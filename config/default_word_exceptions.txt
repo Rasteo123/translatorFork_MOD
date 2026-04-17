@@ -1,0 +1,642 @@
+# Стартовый список слов-исключений для проверки на "недоперевод".
+# Этот список содержит самые частые термины, которые обычно не переводятся.
+# Вы можете расширить его, создав свой собсвтенный пресет в менеджере списков.
+# Каждое слово должно быть на новой строке. Регистр не учитывается.
+
+
+# --- IT-гиганты и программное обеспечение ---
+Adobe
+Amazon
+AMD
+Apple
+ASUS
+Autodesk
+Avast
+Baidu
+Blizzard
+Cisco
+Corel
+Dell
+Docker
+Dropbox
+Electronic Arts
+EA
+Epic Games
+Facebook
+Figma
+GitHub
+GitLab
+Google
+GoPro
+Hewlett-Packard
+HP
+Huawei
+IBM
+Instagram
+Intel
+Kaspersky
+Lenovo
+LG
+LinkedIn
+Logitech
+Meta
+Microsoft
+Mozilla
+MSI
+Xiaomi
+NVIDIA
+Oracle
+PayPal
+Pinterest
+Qualcomm
+Razer
+Reddit
+Riot Games
+Rockstar Games
+Samsung
+SAP
+Skype
+Sony
+Spotify
+Steam
+Tencent
+Tesla
+TikTok
+Twitter
+Ubisoft
+Valve
+Viber
+VMware
+WhatsApp
+Twitter
+Yahoo
+YouTube
+Zoom
+WeChat
+Weixin
+QQ
+Baidu
+Weibo
+Douyin
+Bilibili
+Alipay
+Taobao
+Tmall
+JD.com
+Jingdong
+
+# --- Производители электроники и комплектующих ---
+Acer
+Alienware
+AMD
+AOC
+AsRock
+Beats
+Bose
+Canon
+Corsair
+Crucial
+Deepcool
+DJI
+Epson
+Fujitsu
+Garmin
+Gigabyte
+HyperX
+JBL
+Kingston
+Kyocera
+Lexar
+Marshall
+Nikon
+Nintendo
+Nokia
+OnePlus
+Oppo
+Panasonic
+Philips
+Pioneer
+Realme
+SanDisk
+Seagate
+Sennheiser
+Sharp
+Siemens
+SteelSeries
+Thermaltake
+Toshiba
+TP-Link
+Transcend
+Vivo
+Western Digital
+Zalman
+ZTE
+
+# --- Автомобильные бренды ---
+Audi
+Bentley
+BMW
+Bugatti
+Cadillac
+Chevrolet
+Malibu
+Chrysler
+Citroen
+Dodge
+Ferrari
+Fiat
+Ford
+Geely
+Genesis
+GMC
+Honda
+Hyundai
+Infiniti
+Jaguar
+Jeep
+Kia
+Koenigsegg
+Lamborghini
+Lancia
+Land Rover
+Lexus
+Maserati
+Maybach
+Mazda
+McLaren
+Mercedes
+Mercedes-Benz
+Mitsubishi
+Nissan
+Opel
+Pagani
+Peugeot
+Porsche
+Ram
+Renault
+Rolls-Royce
+Skoda
+Subaru
+Suzuki
+Toyota
+Volkswagen
+Volvo
+
+# --- Мода, одежда и предметы роскоши ---
+Adidas
+Armani
+Balenciaga
+Hugo Boss
+Burberry
+Calvin Klein
+Cartier
+Chanel
+Coach
+Converse
+Dior
+Dolce & Gabbana
+Fendi
+Givenchy
+Gucci
+H&M
+Hermes
+Lacoste
+Levi's
+Louis Vuitton
+Mango
+Michael Kors
+New Balance
+Nike
+Omega
+Prada
+Puma
+Ralph Lauren
+Ray-Ban
+Reebok
+Rolex
+Swarovski
+Skechers
+Supreme
+TAG Heuer
+The North Face
+Tiffany & Co.
+Timberland
+Tom Ford
+Tommy Hilfiger
+Under Armour
+Valentino
+Vans
+Versace
+Victoria's Secret
+Yves Saint Laurent
+Zara
+
+# --- Ритейл и сервисы ---
+Auchan
+Colgate
+Danone
+Domino's
+eBay
+FedEx
+Gillette
+IKEA
+L'Oreal
+Lidl
+Mastercard
+Metro
+Nivea
+Pampers
+P&G
+Procter & Gamble
+Procter and Gamble
+Uber
+Visa
+LEGO
+Hasbro
+Mattel
+Johnson & Johnson
+Bayer
+
+# --- Еда, напитки и сети ресторанов ---
+7 Up
+Barilla
+Burger King
+Carl's Jr.
+Coca-Cola
+Coke
+Danone
+Domino's Pizza
+Dr Pepper
+Dunkin' Donuts
+Fanta
+Ferrero Rocher
+Haribo
+Heinz
+Hellmann's
+Jacobs
+KFC
+Kentucky Fried Chicken
+Kinder
+KitKat
+Knorr
+Kraft
+Lay's
+Lipton
+M&M's
+Mars
+Maxwell House
+McDonald's
+Milka
+Mirinda
+Mountain Dew
+Nescafe
+Nespresso
+Nesquik
+Nestle
+Nutella
+Oreo
+Papa John's
+Pepsi
+Pringles
+Raffaello
+Red Bull
+Schweppes
+Skittles
+Snickers
+Sprite
+Starbucks
+Subway
+Tic Tac
+Tropicana
+Twix
+
+# --- Ключевые технические термины и бренды ---
+AI
+API
+Windows
+Windows XP
+Windows Vista
+Linux
+Android
+iPhone
+CPU
+GPU
+HTML
+JSON
+USB
+Wi-Fi
+VIP
+PC
+Twitch
+Discord
+Unreal Engine
+Unity
+gif
+jpg
+mp4
+mpeg
+DNS
+Com
+Web
+VPN
+Net
+GeForce
+Radeon
+Ryzen
+Core i3
+Core i5
+Core i7
+Core i9
+
+# --- Самые частые игровые аббревиатуры и термины ---
+RPG
+MMORPG
+FPS
+NPC
+HP
+MP
+EXP
+PvP
+PvE
+Quest
+Level
+Online
+
+
+# --- Легендарные франшизы и серии ---
+Age of Empires
+Assassin's Creed
+Battlefield
+BioShock
+Call of Duty
+Civilization
+Command & Conquer
+Counter-Strike
+CS
+Crash Bandicoot
+Dark Souls
+Dead Space
+Deus Ex
+Diablo
+Doom
+Dragon Age
+Dragon Quest
+Fallout
+Far Cry
+Final Fantasy
+God of War
+Gran Turismo
+Grand Theft Auto
+GTA
+Half-Life
+Halo
+Hitman
+League of Legends
+LoL
+Mass Effect
+Max Payne
+Mega Man
+Metal Gear Solid
+Metro
+Mortal Kombat
+Need for Speed
+Persona
+Pokemon
+Portal
+Prince of Persia
+Red Dead Redemption
+Resident Evil
+Silent Hill
+Sonic
+Spyro
+StarCraft
+Street Fighter
+Super Mario
+System Shock
+Tekken
+The Elder Scrolls
+Skyrim
+The Last of Us
+The Legend of Zelda
+Zelda
+Sims
+The Sims
+The Witcher
+Witcher
+Tomb Raider
+Total War
+Uncharted
+Warcraft
+XCOM
+
+# --- Жанроопределяющие и признанные критиками игры ---
+Alan Wake
+Baldur's Gate
+Bloodborne
+Celeste
+Chrono Trigger
+Control
+Cyberpunk
+Death Stranding
+Detroit: Become Human
+Disco Elysium
+Dishonored
+Divinity: Original Sin
+Elden Ring
+Gears of War
+Ghost of Tsushima
+Hades
+Heavy Rain
+Hollow Knight
+Horizon Zero Dawn
+Inside
+Journey
+Kerbal Space Program
+Limbo
+Nier: Automata
+Ori and the Blind Forest
+Overwatch
+Planescape: Torment
+Prey
+Sekiro
+Shadow of the Colossus
+Spore
+Stardew Valley
+Starfield
+Stray
+Subnautica
+Terraria
+Titanfall
+Undertale
+Valorant
+What Remains of Edith Finch
+
+# --- Массовые онлайн-игры и феномены ---
+Among Us
+Apex Legends
+Dota
+EVE Online
+Final Fantasy
+Fortnite
+Genshin Impact
+Minecraft
+PlayerUnknown's Battlegrounds
+PUBG
+Roblox
+Rocket League
+Runescape
+Sea of Thieves
+Team Fortress
+Warframe
+World of Tanks
+World of Warcraft
+WoW
+
+# --- Платформы и магазины ---
+Steam
+Epic Games Store
+GOG
+Good Old Games
+Origin
+Uplay
+Ubisoft Connect
+Battle.net
+
+# --- Медиа, Кино и Стриминг ---
+Disney
+DreamWorks
+Marvel
+Netflix
+Nickelodeon
+Paramount
+Pixar
+HBO
+Warner Bros
+Universal
+20th Century Fox
+DVD
+DVR
+VHS
+
+# --- Авиакомпании и Транспорт ---
+Boeing
+Airbus
+Emirates
+Lufthansa
+Ryanair
+SpaceX
+
+# --- Распространенные англицизмы и междометия ---
+Wow
+Cool
+DJ
+Lol
+IQ
+EQ
+Noob
+Pro
+Top
+Covid
+
+
+# --- Римские цифры ---
+I
+II
+III
+IV
+V
+VI
+VII
+VIII
+IX
+X
+XI
+XII
+XIII
+XIV
+XV
+XVI
+XVII
+XVIII
+XIX
+XX
+XXI
+XXII
+XXIII
+XXIV
+XXV
+XXVI
+XXVII
+XXVIII
+XXIX
+XXX
+XXXI
+XXXII
+XXXIII
+XXXIV
+XXXV
+XXXVI
+XXXVII
+XXXVIII
+XXXIX
+XL
+XLI
+XLII
+XLIII
+XLIV
+XLV
+XLVI
+XLVII
+XLVIII
+XLIX
+L
+LI
+LII
+LIII
+LIV
+LV
+LVI
+LVII
+LVIII
+LIX
+LX
+LXI
+LXII
+LXIII
+LXIV
+LXV
+LXVI
+LXVII
+LXVIII
+LXIX
+LXX
+LXXI
+LXXII
+LXXIII
+LXXIV
+LXXV
+LXXVI
+LXXVII
+LXXVIII
+LXXIX
+LXXX
+LXXXI
+LXXXII
+LXXXIII
+LXXXIV
+LXXXV
+LXXXVI
+LXXXVII
+LXXXVIII
+LXXXIX
+XC
+XCI
+XCII
+XCIII
+XCIV
+XCV
+XCVI
+XCVII
+XCVIII
+XCIX
+C

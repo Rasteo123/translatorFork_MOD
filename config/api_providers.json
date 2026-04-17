@@ -1,0 +1,759 @@
+{
+  "gemini": {
+    "display_name": "Google Gemini Free",
+    "rpd": 1500,
+    "handler_class": "GeminiApiHandler",
+    "is_async": true,
+    "needs_warmup": true,
+    "visible": true,
+    "post_session_creation_delay": 1.5,
+    "file_suffix": "_translated_gemini.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "daily",
+      "timezone": "America/Los_Angeles",
+      "reset_hour": 0,
+      "reset_minute": 1
+    },
+    "models": {
+      "Gemini 3.0 Flash Preview": {
+        "id": "gemini-3-flash-preview",
+        "rpm": 5,
+        "tpm": 250000,
+        "rpd": 20,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 10,
+        "max_output_tokens": 32768,
+        "thinkingLevel": [
+          "high",
+          "medium",
+          "low",
+          "minimal"
+        ],
+        "min_thinking_budget": "minimal"
+      },
+      "Gemini 3.1 Flash-Lite Preview": {
+        "id": "gemini-3.1-flash-lite-preview",
+        "rpm": 15,
+        "tpm": 250000,
+        "rpd": 500,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 10,
+        "max_output_tokens": 16384,
+        "thinkingLevel": [
+          "high",
+          "medium",
+          "low",
+          "minimal"
+        ],
+        "min_thinking_budget": "minimal"
+      },
+      "Gemini 3.1 Flash-Lite": {
+        "id": "gemini-3.1-flash-lite-preview",
+        "rpm": 15,
+        "tpm": 250000,
+        "context_length": 230000,
+        "rpd": 500,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 32000,
+        "min_thinking_budget": -1
+      },
+      "Gemini 2.5 Flash": {
+        "id": "gemini-2.5-flash",
+        "rpm": 5,
+        "tpm": 250000,
+        "rpd": 20,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 10,
+        "max_output_tokens": 32768,
+        "min_thinking_budget": -1
+      },
+      "Gemini Robotics-ER 1.5 Preview": {
+        "id": "gemini-robotics-er-1.5-preview",
+        "rpm": 10,
+        "tpm": 250000,
+        "rpd": 20,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 32768,
+        "min_thinking_budget": -1
+      },
+      "Gemini 2.5 Flash-Lite": {
+        "id": "gemini-2.5-flash-lite",
+        "rpm": 10,
+        "tpm": 250000,
+        "context_length": 230000,
+        "rpd": 20,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": -1
+      },
+      "Gemma 3 27B Instruct": {
+        "id": "gemma-3-27b-it",
+        "rpm": 2,
+        "tpm": 15000,
+        "context_length": 12000,
+        "rpd": 0,
+        "needs_chunking": true,
+        "max_concurrent_requests": 30,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false
+      },
+      "Gemma 4 26B": {
+        "id": "gemma-4-26b-a4b-it",
+        "rpm": 15,
+        "context_length": 180000,
+        "rpd": 1500,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 128000,
+        "min_thinking_budget": false
+      },
+      "Gemma 4 31B Instruct": {
+        "id": "gemma-4-31b-it",
+        "rpm": 2,
+        "tpm": 15000,
+        "context_length": 12000,
+        "rpd": 0,
+        "needs_chunking": true,
+        "max_concurrent_requests": 30,
+        "max_output_tokens": 8192,
+        "thinkingLevel": [
+          "high",
+          "minimal"
+        ],
+        "min_thinking_budget": "minimal"
+      },
+      "Gemma 4 31B": {
+        "id": "gemma-4-31b-it",
+        "rpm": 15,
+        "context_length": 180000,
+        "rpd": 1500,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 128000,
+        "min_thinking_budget": false
+      }
+    }
+  },
+ "deepseek": {
+    "display_name": "Deepseek API",
+    "provider": "deepseek",
+    "handler_class": "DeepseekApiHandler",
+    "base_url": "https://api.deepseek.com/chat/completions",
+    "base_timeout": 1200,
+    "is_async": true,
+    "needs_warmup": true,
+    "visible": true,
+    "file_suffix": "_translated_dp.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "deepseek-chat NonThink": {
+        "id": "deepseek-chat",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "context_window": 128000,
+        "min_thinking_budget": false
+      },
+      "deepseek-reasoner Think": {
+        "id": "deepseek-reasoner",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 64000,
+        "context_window": 128000,
+        "min_thinking_budget": false
+      }
+    }
+   },
+  "perplexytiApiMOD": {
+    "display_name": "Perplexity API MOD",
+    "handler_class": "OpenRouterApiHandler",
+    "server_class": "PerplexityServer",
+    "base_url": "http://127.0.0.1:8765/v1/chat/completions",
+    "server_endpoint": ".perplexity_server_endpoint.json",
+    "_comment": "Реальный URL автоматически определяется из .perplexity_server_endpoint.json",
+    "visible": true,
+    "base_timeout": 1200,
+    "is_async": true,
+    "needs_warmup": false,
+    "file_suffix": "translated_perplexity.html",
+    "shared_request_counter": false,
+    "settings_keys": [
+      "direct_server_url",
+      "direct_server_token"
+    ],
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "Moonshot Kimi k2 (Thinking)": {
+        "id": "kimik2thinking",
+        "rpm": 10,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": true
+      },
+      "Gemini 3.0_flash": {
+        "id": "gemini30flash",
+        "rpm": 10,
+        "context_length": 200000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": true
+      },
+      "Claude 4.5 Sonnet": {
+        "id": "claude45sonnet",
+        "rpm": 5,
+        "context_length": 200000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": false
+      },
+      "Grok 4.1 (Standard)": {
+        "id": "grok41nonreasoning",
+        "rpm": 10,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": false
+      },
+      "Gemini 3.0 Pro (Reasoning)": {
+        "id": "gemini30pro",
+        "rpm": 10,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": true
+      },
+      "Grok 4.1 Reasoning": {
+        "id": "grok41reasoning",
+        "rpm": 10,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": true
+      },
+      "GPT-5.2 Thinking": {
+        "id": "gpt52_thinking",
+        "rpm": 10,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": true
+      },
+      "GPT-5.2 (Standard)": {
+        "id": "gpt52",
+        "rpm": 10,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": false
+      },
+      "Claude 3.7 Sonnet": {
+        "id": "claude37sonnet",
+        "rpm": 10,
+        "context_length": 200000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": false
+      },
+      "Perplexity Sonar": {
+        "id": "sonar",
+        "rpm": 5,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": false
+      },
+      "Gemini_old_test": {
+        "id": "gemini25pro",
+        "rpm": 10,
+        "context_length": 200000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": false
+      },
+      "Auto (Best Model)": {
+        "id": "pplx_pro",
+        "rpm": 15,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_output_tokens": 8192,
+        "reasoning": false
+      }
+    }
+  },
+  "openrouter": {
+    "display_name": "OpenRouter (бесплатные модели)",
+    "handler_class": "OpenRouterApiHandler",
+    "is_async": true,
+    "visible": true,
+    "needs_warmup": true,
+    "post_session_creation_delay": 1.0,
+    "file_suffix": "_translated_openrouter.html",
+    "shared_request_counter": true,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "Gemini 2.0 Flash Experimental (бесплатно)": {
+        "id": "google/gemini-2.0-flash-exp:free",
+        "rpm": 20,
+        "needs_chunking": true,
+        "context_length": 250000,
+        "max_concurrent_requests": 30,
+        "max_output_tokens": 15000
+      },
+      "Xiaomi: MiMo-V2-Flash (бесплатно)": {
+        "id": "xiaomi/mimo-v2-flash:free",
+        "rpm": 20,
+        "max_concurrent_requests": 30,
+        "needs_chunking": true,
+        "context_length": 100000,
+        "max_output_tokens": 7500
+      },
+      "Qwen3 Coder 480B A35B (бесплатно)": {
+        "id": "qwen/qwen3-coder:free",
+        "rpm": 20,
+        "needs_chunking": true,
+        "max_concurrent_requests": 30,
+        "context_length": 30000,
+        "max_output_tokens": 15000
+      },
+      "Nex AGI: DeepSeek V3.1 Nex N1 (Бесплатно)": {
+        "id": "nex-agi/deepseek-v3.1-nex-n1:free",
+        "rpm": 20,
+        "needs_chunking": true,
+        "max_concurrent_requests": 30,
+        "max_output_tokens": 15000,
+        "min_thinking_budget": false,
+        "context_length": 100000
+      },
+      "DeepSeek R1T2 Chimera (бесплатно)": {
+        "id": "tngtech/deepseek-r1t2-chimera:free",
+        "rpm": 20,
+        "max_concurrent_requests": 30,
+        "needs_chunking": true,
+        "context_length": 100000,
+        "max_output_tokens": 7500
+      },
+      "OpenAi GPT OSS 120B (бесплатно)": {
+        "id": "openai/gpt-oss-120b:free",
+        "rpm": 20,
+        "max_concurrent_requests": 30,
+        "needs_chunking": true,
+        "context_length": 30000,
+        "max_output_tokens": 7500
+      },
+      "GLM-4.5 Air (бесплатно)": {
+        "id": "z-ai/glm-4.5-air:free",
+        "rpm": 20,
+        "needs_chunking": true,
+        "max_concurrent_requests": 30,
+        "context_length": 30000,
+        "max_output_tokens": 7500
+      },
+      "Google: Gemma 3 27B (бесплатно)": {
+        "id": "google/gemma-3-27b-it:free",
+        "rpm": 20,
+        "max_concurrent_requests": 30,
+        "needs_chunking": true,
+        "context_length": 30000,
+        "max_output_tokens": 7500
+      },
+      "Xiaomi: MiMo-V2-Flash (бесплатно)": {
+        "id": "xiaomi/mimo-v2-flash:free",
+        "rpm": 20,
+        "max_concurrent_requests": 30,
+        "needs_chunking": true,
+        "context_length": 60000,
+        "max_output_tokens": 15000
+      }
+    }
+  },
+  "huggingface": {
+    "display_name": "Hugging Face (Free)",
+    "provider": "huggingface",
+    "handler_class": "HuggingFaceApiHandler",
+    "base_url": "https://router.huggingface.co/v1/chat/completions",
+    "base_timeout": 1200,
+    "is_async": true,
+    "needs_warmup": true,
+    "visible": true,
+    "file_suffix": "_translated_hf.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "Gemma 3 27B (by scaleway)": {
+        "id": "google/gemma-3-27b-it:scaleway",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "context_window": 128000
+      },
+      "Kimi-K2-Instruct-0905 1T-B (by groq)": {
+        "id": "moonshotai/Kimi-K2-Instruct-0905:groq",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "context_window": 128000
+      },
+      "GLM-4.6 357B (by zai-org)": {
+        "id": "zai-org/GLM-4.6:zai-org",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "context_window": 128000
+      },
+      "OpenAi GPT OSS 120B (by scaleway)": {
+        "id": "openai/gpt-oss-120b:scaleway",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "context_window": 64000
+      }
+    }
+  },
+  "local": {
+    "display_name": "Локальные модели (Ollama/LM Studio)",
+    "handler_class": "LocalApiHandler",
+    "is_async": false,
+    "visible": true,
+    "needs_warmup": false,
+    "base_timeout": 1800,
+    "base_url": "http://127.0.0.1:11434/v1/chat/completions",
+    "file_suffix": "_translated_local.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 9999
+    },
+    "models": {
+      "DeepSeek R1 8B (Ollama)": {
+        "id": "deepseek-r1:8b",
+        "rpm": 1000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 12000,
+        "max_output_tokens": 4096,
+        "base_url": "http://127.0.0.1:11434/v1/chat/completions"
+      },
+      "Qwen 3 8B (Ollama)": {
+        "id": "qwen3:8b",
+        "rpm": 1000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 12000,
+        "max_output_tokens": 4096,
+        "base_url": "http://127.0.0.1:11434/v1/chat/completions"
+      },
+      "Gemma 3 12B IT (Ollama)": {
+        "id": "gemma3:12b-it-qat",
+        "rpm": 1000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 12000,
+        "max_output_tokens": 8192,
+        "base_url": "http://127.0.0.1:11434/v1/chat/completions"
+      },
+      "Mistral Nemo Instruct 12B (LM Studio)": {
+        "id": "mistralai/mistral-nemo-instruct-2407",
+        "rpm": 1000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 12000,
+        "max_output_tokens": 8192,
+        "base_url": "http://localhost:1234/v1/chat/completions"
+      },
+      "Gemma 3 12B IT (LM Studio)": {
+        "id": "google/gemma-3-12b",
+        "rpm": 1000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 12000,
+        "max_output_tokens": 8192,
+        "base_url": "http://localhost:1234/v1/chat/completions"
+      }
+    }
+  },
+  "neuroapi": {
+    "display_name": "NeuroAPI (Платный / VIP Модели)",
+    "handler_class": "OpenRouterApiHandler",
+    "base_url": "https://neuroapi.host/v1/chat/completions",
+    "is_async": true,
+    "needs_warmup": true,
+    "visible": true,
+    "post_session_creation_delay": 1.0,
+    "file_suffix": "_translated_neuro.html",
+    "shared_request_counter": true,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "GPT-5 (OpenAI Flagship)": {
+        "id": "gpt-5",
+        "rpm": 60,
+        "needs_chunking": true,
+        "context_length": 400000,
+        "max_output_tokens": 16384
+      },
+      "Claude 3.7 Sonnet (Anthropic Top)": {
+        "id": "claude-3-7-sonnet-20250219",
+        "rpm": 60,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_output_tokens": 8192
+      },
+      "Gemini 2.5 Pro (Google Top)": {
+        "id": "gemini-2.5-pro",
+        "rpm": 60,
+        "needs_chunking": true,
+        "context_length": 1000000,
+        "max_output_tokens": 32768
+      },
+      "DeepSeek V3.1 (Optimal Price/Quality)": {
+        "id": "deepseek-v3.1",
+        "rpm": 60,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_output_tokens": 8192
+      },
+      "GPT-4o Mini (Economy Fast)": {
+        "id": "gpt-4o-mini",
+        "rpm": 100,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_output_tokens": 16384
+      },
+      "Gemini 2.5 Flash-Lite (Super Economy)": {
+        "id": "gemini-2.5-flash-lite",
+        "rpm": 100,
+        "needs_chunking": true,
+        "context_length": 1000000,
+        "max_output_tokens": 8192
+      },
+      "o3-mini (Reasoning/Smart)": {
+        "id": "o3-mini",
+        "rpm": 60,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_output_tokens": 32768
+      }
+    }
+  },
+  "gemini_top": {
+    "display_name": "Google Gemini Top",
+    "handler_class": "GeminiApiHandler",
+    "is_async": true,
+    "needs_warmup": true,
+    "post_session_creation_delay": 1.5,
+    "file_suffix": "_translated_gemini.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "daily",
+      "timezone": "America/Los_Angeles",
+      "reset_hour": 0,
+      "reset_minute": 1
+    },
+    "models": {
+      "Gemini 3.0 Pro Preview": {
+        "id": "gemini-3.0-pro-preview",
+        "rpm": 2,
+        "tpm": 125000,
+        "context_length": 110000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 5,
+        "max_output_tokens": 32768,
+        "thinkingLevel": [
+          "high",
+          "low"
+        ],
+        "min_thinking_budget": "low"
+      },
+      "Gemini 3.1 Pro Preview": {
+        "id": "gemini-3.1-pro-preview",
+        "rpm": 2,
+        "tpm": 125000,
+        "context_length": 110000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 5,
+        "max_output_tokens": 32768,
+        "thinkingLevel": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "min_thinking_budget": "low"
+      },
+      "Gemini 2.5 Pro": {
+        "id": "gemini-2.5-pro",
+        "rpm": 2,
+        "tpm": 125000,
+        "context_length": 110000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 5,
+        "max_output_tokens": 32768,
+        "min_thinking_budget": 768
+      },
+      "Gemini 2.0 Flash": {
+        "id": "gemini-2.0-flash",
+        "rpm": 10,
+        "tpm": 1000000,
+        "context_length": 950000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Gemini 2.0 Flash-Lite": {
+        "id": "gemini-2.0-flash-lite",
+        "rpm": 10,
+        "tpm": 1000000,
+        "context_length": 950000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false
+      }
+    }
+  },
+  "workascii_chatgpt": {
+    "display_name": "ChatGPT Web (work_ascii)",
+    "handler_class": "WorkAsciiChatGptApiHandler",
+    "is_async": true,
+    "visible": true,
+    "needs_warmup": false,
+    "base_timeout": 1800,
+    "requires_api_key": false,
+    "max_instances": 1,
+    "placeholder_api_key": "__workascii_chatgpt_session__",
+    "file_suffix": "_translated_chatgpt_web.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "ChatGPT Web (current profile model)": {
+        "id": "chatgpt-web-current",
+        "rpm": 3,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false
+      }
+    }
+  },
+  "web_chatgpt_free": {
+    "display_name": "Web Interface (ChatGPT Free)",
+    "handler_class": "BrowserApiHandler",
+    "is_async": true,
+    "visible": false,
+    "base_url": "https://chatgpt.com",
+    "file_suffix": "_web_translated.html",
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "gpt-4o-mini": {
+        "id": "gpt-4o-mini",
+        "rpm": 5
+      }
+    },
+    "selectors": {
+      "input_box": "#prompt-textarea",
+      "send_button": "button[data-testid='send-button']",
+      "last_message": "div[data-message-author-role='assistant'] .markdown",
+      "new_chat_button": "a[href='/']",
+      "login_email": "input[name='email']",
+      "login_password": "input[name='password']"
+    }
+  },
+  "perplexity_api": {
+    "display_name": "Perplexity API (Official)",
+    "handler_class": "OpenRouterApiHandler",
+    "file_suffix": "_pplx.html",
+    "is_async": true,
+    "visible": false,
+    "base_url": "https://api.perplexity.ai/chat/completions",
+    "models": {
+      "Sonar Medium Online": {
+        "id": "sonar-medium-online",
+        "rpm": 10
+      },
+      "Sonar Small Online": {
+        "id": "sonar-small-online",
+        "rpm": 10
+      }
+    }
+  },
+  "web_perplexity": {
+    "display_name": "Web Interface (Perplexity - Writing Mode)",
+    "handler_class": "BrowserApiHandler",
+    "is_async": true,
+    "visible": false,
+    "base_url": "https://www.perplexity.ai/",
+    "file_suffix": "_pplx.html",
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "Default Model": {
+        "id": "default",
+        "rpm": 5
+      }
+    },
+    "selectors": {
+      "input_box": "textarea[placeholder*='Ask']",
+      "send_button": "button[aria-label='Submit']",
+      "new_chat_button": "a[href='/']",
+      "last_message": "div.prose"
+    },
+    "setup_steps": [
+      {
+        "comment": "Нажимаем кнопку Focus (обычно там написано 'Focus')",
+        "action": "click",
+        "selector": "button:has-text('Focus')"
+      },
+      {
+        "comment": "В выпадающем меню выбираем Writing",
+        "action": "click",
+        "selector": "div:has-text('Writing')"
+      }
+    ]
+  }
+}

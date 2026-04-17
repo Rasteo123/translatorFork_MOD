@@ -1,0 +1,58 @@
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging output
+build/
+build_verify/
+build_verify_project_runtime/
+dist/
+dist_verify/
+dist_verify_project_runtime/
+*.egg-info/
+pip-wheel-metadata/
+
+# Local runtimes and generated profiles
+playwright_runtime/
+chatgpt-profile-run/
+
+# Logs and local state
+logs/
+*.log
+*.sqlite3
+*.db
+server_requests.log
+translation_session.json
+translation_stats.json
+context_glossary.json
+settings.json
+.epub_translator_openrouter.json
+
+# Generated output and archives
+*_translated.html
+*_translated_openrouter.html
+*_openrouter_failed.html
+*.epub
+translatorFork_MOD.zip
+
+# Temporary local files
+_tmp_*
+
+# OS and editor files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
