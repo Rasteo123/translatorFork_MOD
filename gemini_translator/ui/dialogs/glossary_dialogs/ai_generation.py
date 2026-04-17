@@ -1096,6 +1096,7 @@ class GenerationSessionDialog(QDialog):
             self.key_widget.set_active_keys_for_provider(provider_id, active_keys)
         else:
             self.key_widget._load_and_refresh_keys()
+        self._update_instances_spinbox_limit()
 
         self.model_settings_widget.set_settings(initial_settings)
 
@@ -1131,6 +1132,22 @@ class GenerationSessionDialog(QDialog):
 
         self._update_dependent_widgets()
         self._update_start_button_state()
+
+    def _get_available_session_capacity(self) -> int:
+        provider_id = self.key_widget.get_selected_provider()
+        active_sessions = len(self.key_widget.get_active_keys())
+        if active_sessions <= 0:
+            return 0
+        provider_limit = api_config.provider_max_instances(provider_id)
+        if provider_limit is None or provider_limit <= 0:
+            provider_limit = active_sessions
+        return min(active_sessions, provider_limit)
+
+    def _update_instances_spinbox_limit(self):
+        if not hasattr(self, 'instances_spin'):
+            return
+        session_capacity = self._get_available_session_capacity()
+        self.instances_spin.setMaximum(session_capacity if session_capacity > 0 else 1)
     
     def _update_task_status_in_list(self, task_tuple, status):
         """
@@ -1853,9 +1870,8 @@ class GenerationSessionDialog(QDialog):
         settings_layout.addStretch(1)
 
         # --- ПОДКЛЮЧЕНИЕ СИГНАЛОВ ---
-        self.key_widget.active_keys_changed.connect(
-            lambda: self.instances_spin.setMaximum(len(self.key_widget.get_active_keys()) or 1)
-        )
+        self.key_widget.active_keys_changed.connect(self._update_instances_spinbox_limit)
+        self.key_widget.provider_combo.currentIndexChanged.connect(self._update_instances_spinbox_limit)
         self.sequential_mode_checkbox.toggled.connect(
             lambda checked: self.model_settings_widget.set_concurrent_requests_visible(not checked)
         )

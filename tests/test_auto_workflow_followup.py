@@ -329,6 +329,7 @@ class _AutoConsistencyWorkerStub:
         self.finished_with_result = _SignalStub()
         self.failed = _SignalStub()
         self.finished = _SignalStub()
+        self.progress_message = _SignalStub()
         self.__class__.instances.append(self)
 
     def start(self):
@@ -378,6 +379,9 @@ class _AutoConsistencyFollowupHarness:
 
 class _ConsistencyEngineStub:
     def __init__(self, chapter_problems_map):
+        self.error_occurred = _SignalStub()
+        self.log_message = _SignalStub()
+        self.progress_updated = _SignalStub()
         self.chapter_problems_map = {
             chapter_name: [dict(problem) for problem in problems]
             for chapter_name, problems in chapter_problems_map.items()
@@ -431,6 +435,9 @@ class _ConsistencyEngineStub:
 
     def get_request_response_trace(self):
         return [dict(item) for item in self.request_response_trace]
+
+    def close_session_resources(self):
+        return None
 
 
 class AutoConsistencyFollowupTests(unittest.TestCase):
