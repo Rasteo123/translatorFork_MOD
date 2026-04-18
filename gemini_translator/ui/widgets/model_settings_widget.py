@@ -99,7 +99,13 @@ class ModelSettingsWidget(QGroupBox):
         
         left_layout.addWidget(QLabel("Модель:"), 0, 0)
         self.model_combo = NoScrollComboBox()
-        left_layout.addWidget(self.model_combo, 0, 1, 1, 2)
+        left_layout.addWidget(self.model_combo, 0, 1)
+        self.refresh_models_btn = QPushButton("↻")
+        self.refresh_models_btn.setFixedWidth(34)
+        self.refresh_models_btn.setToolTip("Обновить список моделей от локального сервера.")
+        self.refresh_models_btn.clicked.connect(self._refresh_current_provider_models)
+        self.refresh_models_btn.setVisible(False)
+        left_layout.addWidget(self.refresh_models_btn, 0, 2)
         
         self.rpm_row_widget = QWidget()
         self.rpm_row_widget.setObjectName("rpm_row")
@@ -633,7 +639,10 @@ class ModelSettingsWidget(QGroupBox):
     def _update_provider_specific_controls(self, provider_id):
         self._current_provider_id = provider_id
         is_workascii = provider_id == "workascii_chatgpt"
+        is_local_provider = provider_id == "local"
         self.workascii_group.setVisible(is_workascii)
+        self.refresh_models_btn.setVisible(is_local_provider)
+        self.refresh_models_btn.setEnabled(is_local_provider)
     # ----------------------------------------------------
     # Публичные методы
     # ----------------------------------------------------
@@ -785,6 +794,16 @@ class ModelSettingsWidget(QGroupBox):
     def _emit_settings_changed(self):
         """Просто испускает сигнал об изменении настроек."""
         self.settings_changed.emit()
+
+    @pyqtSlot()
+    def _refresh_current_provider_models(self):
+        provider_id = getattr(self, "_current_provider_id", None)
+        if not provider_id:
+            return
+
+        api_config.refresh_dynamic_models(provider_id)
+        self.set_available_models(provider_id)
+        self._emit_settings_changed()
     
     
     @pyqtSlot(str) # <-- Делаем его слотом
@@ -793,16 +812,22 @@ class ModelSettingsWidget(QGroupBox):
         current_model_name = self.model_combo.currentText()
         current_model_id = self.model_combo.currentData()
         saved_model_name = None
+        saved_model_id = None
         try:
             saved_model_name = self.settings_manager.get_last_settings().get('model')
+            saved_model_config = api_config.all_models().get(saved_model_name)
+            if isinstance(saved_model_config, dict):
+                saved_model_id = saved_model_config.get('id')
         except Exception:
             saved_model_name = None
+            saved_model_id = None
 
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         self._update_provider_specific_controls(provider_id)
         
         if provider_id:
+            api_config.ensure_dynamic_provider_models(provider_id)
             provider_config = api_config.api_providers().get(provider_id, {})
             models = provider_config.get("models", {})
             if models:
@@ -814,6 +839,8 @@ class ModelSettingsWidget(QGroupBox):
             preferred_index = self._find_model_index(model_id=current_model_id)
             if preferred_index == -1:
                 preferred_index = self._find_model_index(model_name=current_model_name)
+            if preferred_index == -1:
+                preferred_index = self._find_model_index(model_id=saved_model_id)
             if preferred_index == -1:
                 preferred_index = self._find_model_index(model_name=saved_model_name)
             if preferred_index == -1:

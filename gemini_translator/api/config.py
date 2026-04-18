@@ -2,10 +2,19 @@
 
 import json
 import importlib.util
+from copy import deepcopy
 from pathlib import Path
 import sys
 import shutil
 import os # <-- Добавляем импорт os
+import threading
+import time
+from urllib.parse import urlparse, urlunparse
+
+try:
+    import requests
+except Exception:
+    requests = None
 
 
 # [ARCH] URI для общей базы данных в оперативной памяти.
@@ -264,6 +273,12 @@ _INTERNAL_PROMPTS = {}
 _ALL_MODELS = {}
 _PROVIDER_DISPLAY_MAP = {}
 _ALL_TRANSLATED_SUFFIXES = []
+_DYNAMIC_PROVIDER_MODELS = {}
+_DYNAMIC_PROVIDER_MODELS_TS = {}
+_DYNAMIC_PROVIDER_MODELS_LOCK = threading.Lock()
+_LOCAL_MODEL_DISCOVERY_TTL_SECONDS = 15.0
+_LOCAL_MODEL_DISCOVERY_TIMEOUT_SECONDS = 0.75
+_LOCAL_MODEL_DISCOVERY_DISABLE_ENV = "GT_DISABLE_LOCAL_MODEL_DISCOVERY"
 
 # --- ПАРАМЕТРЫ РАСЧЕТА ТОКЕНОВ И РАЗМЕРОВ ---
 CHARS_PER_ASCII_TOKEN = 4.0
@@ -273,9 +288,312 @@ MODEL_OUTPUT_SAFETY_MARGIN = 0.95
 ALPHABETIC_EXPANSION_FACTOR = 1.6
 CJK_EXPANSION_FACTOR = 3.5
 
+
+def _build_all_models(providers_config: dict) -> dict:
+    return {
+        model_name: {**model_config, 'provider': provider_id}
+        for provider_id, provider_data in providers_config.items()
+        for model_name, model_config in provider_data.get("models", {}).items()
+    }
+
+
+def _compose_runtime_providers() -> dict:
+    providers = deepcopy(_API_PROVIDERS)
+    for provider_id, models in _DYNAMIC_PROVIDER_MODELS.items():
+        if provider_id in providers and models is not None:
+            providers[provider_id]["models"] = deepcopy(models)
+    return providers
+
+
+def _local_model_discovery_enabled() -> bool:
+    return os.environ.get(_LOCAL_MODEL_DISCOVERY_DISABLE_ENV, "").strip() != "1"
+
+
+def _normalize_http_root(url_text: str | None) -> str | None:
+    raw_url = str(url_text or "").strip()
+    if not raw_url:
+        return None
+
+    try:
+        parsed = urlparse(raw_url)
+    except Exception:
+        return None
+
+    if not parsed.scheme or not parsed.netloc:
+        return None
+
+    path = (parsed.path or "").rstrip("/")
+    lowered_path = path.lower()
+    for suffix in (
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/v1/completions",
+        "/api/chat",
+        "/api/generate",
+        "/v1",
+        "/api",
+    ):
+        if lowered_path.endswith(suffix):
+            path = path[:-len(suffix)]
+            break
+
+    path = path.rstrip("/")
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def _join_http_path(root_url: str, suffix: str) -> str:
+    parsed = urlparse(root_url)
+    base_path = (parsed.path or "").rstrip("/")
+    if suffix.startswith("/"):
+        final_path = f"{base_path}{suffix}" if base_path else suffix
+    else:
+        final_path = f"{base_path}/{suffix}" if base_path else f"/{suffix}"
+    return urlunparse((parsed.scheme, parsed.netloc, final_path, "", "", ""))
+
+
+def _normalize_local_chat_url(url_text: str | None) -> str | None:
+    root_url = _normalize_http_root(url_text)
+    if not root_url:
+        return None
+    return _join_http_path(root_url, "/v1/chat/completions")
+
+
+def _guess_local_endpoint_label(root_url: str) -> str:
+    parsed = urlparse(root_url)
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+
+    if port == 11434:
+        return "Ollama"
+    if port == 1234:
+        return "LM Studio"
+    if host in {"127.0.0.1", "localhost", "0.0.0.0"} and port:
+        return f"Local {port}"
+    return parsed.netloc or "Local"
+
+
+def _iter_local_discovery_sources(provider_config: dict) -> list[dict]:
+    ordered_sources: dict[str, dict] = {}
+
+    def register_candidate(url_text: str | None, label: str | None = None):
+        root_url = _normalize_http_root(url_text)
+        if not root_url:
+            return
+
+        source_key = root_url.lower()
+        resolved_label = str(label or "").strip() or _guess_local_endpoint_label(root_url)
+        source_entry = {
+            "root_url": root_url,
+            "chat_url": _join_http_path(root_url, "/v1/chat/completions"),
+            "label": resolved_label,
+        }
+
+        existing = ordered_sources.get(source_key)
+        if not existing:
+            ordered_sources[source_key] = source_entry
+            return
+        if resolved_label and existing.get("label", "").startswith("Local "):
+            ordered_sources[source_key] = source_entry
+
+    for endpoint in provider_config.get("discovery_endpoints", []) or []:
+        if isinstance(endpoint, str):
+            register_candidate(endpoint)
+        elif isinstance(endpoint, dict):
+            register_candidate(
+                endpoint.get("root_url") or endpoint.get("base_url") or endpoint.get("chat_url"),
+                endpoint.get("name"),
+            )
+
+    register_candidate(provider_config.get("base_url"))
+    for model_config in provider_config.get("models", {}).values():
+        if isinstance(model_config, dict):
+            register_candidate(model_config.get("base_url"))
+
+    return list(ordered_sources.values())
+
+
+def _index_static_local_models(static_models: dict, provider_base_url: str | None) -> tuple[dict, dict]:
+    by_model_and_url = {}
+    by_model_id = {}
+
+    for display_name, model_config in static_models.items():
+        if not isinstance(model_config, dict):
+            continue
+
+        model_id = str(model_config.get("id") or "").strip()
+        if not model_id:
+            continue
+
+        chat_url = _normalize_local_chat_url(model_config.get("base_url") or provider_base_url) or ""
+        entry = {
+            "display_name": display_name,
+            "config": deepcopy(model_config),
+            "chat_url": chat_url,
+        }
+        by_model_and_url[(model_id, chat_url.lower())] = entry
+        by_model_id.setdefault(model_id, []).append(entry)
+
+    return by_model_and_url, by_model_id
+
+
+def _fetch_local_models_json(url: str) -> tuple[bool, object | None]:
+    if requests is None:
+        return False, None
+
+    try:
+        response = requests.get(url, timeout=_LOCAL_MODEL_DISCOVERY_TIMEOUT_SECONDS)
+    except Exception:
+        return False, None
+
+    if response.status_code != 200:
+        return False, None
+
+    try:
+        return True, response.json()
+    except Exception:
+        return False, None
+
+
+def _extract_model_ids_from_ollama_payload(payload) -> list[str]:
+    models = payload.get("models", []) if isinstance(payload, dict) else []
+    discovered = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("model") or item.get("name") or item.get("id")
+        if isinstance(model_id, str) and model_id.strip():
+            discovered.append(model_id.strip())
+    return discovered
+
+
+def _extract_model_ids_from_openai_payload(payload) -> list[str]:
+    models = payload.get("data", []) if isinstance(payload, dict) else []
+    discovered = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id") or item.get("model")
+        if isinstance(model_id, str) and model_id.strip():
+            discovered.append(model_id.strip())
+    return discovered
+
+
+def _discover_model_ids_for_local_source(source: dict) -> tuple[bool, list[str]]:
+    discovered_ids = set()
+    is_successful = False
+    root_url = source.get("root_url")
+
+    if not root_url:
+        return False, []
+
+    ok, payload = _fetch_local_models_json(_join_http_path(root_url, "/api/tags"))
+    if ok:
+        is_successful = True
+        discovered_ids.update(_extract_model_ids_from_ollama_payload(payload))
+
+    ok, payload = _fetch_local_models_json(_join_http_path(root_url, "/v1/models"))
+    if ok:
+        is_successful = True
+        discovered_ids.update(_extract_model_ids_from_openai_payload(payload))
+
+    return is_successful, sorted(discovered_ids, key=str.casefold)
+
+
+def _default_local_model_config(model_id: str, source: dict) -> dict:
+    source_label = str(source.get("label") or "")
+    max_output_tokens = 8192 if source_label == "LM Studio" else 4096
+    return {
+        "id": model_id,
+        "rpm": 1000,
+        "needs_chunking": True,
+        "max_concurrent_requests": 1,
+        "context_length": 12000,
+        "max_output_tokens": max_output_tokens,
+        "base_url": source.get("chat_url"),
+    }
+
+
+def _build_local_model_entry(model_id: str, source: dict, static_by_model_and_url: dict, static_by_model_id: dict) -> tuple[str, dict]:
+    chat_url = str(source.get("chat_url") or "")
+    match = static_by_model_and_url.get((model_id, chat_url.lower()))
+
+    if match is None:
+        candidates = static_by_model_id.get(model_id, [])
+        if len(candidates) == 1:
+            match = candidates[0]
+
+    if match is not None:
+        resolved_config = deepcopy(match["config"])
+        resolved_config["id"] = model_id
+        resolved_config["base_url"] = chat_url
+        return match["display_name"], resolved_config
+
+    label = str(source.get("label") or "").strip()
+    display_name = f"{model_id} ({label})" if label else model_id
+    return display_name, _default_local_model_config(model_id, source)
+
+
+def _discover_local_provider_models(provider_config: dict) -> dict:
+    static_models = deepcopy(provider_config.get("models", {}))
+    if not _local_model_discovery_enabled() or requests is None:
+        return static_models
+
+    discovery_sources = _iter_local_discovery_sources(provider_config)
+    if not discovery_sources:
+        return static_models
+
+    static_by_model_and_url, static_by_model_id = _index_static_local_models(
+        static_models,
+        provider_config.get("base_url"),
+    )
+    discovered_models = {}
+    successful_sources = 0
+
+    for source in discovery_sources:
+        is_successful, model_ids = _discover_model_ids_for_local_source(source)
+        if not is_successful:
+            continue
+
+        successful_sources += 1
+        for model_id in model_ids:
+            display_name, model_config = _build_local_model_entry(
+                model_id,
+                source,
+                static_by_model_and_url,
+                static_by_model_id,
+            )
+            discovered_models[display_name] = model_config
+
+    if successful_sources > 0:
+        return discovered_models
+    return static_models
+
+
+def _refresh_dynamic_provider_models(provider_id: str, force: bool = False) -> dict:
+    global _ALL_MODELS
+
+    normalized_provider = str(provider_id or "").strip()
+    if normalized_provider != "local":
+        return {}
+
+    with _DYNAMIC_PROVIDER_MODELS_LOCK:
+        cached_models = _DYNAMIC_PROVIDER_MODELS.get(normalized_provider)
+        cached_ts = _DYNAMIC_PROVIDER_MODELS_TS.get(normalized_provider, 0.0)
+        now = time.time()
+
+        if not force and cached_models is not None and (now - cached_ts) < _LOCAL_MODEL_DISCOVERY_TTL_SECONDS:
+            return cached_models
+
+        provider_config = _API_PROVIDERS.get(normalized_provider, {})
+        resolved_models = _discover_local_provider_models(provider_config)
+        _DYNAMIC_PROVIDER_MODELS[normalized_provider] = resolved_models
+        _DYNAMIC_PROVIDER_MODELS_TS[normalized_provider] = now
+        _ALL_MODELS = _build_all_models(_compose_runtime_providers())
+        return resolved_models
+
 # --- ЭТАП 3: ГЛАВНАЯ ФУНКЦИЯ-ИНИЦИАЛИЗАТОР ---
 def initialize_configs():
-    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS
+    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS, _DYNAMIC_PROVIDER_MODELS, _DYNAMIC_PROVIDER_MODELS_TS
     
     print("[CONFIG INFO] Централизованная инициализация конфигураций…")
     _API_PROVIDERS = _load_providers_config()
@@ -286,6 +604,8 @@ def initialize_configs():
     _DEFAULT_UNTRANSLATED_PROMPT = _load_default_untranslated_prompt()
     _DEFAULT_MANUAL_TRANSLATION_PROMPT = _load_default_manual_translation_prompt()
     _INTERNAL_PROMPTS = _load_internal_prompts()
+    _DYNAMIC_PROVIDER_MODELS = {}
+    _DYNAMIC_PROVIDER_MODELS_TS = {}
 
     _API_PROVIDERS['dry_run'] = {
         "display_name": "Пробный запуск",
@@ -296,11 +616,7 @@ def initialize_configs():
         "models": {"dry-run-model": {"id": "dry-run-model", "rpm": 1000}}
     }
     
-    _ALL_MODELS = {
-        model_name: {**model_config, 'provider': provider_id}
-        for provider_id, provider_data in _API_PROVIDERS.items()
-        for model_name, model_config in provider_data.get("models", {}).items()
-    }
+    _ALL_MODELS = _build_all_models(_compose_runtime_providers())
     _PROVIDER_DISPLAY_MAP = {
         p_data["display_name"]: p_id for p_id, p_data in _API_PROVIDERS.items()
     }
@@ -316,7 +632,7 @@ def _ensure_configs_initialized():
 
 def api_providers():
     _ensure_configs_initialized()
-    return _API_PROVIDERS
+    return _compose_runtime_providers()
 
 def default_prompt():
     _ensure_configs_initialized()
@@ -354,7 +670,19 @@ def internal_prompts():
     return _INTERNAL_PROMPTS
 def all_models():
     _ensure_configs_initialized()
-    return _ALL_MODELS
+    return _build_all_models(api_providers())
+
+def ensure_dynamic_provider_models(provider_id: str | None, force: bool = False):
+    _ensure_configs_initialized()
+    normalized_provider = str(provider_id or "").strip()
+    if normalized_provider == "local":
+        _refresh_dynamic_provider_models(normalized_provider, force=force)
+    if normalized_provider:
+        return api_providers().get(normalized_provider, {})
+    return api_providers()
+
+def refresh_dynamic_models(provider_id: str | None = None):
+    return ensure_dynamic_provider_models(provider_id, force=True)
 
 def provider_display_map():
     _ensure_configs_initialized()

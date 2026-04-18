@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("GT_DISABLE_LOCAL_MODEL_DISCOVERY", "1")
 
 from PyQt6 import QtCore, QtWidgets
 
@@ -104,6 +105,15 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         self.assertTrue(result["workascii_headless"])
         self.assertEqual(result["workascii_profile_template_dir"], r"C:\profiles\template")
         self.assertEqual(result["workascii_refresh_every_requests"], 12)
+
+    def test_local_provider_shows_refresh_button(self):
+        widget = self._create_widget()
+
+        widget.set_available_models("local")
+        self.assertFalse(widget.refresh_models_btn.isHidden())
+
+        widget.set_available_models("gemini")
+        self.assertTrue(widget.refresh_models_btn.isHidden())
 
     def test_chatgpt_auth_buttons_launch_saved_profile_browser(self):
         widget = self._create_widget()
