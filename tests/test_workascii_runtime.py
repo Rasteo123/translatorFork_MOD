@@ -108,6 +108,68 @@ sys.exit(0 if "error" not in payload else 1)
         self.assertEqual(payload.get("stdout"), "ok")
         self.assertEqual(payload.get("stderr"), "")
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows-specific memfs os.path regression")
+    def test_os_patch_supports_exists_isdir_isfile_for_mem_paths(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        script = """
+import json
+import os
+import sys
+import traceback
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PyQt6 import QtWidgets
+
+import os_patch
+
+payload = {}
+try:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    os_patch.apply()
+
+    virtual_dir = os.path.join("mem://session-cache", "chapter-1")
+    os.makedirs(virtual_dir)
+    virtual_file = os.write_bytes_to_mem(b"hello", ".txt")
+    payload = {
+        "virtual_file": virtual_file,
+        "file_exists": os.path.exists(virtual_file),
+        "file_isfile": os.path.isfile(virtual_file),
+        "file_isdir": os.path.isdir(virtual_file),
+        "virtual_dir": virtual_dir,
+        "dir_exists": os.path.exists(virtual_dir),
+        "dir_isfile": os.path.isfile(virtual_dir),
+        "dir_isdir": os.path.isdir(virtual_dir),
+    }
+except Exception as exc:
+    payload = {
+        "error": f"{type(exc).__name__}: {exc}",
+        "traceback": traceback.format_exc(),
+    }
+
+print(json.dumps(payload, ensure_ascii=False))
+sys.exit(0 if "error" not in payload else 1)
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        self.assertTrue(completed.stdout.strip(), completed.stderr)
+        json_lines = [line for line in completed.stdout.strip().splitlines() if line.strip().startswith("{")]
+        self.assertTrue(json_lines, completed.stdout)
+        payload = json.loads(json_lines[-1])
+        self.assertEqual(completed.returncode, 0, payload.get("traceback") or completed.stderr)
+        self.assertNotIn("error", payload, payload.get("traceback"))
+        self.assertTrue(payload.get("virtual_file", "").startswith("mem://"))
+        self.assertTrue(payload.get("file_exists"))
+        self.assertTrue(payload.get("file_isfile"))
+        self.assertFalse(payload.get("file_isdir"))
+        self.assertTrue(payload.get("dir_exists"))
+        self.assertTrue(payload.get("dir_isdir"))
+        self.assertFalse(payload.get("dir_isfile"))
+
     @unittest.skipUnless(sys.platform == "win32", "Windows-specific bridge regression")
     def test_bridge_keeps_headful_init_alive_for_manual_login_or_challenge(self):
         repo_root = Path(__file__).resolve().parents[1]

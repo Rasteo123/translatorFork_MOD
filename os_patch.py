@@ -162,6 +162,13 @@ class HybridPath:
         def wrapper(path, *args, **kwargs):
             is_virtual, _, internal_path = _parse_path(path)
             if is_virtual:
+                mem_fs = _get_or_create_mem_fs()
+                if name == 'exists':
+                    return mem_fs.exists(internal_path)
+                if name == 'isdir':
+                    return mem_fs.isdir(internal_path)
+                if name == 'isfile':
+                    return mem_fs.isfile(internal_path)
                 func = getattr(fs_path, name)
                 result = func(internal_path, *args, **kwargs)
                 if name in ('join', 'normpath', 'abspath') and isinstance(result, str):
