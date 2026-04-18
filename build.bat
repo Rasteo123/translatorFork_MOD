@@ -150,9 +150,13 @@ call :build_app_base "ПОЛНОСТЬЮ ПОРТАТИВНАЯ"
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
+--hidden-import="google.genai" ^
+--hidden-import="google.genai.types" ^
 --onefile ^
 --add-data "config;config" ^
 --add-data "README.md;." ^
+--add-data "ffmpeg.exe;." ^
+--add-data "ffprobe.exe;." ^
 --add-data "gemini_translator\scripts\chatgpt_workascii_bridge.cjs;gemini_translator\scripts" ^
 --add-data "gemini_translator\scripts\chatgpt_profile_launcher.cjs;gemini_translator\scripts" ^
 --add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\__init__.py;ranobelib" ^
@@ -194,9 +198,13 @@ call :build_app_base "ГИБРИДНАЯ"
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
+--hidden-import="google.genai" ^
+--hidden-import="google.genai.types" ^
 --onefile ^
 --add-data "config;config" ^
 --add-data "README.md;." ^
+--add-data "ffmpeg.exe;." ^
+--add-data "ffprobe.exe;." ^
 --add-data "gemini_translator\scripts\chatgpt_workascii_bridge.cjs;gemini_translator\scripts" ^
 --add-data "gemini_translator\scripts\chatgpt_profile_launcher.cjs;gemini_translator\scripts" ^
 --add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\__init__.py;ranobelib" ^
@@ -220,8 +228,11 @@ if %ERRORLEVEL% EQU 0 (
     echo [+] Этап 3 из 3: Копирование внешних данных...
     xcopy "config" "dist\config\" /E /I /Y /Q > nul
     copy /Y "README.md" "dist\README.md" > nul
+    copy /Y "ffmpeg.exe" "dist\ffmpeg.exe" > nul
+    copy /Y "ffprobe.exe" "dist\ffprobe.exe" > nul
     if not exist "dist\gemini_translator\scripts" mkdir "dist\gemini_translator\scripts"
     copy /Y "gemini_translator\scripts\chatgpt_workascii_bridge.cjs" "dist\gemini_translator\scripts\chatgpt_workascii_bridge.cjs" > nul
+    if not exist "dist\gemini_translator\scripts" mkdir "dist\gemini_translator\scripts"
     copy /Y "gemini_translator\scripts\chatgpt_profile_launcher.cjs" "dist\gemini_translator\scripts\chatgpt_profile_launcher.cjs" > nul
     if not exist "dist\ranobelib" mkdir "dist\ranobelib"
     copy /Y "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\__init__.py" "dist\ranobelib\__init__.py" > nul
@@ -278,8 +289,12 @@ call :build_app_base "ПРОДВИНУТАЯ"
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
+--hidden-import="google.genai" ^
+--hidden-import="google.genai.types" ^
 --add-data "config;config" ^
 --add-data "README.md;." ^
+--add-data "ffmpeg.exe;." ^
+--add-data "ffprobe.exe;." ^
 --add-data "gemini_translator\scripts\chatgpt_workascii_bridge.cjs;gemini_translator\scripts" ^
 --add-data "gemini_translator\scripts\chatgpt_profile_launcher.cjs;gemini_translator\scripts" ^
 --add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\__init__.py;ranobelib" ^
@@ -303,8 +318,11 @@ if %ERRORLEVEL% EQU 0 (
     echo [+] Этап 3 из 3: Копирование внешних данных...
     xcopy "config" "dist\%AppName%\config\" /E /I /Y /Q > nul
     copy /Y "README.md" "dist\%AppName%\README.md" > nul
+    copy /Y "ffmpeg.exe" "dist\%AppName%\ffmpeg.exe" > nul
+    copy /Y "ffprobe.exe" "dist\%AppName%\ffprobe.exe" > nul
     if not exist "dist\%AppName%\gemini_translator\scripts" mkdir "dist\%AppName%\gemini_translator\scripts"
     copy /Y "gemini_translator\scripts\chatgpt_workascii_bridge.cjs" "dist\%AppName%\gemini_translator\scripts\chatgpt_workascii_bridge.cjs" > nul
+    if not exist "dist\%AppName%\gemini_translator\scripts" mkdir "dist\%AppName%\gemini_translator\scripts"
     copy /Y "gemini_translator\scripts\chatgpt_profile_launcher.cjs" "dist\%AppName%\gemini_translator\scripts\chatgpt_profile_launcher.cjs" > nul
     if not exist "dist\%AppName%\ranobelib" mkdir "dist\%AppName%\ranobelib"
     copy /Y "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\__init__.py" "dist\%AppName%\ranobelib\__init__.py" > nul

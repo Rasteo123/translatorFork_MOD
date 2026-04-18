@@ -23,6 +23,8 @@ OUTPUT_REQUIREMENTS_FILE = "requirements.txt"
 ADDITIONAL_DATA = [
     ('config', 'config'),
     ('README.md', '.'),
+    ('ffmpeg.exe', '.'),
+    ('ffprobe.exe', '.'),
     ('gemini_translator\\scripts\\chatgpt_workascii_bridge.cjs', 'gemini_translator\\scripts'),
     ('gemini_translator\\scripts\\chatgpt_profile_launcher.cjs', 'gemini_translator\\scripts'),
 ]
@@ -30,6 +32,7 @@ ADDITIONAL_DATA = [
 EXCLUDE_DIRS = {'venv', '.venv', 'env', '.git', '__pycache__', 'dist', 'build'}
 PROJECT_MODULES = {
     'gemini_translator',
+    'gemini_reader_v3',
     'main',
     'init',
     'os_patch',
@@ -40,6 +43,7 @@ PROJECT_MODULES = {
     'main_window',
     'models',
     'parsers',
+    'window_branding',
     'utils',
     'workers',
 }
@@ -47,7 +51,7 @@ DEV_MODULES = {'pyinstaller', 'pyinstaller-hooks-contrib'}
 DATA_FILE_EXTENSIONS = {'.txt', '.json', '.ico', '.css', '.html', '.js'}
 # RanobeLib загружается из bundled source-файлов, поэтому PyInstaller
 # не видит его import playwright.sync_api во время анализа main.py.
-HIDDEN_IMPORTS_BLOCK = ['PyQt6.sip', 'docx', 'playwright.sync_api']
+HIDDEN_IMPORTS_BLOCK = ['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types']
 MANUAL_COLLECT_DATA_MODULES = {'docx'}
 MANUALLY_PACKAGED_PACKAGES = {'playwright'}
 # --- КОНФИГУРАЦИЯ ЗАВИСИМОСТЕЙ ---
@@ -58,12 +62,27 @@ IMPORT_TO_PACKAGE_MAP = {
     'jwt': 'pyjwt',
     'bs4': 'beautifulsoup4',
     'docx': 'python-docx',
+    'ebooklib': 'EbookLib',
+    'edge_tts': 'edge-tts',
+    'google': 'google-genai',
+    'pyaudio': 'PyAudio',
     'pymorphy2': 'pymorphy3',
     'recognizers_text': 'recognizers-text',
     'recognizers_number': 'recognizers-text-number',
 }
 
-ESSENTIAL_PACKAGES = {'playwright', 'python-docx'}
+ESSENTIAL_PACKAGES = {
+    'playwright',
+    'python-docx',
+    'EbookLib',
+    'nltk',
+    'PyAudio',
+    'pydub',
+    'edge-tts',
+    'google-genai',
+    'loguru',
+    'websockets',
+}
 FORCED_VERSIONS = {
     'pydantic': '>=2.0.0',
     'setuptools': '<81',

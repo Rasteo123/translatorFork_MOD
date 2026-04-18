@@ -23,6 +23,8 @@ def discover_ranobelib_source_data():
 datas = [
     ('config', 'config'),
     ('README.md', '.'),
+    ('ffmpeg.exe', '.'),
+    ('ffprobe.exe', '.'),
     ('gemini_translator\\scripts\\chatgpt_workascii_bridge.cjs', 'gemini_translator\\scripts'),
     ('gemini_translator\\scripts\\chatgpt_profile_launcher.cjs', 'gemini_translator\\scripts'),
     ('playwright_runtime\\node.exe', 'playwright_runtime'),
@@ -44,7 +46,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['PyQt6.sip', 'docx', 'playwright.sync_api'],
+    hiddenimports=['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

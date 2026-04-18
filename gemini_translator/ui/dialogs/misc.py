@@ -186,6 +186,12 @@ class StartupToolDialog(QDialog):
         bottom_layout.addWidget(chapter_splitter_widget)
         main_layout.addLayout(bottom_layout)
         extra_tools_layout = QHBoxLayout()
+        gemini_reader_widget = self._create_tool_widget(
+            "🎧 Gemini Reader",
+            "Озвучивание EPUB через Gemini Live с просмотром глав, очередью воркеров и экспортом MP3 в общем runtime приложения.",
+            "gemini_reader"
+        )
+        extra_tools_layout.addWidget(gemini_reader_widget)
         ranobelib_widget = self._create_tool_widget(
             "RanobeLib Uploader",
             "Launches the external uploader for RanobeLib chapter uploads, login, and Rulate workflows.",

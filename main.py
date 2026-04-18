@@ -368,11 +368,8 @@ def build_ranobelib_window():
     if hasattr(window, "set_return_to_menu_handler"):
         def return_to_menu():
             app = QtWidgets.QApplication.instance()
-            try:
-                window.close()
-            finally:
-                if app is not None:
-                    app.exit(EXIT_CODE_REBOOT)
+            if app is not None:
+                app.exit(EXIT_CODE_REBOOT)
 
         window.set_return_to_menu_handler(return_to_menu)
 
@@ -394,6 +391,33 @@ def launch_ranobelib_uploader():
             f"{type(direct_error).__name__}: {direct_error}\n\n"
             f"{source_status}\n\n"
             f"Проверенные пути исходников:\n{checked_paths}"
+        )
+        return None, False
+
+
+def build_gemini_reader_window():
+    import gemini_reader_v3
+
+    window = gemini_reader_v3.MainWindow()
+    if hasattr(window, "set_return_to_menu_handler"):
+        def return_to_menu():
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.exit(EXIT_CODE_REBOOT)
+
+        window.set_return_to_menu_handler(return_to_menu)
+
+    return window
+
+
+def launch_gemini_reader():
+    try:
+        return build_gemini_reader_window(), False
+    except Exception as direct_error:
+        QtWidgets.QMessageBox.critical(
+            None,
+            "Ошибка запуска Gemini Reader",
+            f"Не удалось открыть Gemini Reader.\n\n{type(direct_error).__name__}: {direct_error}",
         )
         return None, False
 
@@ -994,6 +1018,12 @@ if __name__ == "__main__":
                     )
 
                     main_window_to_run = ChapterSplitterWindow()
+                elif selected_tool == 'gemini_reader':
+                    gemini_reader_window, _ = launch_gemini_reader()
+                    if gemini_reader_window:
+                        main_window_to_run = gemini_reader_window
+                    else:
+                        continue
                 elif selected_tool == 'ranobelib_uploader':
                     ranobelib_window, _ = launch_ranobelib_uploader()
                     if ranobelib_window:
