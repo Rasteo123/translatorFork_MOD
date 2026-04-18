@@ -528,7 +528,10 @@ class InitialSetupDialog(QDialog):
         self.project_actions_widget.build_epub_requested.connect(self._open_epub_builder_standalone)
     
         self.model_settings_widget.settings_changed.connect(self._mark_settings_as_dirty)
+        self.translation_options_widget.settings_changed.connect(self._mark_settings_as_dirty)
         self.key_management_widget.active_keys_changed.connect(self._mark_settings_as_dirty)
+        self.key_management_widget.provider_combo.currentIndexChanged.connect(self._mark_settings_as_dirty)
+        self.instances_spin.valueChanged.connect(self._mark_settings_as_dirty)
         self.preset_widget.text_changed.connect(self._mark_promt_as_dirty)
         self.glossary_widget.glossary_changed.connect(self._mark_settings_as_dirty)
         self.auto_translate_widget.settings_changed.connect(self._mark_settings_as_dirty)
@@ -677,8 +680,74 @@ class InitialSetupDialog(QDialog):
         """Просто возвращает уже созданный PresetWidget."""
         return self.preset_widget
 
+    def _prepare_for_close(self):
+        """Обрабатывает несохраненные изменения перед закрытием окна."""
+        has_unsaved_settings = self.is_settings_dirty
+
+        has_unsaved_glossary = (
+            self.output_folder
+            and self.glossary_widget.get_glossary() != self.initial_glossary_state
+        )
+
+        should_show_dialog = has_unsaved_settings or has_unsaved_glossary
+        user_choice_to_exit = True
+        skip_global_save_on_exit = False
+
+        if should_show_dialog:
+            is_local_mode = self.local_set and self.output_folder
+
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Несохраненные изменения")
+            msg_box.setIcon(QMessageBox.Icon.Question)
+
+            messages = []
+            if has_unsaved_settings:
+                messages.append("настройки сессии")
+            if has_unsaved_glossary:
+                messages.append("глоссарий")
+            msg_box.setText(f"Обнаружены несохраненные изменения: {', '.join(messages)}.")
+
+            if is_local_mode:
+                msg_box.setInformativeText("Сохранить все изменения в файлы текущего проекта?")
+                save_btn = msg_box.addButton("Сохранить в Проект", QMessageBox.ButtonRole.AcceptRole)
+            else:
+                msg_box.setInformativeText("Выберите действие для сохранения.")
+                save_btn = msg_box.addButton("Сохранить изменения", QMessageBox.ButtonRole.AcceptRole)
+
+            msg_box.addButton("Выйти без сохранения", QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+
+            msg_box.exec()
+            clicked_button = msg_box.clickedButton()
+
+            if clicked_button == save_btn:
+                if is_local_mode:
+                    if has_unsaved_settings:
+                        self._save_project_settings_only()
+                    if has_unsaved_glossary:
+                        self._save_project_glossary_only()
+                elif has_unsaved_glossary:
+                    self._save_project_glossary_only()
+            elif clicked_button == cancel_btn:
+                user_choice_to_exit = False
+            elif not is_local_mode:
+                skip_global_save_on_exit = True
+
+        if not user_choice_to_exit:
+            return False
+
+        self.settings_manager.save_custom_prompt(self.preset_widget.get_prompt())
+        self.settings_manager.save_last_prompt_preset_name(self.preset_widget.get_current_preset_name())
+
+        if not (self.local_set and self.output_folder) and not skip_global_save_on_exit:
+            self._save_global_ui_settings(clear_dirty=False)
+
+        return True
+
     def _return_to_main_menu_from_button(self):
         """Возвращает пользователя в главное меню по кнопке 'Выход'."""
+        if not self._prepare_for_close():
+            return
         self._returning_to_main_menu = True
         self.close()
 
@@ -703,6 +772,8 @@ class InitialSetupDialog(QDialog):
         self.key_management_widget.provider_combo.currentIndexChanged.emit(
             self.key_management_widget.provider_combo.currentIndex()
         )
+
+        self._restore_global_ui_settings()
 
         # 3. Проверяем, нужно ли автозаполнение из валидатора
         if self.prefill_data and self.prefill_data.get("is_restarting"):
@@ -1038,7 +1109,10 @@ class InitialSetupDialog(QDialog):
         """Собирает все релевантные настройки из UI в один словарь для сохранения."""
         state = {}
         state.update(self.model_settings_widget.get_settings())
+        state.update(self.translation_options_widget.get_settings())
         state.update({
+            'provider': self.key_management_widget.get_selected_provider(),
+            'num_instances': self.instances_spin.value(),
             'custom_prompt': self.preset_widget.get_prompt(),
             'last_prompt_preset': self.preset_widget.get_current_preset_name(),
             'auto_translation': self.auto_translate_widget.get_settings(),
@@ -1046,17 +1120,56 @@ class InitialSetupDialog(QDialog):
         # Добавьте сюда другие настройки, если они должны сохраняться
         return state
 
+    def _collect_global_ui_settings_for_restore(self):
+        """Собирает глобальные настройки UI с учетом старого и нового форматов."""
+        merged = {}
+
+        raw_settings = self.settings_manager.load_settings()
+        if isinstance(raw_settings, dict):
+            merged.update(raw_settings)
+
+        legacy_last_settings = self.settings_manager.get_last_settings()
+        if isinstance(legacy_last_settings, dict):
+            for key in (
+                'model',
+                'temperature',
+                'rpm_limit',
+                'chunking',
+                'dynamic_glossary',
+                'thinking_enabled',
+                'thinking_budget',
+                'use_json_epub_pipeline',
+            ):
+                value = legacy_last_settings.get(key)
+                if value is not None and (key not in merged or merged.get(key) is None):
+                    merged[key] = value
+
+        full_session_settings = self.settings_manager.load_full_session_settings()
+        if isinstance(full_session_settings, dict):
+            merged.update(full_session_settings)
+
+        return merged
+
+    def _restore_global_ui_settings(self):
+        """Применяет сохраненные глобальные настройки после построения UI."""
+        settings = self._collect_global_ui_settings_for_restore()
+        if settings:
+            self._apply_full_ui_settings(settings)
+
+    def _save_global_ui_settings(self, clear_dirty=True):
+        """Сохраняет полный набор глобальных настроек для следующего запуска."""
+        self.settings_manager.save_ui_state(self._get_ui_state_for_saving())
+        self.settings_manager.save_full_session_settings(self._get_full_ui_settings())
+
+        if clear_dirty:
+            self.is_settings_dirty = False
+            self.setWindowTitle(self.windowTitle().replace("*", ""))
+
+        print(f"[SETTINGS] Глобальные настройки сохранены в: {self.settings_manager.config_file}")
+
     def _save_current_ui_settings(self):
         """Сохраняет текущее состояние UI в активный файл настроек."""
-        app = QtWidgets.QApplication.instance()
-        current_manager = app.get_settings_manager()
-        ui_state = self._get_ui_state_for_saving()
-        
-        current_manager.save_ui_state(ui_state)
-        
-        self.is_settings_dirty = False
-        self.setWindowTitle(self.windowTitle().replace("*", ""))
-        print(f"[SETTINGS] Настройки сохранены в: {current_manager.config_file}")
+        self._save_global_ui_settings()
     
     
     @QtCore.pyqtSlot()
@@ -2441,8 +2554,12 @@ class InitialSetupDialog(QDialog):
 
         try:
             self.model_settings_widget.set_settings(settings)
-            self.translation_options_widget.set_settings(settings)
-            self.auto_translate_widget.set_settings(settings.get('auto_translation'))
+            if any(key in settings for key in ('use_batching', 'chunking', 'chunk_on_error', 'task_size_limit')):
+                self.translation_options_widget.set_settings(settings)
+
+            auto_translation_settings = settings.get('auto_translation')
+            if isinstance(auto_translation_settings, dict):
+                self.auto_translate_widget.set_settings(auto_translation_settings)
             
             if 'custom_prompt' in settings:
                 self.preset_widget.set_prompt(settings['custom_prompt'])
@@ -2816,6 +2933,8 @@ class InitialSetupDialog(QDialog):
         self.auto_translate_widget.save_last_state_now()
         if self.local_set:
             self._save_project_settings_only()
+        else:
+            self._save_global_ui_settings()
         if self.glossary_widget.get_glossary() != self.initial_glossary_state:
             self._save_project_glossary_only()
 
@@ -4983,72 +5102,10 @@ class InitialSetupDialog(QDialog):
         Перехватывает событие закрытия. Корректно проверяет наличие ИЗМЕНЕНИЙ
         и предлагает сохранить их только в этом случае.
         """
-        # --- ШАГ 1: Определяем, есть ли изменения, требующие диалога ---
-        
-        has_unsaved_settings = self.is_settings_dirty
+        if not self._prepare_for_close():
+            return
 
-        # Глоссарий считаем измененным только если есть папка проекта для сохранения
-        has_unsaved_glossary = (self.output_folder and 
-                                self.glossary_widget.get_glossary() != self.initial_glossary_state)
-        
-        # Если ни одна из "грязных" сущностей не изменилась, диалог не нужен
-        should_show_dialog = has_unsaved_settings or has_unsaved_glossary
-        
-        user_choice_to_exit = True
-
-        # --- ШАГ 2: Если изменения есть, показываем диалог ---
-        
-        if should_show_dialog:
-            is_local_mode = self.local_set and self.output_folder
-            
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("Несохраненные изменения")
-            msg_box.setIcon(QMessageBox.Icon.Question)
-            
-            messages = []
-            if has_unsaved_settings: messages.append("настройки сессии")
-            if has_unsaved_glossary: messages.append("глоссарий")
-            msg_box.setText(f"Обнаружены несохраненные изменения: {', '.join(messages)}.")
-
-            if is_local_mode:
-                msg_box.setInformativeText("Сохранить все изменения в файлы текущего проекта?")
-                save_btn = msg_box.addButton("Сохранить в Проект", QMessageBox.ButtonRole.AcceptRole)
-            else:
-                msg_box.setInformativeText("Выберите действие для сохранения.")
-                save_btn = msg_box.addButton("Сохранить изменения", QMessageBox.ButtonRole.AcceptRole)
-            
-            discard_btn = msg_box.addButton("Выйти без сохранения", QMessageBox.ButtonRole.DestructiveRole)
-            cancel_btn = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-            
-            msg_box.exec()
-            clicked_button = msg_box.clickedButton()
-
-            if clicked_button == save_btn:
-                if is_local_mode:
-                    if has_unsaved_settings: self._save_project_settings_only()
-                    if has_unsaved_glossary: self._save_project_glossary_only()
-                else: # Глобальный режим
-                    if has_unsaved_settings:
-                        self.settings_manager.save_ui_state(self._get_ui_state_for_saving())
-                    if has_unsaved_glossary:
-                        self._save_project_glossary_only()
-            
-            elif clicked_button == cancel_btn:
-                user_choice_to_exit = False # Отменяем выход
-            
-            # Если нажата "Выйти без сохранения", user_choice_to_exit остается True
-
-        # --- ШАГ 3: Если пользователь не отменил выход, завершаем работу ---
-        
-        if user_choice_to_exit:
-            # Вне зависимости от сохранения, всегда запоминаем последний использованный
-            # промпт и пресет для удобства при следующем запуске.
-            # Это состояние сессии, а не "настройка", о которой нужно предупреждать.
-            self.settings_manager.save_custom_prompt(self.preset_widget.get_prompt())
-            self.settings_manager.save_last_prompt_preset_name(self.preset_widget.get_current_preset_name())
-            
-            # Вызываем родительский метод для фактического закрытия окна
-            super().reject()
+        super().reject()
     
     
     # --------------------------------------------------------------------
@@ -5193,7 +5250,7 @@ class InitialSetupDialog(QDialog):
                 if is_currently_local:
                     self._save_project_settings_only()
                 else:
-                    self.settings_manager.save_ui_state(self._get_ui_state_for_saving())
+                    self._save_global_ui_settings()
             elif clicked == cancel_btn:
                 self.use_project_settings_btn.blockSignals(True)
                 self.use_project_settings_btn.setChecked(is_currently_local)
@@ -5442,6 +5499,10 @@ class InitialSetupDialog(QDialog):
             event.ignore()
             return
 
+        if not self._prepare_for_close():
+            event.ignore()
+            return
+
         if self.bus:
             try:
                 self.bus.event_posted.disconnect(self.on_event)
@@ -5450,4 +5511,4 @@ class InitialSetupDialog(QDialog):
 
         if action == "menu":
             return_to_main_menu()
-        super().closeEvent(event)
+        event.accept()

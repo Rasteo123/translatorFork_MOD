@@ -94,11 +94,17 @@ class TranslationOptionsWidget(QGroupBox):
     
     def set_settings(self, settings: dict):
         """Применяет настройки из словаря к виджетам."""
+        settings = settings or {}
+        current_batching = self.batch_checkbox.isChecked()
+        current_chunking = self.chunking_checkbox.isChecked()
+        current_chunk_on_error = self.chunk_on_error_checkbox.isChecked()
+        current_task_size = self.task_size_spin.value()
+
         self.blockSignals(True)
-        self.batch_checkbox.setChecked(settings.get('use_batching', False))
-        self.chunking_checkbox.setChecked(settings.get('chunking', False))
-        self.chunk_on_error_checkbox.setChecked(settings.get('chunk_on_error', True))
-        self.task_size_spin.setValue(settings.get('task_size_limit', 30000))
+        self.batch_checkbox.setChecked(settings.get('use_batching', current_batching))
+        self.chunking_checkbox.setChecked(settings.get('chunking', current_chunking))
+        self.chunk_on_error_checkbox.setChecked(settings.get('chunk_on_error', current_chunk_on_error))
+        self.task_size_spin.setValue(settings.get('task_size_limit', current_task_size))
         self.blockSignals(False)
         self._on_mode_changed() # Обновляем UI после установки
    
