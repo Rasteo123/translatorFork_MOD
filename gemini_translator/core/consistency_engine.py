@@ -150,6 +150,7 @@ class _ConsistencyPromptBuilder:
 class _ConsistencyMockWorker:
     def __init__(self, parent_engine):
         self._parent_engine = parent_engine
+        self.settings_manager = parent_engine.settings_manager if parent_engine else None
         self.session_id = "consistency_check"
         self.provider_config = {}
         self.model_config = {}
@@ -1131,11 +1132,9 @@ class ConsistencyEngine(QObject):
         )
 
         try:
-            response = handler.call_api(prompt, "[Consistency]", use_stream=False)
+            response = handler.execute_api_call(prompt, "[Consistency]", use_stream=False)
             if inspect.isawaitable(response):
                 response = self._run_handler_awaitable(response)
-
-            self.settings_manager.increment_request_count(api_key, model_id)
             return response
         except Exception:
             self._invalidate_cached_handler(cache_key, handler)
