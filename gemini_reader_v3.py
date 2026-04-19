@@ -13,6 +13,12 @@ import platform
 import subprocess
 import io
 import logging
+from datetime import datetime, timedelta
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 # PyQt6 Imports
 from PyQt6.QtWidgets import (
@@ -72,6 +78,26 @@ try:
 except ImportError:
     _loguru_logger = None
 
+try:
+    from gemini_translator.api import config as reader_api_config
+except Exception:
+    reader_api_config = None
+
+try:
+    from gemini_translator.core.worker_helpers.rpm_limiter import RPMLimiter
+except Exception:
+    RPMLimiter = None
+
+try:
+    from gemini_translator.utils.helpers import TokenCounter
+except Exception:
+    TokenCounter = None
+
+try:
+    from gemini_translator.utils.settings import SettingsManager
+except Exception:
+    SettingsManager = None
+
 if platform.system() == "Windows":
     import subprocess
     # Патч: заставляем все процессы запускаться без окна консоли
@@ -87,14 +113,105 @@ if platform.system() == "Windows":
 
 
 # --- КОНФИГУРАЦИЯ ---
-MODEL_ID = "gemini-3.1-flash-live-preview" # Или gemini-2.0-flash-native-audio-preview-12-2025
+MODEL_ID = "gemini-3.1-flash-live-preview" # Legacy default for Live API
 AUDIO_RATE = 24000
 AUDIO_CHANNELS = 1
 WINDOWS_CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
 READER_SETTINGS_KEY = "gemini_reader_settings"
+READER_RPD_STATE_KEY = "gemini_reader_rpd_state"
+READER_INVALID_KEYS_KEY = "gemini_reader_invalid_keys"
+READER_PROJECT_SETTINGS_FILENAME = "project_settings.json"
 LEGACY_SETTINGS_FILE = "settings.json"
 READER_BOOKS_DIRNAME = "gemini_reader_books"
+LIVE_PARALLEL_DIRNAME = "_live_parallel"
 MAX_PART_SIZE = 1.45 * 1024 * 1024 * 1024 # ~1.5 ГБ порог для склейки
+SCRIPT_SUFFIX = ".tts.txt"
+VIDEO_COVER_BASENAME = "video_cover"
+VIDEO_COVER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+VIDEO_FRAME_SIZE = "1920:1080"
+CHAPTER_TRIM_SILENCE_THRESHOLD_DB = -45
+CHAPTER_TRIM_SILENCE_STEP_MS = 10
+CHAPTER_TRIM_KEEP_MS = 70
+
+ENGINE_MODES = {
+    "Live API": "live",
+    "Flash TTS": "flash_tts",
+}
+
+LIVE_AUDIO_MODELS = {
+    "Gemini 3.1 Flash Live Preview": "gemini-3.1-flash-live-preview",
+    "Gemini 2.5 Flash Native Audio Preview": "gemini-2.5-flash-native-audio-preview-12-2025",
+}
+
+LIVE_SEGMENT_OPTIONS = {
+    "Предложения": "sentences",
+    "Параграфы": "paragraphs",
+}
+
+FLASH_TTS_MODELS = {
+    "Gemini 3.1 Flash TTS Preview": "gemini-3.1-flash-tts-preview",
+    "Gemini 2.5 Flash TTS Preview": "gemini-2.5-flash-preview-tts",
+    "Gemini 2.5 Pro TTS Preview": "gemini-2.5-pro-preview-tts",
+}
+
+VOICE_MODE_OPTIONS = {
+    "Один голос": "single",
+    "Два голоса (Narrator + Dialogue)": "duo",
+}
+
+PIPELINE_MODE_OPTIONS = {
+    "Авто: AI сценарий + TTS": "auto",
+    "По шагам: сохранённый сценарий": "staged",
+    "Без AI сценария": "raw",
+}
+
+PREPROCESS_PROFILE_OPTIONS = {
+    "Бережно": "Keep tags sparse. Only add them where emotion or sound is explicit in the source text.",
+    "Выразительно": "Add tasteful performance cues and a few non-verbal sounds when clearly supported by the scene.",
+}
+
+TTS_SPEAKER_NARRATOR = "Narrator"
+TTS_SPEAKER_DIALOGUE = "Dialogue"
+
+TTS_SPEED_PROMPTS = {
+    "Very Slow": "Read very slowly, with clear breathing room between phrases.",
+    "Slow": "Read slowly and steadily, with calm pacing.",
+    "Normal": "Read naturally, like a professional audiobook narrator.",
+    "Fast": "Read with energetic but still intelligible pacing.",
+    "Very Fast": "Read very quickly but keep the diction understandable.",
+}
+
+PREPROCESS_MODEL_FALLBACKS = {
+    "Gemini 2.5 Flash": "gemini-2.5-flash",
+    "Gemini 3.1 Flash-Lite": "gemini-3.1-flash-lite-preview",
+    "Gemini 3.0 Flash Preview": "gemini-3-flash-preview",
+}
+
+TTS_AUDIO_TAG_HINT = (
+    "[whispers] [laughs] [sighs] [gasp] [shouting] "
+    "[serious] [excited] [tired] [very slow] [very fast]"
+)
+
+DEFAULT_PREPROCESS_DIRECTIVE = (
+    "Prefer compact, production-safe markup. Avoid overacting, dense tag spam and cinematic additions "
+    "that are not grounded in the original text."
+)
+
+DEFAULT_TTS_DIRECTIVE = (
+    "Keep diction clear and stable. Prioritize audiobook intelligibility over theatrical exaggeration."
+)
+
+LIVE_API_DEFAULT_RPM = 5
+FLASH_TTS_DEFAULT_RPM = 5
+DEFAULT_TPM_LIMIT = 0
+RATE_LIMIT_BACKOFF_SECONDS = 65
+LIVE_PARAGRAPH_MAX_CHARS = 2200
+
+RPD_LIMIT_FALLBACKS = {
+    "gemini-3.1-flash-tts-preview": 10,
+    "gemini-2.5-flash-preview-tts": 10,
+    "gemini-2.5-pro-preview-tts": 10,
+}
 
 VOICES_MAP = {
     "Puck": "М", "Charon": "М", "Kore": "Ж", "Fenrir": "М", "Aoede": "Ж",
@@ -218,6 +335,738 @@ def _load_legacy_settings():
         return {}
 
 
+def _build_preprocess_models_map():
+    models_map = {}
+    if reader_api_config is not None:
+        try:
+            provider_cfg = reader_api_config.api_providers().get("gemini", {})
+            for display_name, model_cfg in provider_cfg.get("models", {}).items():
+                model_id = str(model_cfg.get("id") or "").strip()
+                if not model_id or "tts" in model_id.lower():
+                    continue
+                models_map[display_name] = model_id
+        except Exception:
+            models_map = {}
+
+    if models_map:
+        return models_map
+    return dict(PREPROCESS_MODEL_FALLBACKS)
+
+
+def _default_preprocess_model_label(models_map):
+    for preferred in ("Gemini 2.5 Flash", "Gemini 3.1 Flash-Lite", "Gemini 3.0 Flash Preview"):
+        if preferred in models_map:
+            return preferred
+    return next(iter(models_map), "")
+
+
+def _extract_response_text(response):
+    direct_text = getattr(response, "text", None)
+    if isinstance(direct_text, str) and direct_text.strip():
+        return direct_text.strip()
+
+    parts = []
+    for candidate in getattr(response, "candidates", []) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            text_value = getattr(part, "text", None)
+            if text_value:
+                parts.append(text_value)
+    return "\n".join(parts).strip()
+
+
+def _iter_inline_audio_parts(response):
+    for candidate in getattr(response, "candidates", []) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            inline_data = getattr(part, "inline_data", None)
+            chunk = getattr(inline_data, "data", None) if inline_data is not None else None
+            mime_type = str(getattr(inline_data, "mime_type", "") or "").strip().lower()
+            if chunk:
+                yield bytes(chunk), mime_type
+
+
+def _guess_audio_format_from_mime(mime_type):
+    mime_type = (mime_type or "").lower()
+    if "mpeg" in mime_type or "mp3" in mime_type:
+        return "mp3"
+    if "wav" in mime_type:
+        return "wav"
+    if "ogg" in mime_type:
+        return "ogg"
+    if "flac" in mime_type:
+        return "flac"
+    if "aac" in mime_type:
+        return "aac"
+    if "mp4" in mime_type or "m4a" in mime_type:
+        return "mp4"
+    return None
+
+
+def _decode_generated_audio_chunk(chunk, mime_type=""):
+    mime_type = (mime_type or "").lower()
+    if not chunk:
+        return b""
+
+    if any(marker in mime_type for marker in ("audio/l16", "audio/pcm", "audio/raw")):
+        return bytes(chunk)
+
+    if AudioSegment is None:
+        if mime_type:
+            raise RuntimeError(
+                f"Модель вернула audio chunk в формате {mime_type}, но pydub недоступен для декодирования."
+            )
+        return bytes(chunk)
+
+    audio_format = _guess_audio_format_from_mime(mime_type)
+    if audio_format is None and not mime_type:
+        return bytes(chunk)
+    if audio_format is None:
+        raise RuntimeError(f"Неподдерживаемый mime type аудио: {mime_type}")
+
+    fp = io.BytesIO(chunk)
+    segment = AudioSegment.from_file(fp, format=audio_format)
+    segment = segment.set_frame_rate(AUDIO_RATE).set_channels(AUDIO_CHANNELS).set_sample_width(2)
+    return segment.raw_data
+
+
+def _extract_audio_bytes(response):
+    data = bytearray()
+    for chunk, mime_type in _iter_inline_audio_parts(response):
+        data.extend(_decode_generated_audio_chunk(chunk, mime_type))
+    return bytes(data)
+
+
+def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directive=""):
+    profile_line = profile_prompt or PREPROCESS_PROFILE_OPTIONS["Бережно"]
+    extra_line = (extra_directive or "").strip() or DEFAULT_PREPROCESS_DIRECTIVE
+    common_rules = (
+        "You are preparing a Russian audiobook script for Gemini Flash TTS.\n"
+        "Rules:\n"
+        "- Preserve plot facts, meaning, names and chronology.\n"
+        "- Keep the script in Russian.\n"
+        "- Do not summarize, shorten or explain the text.\n"
+        f"- You may use sparse English audio tags such as {TTS_AUDIO_TAG_HINT}.\n"
+        "- Tags must be short, tasteful and only where justified by the source scene.\n"
+        "- Return only the final script text, with no markdown and no comments.\n"
+        f"- Direction profile: {profile_line}\n"
+        f"- Additional director note: {extra_line}\n"
+    )
+
+    if voice_mode == "duo":
+        return (
+            f"{common_rules}\n"
+            f"Transform the source into a strict two-speaker script using exactly these speakers: "
+            f"{TTS_SPEAKER_NARRATOR} and {TTS_SPEAKER_DIALOGUE}.\n"
+            f"Rules for speakers:\n"
+            f"- Prefix every spoken line with `{TTS_SPEAKER_NARRATOR}:` or `{TTS_SPEAKER_DIALOGUE}:`.\n"
+            f"- Narrative prose, author remarks, scene description and exposition go to `{TTS_SPEAKER_NARRATOR}`.\n"
+            f"- Direct speech and quoted dialogue go to `{TTS_SPEAKER_DIALOGUE}`.\n"
+            f"- If a paragraph mixes narration and dialogue, split it into several speaker lines.\n"
+            f"- Do not invent extra speakers beyond those two names.\n\n"
+            f"SOURCE TEXT:\n{raw_text}"
+        )
+
+    return (
+        f"{common_rules}\n"
+        "Keep the result as a single-speaker performance script.\n"
+        "Do not add speaker labels.\n\n"
+        f"SOURCE TEXT:\n{raw_text}"
+    )
+
+
+def _build_tts_generation_prompt(script_text, voice_mode, speed_key, extra_directive=""):
+    speed_prompt = TTS_SPEED_PROMPTS.get(speed_key, TTS_SPEED_PROMPTS["Normal"])
+    director_note = (extra_directive or "").strip() or DEFAULT_TTS_DIRECTIVE
+    if voice_mode == "duo":
+        return (
+            "Perform the following Russian two-speaker audiobook script exactly as written.\n"
+            f"Use the speaker names `{TTS_SPEAKER_NARRATOR}` and `{TTS_SPEAKER_DIALOGUE}` exactly as provided.\n"
+            "Respect inline audio tags and emotional cues.\n"
+            f"{speed_prompt}\n"
+            f"{director_note}\n"
+            "Preserve the wording of the script.\n\n"
+            f"{script_text}"
+        )
+
+    return (
+        "Perform the following Russian audiobook script exactly as written.\n"
+        "Respect inline audio tags and emotional cues.\n"
+        f"{speed_prompt}\n"
+        f"{director_note}\n"
+        "Preserve the wording of the script.\n\n"
+        f"{script_text}"
+    )
+
+
+def _clean_tts_markup(text):
+    cleaned = re.sub(rf"^\s*(?:{TTS_SPEAKER_NARRATOR}|{TTS_SPEAKER_DIALOGUE})\s*:\s*", "", text, flags=re.MULTILINE)
+    cleaned = re.sub(r"\[[^\]\n]{1,40}\]", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _split_long_tts_line(prefix, content, max_chars):
+    content = content.strip()
+    if not content:
+        return []
+    if len(prefix) + len(content) + 2 <= max_chars:
+        return [f"{prefix}: {content}"]
+
+    sentences = _sentence_tokenize(content)
+    if not sentences:
+        sentences = [content]
+
+    chunks = []
+    current = []
+    current_len = len(prefix) + 2
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        addition = len(sentence) + (1 if current else 0)
+        if current and current_len + addition > max_chars:
+            chunks.append(f"{prefix}: {' '.join(current)}")
+            current = [sentence]
+            current_len = len(prefix) + 2 + len(sentence)
+        else:
+            current.append(sentence)
+            current_len += addition
+    if current:
+        chunks.append(f"{prefix}: {' '.join(current)}")
+    return chunks
+
+
+def _split_tts_script(script_text, voice_mode, max_chars):
+    normalized_text = (script_text or "").strip()
+    if not normalized_text:
+        return []
+
+    max_chars = max(900, int(max_chars))
+    if voice_mode == "duo":
+        raw_lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
+        prepared_lines = []
+        for line in raw_lines:
+            if ":" in line:
+                prefix, content = line.split(":", 1)
+                prefix = prefix.strip()
+                content = content.strip()
+                if prefix in {TTS_SPEAKER_NARRATOR, TTS_SPEAKER_DIALOGUE}:
+                    prepared_lines.extend(_split_long_tts_line(prefix, content, max_chars))
+                    continue
+            prepared_lines.extend(_split_long_tts_line(TTS_SPEAKER_NARRATOR, line, max_chars))
+
+        chunks = []
+        current_lines = []
+        current_len = 0
+        for line in prepared_lines:
+            candidate_len = current_len + len(line) + (1 if current_lines else 0)
+            if current_lines and candidate_len > max_chars:
+                chunks.append("\n".join(current_lines))
+                current_lines = [line]
+                current_len = len(line)
+            else:
+                current_lines.append(line)
+                current_len = candidate_len
+        if current_lines:
+            chunks.append("\n".join(current_lines))
+        return chunks
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", normalized_text) if part.strip()]
+    if not paragraphs:
+        paragraphs = [normalized_text]
+
+    chunks = []
+    current_parts = []
+    current_len = 0
+    for paragraph in paragraphs:
+        if len(paragraph) > max_chars:
+            split_parts = []
+            current_sentences = []
+            current_sentence_len = 0
+            for sentence in _sentence_tokenize(paragraph):
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                addition = len(sentence) + (1 if current_sentences else 0)
+                if current_sentences and current_sentence_len + addition > max_chars:
+                    split_parts.append(" ".join(current_sentences))
+                    current_sentences = [sentence]
+                    current_sentence_len = len(sentence)
+                else:
+                    current_sentences.append(sentence)
+                    current_sentence_len += addition
+            if current_sentences:
+                split_parts.append(" ".join(current_sentences))
+        else:
+            split_parts = [paragraph]
+
+        for part in split_parts:
+            candidate_len = current_len + len(part) + (2 if current_parts else 0)
+            if current_parts and candidate_len > max_chars:
+                chunks.append("\n\n".join(current_parts))
+                current_parts = [part]
+                current_len = len(part)
+            else:
+                current_parts.append(part)
+                current_len = candidate_len
+
+    if current_parts:
+        chunks.append("\n\n".join(current_parts))
+    return chunks
+
+
+def _script_matches_voice_mode(script_text, voice_mode):
+    script_text = (script_text or "").strip()
+    if not script_text:
+        return False
+
+    has_duo_labels = bool(
+        re.search(
+            rf"^\s*(?:{TTS_SPEAKER_NARRATOR}|{TTS_SPEAKER_DIALOGUE})\s*:",
+            script_text,
+            flags=re.MULTILINE,
+        )
+    )
+    if voice_mode == "duo":
+        return has_duo_labels
+    return not has_duo_labels
+
+
+class InvalidApiKeyError(RuntimeError):
+    pass
+
+
+class RateLimitBudgetError(RuntimeError):
+    def __init__(self, message, model_id=None):
+        super().__init__(message)
+        self.model_id = model_id
+
+
+class ProjectRateLimitReachedError(RuntimeError):
+    def __init__(self, message, model_id=None):
+        super().__init__(message)
+        self.model_id = model_id
+
+
+def _is_invalid_api_key_error(exc):
+    text = str(exc or "")
+    return "API_KEY_INVALID" in text or "API key not valid" in text
+
+
+def _mask_api_key(api_key):
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return "<пустой>"
+    if len(api_key) <= 10:
+        return f"{api_key[:3]}...{api_key[-2:]}"
+    return f"{api_key[:6]}...{api_key[-4:]}"
+
+
+def _format_local_timestamp(timestamp):
+    if not timestamp:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(timestamp)).astimezone().strftime("%H:%M (%d.%m)")
+    except Exception:
+        return ""
+
+
+def _ffmpeg_concat_path(path):
+    normalized = os.path.abspath(path).replace("\\", "/")
+    return normalized.replace("'", "'\\''")
+
+
+def _format_chapter_scope_slug(chapter_indices):
+    chapter_numbers = sorted({idx + 1 for idx in (chapter_indices or []) if isinstance(idx, int) and idx >= 0})
+    if not chapter_numbers:
+        return ""
+
+    ranges = []
+    start = chapter_numbers[0]
+    prev = chapter_numbers[0]
+    for number in chapter_numbers[1:]:
+        if number == prev + 1:
+            prev = number
+            continue
+        ranges.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = number
+    ranges.append(f"{start}-{prev}" if start != prev else str(start))
+    return "Ch" + "_".join(ranges)
+
+
+def _detect_leading_silence_ms(
+    segment,
+    silence_threshold=CHAPTER_TRIM_SILENCE_THRESHOLD_DB,
+    chunk_size=CHAPTER_TRIM_SILENCE_STEP_MS,
+):
+    if segment is None:
+        return 0
+    trim_ms = 0
+    segment_len = len(segment)
+    while trim_ms < segment_len:
+        chunk = segment[trim_ms:trim_ms + chunk_size]
+        if len(chunk) <= 0:
+            break
+        if chunk.dBFS != float("-inf") and chunk.dBFS > silence_threshold:
+            break
+        if chunk.dBFS == float("-inf") or chunk.dBFS <= silence_threshold:
+            trim_ms += chunk_size
+            continue
+        break
+    return min(trim_ms, segment_len)
+
+
+def _trim_audio_segment_boundaries(
+    segment,
+    silence_threshold=CHAPTER_TRIM_SILENCE_THRESHOLD_DB,
+    chunk_size=CHAPTER_TRIM_SILENCE_STEP_MS,
+    keep_ms=CHAPTER_TRIM_KEEP_MS,
+):
+    if segment is None or len(segment) <= 0:
+        return segment
+
+    leading_ms = _detect_leading_silence_ms(segment, silence_threshold=silence_threshold, chunk_size=chunk_size)
+    trailing_ms = _detect_leading_silence_ms(
+        segment.reverse(),
+        silence_threshold=silence_threshold,
+        chunk_size=chunk_size,
+    )
+    if leading_ms <= 0 and trailing_ms <= 0:
+        return segment
+
+    start_ms = max(0, leading_ms - keep_ms)
+    end_ms = len(segment) - max(0, trailing_ms - keep_ms)
+    if end_ms <= start_ms:
+        return segment
+    return segment[start_ms:end_ms]
+
+
+def _load_trimmed_mp3_segment(path):
+    if AudioSegment is None:
+        raise RuntimeError("Для обрезки пауз нужен pydub.")
+    segment = AudioSegment.from_file(path, format="mp3")
+    return _trim_audio_segment_boundaries(segment)
+
+
+def _export_trimmed_mp3_file(source_path, output_path):
+    segment = _load_trimmed_mp3_segment(source_path)
+    tmp_path = f"{output_path}.tmp"
+    try:
+        segment.export(tmp_path, format="mp3")
+        os.replace(tmp_path, output_path)
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise RuntimeError(f"Не удалось сохранить MP3 после обрезки пауз: {exc}") from exc
+
+
+def _export_pcm_to_mp3(raw_audio, output_path):
+    if AudioSegment is None:
+        raise RuntimeError("Невозможно сохранить MP3: не найден pydub.")
+    if not raw_audio:
+        raise RuntimeError("Невозможно сохранить пустой аудиоблок.")
+
+    tmp_path = f"{output_path}.tmp"
+    try:
+        snap = AudioSegment(data=raw_audio, sample_width=2, frame_rate=AUDIO_RATE, channels=AUDIO_CHANNELS)
+        snap = _trim_audio_segment_boundaries(snap)
+        snap.export(tmp_path, format="mp3")
+        os.replace(tmp_path, output_path)
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise RuntimeError(f"Не удалось сохранить MP3: {exc}") from exc
+
+
+def _combine_mp3_sequence(input_paths, output_path):
+    normalized_paths = [os.path.abspath(path) for path in (input_paths or []) if path and os.path.exists(path)]
+    if not normalized_paths:
+        raise RuntimeError("Нет MP3-файлов для сборки.")
+
+    tmp_output = f"{output_path}.tmp"
+    ffmpeg_path = _resolve_tool_path("ffmpeg")
+    concat_list_path = f"{output_path}.concat.txt"
+
+    if ffmpeg_path:
+        try:
+            with open(concat_list_path, "w", encoding="utf-8") as list_file:
+                for file_path in normalized_paths:
+                    list_file.write(f"file '{_ffmpeg_concat_path(file_path)}'\n")
+            combine_cmd = [
+                ffmpeg_path,
+                "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list_path,
+                "-c", "copy",
+                tmp_output,
+            ]
+            result = _run_subprocess(combine_cmd, capture_output=True, text=True)
+            if result.returncode == 0 and os.path.exists(tmp_output):
+                os.replace(tmp_output, output_path)
+                return
+            raise RuntimeError(result.stderr.strip() or "ffmpeg не смог собрать итоговый MP3.")
+        except Exception:
+            if os.path.exists(tmp_output):
+                try:
+                    os.remove(tmp_output)
+                except Exception:
+                    pass
+        finally:
+            if os.path.exists(concat_list_path):
+                try:
+                    os.remove(concat_list_path)
+                except Exception:
+                    pass
+
+    if AudioSegment is None:
+        raise RuntimeError("Для сборки MP3 нужны ffmpeg или pydub.")
+
+    combined = None
+    try:
+        for file_path in normalized_paths:
+            segment = AudioSegment.from_file(file_path, format="mp3")
+            combined = segment if combined is None else (combined + segment)
+        if combined is None:
+            raise RuntimeError("Нет валидных MP3-файлов для сборки.")
+        combined.export(tmp_output, format="mp3")
+        os.replace(tmp_output, output_path)
+    except Exception as exc:
+        if os.path.exists(tmp_output):
+            try:
+                os.remove(tmp_output)
+            except Exception:
+                pass
+        raise RuntimeError(f"Не удалось собрать MP3: {exc}") from exc
+
+
+def _is_rate_limited_error(exc):
+    text = str(exc or "")
+    text_low = text.lower()
+    return (
+        "resource_exhausted" in text_low
+        or "quota" in text_low
+        or "429" in text_low
+        or "rate limit" in text_low
+    )
+
+
+def _lookup_model_limit(model_id, field_name, fallback=None):
+    if not model_id or reader_api_config is None:
+        if field_name == "rpd":
+            return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
+        return fallback
+    try:
+        provider_cfg = reader_api_config.api_providers().get("gemini", {})
+        for model_cfg in provider_cfg.get("models", {}).values():
+            if str(model_cfg.get("id") or "").strip() == model_id:
+                value = model_cfg.get(field_name, fallback)
+                if value is None and field_name == "rpd":
+                    return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
+                return fallback if value is None else value
+    except Exception:
+        if field_name == "rpd":
+            return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
+        return fallback
+    if field_name == "rpd":
+        return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
+    return fallback
+
+
+def _make_rpm_limiter(model_id, fallback_rpm):
+    rpm_value = _lookup_model_limit(model_id, "rpm", fallback_rpm)
+    try:
+        rpm_value = int(rpm_value)
+    except Exception:
+        rpm_value = fallback_rpm
+    if RPMLimiter is None:
+        return None
+    return RPMLimiter(max(1, rpm_value))
+
+
+class TPMLimiter:
+    def __init__(self, tpm_limit=0):
+        try:
+            self.tpm_limit = max(0, int(tpm_limit or 0))
+        except Exception:
+            self.tpm_limit = 0
+        self._events = []
+        self._lock = threading.Lock()
+
+    def _prune(self, now_ts):
+        cutoff = now_ts - 60.0
+        self._events = [(ts, tokens) for ts, tokens in self._events if ts > cutoff]
+
+    def get_required_delay(self, token_count):
+        if self.tpm_limit <= 0:
+            return 0.0
+        token_count = max(1, int(token_count or 1))
+        with self._lock:
+            now_ts = time.time()
+            self._prune(now_ts)
+            used_tokens = sum(tokens for _, tokens in self._events)
+            if used_tokens + token_count <= self.tpm_limit:
+                return 0.0
+
+            running_total = used_tokens + token_count
+            for event_ts, event_tokens in self._events:
+                running_total -= event_tokens
+                if running_total <= self.tpm_limit:
+                    return max(0.25, 60.0 - (now_ts - event_ts))
+            return 60.0
+
+    def register(self, token_count):
+        if self.tpm_limit <= 0:
+            return
+        token_count = max(1, int(token_count or 1))
+        with self._lock:
+            now_ts = time.time()
+            self._prune(now_ts)
+            self._events.append((now_ts, token_count))
+
+
+def _gemini_reset_policy():
+    if reader_api_config is not None:
+        try:
+            provider_cfg = reader_api_config.api_providers().get("gemini", {})
+            policy = provider_cfg.get("reset_policy", {})
+            if policy:
+                return dict(policy)
+        except Exception:
+            pass
+    return {
+        "type": "daily",
+        "timezone": "America/Los_Angeles",
+        "reset_hour": 0,
+        "reset_minute": 1,
+    }
+
+
+def _policy_timezone(policy):
+    tz_name = (policy or {}).get("timezone") or "America/Los_Angeles"
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            return None
+    return None
+
+
+def _current_policy_bucket(policy):
+    policy = policy or _gemini_reset_policy()
+    tz = _policy_timezone(policy)
+    now_dt = datetime.now(tz) if tz is not None else datetime.utcnow()
+
+    if policy.get("type") == "daily":
+        boundary = now_dt.replace(
+            hour=policy.get("reset_hour", 0),
+            minute=policy.get("reset_minute", 1),
+            second=0,
+            microsecond=0,
+        )
+        if now_dt < boundary:
+            boundary -= timedelta(days=1)
+        return boundary.strftime("%Y-%m-%dT%H:%M")
+
+    return now_dt.strftime("%Y-%m-%d")
+
+
+def _next_policy_reset_text(policy):
+    policy = policy or _gemini_reset_policy()
+    tz = _policy_timezone(policy)
+    now_dt = datetime.now(tz) if tz is not None else datetime.utcnow()
+
+    if policy.get("type") == "daily":
+        next_reset = now_dt.replace(
+            hour=policy.get("reset_hour", 0),
+            minute=policy.get("reset_minute", 1),
+            second=0,
+            microsecond=0,
+        )
+        if next_reset <= now_dt:
+            next_reset += timedelta(days=1)
+        return next_reset.strftime("%H:%M (%d.%m)")
+
+    return "следующее окно"
+
+
+class ProjectDailyRequestLimiter:
+    def __init__(self, settings_manager=None):
+        self.settings_manager = settings_manager
+        self.policy = _gemini_reset_policy()
+        self.lock = threading.Lock()
+        self.state = self._load_state()
+
+    def _load_state(self):
+        bucket = _current_policy_bucket(self.policy)
+        default_state = {"bucket": bucket, "counts": {}}
+        if self.settings_manager is not None:
+            try:
+                stored = self.settings_manager.load_settings().get(READER_RPD_STATE_KEY, {})
+                if isinstance(stored, dict):
+                    default_state.update(stored)
+            except Exception:
+                pass
+        else:
+            legacy_data = _load_legacy_settings()
+            stored = legacy_data.get(READER_RPD_STATE_KEY, {})
+            if isinstance(stored, dict):
+                default_state.update(stored)
+        if not isinstance(default_state.get("counts"), dict):
+            default_state["counts"] = {}
+        return default_state
+
+    def _save_state_locked(self):
+        payload = {
+            "bucket": self.state.get("bucket"),
+            "counts": dict(self.state.get("counts", {})),
+        }
+        if self.settings_manager is not None:
+            try:
+                self.settings_manager.save_ui_state({READER_RPD_STATE_KEY: payload})
+                return
+            except Exception:
+                pass
+
+        legacy_data = _load_legacy_settings()
+        legacy_data[READER_RPD_STATE_KEY] = payload
+        with open(LEGACY_SETTINGS_FILE, "w", encoding="utf-8") as file_obj:
+            json.dump(legacy_data, file_obj, ensure_ascii=False, indent=2)
+
+    def _rollover_locked(self):
+        current_bucket = _current_policy_bucket(self.policy)
+        if self.state.get("bucket") != current_bucket:
+            self.state = {"bucket": current_bucket, "counts": {}}
+            self._save_state_locked()
+
+    def try_acquire(self, model_id, daily_limit, amount=1):
+        if not model_id or not daily_limit or daily_limit <= 0:
+            return True, 0, daily_limit, _next_policy_reset_text(self.policy)
+
+        with self.lock:
+            self._rollover_locked()
+            counts = self.state.setdefault("counts", {})
+            current_count = int(counts.get(model_id, 0) or 0)
+            if current_count + amount > daily_limit:
+                return False, current_count, daily_limit, _next_policy_reset_text(self.policy)
+            counts[model_id] = current_count + amount
+            self._save_state_locked()
+            return True, counts[model_id], daily_limit, _next_policy_reset_text(self.policy)
+
+    def get_count(self, model_id):
+        with self.lock:
+            self._rollover_locked()
+            return int(self.state.get("counts", {}).get(model_id, 0) or 0)
+
+
 def _sentence_tokenize(text):
     fallback_sentences = [
         part.strip()
@@ -237,6 +1086,71 @@ def _sentence_tokenize(text):
             return fallback_sentences
     except Exception:
         return fallback_sentences
+
+
+def _normalize_reader_text(text):
+    cleaned = re.sub(r'[^\x20-\x7E\u0400-\u04FF\s\.,!\?\-:;\"\'«»—]', '', text or "")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _merge_reader_paragraphs(raw_paragraphs, min_alnum=15):
+    paragraphs = []
+    pending = ""
+
+    for raw_paragraph in raw_paragraphs or []:
+        paragraph = _normalize_reader_text(raw_paragraph)
+        if not paragraph:
+            continue
+
+        if pending:
+            candidate = f"{pending}\n\n{paragraph}"
+        else:
+            candidate = paragraph
+
+        alnum_count = sum(ch.isalnum() for ch in candidate)
+        if alnum_count >= min_alnum:
+            paragraphs.append(candidate)
+            pending = ""
+        else:
+            pending = candidate
+
+    if pending:
+        if paragraphs:
+            paragraphs[-1] = f"{paragraphs[-1]}\n\n{pending}"
+        else:
+            paragraphs.append(pending)
+
+    return paragraphs
+
+
+def _split_live_paragraph(paragraph, max_chars=LIVE_PARAGRAPH_MAX_CHARS):
+    paragraph = (paragraph or "").strip()
+    if not paragraph or len(paragraph) <= max_chars:
+        return [paragraph] if paragraph else []
+
+    sentences = _sentence_tokenize(paragraph)
+    if len(sentences) <= 1:
+        return [paragraph]
+
+    chunks = []
+    current = []
+    current_len = 0
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        addition = len(sentence) + (1 if current else 0)
+        if current and current_len + addition > max_chars:
+            chunks.append(" ".join(current))
+            current = [sentence]
+            current_len = len(sentence)
+        else:
+            current.append(sentence)
+            current_len += addition
+    if current:
+        chunks.append(" ".join(current))
+    return chunks or [paragraph]
 
 
 if platform.system() == "Windows" and "_orig_popen" in globals():
@@ -260,6 +1174,7 @@ class Chapter:
     def __init__(self, title, content):
         self.title = title
         self.flat_sentences = []
+        self.paragraphs = []
         self.raw_text = ""
         self._parse_content(content)
 
@@ -276,8 +1191,12 @@ class Chapter:
             if t:
                 lines.append(t)
 
-        self.raw_text = "\n".join(lines)
-        full_text = re.sub(r'[^\x20-\x7E\u0400-\u04FF\s\.,!\?\-:;\"\'«»—]', '', self.raw_text)
+        normalized_lines = [_normalize_reader_text(line) for line in lines]
+        normalized_lines = [line for line in normalized_lines if line]
+
+        self.paragraphs = _merge_reader_paragraphs(normalized_lines)
+        self.raw_text = "\n".join(normalized_lines)
+        full_text = self.raw_text
 
         raw_sentences = _sentence_tokenize(full_text)
             
@@ -405,112 +1324,299 @@ class BookManager:
     def get_mp3_path(self, c):
         return os.path.join(self.book_dir, f"Ch{c + 1}.mp3")
 
+    def get_tts_script_path(self, c_idx):
+        return os.path.join(self.book_dir, f"Ch{c_idx + 1}{SCRIPT_SUFFIX}")
+
+    def load_tts_script(self, c_idx):
+        path = self.get_tts_script_path(c_idx)
+        if not os.path.exists(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as file_obj:
+                return file_obj.read()
+        except Exception:
+            return ""
+
+    def save_tts_script(self, c_idx, script_text):
+        path = self.get_tts_script_path(c_idx)
+        with open(path, "w", encoding="utf-8") as file_obj:
+            file_obj.write(script_text or "")
+        return path
+
+    def has_tts_script(self, c_idx):
+        return os.path.exists(self.get_tts_script_path(c_idx))
+
+    def get_video_cover_path(self):
+        for extension in VIDEO_COVER_EXTENSIONS:
+            candidate = os.path.join(self.book_dir, f"{VIDEO_COVER_BASENAME}{extension}")
+            if os.path.exists(candidate):
+                return candidate
+        return ""
+
+    def save_video_cover_image(self, source_path):
+        if not self.book_dir:
+            raise RuntimeError("Книга ещё не загружена.")
+        if not source_path or not os.path.isfile(source_path):
+            raise FileNotFoundError("Файл картинки не найден.")
+
+        extension = os.path.splitext(source_path)[1].lower()
+        if not extension:
+            extension = ".png"
+        destination_path = os.path.join(self.book_dir, f"{VIDEO_COVER_BASENAME}{extension}")
+
+        for existing_extension in VIDEO_COVER_EXTENSIONS:
+            existing_path = os.path.join(self.book_dir, f"{VIDEO_COVER_BASENAME}{existing_extension}")
+            if os.path.exists(existing_path) and os.path.abspath(existing_path) != os.path.abspath(destination_path):
+                try:
+                    os.remove(existing_path)
+                except Exception:
+                    pass
+
+        if os.path.abspath(source_path) != os.path.abspath(destination_path):
+            shutil.copy2(source_path, destination_path)
+        return destination_path
+
 
 # --- УМНЫЙ КОМБАЙН (ПО 1.5 ГБ) ---
 class AudioCombinerWorker(QThread):
     finished_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(str)
 
-    def __init__(self, book_manager, voice_name="Unknown", ffmpeg_path=None, ffprobe_path=None):
+    def __init__(
+        self,
+        book_manager,
+        voice_name="Unknown",
+        ffmpeg_path=None,
+        ffprobe_path=None,
+        video_image_path=None,
+        chapter_indices=None,
+    ):
         super().__init__()
         self.bm = book_manager
         self.voice_name = voice_name
         self.ffmpeg_path = ffmpeg_path or _resolve_tool_path("ffmpeg")
         self.ffprobe_path = ffprobe_path or _resolve_tool_path("ffprobe")
+        self.video_image_path = video_image_path or ""
+        self.chapter_indices = sorted(
+            {idx for idx in (chapter_indices or []) if isinstance(idx, int) and idx >= 0}
+        )
 
     def run(self):
         try:
-            self.progress_signal.emit("Сканирование файлов...")
-            files = sorted([f for f in os.listdir(self.bm.book_dir) if f.startswith("Ch") and f.endswith(".mp3") and "Part" not in f],
-                           key=lambda x: int(re.search(r'\d+', x).group()))
-            
+            self.progress_signal.emit("???????????? ??????...")
+            allowed_files = None
+            if self.chapter_indices:
+                allowed_files = {f"Ch{idx + 1}.mp3" for idx in self.chapter_indices}
+            files = sorted(
+                [
+                    file_name
+                    for file_name in os.listdir(self.bm.book_dir)
+                    if file_name.startswith("Ch")
+                    and file_name.endswith(".mp3")
+                    and "Part" not in file_name
+                    and (allowed_files is None or file_name in allowed_files)
+                ],
+                key=lambda name: int(re.search(r'\d+', name).group()),
+            )
+
             if not files:
-                self.finished_signal.emit("Ошибка: Нет файлов Ch*.mp3")
+                if self.chapter_indices:
+                    self.finished_signal.emit(
+                        "Ошибка: среди выбранных глав нет готовых MP3 для экспорта."
+                    )
+                else:
+                    self.finished_signal.emit("??????: ??? ?????? Ch*.mp3")
                 return
 
             parts = []
-            current_part_files =[]
+            current_part_files = []
             current_size = 0
+            created_videos = 0
+            scope_suffix = _format_chapter_scope_slug(self.chapter_indices)
+            base_title = self.bm.title if not scope_suffix else f"{self.bm.title}_{scope_suffix}"
 
-            for f in files:
-                f_path = os.path.join(self.bm.book_dir, f)
-                f_size = os.path.getsize(f_path)
-                if current_size + f_size > MAX_PART_SIZE and current_part_files:
+            for file_name in files:
+                file_path = os.path.join(self.bm.book_dir, file_name)
+                file_size = os.path.getsize(file_path)
+                if current_size + file_size > MAX_PART_SIZE and current_part_files:
                     parts.append(current_part_files)
-                    current_part_files =[]
+                    current_part_files = []
                     current_size = 0
-                current_part_files.append(f)
-                current_size += f_size
-            
+                current_part_files.append(file_name)
+                current_size += file_size
+
             if current_part_files:
                 parts.append(current_part_files)
 
             for idx, part_files in enumerate(parts):
-                # Добавляем имя голоса в конец файла
-                part_name = f"{self.bm.title}_Part_{idx+1}_{self.voice_name}.mp3"
-                list_txt_path = os.path.join(self.bm.book_dir, f"concat_list_{idx}.txt")
-                meta_txt_path = os.path.join(self.bm.book_dir, f"metadata_{idx}.txt")
-                
-                # Заготовка для файла метаданных с оглавлением (тоже добавим голос для красоты)
-                meta_lines =[";FFMETADATA1", f"title={self.bm.title} - Часть {idx+1} ({self.voice_name})", ""]
-                current_time_ms = 0
+                part_name = f"{base_title}_Part_{idx + 1}_{self.voice_name}.mp3"
+                part_output_path = os.path.join(self.bm.book_dir, part_name)
+                trim_dir_path = os.path.join(self.bm.book_dir, "_combine_trim_cache", f"part_{idx}")
+                if len(part_files) == 1:
+                    file_name = part_files[0]
+                    file_path = os.path.join(self.bm.book_dir, file_name)
+                    if not os.path.exists(file_path):
+                        raise RuntimeError(f"Не найден файл главы для экспорта: {file_name}")
+                    if os.path.getsize(file_path) <= 0:
+                        raise RuntimeError(f"Файл главы пустой или повреждён: {file_name}")
+                    try:
+                        duration_result = _run_subprocess(
+                            [
+                                self.ffprobe_path,
+                                "-v", "error",
+                                "-show_entries", "format=duration",
+                                "-of", "default=noprint_wrappers=1:nokey=1",
+                                file_path,
+                            ],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if duration_result.returncode != 0:
+                            raise RuntimeError(duration_result.stderr.strip() or "ffprobe не смог прочитать MP3")
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Глава {file_name} содержит битый или неполный MP3. "
+                            f"Нужно переозвучить главу перед экспортом. Детали: {exc}"
+                        ) from exc
 
-                with open(list_txt_path, 'w', encoding='utf-8') as lf:
-                    for f in part_files:
-                        lf.write(f"file '{f}'\n")
-                        
-                        # --- Узнаем длину файла через ffprobe для ОГЛАВЛЕНИЯ ---
-                        f_path = os.path.join(self.bm.book_dir, f)
-                        dur_cmd =[self.ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", f_path]
-                        dur_sec = 0.0
-                        try:
-                            res = _run_subprocess(dur_cmd, capture_output=True, text=True)
-                            dur_sec = float(res.stdout.strip())
-                        except Exception as e:
-                            logger.error(f"Не удалось получить длину {f}: {e}")
-                            
-                        dur_ms = int(dur_sec * 1000)
-                        
-                        # Достаем номер главы из имени файла
-                        ch_match = re.search(r'Ch(\d+)\.mp3', f)
-                        ch_num = ch_match.group(1) if ch_match else "?"
-                        
-                        meta_lines.append("[CHAPTER]")
-                        meta_lines.append("TIMEBASE=1/1000")
-                        meta_lines.append(f"START={current_time_ms}")
-                        meta_lines.append(f"END={current_time_ms + dur_ms}")
-                        meta_lines.append(f"title=Глава {ch_num}")
-                        meta_lines.append("")
-                        
-                        current_time_ms += dur_ms
+                    self.progress_signal.emit(f"Подготовка части {idx + 1} из {len(parts)}...")
+                    if AudioSegment is not None:
+                        _export_trimmed_mp3_file(file_path, part_output_path)
+                    else:
+                        shutil.copy2(file_path, part_output_path)
+                else:
+                    list_txt_path = os.path.join(self.bm.book_dir, f"concat_list_{idx}.txt")
+                    meta_txt_path = os.path.join(self.bm.book_dir, f"metadata_{idx}.txt")
 
-                # Сохраняем файл метаданных
-                with open(meta_txt_path, 'w', encoding='utf-8') as mf:
-                    mf.write("\n".join(meta_lines))
+                    meta_lines = [";FFMETADATA1", f"title={self.bm.title} - ????? {idx + 1} ({self.voice_name})", ""]
+                    current_time_ms = 0
+                    shutil.rmtree(trim_dir_path, ignore_errors=True)
+                    os.makedirs(trim_dir_path, exist_ok=True)
 
-                self.progress_signal.emit(f"Склейка части {idx+1} из {len(parts)}...")
-                
-                # Добавляем инжект метаданных (-i metadata.txt -map_metadata 1)
-                cmd =[self.ffmpeg_path, "-y", "-f", "concat", "-safe", "0", "-i", f"concat_list_{idx}.txt", "-i", f"metadata_{idx}.txt", "-map_metadata", "1", "-c", "copy", part_name]
-                
-                process = _run_subprocess(cmd, cwd=self.bm.book_dir, capture_output=True, text=True)
-                
-                if os.path.exists(list_txt_path):
-                    os.remove(list_txt_path)
-                if os.path.exists(meta_txt_path):
-                    os.remove(meta_txt_path)
-                    
-                if process.returncode != 0:
-                    logger.error(f"FFMPEG Error Part {idx+1}: {process.stderr}")
+                    with open(list_txt_path, 'w', encoding='utf-8') as list_file:
+                        for file_name in part_files:
+                            file_path = os.path.join(self.bm.book_dir, file_name)
 
-            self.finished_signal.emit(f"Готово! Создано частей: {len(parts)}")
+                            if not os.path.exists(file_path):
+                                raise RuntimeError(f"Не найден файл главы для склейки: {file_name}")
+                            if os.path.getsize(file_path) <= 0:
+                                raise RuntimeError(f"Файл главы пустой или повреждён: {file_name}")
+
+                            prepared_file_path = file_path
+                            if AudioSegment is not None:
+                                prepared_file_path = os.path.join(trim_dir_path, file_name)
+                                _export_trimmed_mp3_file(file_path, prepared_file_path)
+
+                            list_file.write(f"file '{_ffmpeg_concat_path(prepared_file_path)}'\n")
+
+                            duration_cmd = [
+                                self.ffprobe_path,
+                                "-v", "error",
+                                "-show_entries", "format=duration",
+                                "-of", "default=noprint_wrappers=1:nokey=1",
+                                prepared_file_path,
+                            ]
+                            duration_sec = 0.0
+                            try:
+                                duration_result = _run_subprocess(duration_cmd, capture_output=True, text=True)
+                                if duration_result.returncode != 0:
+                                    raise RuntimeError(duration_result.stderr.strip() or "ffprobe не смог прочитать MP3")
+                                duration_sec = float(duration_result.stdout.strip())
+                            except Exception as exc:
+                                logger.error(f"?? ??????? ???????? ????? {file_name}: {exc}")
+                                raise RuntimeError(
+                                    f"Глава {file_name} содержит битый или неполный MP3. "
+                                    f"Нужно переозвучить главу перед склейкой. Детали: {exc}"
+                                ) from exc
+
+                            duration_ms = int(duration_sec * 1000)
+                            chapter_match = re.search(r'Ch(\d+)\.mp3', file_name)
+                            chapter_number = chapter_match.group(1) if chapter_match else "?"
+
+                            meta_lines.append("[CHAPTER]")
+                            meta_lines.append("TIMEBASE=1/1000")
+                            meta_lines.append(f"START={current_time_ms}")
+                            meta_lines.append(f"END={current_time_ms + duration_ms}")
+                            meta_lines.append(f"title=????? {chapter_number}")
+                            meta_lines.append("")
+                            current_time_ms += duration_ms
+
+                    with open(meta_txt_path, 'w', encoding='utf-8') as meta_file:
+                        meta_file.write("\n".join(meta_lines))
+
+                    self.progress_signal.emit(f"??????? ????? {idx + 1} ?? {len(parts)}...")
+                    combine_cmd = [
+                        self.ffmpeg_path,
+                        "-y",
+                        "-f", "concat",
+                        "-safe", "0",
+                        "-i", list_txt_path,
+                        "-i", meta_txt_path,
+                        "-map_metadata", "1",
+                        "-c", "copy",
+                        part_output_path,
+                    ]
+                    combine_process = _run_subprocess(combine_cmd, capture_output=True, text=True)
+
+                    if os.path.exists(list_txt_path):
+                        os.remove(list_txt_path)
+                    if os.path.exists(meta_txt_path):
+                        os.remove(meta_txt_path)
+                    if os.path.isdir(trim_dir_path):
+                        shutil.rmtree(trim_dir_path, ignore_errors=True)
+
+                    if combine_process.returncode != 0:
+                        logger.error(f"FFMPEG Error Part {idx + 1}: {combine_process.stderr}")
+                        raise RuntimeError(
+                            f"?? ??????? ??????? ????? {idx + 1}: "
+                            f"{combine_process.stderr.strip() or '?????? ffmpeg'}"
+                        )
+
+                if self.video_image_path:
+                    video_name = os.path.splitext(part_name)[0] + ".mp4"
+                    video_output_path = os.path.join(self.bm.book_dir, video_name)
+                    self.progress_signal.emit(f"??????? ????? {idx + 1} ?? {len(parts)}...")
+                    video_cmd = [
+                        self.ffmpeg_path,
+                        "-y",
+                        "-loop", "1",
+                        "-framerate", "1",
+                        "-i", self.video_image_path,
+                        "-i", part_output_path,
+                        "-map", "0:v:0",
+                        "-map", "1:a:0",
+                        "-c:v", "libx264",
+                        "-preset", "medium",
+                        "-tune", "stillimage",
+                        "-vf",
+                        (
+                            f"scale={VIDEO_FRAME_SIZE}:force_original_aspect_ratio=decrease,"
+                            f"pad={VIDEO_FRAME_SIZE}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
+                        ),
+                        "-c:a", "aac",
+                        "-b:a", "192k",
+                        "-movflags", "+faststart",
+                        "-shortest",
+                        video_output_path,
+                    ]
+                    video_process = _run_subprocess(video_cmd, capture_output=True, text=True)
+                    if video_process.returncode != 0:
+                        logger.error(f"FFMPEG Video Error Part {idx + 1}: {video_process.stderr}")
+                        raise RuntimeError(
+                            f"?? ??????? ??????? ????? ??? ????? {idx + 1}: "
+                            f"{video_process.stderr.strip() or '?????? ffmpeg'}"
+                        )
+                    created_videos += 1
+
+            if created_videos:
+                self.finished_signal.emit(f"??????! ??????? ??????: {len(parts)}, ?????: {created_videos}")
+            else:
+                self.finished_signal.emit(f"??????! ??????? ??????: {len(parts)}")
 
         except Exception as e:
-            logger.exception(f"Критическая ошибка при объединении аудио: {e}")
-            self.finished_signal.emit(f"Ошибка: {str(e)}")
+            logger.exception(f"??????????? ?????? ??? ??????????? ?????: {e}")
+            self.finished_signal.emit(f"??????: {str(e)}")
 
-
-# --- АУДИО ПЛЕЕР ---
 class AudioPlayer(QThread):
     def __init__(self, audio_queue, vol=80):
         super().__init__()
@@ -568,8 +1674,27 @@ class GeminiWorker(QThread):
     finished_signal = pyqtSignal(int)
     error_signal = pyqtSignal(int, str)
     chapter_done_ui_signal = pyqtSignal(int)
+    invalid_key_signal = pyqtSignal(int, str, str, int)
+    quota_key_signal = pyqtSignal(int, str, str, str, int)
+    project_quota_signal = pyqtSignal(int, str, str, int)
 
-    def __init__(self, worker_id, api_key, bm, audio_queue, model_id, voice, style_prompt, speed, record, fast, chunk, manager_chapter_queue):
+    def __init__(
+        self,
+        worker_id,
+        api_key,
+        bm,
+        audio_queue,
+        model_id,
+        voice,
+        style_prompt,
+        speed,
+        record,
+        fast,
+        chunk,
+        segment_mode,
+        manager_chapter_queue,
+        daily_request_limiter=None,
+    ):
         super().__init__()
         self.worker_id = worker_id
         self.api_key = api_key
@@ -582,6 +1707,7 @@ class GeminiWorker(QThread):
         self.record = record
         self.fast = fast
         self.chunk = chunk
+        self.segment_mode = segment_mode or "sentences"
         self.manager_chapter_queue = manager_chapter_queue
         self.c_idx = -1
         self.s_idx = 0
@@ -589,8 +1715,157 @@ class GeminiWorker(QThread):
         self._is_paused = False
         self.audio_chunks = []
         self.buffer_lock = threading.Lock()
+        self.token_counter = TokenCounter() if TokenCounter is not None else None
+        self.request_rpm_limiter = _make_rpm_limiter(self.model_id, LIVE_API_DEFAULT_RPM)
+        self.request_tpm_limiter = TPMLimiter(_lookup_model_limit(self.model_id, "tpm", DEFAULT_TPM_LIMIT))
+        self.daily_request_limiter = daily_request_limiter
+        self.request_rpd_limit = _lookup_model_limit(self.model_id, "rpd", 0)
 
     def update_chunk_size(self, v): self.chunk = v
+
+    def _chapter_segments(self, chapter_index):
+        chapter = self.bm.chapters[chapter_index]
+        if self.segment_mode == "paragraphs":
+            paragraphs = []
+            for part in getattr(chapter, "paragraphs", []) or []:
+                paragraphs.extend(_split_live_paragraph(part))
+            paragraphs = [part.strip() for part in paragraphs if (part or "").strip()]
+            if paragraphs:
+                return paragraphs
+            raw_text = (chapter.raw_text or "").strip()
+            return [raw_text] if raw_text else []
+        return [part.strip() for part in chapter.flat_sentences if (part or "").strip()]
+
+    def _join_segments_for_request(self, segments):
+        if self.segment_mode == "paragraphs":
+            return "\n\n".join(segment for segment in segments if segment).strip()
+        return " ".join(segment for segment in segments if segment).strip()
+
+    def _estimate_tokens(self, text):
+        if self.token_counter is not None:
+            try:
+                return max(1, int(self.token_counter.estimate_tokens(text)))
+            except Exception:
+                pass
+        return max(1, int(len(text or "") / 3.0))
+
+    def _rpm_required_delay(self, limiter=None):
+        limiter = limiter or self.request_rpm_limiter
+        if limiter is None or not hasattr(limiter, "interval") or not hasattr(limiter, "last_request_time"):
+            return 0.0
+        try:
+            with limiter.lock:
+                now_ts = time.time()
+                elapsed = now_ts - limiter.last_request_time
+                if elapsed >= limiter.interval:
+                    return 0.0
+                return max(0.0, limiter.interval - elapsed)
+        except Exception:
+            return 0.0
+
+    async def _wait_for_request_budget(
+        self,
+        payload_text,
+        rpm_limiter=None,
+        tpm_limiter=None,
+        request_label="API",
+        daily_request_limiter=None,
+        model_id=None,
+        rpd_limit=0,
+    ):
+        rpm_limiter = rpm_limiter or self.request_rpm_limiter
+        tpm_limiter = tpm_limiter or self.request_tpm_limiter
+        daily_request_limiter = daily_request_limiter or self.daily_request_limiter
+        model_id = model_id or self.model_id
+        token_cost = self._estimate_tokens(payload_text)
+
+        while self._is_running:
+            rpm_delay = self._rpm_required_delay(rpm_limiter)
+            tpm_delay = tpm_limiter.get_required_delay(token_cost) if tpm_limiter is not None else 0.0
+            if rpm_delay <= 0 and tpm_delay <= 0:
+                if daily_request_limiter is not None and model_id and rpd_limit and rpd_limit > 0:
+                    acquired, current_count, limit_value, reset_text = daily_request_limiter.try_acquire(
+                        model_id, rpd_limit, amount=1
+                    )
+                    if not acquired:
+                        raise ProjectRateLimitReachedError(
+                            f"Дневной лимит {limit_value} запросов для модели {model_id} исчерпан. "
+                            f"Следующий сброс около {reset_text}.",
+                            model_id=model_id,
+                        )
+                if rpm_limiter is not None:
+                    rpm_limiter.can_proceed()
+                if tpm_limiter is not None:
+                    tpm_limiter.register(token_cost)
+                return
+
+            sleep_candidates = [delay for delay in (rpm_delay, tpm_delay) if delay and delay > 0]
+            sleep_for = min(sleep_candidates) if sleep_candidates else 0.5
+            await asyncio.sleep(max(0.25, min(sleep_for, 5.0)))
+
+    async def _handle_rate_limit(self, exc, attempt, model_id=None, rpm_limiter=None):
+        delay_seconds = RATE_LIMIT_BACKOFF_SECONDS + max(0, attempt - 1) * 20
+        limiter = rpm_limiter or self.request_rpm_limiter
+        if limiter is not None and hasattr(limiter, "decrease_rpm"):
+            try:
+                limiter.decrease_rpm(percentage=25)
+                limiter.update_last_request_time(delay_seconds)
+            except Exception:
+                pass
+
+        model_label = model_id or self.model_id or "<unknown>"
+        logger.warning(
+            f"[W{self.worker_id}] {model_label}: получен RESOURCE_EXHAUSTED/429. "
+            f"Backoff {delay_seconds} сек и снижение RPM для ключа {_mask_api_key(self.api_key)}."
+        )
+        await asyncio.sleep(delay_seconds)
+
+    def _requeue_current_chapter(self):
+        if self.c_idx == -1 or self.manager_chapter_queue is None:
+            return
+        try:
+            if not self.bm.is_chapter_done(self.c_idx) and not self.bm.is_chapter_skipped(self.c_idx):
+                self.manager_chapter_queue.put(self.c_idx)
+        except Exception:
+            pass
+
+    def _abort_for_invalid_key(self, error_text):
+        chapter_index = self.c_idx
+        self._requeue_current_chapter()
+        masked_key = _mask_api_key(self.api_key)
+        logger.error(
+            f"[W{self.worker_id}] Ключ {masked_key} отклонён API Google как невалидный. "
+            "Воркер остановлен, глава возвращена в очередь."
+        )
+        self.invalid_key_signal.emit(self.worker_id, self.api_key, error_text, chapter_index)
+        self.c_idx = -1
+        self._is_running = False
+        self.finished_signal.emit(self.worker_id)
+
+    def _abort_for_quota_key(self, error_text, model_id):
+        chapter_index = self.c_idx
+        self._requeue_current_chapter()
+        masked_key = _mask_api_key(self.api_key)
+        logger.error(
+            f"[W{self.worker_id}] Ключ {masked_key} упёрся в квоту/лимит модели {model_id}. "
+            "Воркер остановлен, глава возвращена в очередь."
+        )
+        self.quota_key_signal.emit(self.worker_id, self.api_key, model_id or "", error_text, chapter_index)
+        self.c_idx = -1
+        self._is_running = False
+        self.finished_signal.emit(self.worker_id)
+
+    def _abort_for_project_quota(self, error_text, model_id):
+        chapter_index = self.c_idx
+        self._requeue_current_chapter()
+        logger.error(
+            f"[W{self.worker_id}] Дневной лимит проекта по модели {model_id} исчерпан. "
+            "Глава возвращена в очередь, воркер остановлен."
+        )
+        self.project_quota_signal.emit(self.worker_id, model_id or "", error_text, chapter_index)
+        self.c_idx = -1
+        self._is_running = False
+        self.finished_signal.emit(self.worker_id)
 
     def run(self):
         try:
@@ -675,19 +1950,11 @@ class GeminiWorker(QThread):
             logger.error(f"[W{self.worker_id}] Критическая ошибка Edge TTS: {e}")
             return None
 
-    async def main_loop(self):
-        
-        # Обновленный клиент (новый SDK обрабатывает Live API без костылей v1alpha)
-        if genai is None or genai_types is None:
-            raise RuntimeError("Для озвучки Gemini Reader требуется пакет google-genai.")
-        client = genai.Client(api_key=self.api_key)
-        
+    def _build_live_connect_config(self):
         speed_instr = SPEED_PROMPTS.get(self.speed, SPEED_PROMPTS["Normal"])
-        
-        # --- УМНЫЙ ПРОМПТ В ЗАВИСИМОСТИ ОТ ПОЛА ---
         gender = VOICES_MAP.get(self.voice, "Ж")
         dictor_type = "диктор-мужчина" if gender == "М" else "диктор-женщина"
-        
+
         sys_instr = (
             f"Ты профессиональный {dictor_type}. {self.style_prompt} "
             f"{speed_instr} "
@@ -695,16 +1962,26 @@ class GeminiWorker(QThread):
             f"ОБЯЗАТЕЛЬНО дочитывай текст до самой последней точки, не глотай окончания и последние слова. "
             f"Выдай полный аудиоответ. Язык: Русский."
         )
-        
+
         config = genai_types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             speech_config=genai_types.SpeechConfig(
+                language_code="ru-RU",
                 voice_config=genai_types.VoiceConfig(
                     prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
                 )
             ),
             system_instruction=sys_instr
         )
+        return config, gender
+
+    async def main_loop(self):
+        
+        # Обновленный клиент (новый SDK обрабатывает Live API без костылей v1alpha)
+        if genai is None or genai_types is None:
+            raise RuntimeError("Для озвучки Gemini Reader требуется пакет google-genai.")
+        client = genai.Client(api_key=self.api_key)
+        config, gender = self._build_live_connect_config()
 
         # Используем выбранную в UI модель
         logger.info(f"Воркер {self.worker_id} запущен (Модель: {self.model_id}, Голос: {self.voice} [{gender}]).")
@@ -725,13 +2002,14 @@ class GeminiWorker(QThread):
                     fail_count = 0
                     gemini_retry_count = 0
                     batch_retry_count = 0
-                    total_sent = len(self.bm.chapters[self.c_idx].flat_sentences)
-                    logger.info(f"Воркер {self.worker_id} взял Главу {self.c_idx + 1} ({total_sent} предл.)")
+                    total_sent = len(self._chapter_segments(self.c_idx))
+                    segment_label = "абз." if self.segment_mode == "paragraphs" else "предл."
+                    logger.info(f"Воркер {self.worker_id} взял Главу {self.c_idx + 1} ({total_sent} {segment_label})")
                 except queue.Empty:
                     self.finished_signal.emit(self.worker_id)
                     break
             else:
-                total_sent = len(self.bm.chapters[self.c_idx].flat_sentences)
+                total_sent = len(self._chapter_segments(self.c_idx))
 
             if self.bm.is_chapter_done(self.c_idx):
                 self.chapter_done_ui_signal.emit(self.c_idx)
@@ -753,15 +2031,16 @@ class GeminiWorker(QThread):
 
             current_chunk_size = 1 if single_sentence_mode_remaining > 0 else self.chunk
             
-            text_to_send = ""
+            segments = self._chapter_segments(self.c_idx)
+            text_parts = []
             actual_count = 0
             end_range = min(self.s_idx + current_chunk_size, total_sent)
             
             for i in range(self.s_idx, end_range):
-                text_to_send += self.bm.chapters[self.c_idx].flat_sentences[i] + " "
+                text_parts.append(segments[i])
                 actual_count += 1
             
-            text_to_send = text_to_send.strip()
+            text_to_send = self._join_segments_for_request(text_parts)
             if not text_to_send:
                 self.s_idx += 1
                 if single_sentence_mode_remaining > 0:
@@ -770,6 +2049,13 @@ class GeminiWorker(QThread):
 
             data_received = False
             try:
+                await self._wait_for_request_budget(
+                    text_to_send,
+                    request_label="Live API",
+                    daily_request_limiter=self.daily_request_limiter,
+                    model_id=self.model_id,
+                    rpd_limit=self.request_rpd_limit,
+                )
                 # ПОДКЛЮЧАЕМСЯ К ВЫБРАННОЙ МОДЕЛИ
                 async with client.aio.live.connect(model=self.model_id, config=config) as session:
                     await session.send_realtime_input(text=text_to_send)
@@ -803,6 +2089,20 @@ class GeminiWorker(QThread):
                         except StopAsyncIteration:
                             break
             except Exception as e:
+                if isinstance(e, ProjectRateLimitReachedError):
+                    self._abort_for_project_quota(str(e), e.model_id or self.model_id)
+                    break
+                if _is_invalid_api_key_error(e):
+                    self._abort_for_invalid_key(str(e))
+                    break
+                if _is_rate_limited_error(e):
+                    await self._handle_rate_limit(
+                        e,
+                        gemini_retry_count + batch_retry_count + 1,
+                        model_id=self.model_id,
+                        rpm_limiter=self.request_rpm_limiter,
+                    )
+                    continue
                 # Ошибки сети или внезапные разрывы логируем, чтобы не было "тихих" провалов
                 logger.debug(f"[W{self.worker_id}] Внутренняя ошибка сессии Gemini: {e}")
 
@@ -879,20 +2179,598 @@ class GeminiWorker(QThread):
         with self.buffer_lock:
             if not self.audio_chunks: return
             combined_data = b"".join(self.audio_chunks)
-            if final: self.audio_chunks =[]
         
         def _exp():
-            if AudioSegment is None:
-                logger.error(f"[W{self.worker_id}] Невозможно сохранить MP3: не найден pydub.")
-                return
             try:
-                snap = AudioSegment(data=combined_data, sample_width=2, frame_rate=AUDIO_RATE, channels=AUDIO_CHANNELS)
-                snap.export(path, format="mp3")
-            except: pass
+                _export_pcm_to_mp3(combined_data, path)
+            except Exception as exc:
+                raise RuntimeError(f"[W{self.worker_id}] Не удалось сохранить MP3 главы {self.c_idx + 1}: {exc}") from exc
         await asyncio.to_thread(_exp)
+        if final:
+            with self.buffer_lock:
+                self.audio_chunks = []
 
     def pause(self): self._is_paused = not self._is_paused
     def stop(self): self._is_running = False
+
+
+class GeminiParallelChapterWorker(GeminiWorker):
+    def __init__(
+        self,
+        worker_id,
+        api_key,
+        bm,
+        model_id,
+        voice,
+        speed,
+        task_queue,
+        parallel_state,
+        daily_request_limiter=None,
+    ):
+        super().__init__(
+            worker_id,
+            api_key,
+            bm,
+            None,
+            model_id,
+            voice,
+            "Ты диктор.",
+            speed,
+            True,
+            True,
+            1,
+            parallel_state.get("segment_mode", "sentences"),
+            task_queue,
+            daily_request_limiter=daily_request_limiter,
+        )
+        self.parallel_task_queue = task_queue
+        self.parallel_state = parallel_state
+        self.current_task = None
+
+    def _requeue_current_task(self):
+        if self.current_task is None or self.parallel_task_queue is None:
+            return
+        if self.parallel_state.get("cancelled"):
+            return
+        try:
+            self.parallel_task_queue.put(self.current_task)
+        except Exception:
+            pass
+
+    def _abort_for_invalid_key(self, error_text):
+        chapter_index = self.current_task.get("chapter_index", -1) if self.current_task else -1
+        self._requeue_current_task()
+        masked_key = _mask_api_key(self.api_key)
+        logger.error(
+            f"[W{self.worker_id}] Ключ {masked_key} отклонён API Google во время параллельной озвучки главы. "
+            "Текущий блок возвращён в очередь."
+        )
+        self.invalid_key_signal.emit(self.worker_id, self.api_key, error_text, chapter_index)
+        self.current_task = None
+        self.c_idx = -1
+        self._is_running = False
+        self.finished_signal.emit(self.worker_id)
+
+    def _abort_for_quota_key(self, error_text, model_id):
+        chapter_index = self.current_task.get("chapter_index", -1) if self.current_task else -1
+        self._requeue_current_task()
+        masked_key = _mask_api_key(self.api_key)
+        logger.error(
+            f"[W{self.worker_id}] Ключ {masked_key} упёрся в лимит {model_id} во время параллельной озвучки. "
+            "Текущий блок возвращён в очередь."
+        )
+        self.quota_key_signal.emit(self.worker_id, self.api_key, model_id or "", error_text, chapter_index)
+        self.current_task = None
+        self.c_idx = -1
+        self._is_running = False
+        self.finished_signal.emit(self.worker_id)
+
+    def _abort_for_project_quota(self, error_text, model_id):
+        chapter_index = self.current_task.get("chapter_index", -1) if self.current_task else -1
+        self._requeue_current_task()
+        logger.error(
+            f"[W{self.worker_id}] Дневной лимит проекта по модели {model_id} исчерпан во время параллельной озвучки. "
+            "Текущий блок возвращён в очередь."
+        )
+        self.project_quota_signal.emit(self.worker_id, model_id or "", error_text, chapter_index)
+        self.current_task = None
+        self.c_idx = -1
+        self._is_running = False
+        self.finished_signal.emit(self.worker_id)
+
+    def _register_completed_task(self, task_index):
+        with self.parallel_state["lock"]:
+            completed_tasks = self.parallel_state.setdefault("completed_tasks", set())
+            completed_tasks.add(task_index)
+            completed_count = len(completed_tasks)
+            self.parallel_state["completed_count"] = completed_count
+        return completed_count
+
+    async def _request_live_task_audio(self, client, config, text_to_send):
+        received_chunks = []
+        await self._wait_for_request_budget(
+            text_to_send,
+            request_label="Live API",
+            daily_request_limiter=self.daily_request_limiter,
+            model_id=self.model_id,
+            rpd_limit=self.request_rpd_limit,
+        )
+        async with client.aio.live.connect(model=self.model_id, config=config) as session:
+            await session.send_realtime_input(text=text_to_send)
+
+            receive_iterator = session.receive().__aiter__()
+            current_timeout = 30.0
+
+            while self._is_running:
+                try:
+                    response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                    current_timeout = 15.0
+
+                    if response.server_content:
+                        if response.server_content.model_turn:
+                            for part in response.server_content.model_turn.parts:
+                                if part.inline_data:
+                                    received_chunks.append(part.inline_data.data)
+                        if getattr(response.server_content, "turn_complete", False):
+                            break
+                except asyncio.TimeoutError:
+                    break
+                except StopAsyncIteration:
+                    break
+
+        return b"".join(received_chunks)
+
+    async def _process_task(self, client, config, task):
+        text_to_send = task.get("text", "").strip()
+        if not text_to_send:
+            raise RuntimeError("Пустой блок главы для озвучки.")
+
+        gemini_retry_count = 0
+        fail_count = 0
+
+        while self._is_running:
+            audio_bytes = b""
+            try:
+                audio_bytes = await self._request_live_task_audio(client, config, text_to_send)
+            except Exception as exc:
+                if isinstance(exc, ProjectRateLimitReachedError):
+                    self._abort_for_project_quota(str(exc), exc.model_id or self.model_id)
+                    return False
+                if _is_invalid_api_key_error(exc):
+                    self._abort_for_invalid_key(str(exc))
+                    return False
+                if _is_rate_limited_error(exc):
+                    await self._handle_rate_limit(exc, gemini_retry_count + 1, model_id=self.model_id, rpm_limiter=self.request_rpm_limiter)
+                    gemini_retry_count += 1
+                    continue
+                logger.debug(f"[W{self.worker_id}] Ошибка Live API для блока главы: {exc}")
+
+            if not audio_bytes and self._is_running:
+                if gemini_retry_count < 3:
+                    gemini_retry_count += 1
+                    logger.warning(
+                        f"[W{self.worker_id}] Пустой ответ Gemini для блока {task['task_index'] + 1}/{task['total_tasks']}. "
+                        f"Повтор {gemini_retry_count}/3."
+                    )
+                    await asyncio.sleep(2)
+                    continue
+
+                fallback_data = await self.get_edge_tts_fallback(text_to_send)
+                if fallback_data:
+                    audio_bytes = fallback_data
+                else:
+                    fail_count += 1
+                    if fail_count >= 3:
+                        raise RuntimeError(
+                            f"Не удалось озвучить блок {task['task_index'] + 1}/{task['total_tasks']} даже через Edge TTS."
+                        )
+                    await asyncio.sleep(5)
+                    continue
+
+            if audio_bytes:
+                await asyncio.to_thread(_export_pcm_to_mp3, audio_bytes, task["output_path"])
+                completed_count = self._register_completed_task(task["task_index"])
+                self.worker_progress.emit(self.worker_id, task["chapter_index"], completed_count, task["total_tasks"])
+                return True
+
+        return False
+
+    async def main_loop(self):
+        if genai is None or genai_types is None:
+            raise RuntimeError("Для озвучки Gemini Reader требуется пакет google-genai.")
+
+        client = genai.Client(api_key=self.api_key)
+        config, gender = self._build_live_connect_config()
+        logger.info(
+            f"Параллельный Live воркер {self.worker_id} запущен (Модель: {self.model_id}, Голос: {self.voice} [{gender}])."
+        )
+        await asyncio.sleep(self.worker_id * 1.0)
+
+        while self._is_running:
+            try:
+                task = self.parallel_task_queue.get_nowait()
+            except queue.Empty:
+                self.finished_signal.emit(self.worker_id)
+                break
+
+            self.current_task = task
+            self.c_idx = task["chapter_index"]
+            self.s_idx = task["task_index"]
+
+            try:
+                completed = await self._process_task(client, config, task)
+                if not completed and not self._is_running:
+                    break
+            except Exception as exc:
+                logger.error(
+                    f"[W{self.worker_id}] Ошибка блока {task['task_index'] + 1}/{task['total_tasks']} главы "
+                    f"{task['chapter_index'] + 1}: {exc}"
+                )
+                self.error_signal.emit(
+                    self.worker_id,
+                    f"Глава {task['chapter_index'] + 1}, блок {task['task_index'] + 1}: {exc}"
+                )
+                self._requeue_current_task()
+                self.current_task = None
+                self.c_idx = -1
+                self._is_running = False
+                self.finished_signal.emit(self.worker_id)
+                break
+
+            self.current_task = None
+            self.c_idx = -1
+
+
+class FlashTtsWorker(GeminiWorker):
+    script_ready_signal = pyqtSignal(int)
+
+    def __init__(
+        self,
+        worker_id,
+        api_key,
+        bm,
+        audio_queue,
+        tts_model_id,
+        primary_voice,
+        secondary_voice,
+        speed,
+        record,
+        fast,
+        chunk,
+        manager_chapter_queue,
+        preprocess_model_id,
+        preprocess_profile,
+        voice_mode,
+        run_mode,
+        preprocess_directive,
+        tts_directive,
+        daily_request_limiter,
+    ):
+        super().__init__(
+            worker_id,
+            api_key,
+            bm,
+            audio_queue,
+            tts_model_id,
+            primary_voice,
+            "Professional audiobook performance.",
+            speed,
+            record,
+            fast,
+            chunk,
+            "sentences",
+            manager_chapter_queue,
+            daily_request_limiter=daily_request_limiter,
+        )
+        self.secondary_voice = secondary_voice or primary_voice
+        self.preprocess_model_id = preprocess_model_id
+        self.preprocess_profile = preprocess_profile or PREPROCESS_PROFILE_OPTIONS["Бережно"]
+        self.voice_mode = voice_mode
+        self.run_mode = run_mode
+        self.preprocess_directive = preprocess_directive or DEFAULT_PREPROCESS_DIRECTIVE
+        self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
+        self.preprocess_rpm_limiter = _make_rpm_limiter(self.preprocess_model_id, FLASH_TTS_DEFAULT_RPM)
+        self.preprocess_tpm_limiter = TPMLimiter(_lookup_model_limit(self.preprocess_model_id, "tpm", DEFAULT_TPM_LIMIT))
+        self.tts_rpm_limiter = _make_rpm_limiter(self.model_id, FLASH_TTS_DEFAULT_RPM)
+        self.tts_tpm_limiter = TPMLimiter(_lookup_model_limit(self.model_id, "tpm", DEFAULT_TPM_LIMIT))
+        self.preprocess_rpd_limit = _lookup_model_limit(self.preprocess_model_id, "rpd", 0)
+        self.tts_rpd_limit = _lookup_model_limit(self.model_id, "rpd", 0)
+
+    def _tts_chunk_limit(self):
+        base = max(1, int(self.chunk))
+        if self.voice_mode == "duo":
+            return max(1200, base * 700)
+        return max(1600, base * 900)
+
+    def _build_speech_config(self):
+        if self.voice_mode == "duo":
+            return genai_types.SpeechConfig(
+                language_code="ru-RU",
+                multi_speaker_voice_config=genai_types.MultiSpeakerVoiceConfig(
+                    speaker_voice_configs=[
+                        genai_types.SpeakerVoiceConfig(
+                            speaker=TTS_SPEAKER_NARRATOR,
+                            voice_config=genai_types.VoiceConfig(
+                                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                                    voice_name=self.voice,
+                                )
+                            ),
+                        ),
+                        genai_types.SpeakerVoiceConfig(
+                            speaker=TTS_SPEAKER_DIALOGUE,
+                            voice_config=genai_types.VoiceConfig(
+                                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                                    voice_name=self.secondary_voice,
+                                )
+                            ),
+                        ),
+                    ]
+                )
+            )
+        return genai_types.SpeechConfig(
+            language_code="ru-RU",
+            voice_config=genai_types.VoiceConfig(
+                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                    voice_name=self.voice,
+                )
+            )
+        )
+
+    async def _call_text_generation(self, client, model_id, prompt_text):
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                await self._wait_for_request_budget(
+                    prompt_text,
+                    rpm_limiter=self.preprocess_rpm_limiter,
+                    tpm_limiter=self.preprocess_tpm_limiter,
+                    request_label=f"text-model {model_id}",
+                    daily_request_limiter=self.daily_request_limiter,
+                    model_id=model_id,
+                    rpd_limit=self.preprocess_rpd_limit,
+                )
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model_id,
+                    contents=prompt_text,
+                )
+                generated_text = _extract_response_text(response)
+                if generated_text:
+                    return generated_text
+                raise RuntimeError("Пустой текстовый ответ модели.")
+            except Exception as exc:
+                if _is_invalid_api_key_error(exc):
+                    raise InvalidApiKeyError(str(exc)) from exc
+                if _is_rate_limited_error(exc):
+                    await self._handle_rate_limit(
+                        exc,
+                        attempt,
+                        model_id=model_id,
+                        rpm_limiter=self.preprocess_rpm_limiter,
+                    )
+                    last_error = exc
+                    continue
+                last_error = exc
+                logger.warning(
+                    f"[W{self.worker_id}] Ошибка text-model {model_id} (попытка {attempt}/3): {exc}"
+                )
+                await asyncio.sleep(1.5 + attempt)
+        if last_error is not None and _is_rate_limited_error(last_error):
+            raise RateLimitBudgetError(
+                f"Не удалось получить текст от модели {model_id}: {last_error}",
+                model_id=model_id,
+            )
+        raise RuntimeError(f"Не удалось получить текст от модели {model_id}: {last_error}")
+
+    async def _prepare_script_for_chapter(self, text_client, chapter_index, force=False):
+        existing_script = self.bm.load_tts_script(chapter_index)
+        if existing_script and not force and _script_matches_voice_mode(existing_script, self.voice_mode):
+            return existing_script
+
+        raw_text = self.bm.chapters[chapter_index].raw_text.strip()
+        if not raw_text:
+            raise RuntimeError("Глава не содержит текста для озвучки.")
+
+        preprocess_prompt = _build_preprocess_prompt(
+            raw_text,
+            voice_mode=self.voice_mode,
+            profile_prompt=self.preprocess_profile,
+            extra_directive=self.preprocess_directive,
+        )
+        prepared_script = await self._call_text_generation(
+            text_client,
+            self.preprocess_model_id,
+            preprocess_prompt,
+        )
+        self.bm.save_tts_script(chapter_index, prepared_script)
+        self.script_ready_signal.emit(chapter_index)
+        logger.info(f"[W{self.worker_id}] Сценарий для главы {chapter_index + 1} подготовлен.")
+        return prepared_script
+
+    async def _resolve_script_for_run(self, text_client, chapter_index):
+        if self.run_mode == "prepare":
+            return await self._prepare_script_for_chapter(text_client, chapter_index, force=True)
+
+        if self.run_mode == "auto":
+            return await self._prepare_script_for_chapter(text_client, chapter_index, force=False)
+
+        if self.run_mode == "staged":
+            prepared_script = self.bm.load_tts_script(chapter_index)
+            if prepared_script.strip() and _script_matches_voice_mode(prepared_script, self.voice_mode):
+                return prepared_script
+            if prepared_script.strip():
+                raise RuntimeError(
+                    f"Сохранённый сценарий главы {chapter_index + 1} не соответствует режиму "
+                    f"{'двух голосов' if self.voice_mode == 'duo' else 'одного голоса'}."
+                )
+            raise RuntimeError(
+                f"Для главы {chapter_index + 1} нет сохранённого TTS-сценария. "
+                "Сначала выполните шаг AI-подготовки."
+            )
+
+        if self.run_mode == "raw":
+            if self.voice_mode == "duo":
+                raise RuntimeError("Двухголосый режим требует AI-сценарий. Выберите режим 'Авто' или 'По шагам'.")
+            return self.bm.chapters[chapter_index].raw_text.strip()
+
+        raise RuntimeError(f"Неизвестный режим Flash TTS: {self.run_mode}")
+
+    async def _synthesize_chunk(self, tts_client, script_chunk):
+        prompt_text = _build_tts_generation_prompt(
+            script_chunk,
+            self.voice_mode,
+            self.speed,
+            extra_directive=self.tts_directive,
+        )
+        config = genai_types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=self._build_speech_config(),
+        )
+
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                await self._wait_for_request_budget(
+                    prompt_text,
+                    rpm_limiter=self.tts_rpm_limiter,
+                    tpm_limiter=self.tts_tpm_limiter,
+                    request_label=f"flash-tts {self.model_id}",
+                    daily_request_limiter=self.daily_request_limiter,
+                    model_id=self.model_id,
+                    rpd_limit=self.tts_rpd_limit,
+                )
+                response = await asyncio.to_thread(
+                    tts_client.models.generate_content,
+                    model=self.model_id,
+                    contents=prompt_text,
+                    config=config,
+                )
+                audio_bytes = _extract_audio_bytes(response)
+                if audio_bytes:
+                    return audio_bytes
+                raise RuntimeError("TTS модель вернула пустой audio payload.")
+            except Exception as exc:
+                if _is_invalid_api_key_error(exc):
+                    raise InvalidApiKeyError(str(exc)) from exc
+                if _is_rate_limited_error(exc):
+                    await self._handle_rate_limit(
+                        exc,
+                        attempt,
+                        model_id=self.model_id,
+                        rpm_limiter=self.tts_rpm_limiter,
+                    )
+                    last_error = exc
+                    continue
+                last_error = exc
+                logger.warning(
+                    f"[W{self.worker_id}] Ошибка Flash TTS (попытка {attempt}/3): {exc}"
+                )
+                await asyncio.sleep(2 + attempt)
+
+        fallback_text = _clean_tts_markup(script_chunk)
+        fallback_audio = await self.get_edge_tts_fallback(fallback_text)
+        if fallback_audio:
+            logger.warning(
+                f"[W{self.worker_id}] Flash TTS не ответил. Использован аварийный Edge fallback "
+                f"для {'двухголосого' if self.voice_mode == 'duo' else 'одноголосого'} блока."
+            )
+            return fallback_audio
+
+        if last_error is not None and _is_rate_limited_error(last_error):
+            raise RateLimitBudgetError(
+                f"Не удалось синтезировать блок через Flash TTS ({self.model_id}): {last_error}",
+                model_id=self.model_id,
+            )
+        raise RuntimeError(f"Не удалось синтезировать блок через Flash TTS: {last_error}")
+
+    async def _synthesize_chapter(self, tts_client, chapter_index, script_text):
+        self.audio_chunks = []
+        script_chunks = _split_tts_script(script_text, self.voice_mode, self._tts_chunk_limit())
+        if not script_chunks:
+            raise RuntimeError("Подготовленный сценарий пустой после разбиения на блоки.")
+
+        total_chunks = len(script_chunks)
+        logger.info(
+            f"[W{self.worker_id}] Глава {chapter_index + 1}: {total_chunks} TTS-блок(ов), "
+            f"режим={self.voice_mode}, модель={self.model_id}."
+        )
+
+        for chunk_index, script_chunk in enumerate(script_chunks, start=1):
+            if not self._is_running:
+                return False
+            audio_bytes = await self._synthesize_chunk(tts_client, script_chunk)
+            if self.record:
+                with self.buffer_lock:
+                    self.audio_chunks.append(audio_bytes)
+            if self.audio_queue and not self.fast:
+                self.audio_queue.put((audio_bytes, chapter_index, chunk_index - 1, False))
+            if self.record and chunk_index % 2 == 0:
+                await self.save_file()
+            self.worker_progress.emit(self.worker_id, chapter_index, chunk_index, total_chunks)
+
+        await self.save_file(final=True)
+        self.bm.mark_chapter_done(chapter_index)
+        self.chapter_done_ui_signal.emit(chapter_index)
+        return True
+
+    async def main_loop(self):
+        if genai is None or genai_types is None:
+            raise RuntimeError("Для Flash TTS и AI-предобработки требуется пакет google-genai.")
+
+        if self.run_mode in {"auto", "prepare"} and not self.preprocess_model_id:
+            raise RuntimeError("Не выбрана модель для AI-предобработки сценария.")
+
+        text_client = genai.Client(api_key=self.api_key)
+        tts_client = genai.Client(api_key=self.api_key)
+        logger.info(
+            f"FlashTTS воркер {self.worker_id} запущен (TTS={self.model_id}, preprocess={self.preprocess_model_id}, "
+            f"voice_mode={self.voice_mode}, primary={self.voice}, secondary={self.secondary_voice})."
+        )
+        await asyncio.sleep(self.worker_id * 1.0)
+
+        while self._is_running:
+            if self.c_idx == -1:
+                try:
+                    self.c_idx = self.manager_chapter_queue.get_nowait()
+                except queue.Empty:
+                    self.finished_signal.emit(self.worker_id)
+                    break
+
+            chapter_index = self.c_idx
+            if self.run_mode != "prepare" and self.bm.is_chapter_done(chapter_index):
+                self.chapter_done_ui_signal.emit(chapter_index)
+                self.c_idx = -1
+                continue
+
+            try:
+                if self.run_mode == "prepare":
+                    self.worker_progress.emit(self.worker_id, chapter_index, 0, 1)
+                    await self._resolve_script_for_run(text_client, chapter_index)
+                    self.worker_progress.emit(self.worker_id, chapter_index, 1, 1)
+                    self.c_idx = -1
+                    continue
+
+                script_text = await self._resolve_script_for_run(text_client, chapter_index)
+                if not script_text.strip():
+                    raise RuntimeError(f"Сценарий главы {chapter_index + 1} пуст.")
+
+                completed = await self._synthesize_chapter(tts_client, chapter_index, script_text)
+                if completed and self.worker_id == 0:
+                    self.change_chapter_signal.emit(chapter_index)
+            except InvalidApiKeyError as exc:
+                self._abort_for_invalid_key(str(exc))
+                break
+            except ProjectRateLimitReachedError as exc:
+                self._abort_for_project_quota(str(exc), exc.model_id or self.model_id)
+                break
+            except RateLimitBudgetError as exc:
+                self._abort_for_quota_key(str(exc), exc.model_id or self.model_id)
+                break
+            except Exception as exc:
+                logger.error(f"[W{self.worker_id}] Ошибка обработки главы {chapter_index + 1}: {exc}")
+                self.error_signal.emit(self.worker_id, f"Глава {chapter_index + 1}: {exc}")
+            finally:
+                self.c_idx = -1
 
 
 # --- UI КОМПОНЕНТЫ ---
@@ -964,16 +2842,147 @@ class ApiKeysDialog(QDialog):
         return [k.strip() for k in self.text_edit.toPlainText().split('\n') if k.strip()]
 
 
+class ReaderKeyStatusDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Состояние ключей")
+        self.resize(760, 520)
+
+        layout = QVBoxLayout(self)
+        self.lbl_summary = QLabel("Ключи: 0")
+        self.lbl_summary.setStyleSheet("font-size: 10pt; color: #cfcfcf;")
+        layout.addWidget(self.lbl_summary)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.list_widget.setToolTip(
+            "Список ключей для текущих моделей reader.\n"
+            "Если ничего не выделено, действия применяются ко всем ключам из списка."
+        )
+        layout.addWidget(self.list_widget, 1)
+
+        buttons_row = QHBoxLayout()
+        self.btn_refresh = QPushButton("Обновить")
+        self.btn_clear_limits = QPushButton("Сбросить лимиты")
+        self.btn_clear_invalid = QPushButton("Снять invalid")
+        buttons_row.addWidget(self.btn_refresh)
+        buttons_row.addWidget(self.btn_clear_limits)
+        buttons_row.addWidget(self.btn_clear_invalid)
+        buttons_row.addStretch(1)
+        layout.addLayout(buttons_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    def set_snapshot(self, snapshot):
+        rows = (snapshot or {}).get("rows", [])
+        self.lbl_summary.setText((snapshot or {}).get("summary_text", "Ключи: 0"))
+        self.lbl_summary.setToolTip((snapshot or {}).get("summary_tooltip", ""))
+        self.list_widget.clear()
+
+        state_colors = {
+            "ready": "#90EE90",
+            "limited": "#F08080",
+            "invalid": "#FFAB91",
+            "session": "#FFD54F",
+        }
+
+        for row in rows:
+            item = QListWidgetItem(row.get("display_text", row.get("key", "")))
+            item.setData(Qt.ItemDataRole.UserRole, row.get("key", ""))
+            item.setToolTip(row.get("tooltip", ""))
+            item.setForeground(QColor(state_colors.get(row.get("state"), "#ECECEC")))
+            self.list_widget.addItem(item)
+
+    def selected_keys(self):
+        selected = []
+        for item in self.list_widget.selectedItems():
+            key = item.data(Qt.ItemDataRole.UserRole)
+            if key:
+                selected.append(key)
+        return selected
+
+    def visible_keys(self):
+        keys = []
+        for i in range(self.list_widget.count()):
+            key = self.list_widget.item(i).data(Qt.ItemDataRole.UserRole)
+            if key:
+                keys.append(key)
+        return keys
+
+
+class PromptTuningDialog(QDialog):
+    def __init__(self, preprocess_directive, tts_directive, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Flash TTS: Режиссура промптов")
+        self.resize(760, 620)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Дополнительные указания для AI-предобработки сценария:"))
+
+        self.preprocess_edit = QPlainTextEdit()
+        self.preprocess_edit.setPlaceholderText(DEFAULT_PREPROCESS_DIRECTIVE)
+        self.preprocess_edit.setPlainText(preprocess_directive or "")
+        layout.addWidget(self.preprocess_edit, 1)
+
+        layout.addWidget(QLabel("Дополнительные указания для TTS-исполнения:"))
+
+        self.tts_edit = QPlainTextEdit()
+        self.tts_edit.setPlaceholderText(DEFAULT_TTS_DIRECTIVE)
+        self.tts_edit.setPlainText(tts_directive or "")
+        layout.addWidget(self.tts_edit, 1)
+
+        buttons_row = QHBoxLayout()
+        btn_reset = QPushButton("Сбросить к стандарту")
+        btn_reset.clicked.connect(self._reset_defaults)
+        buttons_row.addWidget(btn_reset)
+        buttons_row.addStretch(1)
+        layout.addLayout(buttons_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _reset_defaults(self):
+        self.preprocess_edit.setPlainText(DEFAULT_PREPROCESS_DIRECTIVE)
+        self.tts_edit.setPlainText(DEFAULT_TTS_DIRECTIVE)
+
+    def get_values(self):
+        return (
+            self.preprocess_edit.toPlainText().strip(),
+            self.tts_edit.toPlainText().strip(),
+        )
+
+
 # --- ТЕСТОВЫЙ ВОСПРОИЗВОДИТЕЛЬ ГОЛОСА ---
 class VoiceSampleWorker(QThread):
     finished_signal = pyqtSignal()
     error_signal = pyqtSignal(str)
 
-    def __init__(self, api_key, model_id, voice):
+    def __init__(
+        self,
+        api_key,
+        model_id,
+        voice,
+        engine_mode="live",
+        voice_mode="single",
+        secondary_voice=None,
+        tts_directive="",
+        daily_request_limiter=None,
+    ):
         super().__init__()
         self.api_key = api_key
         self.model_id = model_id
         self.voice = voice
+        self.engine_mode = engine_mode or "live"
+        self.voice_mode = voice_mode or "single"
+        self.secondary_voice = secondary_voice or voice
+        self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
+        self.daily_request_limiter = daily_request_limiter
+        self.rpd_limit = _lookup_model_limit(self.model_id, "rpd", 0)
         # Сложное предложение с шипящими для проверки интонации и дикции голоса
         self.test_text = "Проверка голоса Озвучь сделующую скороговорку. Саша шустро сушила сушки на шоссе, а жужжащая жужелица жадно жевала жёлтый жёлудь. Раз, два, три."
 
@@ -989,46 +2998,107 @@ class VoiceSampleWorker(QThread):
         if genai is None or genai_types is None:
             raise RuntimeError("Для теста голоса требуется пакет google-genai.")
 
-        client = genai.Client(api_key=self.api_key)
-        
-        config = genai_types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            speech_config=genai_types.SpeechConfig(
-                voice_config=genai_types.VoiceConfig(
-                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
+        if self.daily_request_limiter is not None and self.rpd_limit and self.rpd_limit > 0:
+            acquired, _, limit_value, reset_text = self.daily_request_limiter.try_acquire(
+                self.model_id, self.rpd_limit, amount=1
+            )
+            if not acquired:
+                raise RuntimeError(
+                    f"Дневной лимит {limit_value} запросов для модели {self.model_id} исчерпан. "
+                    f"Следующий сброс около {reset_text}."
                 )
-            ),
-            system_instruction="Ты диктор."
-        )
 
-        audio_data = b""
-        
-        async with client.aio.live.connect(model=self.model_id, config=config) as session:
-            await session.send_realtime_input(text=self.test_text)
-            receive_iterator = session.receive().__aiter__()
-            
-            current_timeout = 20.0 # Время на первый ответ
-            
-            while True:
-                try:
-                    response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
-                    current_timeout = 10.0 # Безопасное время между чанками аудио
-                    
-                    if response.server_content:
-                        if response.server_content.model_turn:
-                            for part in response.server_content.model_turn.parts:
-                                if part.inline_data:
-                                    audio_data += part.inline_data.data
-                                    
-                        # Правильное завершение по сигналу от сервера
-                        if getattr(response.server_content, "turn_complete", False):
-                            break
-                            
-                except asyncio.TimeoutError:
-                    break
-                except StopAsyncIteration:
-                    break
-                    
+        client = genai.Client(api_key=self.api_key)
+
+        if self.engine_mode == "flash_tts":
+            if self.voice_mode == "duo":
+                test_script = (
+                    f"{TTS_SPEAKER_NARRATOR}: [serious] Проверка двухголосого режима. Рассказчик открывает сцену.\n"
+                    f"{TTS_SPEAKER_DIALOGUE}: [excited] А я вторая роль и проверяю другой голос!"
+                )
+                speech_config = genai_types.SpeechConfig(
+                    language_code="ru-RU",
+                    multi_speaker_voice_config=genai_types.MultiSpeakerVoiceConfig(
+                        speaker_voice_configs=[
+                            genai_types.SpeakerVoiceConfig(
+                                speaker=TTS_SPEAKER_NARRATOR,
+                                voice_config=genai_types.VoiceConfig(
+                                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
+                                ),
+                            ),
+                            genai_types.SpeakerVoiceConfig(
+                                speaker=TTS_SPEAKER_DIALOGUE,
+                                voice_config=genai_types.VoiceConfig(
+                                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.secondary_voice)
+                                ),
+                            ),
+                        ]
+                    )
+                )
+            else:
+                test_script = "[clear, upbeat] Проверка голоса. Саша шустро сушила сушки на шоссе."
+                speech_config = genai_types.SpeechConfig(
+                    language_code="ru-RU",
+                    voice_config=genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
+                    )
+                )
+
+            config = genai_types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=speech_config,
+            )
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=self.model_id,
+                contents=_build_tts_generation_prompt(
+                    test_script,
+                    self.voice_mode,
+                    "Normal",
+                    extra_directive=self.tts_directive,
+                ),
+                config=config,
+            )
+            audio_data = _extract_audio_bytes(response)
+        else:
+            config = genai_types.LiveConnectConfig(
+                response_modalities=["AUDIO"],
+                speech_config=genai_types.SpeechConfig(
+                    language_code="ru-RU",
+                    voice_config=genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
+                    )
+                ),
+                system_instruction="Ты диктор."
+            )
+
+            audio_data = b""
+
+            async with client.aio.live.connect(model=self.model_id, config=config) as session:
+                await session.send_realtime_input(text=self.test_text)
+                receive_iterator = session.receive().__aiter__()
+
+                current_timeout = 20.0
+
+                while True:
+                    try:
+                        response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                        current_timeout = 10.0
+
+                        if response.server_content:
+                            if response.server_content.model_turn:
+                                for part in response.server_content.model_turn.parts:
+                                    if part.inline_data:
+                                        audio_data += part.inline_data.data
+
+                            if getattr(response.server_content, "turn_complete", False):
+                                break
+
+                    except asyncio.TimeoutError:
+                        break
+                    except StopAsyncIteration:
+                        break
+
         if audio_data:
             self.play_audio(audio_data)
 
@@ -1065,7 +3135,12 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.settings_manager = settings_manager or _get_app_settings_manager()
         self.reader_books_dir = _reader_books_dir(self.settings_manager)
+        self.daily_request_limiter = ProjectDailyRequestLimiter(self.settings_manager)
+        self.preprocess_models_map = _build_preprocess_models_map()
+        self.preprocess_directive = DEFAULT_PREPROCESS_DIRECTIVE
+        self.tts_directive = DEFAULT_TTS_DIRECTIVE
         self.bm = None
+        self.project_settings_manager = None
         self.workers = []
         self.api_keys = []
         self.audio_queue = queue.Queue(maxsize=100)
@@ -1075,9 +3150,24 @@ class MainWindow(QMainWindow):
         self.worker_widgets = {}
         self._return_to_menu_handler = None
         self._returning_to_main_menu = False
+        self._active_job_kind = "tts"
+        self._active_manager_queue = None
+        self._parallel_live_state = None
+        self._run_had_invalid_keys = False
+        self._project_quota_message = ""
+        self._current_chapter_index = None
+        self.disabled_api_keys = set()
+        self._settings_event_bus = getattr(self.settings_manager, "bus", None) if self.settings_manager is not None else None
+        self._loading_settings = False
         self.init_ui()
         self.load_settings()
+        if self._settings_event_bus is not None:
+            try:
+                self._settings_event_bus.event_posted.connect(self._on_settings_bus_event)
+            except Exception:
+                pass
         self.apply_runtime_capabilities()
+        self._update_key_state_ui()
         log_fifo.new_log.connect(self.add_log_to_ui)
 
     def init_ui(self):
@@ -1095,6 +3185,10 @@ class MainWindow(QMainWindow):
         act_open = QAction("📂 Открыть EPUB", self)
         act_open.triggered.connect(self.open_book_dialog)
         toolbar.addAction(act_open)
+
+        self.act_prompt_tuning = QAction("🧠 Flash TTS", self)
+        self.act_prompt_tuning.triggered.connect(self.edit_flash_tts_prompts)
+        toolbar.addAction(self.act_prompt_tuning)
         
         self.lbl_info = QLabel("Перетащите EPUB файл")
         toolbar.addSeparator()
@@ -1113,6 +3207,8 @@ class MainWindow(QMainWindow):
         # Включаем множественное выделение (через Shift и Ctrl)
         self.list_chapters.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.list_chapters.itemClicked.connect(self.on_chapter_clicked)
+        self.list_chapters.itemSelectionChanged.connect(self._on_chapter_selection_changed)
+        self.list_chapters.setToolTip("Выделяйте несколько глав через Ctrl/Shift или кнопку выбора диапазона.")
         
         # --- ВКЛЮЧАЕМ КОНТЕКСТНОЕ МЕНЮ (ПРАВАЯ КНОПКА МЫШИ) ---
         self.list_chapters.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1128,7 +3224,15 @@ class MainWindow(QMainWindow):
         self.txt_view.setReadOnly(True)
         self.tabs.addTab(self.txt_view, "📖 Текст")
 
-        # Таб 2: Дашборд
+        # Таб 2: TTS-сценарий
+        self.script_view = QPlainTextEdit()
+        self.script_view.setPlaceholderText(
+            "Здесь хранится подготовленный TTS-сценарий главы.\n"
+            "В режиме 'По шагам' вы можете отредактировать его вручную и сохранить."
+        )
+        self.tabs.addTab(self.script_view, "🎭 Сценарий")
+
+        # Таб 3: Дашборд
         self.scroll_dash = QScrollArea()
         self.scroll_dash.setWidgetResizable(True)
         self.dash_content = QWidget()
@@ -1137,7 +3241,7 @@ class MainWindow(QMainWindow):
         self.scroll_dash.setWidget(self.dash_content)
         self.tabs.addTab(self.scroll_dash, "📊 Воркеры")
 
-        # Таб 3: Лог
+        # Таб 4: Лог
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setStyleSheet("background-color: #1e1e1e; color: #ececec; font-family: Consolas; font-size: 13px;")
@@ -1147,56 +3251,141 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
 
         # Контролы
-        controls = QHBoxLayout()
-        
-        self.models_map = {
-            "Gemini 3.1 Flash (Новая)": "gemini-3.1-flash-live-preview",
-            "Gemini 2.5 Flash (Старая)": "gemini-2.5-flash-native-audio-preview-12-2025"
-        }
-        self.combo_model = QComboBox()
-        self.combo_model.addItems(list(self.models_map.keys()))
-        self.combo_model.currentTextChanged.connect(self.save_settings)
-        controls.addWidget(QLabel("Модель:"))
-        controls.addWidget(self.combo_model)
+        controls_container = QVBoxLayout()
+        primary_controls = QHBoxLayout()
+        secondary_controls = QHBoxLayout()
 
-        # ИЗМЕНЕНИЕ: Заполняем голоса с привязкой "Отображаемое имя -> Скрытый ID"
+        self.live_models_map = dict(LIVE_AUDIO_MODELS)
+        self.flash_tts_models_map = dict(FLASH_TTS_MODELS)
+        self.models_map = {}
+
+        self.combo_engine = QComboBox()
+        for label, mode_id in ENGINE_MODES.items():
+            self.combo_engine.addItem(label, mode_id)
+        self.combo_engine.currentIndexChanged.connect(self._on_engine_changed)
+        self.combo_engine.currentIndexChanged.connect(self._update_worker_spinbox_limit)
+        self.combo_engine.currentIndexChanged.connect(self._update_key_state_ui)
+        self.combo_engine.currentIndexChanged.connect(self.save_settings)
+        primary_controls.addWidget(QLabel("Движок:"))
+        primary_controls.addWidget(self.combo_engine)
+
+        self.combo_model = QComboBox()
+        self.combo_model.currentIndexChanged.connect(self._update_worker_spinbox_limit)
+        self.combo_model.currentIndexChanged.connect(self._update_key_state_ui)
+        self.combo_model.currentTextChanged.connect(self.save_settings)
+        primary_controls.addWidget(QLabel("Модель TTS:"))
+        primary_controls.addWidget(self.combo_model)
+
+        self.combo_voice_mode = QComboBox()
+        for label, mode_id in VOICE_MODE_OPTIONS.items():
+            self.combo_voice_mode.addItem(label, mode_id)
+        self.combo_voice_mode.currentIndexChanged.connect(self._on_voice_mode_changed)
+        self.combo_voice_mode.currentIndexChanged.connect(self.save_settings)
+        primary_controls.addWidget(QLabel("Голоса:"))
+        primary_controls.addWidget(self.combo_voice_mode)
+
         self.combo_voices = QComboBox()
+        self.combo_voice_secondary = QComboBox()
         for voice_id, gender in VOICES_MAP.items():
-            self.combo_voices.addItem(f"{voice_id} ({gender})", voice_id)
-            
+            display_text = f"{voice_id} ({gender})"
+            self.combo_voices.addItem(display_text, voice_id)
+            self.combo_voice_secondary.addItem(display_text, voice_id)
+
         self.combo_voices.currentIndexChanged.connect(self.save_settings)
-        controls.addWidget(QLabel("Голос:"))
-        controls.addWidget(self.combo_voices)
-        
+        self.combo_voice_secondary.currentIndexChanged.connect(self.save_settings)
+        self.lbl_voice_primary = QLabel("Voice A:")
+        primary_controls.addWidget(self.lbl_voice_primary)
+        primary_controls.addWidget(self.combo_voices)
+        self.lbl_voice_secondary = QLabel("Voice B:")
+        primary_controls.addWidget(self.lbl_voice_secondary)
+        primary_controls.addWidget(self.combo_voice_secondary)
+
         self.btn_test_voice = QPushButton("🔊 Плей")
-        self.btn_test_voice.setFixedSize(80, 25)
+        self.btn_test_voice.setFixedSize(90, 28)
         self.btn_test_voice.clicked.connect(self.test_voice_sample)
-        controls.addWidget(self.btn_test_voice)
-        
+        primary_controls.addWidget(self.btn_test_voice)
+
         self.combo_speed = QComboBox()
         self.combo_speed.addItems(list(SPEED_PROMPTS.keys()))
         self.combo_speed.setCurrentText("Normal")
         self.combo_speed.currentTextChanged.connect(self.save_settings)
-        controls.addWidget(QLabel("Скорость:"))
-        controls.addWidget(self.combo_speed)
-        
+        primary_controls.addWidget(QLabel("Скорость:"))
+        primary_controls.addWidget(self.combo_speed)
+
+        self.combo_live_segment_mode = QComboBox()
+        for label, mode_id in LIVE_SEGMENT_OPTIONS.items():
+            self.combo_live_segment_mode.addItem(label, mode_id)
+        self.combo_live_segment_mode.currentIndexChanged.connect(self._refresh_live_segment_controls)
+        self.combo_live_segment_mode.currentIndexChanged.connect(self.save_settings)
+        self.lbl_live_segment_mode = QLabel("Live:")
+        primary_controls.addWidget(self.lbl_live_segment_mode)
+        primary_controls.addWidget(self.combo_live_segment_mode)
+
         self.spin_chunk = QSpinBox()
         self.spin_chunk.setRange(1, 50)
         self.spin_chunk.setValue(2)
         self.spin_chunk.valueChanged.connect(self.save_settings)
-        controls.addWidget(QLabel("Батч:"))
-        controls.addWidget(self.spin_chunk)
+        self.lbl_chunk = QLabel("Блок:")
+        primary_controls.addWidget(self.lbl_chunk)
+        primary_controls.addWidget(self.spin_chunk)
+
+        self.spin_workers = QSpinBox()
+        self.spin_workers.setRange(1, 1)
+        self.spin_workers.setValue(1)
+        self.spin_workers.setToolTip(
+            "Максимальное число параллельных воркеров. "
+            "Фактический запуск дополнительно ограничивается доступными ключами и числом глав."
+        )
+        self.spin_workers.valueChanged.connect(self.save_settings)
+        primary_controls.addWidget(QLabel("Воркеры:"))
+        primary_controls.addWidget(self.spin_workers)
 
         self.btn_play = QPushButton("▶ СТАРТ")
-        self.btn_play.setFixedSize(90, 40)
+        self.btn_play.setFixedSize(100, 40)
         self.btn_play.clicked.connect(self.toggle_play)
-        controls.addWidget(self.btn_play)
+        primary_controls.addWidget(self.btn_play)
 
         self.btn_stop = QPushButton("⏹ СТОП")
-        self.btn_stop.setFixedSize(90, 40)
+        self.btn_stop.setFixedSize(100, 40)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.force_stop)
-        controls.addWidget(self.btn_stop)
+        primary_controls.addWidget(self.btn_stop)
+        primary_controls.addStretch(1)
+
+        self.combo_preprocess_model = QComboBox()
+        for display_name, model_id in self.preprocess_models_map.items():
+            self.combo_preprocess_model.addItem(display_name, model_id)
+        self.combo_preprocess_model.currentIndexChanged.connect(self._update_worker_spinbox_limit)
+        self.combo_preprocess_model.currentIndexChanged.connect(self._update_key_state_ui)
+        self.combo_preprocess_model.currentIndexChanged.connect(self.save_settings)
+        secondary_controls.addWidget(QLabel("AI сценарий:"))
+        secondary_controls.addWidget(self.combo_preprocess_model)
+
+        self.combo_preprocess_profile = QComboBox()
+        for label, profile_prompt in PREPROCESS_PROFILE_OPTIONS.items():
+            self.combo_preprocess_profile.addItem(label, profile_prompt)
+        self.combo_preprocess_profile.currentIndexChanged.connect(self.save_settings)
+        secondary_controls.addWidget(QLabel("Профиль:"))
+        secondary_controls.addWidget(self.combo_preprocess_profile)
+
+        self.combo_pipeline_mode = QComboBox()
+        for label, mode_id in PIPELINE_MODE_OPTIONS.items():
+            self.combo_pipeline_mode.addItem(label, mode_id)
+        self.combo_pipeline_mode.currentIndexChanged.connect(self._update_worker_spinbox_limit)
+        self.combo_pipeline_mode.currentIndexChanged.connect(self._update_key_state_ui)
+        self.combo_pipeline_mode.currentIndexChanged.connect(self.save_settings)
+        secondary_controls.addWidget(QLabel("Pipeline:"))
+        secondary_controls.addWidget(self.combo_pipeline_mode)
+
+        self.btn_prepare_script = QPushButton("🪄 AI сценарий")
+        self.btn_prepare_script.setFixedSize(125, 30)
+        self.btn_prepare_script.clicked.connect(self.prepare_selected_scripts)
+        secondary_controls.addWidget(self.btn_prepare_script)
+
+        self.btn_save_script = QPushButton("💾 Сохранить сценарий")
+        self.btn_save_script.setFixedSize(160, 30)
+        self.btn_save_script.clicked.connect(self.save_current_script)
+        secondary_controls.addWidget(self.btn_save_script)
 
         opts = QVBoxLayout()
         self.chk_mp3 = QCheckBox("Запись MP3")
@@ -1204,12 +3393,44 @@ class MainWindow(QMainWindow):
         self.chk_mp3.stateChanged.connect(self.save_settings)
         self.chk_fast = QCheckBox("Только экспорт")
         self.chk_fast.stateChanged.connect(self.save_settings)
+        self.chk_selected_only = QCheckBox("Только выбранные главы")
+        self.chk_selected_only.stateChanged.connect(self.save_settings)
+        self.chk_selected_only.stateChanged.connect(self._on_chapter_selection_changed)
+        self.chk_parallel_single_chapter = QCheckBox("1 глава = много воркеров")
+        self.chk_parallel_single_chapter.setToolTip(
+            "Только для Live API. Если выбрана одна глава, reader разделит её на блоки и "
+            "раздаст их нескольким воркерам с последующей автоматической сборкой."
+        )
+        self.chk_parallel_single_chapter.stateChanged.connect(self.save_settings)
         opts.addWidget(self.chk_mp3)
         opts.addWidget(self.chk_fast)
-        controls.addLayout(opts)
+        opts.addWidget(self.chk_selected_only)
+        opts.addWidget(self.chk_parallel_single_chapter)
+        secondary_controls.addLayout(opts)
 
-        # Секция утилит
         utils_layout = QVBoxLayout()
+        self.lbl_chapter_scope = QLabel("Главы: все")
+        self.lbl_chapter_scope.setToolTip("Область обработки для кнопок Старт и AI сценарий.")
+        utils_layout.addWidget(self.lbl_chapter_scope)
+
+        self.lbl_key_state = QLabel("Ключи: 0")
+        self.lbl_key_state.setToolTip("Сводка по состоянию ключей для текущих моделей reader.")
+        utils_layout.addWidget(self.lbl_key_state)
+
+        self.btn_key_status = QPushButton("Статус ключей")
+        self.btn_key_status.setFixedSize(140, 30)
+        self.btn_key_status.clicked.connect(self.show_key_status_dialog)
+        utils_layout.addWidget(self.btn_key_status)
+
+        self.btn_pick_chapters = QPushButton("Выбрать главы")
+        self.btn_pick_chapters.setFixedSize(140, 30)
+        self.btn_pick_chapters.clicked.connect(self.pick_chapters_dialog)
+        utils_layout.addWidget(self.btn_pick_chapters)
+
+        self.btn_clear_chapter_selection = QPushButton("Сбросить выбор")
+        self.btn_clear_chapter_selection.setFixedSize(140, 30)
+        self.btn_clear_chapter_selection.clicked.connect(self.clear_chapter_selection)
+        utils_layout.addWidget(self.btn_clear_chapter_selection)
         self.btn_clean_stuck = QPushButton("🧹 Очистить зависшие")
         self.btn_clean_stuck.setFixedSize(140, 30)
         self.btn_clean_stuck.setStyleSheet("background-color: #ffe0b2;")
@@ -1220,9 +3441,31 @@ class MainWindow(QMainWindow):
         self.btn_combine.setFixedSize(140, 30)
         self.btn_combine.clicked.connect(self.run_combine)
         utils_layout.addWidget(self.btn_combine)
-        controls.addLayout(utils_layout)
 
-        main_layout.addLayout(controls)
+        self.lbl_video_cover = QLabel("Видео: картинка не выбрана")
+        self.lbl_video_cover.setToolTip("Выбранная картинка будет скопирована в папку книги и использована для экспорта видео.")
+        utils_layout.addWidget(self.lbl_video_cover)
+
+        self.btn_select_video_cover = QPushButton("Картинка видео")
+        self.btn_select_video_cover.setFixedSize(140, 30)
+        self.btn_select_video_cover.clicked.connect(self.select_video_cover)
+        utils_layout.addWidget(self.btn_select_video_cover)
+
+        self.btn_export_video = QPushButton("Экспорт видео")
+        self.btn_export_video.setFixedSize(140, 30)
+        self.btn_export_video.clicked.connect(self.run_export_video)
+        utils_layout.addWidget(self.btn_export_video)
+        secondary_controls.addLayout(utils_layout)
+        secondary_controls.addStretch(1)
+
+        controls_container.addLayout(primary_controls)
+        controls_container.addLayout(secondary_controls)
+        main_layout.addLayout(controls_container)
+
+        self._on_engine_changed()
+        self._on_voice_mode_changed()
+        self._on_chapter_selection_changed()
+        self._update_video_cover_status()
 
     def _running_tasks_exist(self):
         active_workers = any(getattr(worker, "isRunning", lambda: False)() for worker in self.workers)
@@ -1230,18 +3473,759 @@ class MainWindow(QMainWindow):
         tester_running = bool(self.tester_worker and self.tester_worker.isRunning())
         return active_workers or combiner_running or tester_running
 
+    def _refresh_runtime_controls(self):
+        running = self._running_tasks_exist()
+        is_flash_tts = self._is_flash_tts_mode()
+        has_genai = genai is not None and genai_types is not None
+        has_pyaudio = pyaudio is not None
+
+        self.btn_play.setText("⏳ ИДЁТ" if running else "▶ СТАРТ")
+        self.btn_play.setEnabled(not running and has_genai)
+        self.btn_stop.setEnabled(running)
+        self.btn_clean_stuck.setEnabled(not running)
+        chapter_scope_enabled = not running and self.bm is not None
+        self.chk_selected_only.setEnabled(chapter_scope_enabled)
+        self.btn_pick_chapters.setEnabled(chapter_scope_enabled)
+        self.btn_clear_chapter_selection.setEnabled(chapter_scope_enabled)
+        self.btn_select_video_cover.setEnabled(chapter_scope_enabled)
+        has_video_tools = _resolve_tool_path("ffmpeg") is not None and _resolve_tool_path("ffprobe") is not None
+        has_video_cover = bool(self.bm and self.bm.get_video_cover_path())
+        self.btn_export_video.setEnabled(chapter_scope_enabled and has_video_tools and has_video_cover)
+
+        flash_controls_enabled = not running and is_flash_tts and has_genai
+        self.btn_prepare_script.setEnabled(flash_controls_enabled)
+        self.btn_save_script.setEnabled(flash_controls_enabled)
+        self.combo_preprocess_model.setEnabled(flash_controls_enabled)
+        self.combo_preprocess_profile.setEnabled(flash_controls_enabled)
+        self.combo_pipeline_mode.setEnabled(flash_controls_enabled)
+        self.combo_voice_mode.setEnabled(flash_controls_enabled)
+        self.act_prompt_tuning.setEnabled(is_flash_tts and not running)
+        live_controls_enabled = not running and not is_flash_tts
+        self.combo_live_segment_mode.setEnabled(live_controls_enabled)
+        self.chk_parallel_single_chapter.setEnabled(live_controls_enabled)
+
+        self.btn_test_voice.setEnabled(not running and has_genai and has_pyaudio)
+
     def _set_reading_controls_running(self, running):
-        if running:
-            self.btn_play.setText("⏳ ИДЁТ")
-            self.btn_play.setEnabled(False)
-            self.btn_stop.setEnabled(True)
-            self.btn_clean_stuck.setEnabled(False)
+        self._refresh_runtime_controls()
+
+    def _current_engine_id(self):
+        return self.combo_engine.currentData() or "live"
+
+    def _selected_voice_mode(self):
+        return self.combo_voice_mode.currentData() or "single"
+
+    def _selected_live_segment_mode(self):
+        return self.combo_live_segment_mode.currentData() or "sentences"
+
+    def _selected_pipeline_mode(self):
+        return self.combo_pipeline_mode.currentData() or "auto"
+
+    def _is_flash_tts_mode(self):
+        return self._current_engine_id() == "flash_tts"
+
+    def _refresh_model_combo(self, models_map):
+        previous_label = self.combo_model.currentText()
+        self.models_map = dict(models_map)
+        self.combo_model.blockSignals(True)
+        self.combo_model.clear()
+        for display_name, model_id in self.models_map.items():
+            self.combo_model.addItem(display_name, model_id)
+        if previous_label and previous_label in self.models_map:
+            self.combo_model.setCurrentText(previous_label)
+        self.combo_model.blockSignals(False)
+
+    def _on_engine_changed(self):
+        is_flash_tts = self._is_flash_tts_mode()
+        self._refresh_model_combo(self.flash_tts_models_map if is_flash_tts else self.live_models_map)
+
+        if not is_flash_tts:
+            self.combo_pipeline_mode.setCurrentIndex(self.combo_pipeline_mode.findData("auto"))
+            self.combo_voice_mode.setCurrentIndex(self.combo_voice_mode.findData("single"))
+
+        self._on_voice_mode_changed()
+        self._refresh_live_segment_controls()
+        self._refresh_runtime_controls()
+
+    def _refresh_live_segment_controls(self, *_args):
+        if not hasattr(self, "combo_live_segment_mode"):
+            return
+        is_live_mode = not self._is_flash_tts_mode()
+        self.lbl_live_segment_mode.setVisible(is_live_mode)
+        self.combo_live_segment_mode.setVisible(is_live_mode)
+        self.chk_parallel_single_chapter.setVisible(is_live_mode)
+        if not is_live_mode:
+            self.lbl_chunk.setText("Блок:")
+            self.spin_chunk.setToolTip(
+                "Базовый размер блока для текущего TTS-режима."
+            )
+            return
+        segment_mode = self._selected_live_segment_mode()
+        if segment_mode == "paragraphs":
+            self.lbl_chunk.setText("Блок абз.:")
+            self.spin_chunk.setToolTip(
+                "Сколько параграфов отправлять одним запросом в Live API."
+            )
+        else:
+            self.lbl_chunk.setText("Блок предл.:")
+            self.spin_chunk.setToolTip(
+                "Сколько предложений отправлять одним запросом в Live API."
+            )
+
+    def _worker_models_for_limit(self):
+        if self._is_flash_tts_mode():
+            model_ids = []
+            pipeline_mode = self._selected_pipeline_mode()
+            if pipeline_mode in {"auto", "prepare"}:
+                model_ids.append(self._selected_preprocess_model_id())
+            if pipeline_mode != "prepare":
+                model_ids.append(self._selected_model_id())
+            return [model_id for model_id in model_ids if model_id]
+        return [self._selected_model_id()]
+
+    def _update_worker_spinbox_limit(self, *_args):
+        if not hasattr(self, "spin_workers"):
+            return
+        current_value = self.spin_workers.value()
+        available_count = len(self._get_available_api_keys(self._worker_models_for_limit()))
+        max_workers = max(1, available_count)
+        self.spin_workers.blockSignals(True)
+        self.spin_workers.setMaximum(max_workers)
+        self.spin_workers.setValue(max(1, min(current_value, max_workers)))
+        self.spin_workers.blockSignals(False)
+
+    def _on_voice_mode_changed(self):
+        show_secondary_voice = self._is_flash_tts_mode() and self._selected_voice_mode() == "duo"
+        self.lbl_voice_secondary.setVisible(show_secondary_voice)
+        self.combo_voice_secondary.setVisible(show_secondary_voice)
+        self.lbl_voice_secondary.setEnabled(show_secondary_voice)
+        self.combo_voice_secondary.setEnabled(show_secondary_voice)
+
+    def _selected_model_id(self):
+        return self.combo_model.currentData() or self.models_map.get(self.combo_model.currentText(), MODEL_ID)
+
+    def _selected_preprocess_model_id(self):
+        return self.combo_preprocess_model.currentData() or self.preprocess_models_map.get(
+            self.combo_preprocess_model.currentText(), ""
+        )
+
+    def _reader_status_model_ids(self):
+        if not hasattr(self, "combo_engine"):
+            return []
+        if self._is_flash_tts_mode():
+            model_ids = []
+            pipeline_mode = self._selected_pipeline_mode()
+            if pipeline_mode != "raw":
+                model_ids.append(self._selected_preprocess_model_id())
+            model_ids.append(self._selected_model_id())
+            return [model_id for model_id in dict.fromkeys(model_ids) if model_id]
+        return [model_id for model_id in [self._selected_model_id()] if model_id]
+
+    def _load_invalid_key_states(self):
+        raw_state = {}
+        if self.settings_manager is not None:
+            try:
+                raw_state = self.settings_manager.load_settings().get(READER_INVALID_KEYS_KEY, {}) or {}
+            except Exception:
+                raw_state = {}
+        else:
+            raw_state = _load_legacy_settings().get(READER_INVALID_KEYS_KEY, {}) or {}
+
+        normalized = {}
+        if not isinstance(raw_state, dict):
+            return normalized
+
+        for api_key, state in raw_state.items():
+            if not isinstance(api_key, str) or not api_key.strip() or not isinstance(state, dict):
+                continue
+            normalized[api_key] = {
+                "invalid_at": state.get("invalid_at"),
+                "message": str(state.get("message") or "").strip(),
+                "source_model": str(state.get("source_model") or "").strip(),
+            }
+        return normalized
+
+    def _save_invalid_key_states(self, states):
+        normalized = {}
+        for api_key, state in (states or {}).items():
+            if not isinstance(api_key, str) or not api_key.strip() or not isinstance(state, dict):
+                continue
+            normalized[api_key] = {
+                "invalid_at": state.get("invalid_at"),
+                "message": str(state.get("message") or "").strip(),
+                "source_model": str(state.get("source_model") or "").strip(),
+            }
+
+        if self.settings_manager is not None:
+            try:
+                self.settings_manager.save_ui_state({READER_INVALID_KEYS_KEY: normalized})
+                return
+            except Exception:
+                pass
+
+        legacy_data = _load_legacy_settings()
+        legacy_data[READER_INVALID_KEYS_KEY] = normalized
+        with open(LEGACY_SETTINGS_FILE, "w", encoding="utf-8") as file_obj:
+            json.dump(legacy_data, file_obj, ensure_ascii=False, indent=2)
+
+    def _prune_invalid_key_states(self, valid_keys=None):
+        valid_keys = {key for key in (valid_keys or self.api_keys) if (key or "").strip()}
+        current_states = self._load_invalid_key_states()
+        pruned_states = {key: value for key, value in current_states.items() if key in valid_keys}
+        if pruned_states != current_states:
+            self._save_invalid_key_states(pruned_states)
+        return pruned_states
+
+    def _mark_key_invalid(self, api_key, error_text="", model_id=""):
+        if not (api_key or "").strip():
+            return
+        current_states = self._load_invalid_key_states()
+        current_states[api_key] = {
+            "invalid_at": time.time(),
+            "message": (str(error_text or "").strip() or "API key not valid.")[:500],
+            "source_model": str(model_id or "").strip(),
+        }
+        self._save_invalid_key_states(current_states)
+
+    def _clear_invalid_key_states(self, keys=None):
+        target_keys = {key for key in (keys or self.api_keys) if (key or "").strip()}
+        if not target_keys:
+            return False
+        current_states = self._load_invalid_key_states()
+        changed = False
+        for key in list(current_states.keys()):
+            if key in target_keys:
+                current_states.pop(key, None)
+                self.disabled_api_keys.discard(key)
+                changed = True
+        if changed:
+            self._save_invalid_key_states(current_states)
+        return changed
+
+    def _save_api_keys_with_status_preservation(self, keys):
+        normalized_keys = [key for key in dict.fromkeys((key or "").strip() for key in keys) if key]
+        if self.settings_manager is not None:
+            try:
+                existing_statuses = self.settings_manager.load_key_statuses() or []
+            except Exception:
+                existing_statuses = []
+            existing_map = {
+                item.get("key"): item
+                for item in existing_statuses
+                if isinstance(item, dict) and item.get("key")
+            }
+            merged_statuses = []
+            for key in normalized_keys:
+                if key in existing_map:
+                    merged_statuses.append(existing_map[key])
+                else:
+                    merged_statuses.append({"key": key, "provider": "gemini", "status_by_model": {}})
+            self.settings_manager.save_key_statuses(merged_statuses)
+        else:
+            legacy_data = _load_legacy_settings()
+            legacy_data["api_keys"] = normalized_keys
+            with open(LEGACY_SETTINGS_FILE, "w", encoding="utf-8") as file_obj:
+                json.dump(legacy_data, file_obj, ensure_ascii=False, indent=2)
+
+        self._prune_invalid_key_states(normalized_keys)
+        self.api_keys = normalized_keys
+
+    def _build_key_state_snapshot(self, required_model_ids=None):
+        model_ids = [model_id for model_id in (required_model_ids or self._reader_status_model_ids()) if model_id]
+        invalid_states = self._prune_invalid_key_states()
+        rows = []
+        counts = {"ready": 0, "limited": 0, "invalid": 0, "session": 0}
+
+        for api_key in [key for key in self.api_keys if (key or "").strip()]:
+            key_info = self.settings_manager.get_key_info(api_key) if self.settings_manager is not None else None
+            request_parts = []
+            limited_parts = []
+            request_total = 0
+            for model_id in model_ids:
+                if not key_info:
+                    continue
+                try:
+                    request_count = self.settings_manager.get_request_count(key_info, model_id)
+                except Exception:
+                    request_count = 0
+                if request_count:
+                    request_total += int(request_count)
+                    request_parts.append(f"{model_id}: {request_count}")
+                try:
+                    is_limited = self.settings_manager.is_key_limit_active(key_info, model_id)
+                except Exception:
+                    is_limited = False
+                if is_limited:
+                    reset_text = self.settings_manager.get_key_reset_time_str(key_info, model_id)
+                    limited_parts.append(f"{model_id} ({reset_text})")
+
+            invalid_state = invalid_states.get(api_key)
+            if invalid_state:
+                state = "invalid"
+                status_text = "невалидный"
+            elif limited_parts:
+                state = "limited"
+                status_text = "лимит"
+            elif api_key in self.disabled_api_keys:
+                state = "session"
+                status_text = "отключён в сессии"
+            else:
+                state = "ready"
+                status_text = "готов"
+            counts[state] += 1
+
+            tooltip_lines = [f"Полный ключ: {api_key}"]
+            if model_ids:
+                tooltip_lines.append(f"Модели: {', '.join(model_ids)}")
+            if request_parts:
+                tooltip_lines.append("Запросы: " + ", ".join(request_parts))
+            if limited_parts:
+                tooltip_lines.append("Лимиты: " + "; ".join(limited_parts))
+            if invalid_state:
+                invalid_at = _format_local_timestamp(invalid_state.get("invalid_at"))
+                if invalid_at:
+                    tooltip_lines.append(f"Помечен invalid: {invalid_at}")
+                if invalid_state.get("source_model"):
+                    tooltip_lines.append(f"Модель ошибки: {invalid_state['source_model']}")
+                if invalid_state.get("message"):
+                    tooltip_lines.append(invalid_state["message"])
+            elif api_key in self.disabled_api_keys:
+                tooltip_lines.append("Ключ временно отключён в текущем запуске reader.")
+            elif not limited_parts:
+                tooltip_lines.append("Статус: активен.")
+
+            short_requests = f" | req {request_total}" if request_total else ""
+            display_text = f"{_mask_api_key(api_key)} — {status_text}{short_requests}"
+            rows.append(
+                {
+                    "key": api_key,
+                    "state": state,
+                    "display_text": display_text,
+                    "tooltip": "\n".join(tooltip_lines),
+                }
+            )
+
+        state_order = {"invalid": 0, "limited": 1, "session": 2, "ready": 3}
+        rows.sort(key=lambda row: (state_order.get(row.get("state"), 9), row.get("display_text", "")))
+        total = sum(counts.values())
+        summary_parts = [f"готовы {counts['ready']}"]
+        if counts["limited"]:
+            summary_parts.append(f"лимит {counts['limited']}")
+        if counts["invalid"]:
+            summary_parts.append(f"невалидны {counts['invalid']}")
+        if counts["session"]:
+            summary_parts.append(f"сессия {counts['session']}")
+        summary_text = f"Ключи: {total}" if not total else f"Ключи: {total} ({' / '.join(summary_parts)})"
+        summary_tooltip = "Актуальные модели: " + (", ".join(model_ids) if model_ids else "не выбраны")
+        return {
+            "rows": rows,
+            "counts": counts,
+            "total": total,
+            "model_ids": model_ids,
+            "summary_text": summary_text,
+            "summary_tooltip": summary_tooltip,
+        }
+
+    def _update_key_state_ui(self, *_args):
+        if not hasattr(self, "lbl_key_state"):
+            return
+        snapshot = self._build_key_state_snapshot()
+        self.lbl_key_state.setText(snapshot["summary_text"])
+        self.lbl_key_state.setToolTip(snapshot["summary_tooltip"])
+        if hasattr(self, "btn_key_status"):
+            self.btn_key_status.setEnabled(bool(self.api_keys))
+            self.btn_key_status.setToolTip(snapshot["summary_tooltip"])
+
+    def _on_settings_bus_event(self, event):
+        event_name = (event or {}).get("event")
+        if event_name not in {"key_statuses_updated", "request_count_updated"}:
+            return
+        self._update_worker_spinbox_limit()
+        self._update_key_state_ui()
+
+    def _clear_key_limit_states(self, keys=None):
+        if self._running_tasks_exist():
+            QMessageBox.information(self, "Ключи", "Сброс статусов ключей доступен только когда фоновые задачи остановлены.")
+            return False
+        if self.settings_manager is None:
+            return False
+
+        model_ids = self._reader_status_model_ids()
+        target_keys = [key for key in (keys or self.api_keys) if (key or "").strip()]
+        if not model_ids or not target_keys:
+            return False
+
+        changed = False
+        for api_key in target_keys:
+            for model_id in model_ids:
+                try:
+                    if self.settings_manager.clear_key_exhaustion_status(api_key, model_id):
+                        changed = True
+                except Exception:
+                    continue
+            self.disabled_api_keys.discard(api_key)
+
+        if changed:
+            self._update_worker_spinbox_limit()
+            self._update_key_state_ui()
+        return changed
+
+    def show_key_status_dialog(self):
+        dlg = ReaderKeyStatusDialog(self)
+
+        def refresh_dialog():
+            dlg.set_snapshot(self._build_key_state_snapshot())
+
+        def selected_or_all_keys():
+            keys = dlg.selected_keys()
+            return keys or dlg.visible_keys()
+
+        def clear_limits():
+            if self._clear_key_limit_states(selected_or_all_keys()):
+                self.statusBar().showMessage("Статусы лимитов ключей обновлены.")
+            refresh_dialog()
+
+        def clear_invalid():
+            if self._running_tasks_exist():
+                QMessageBox.information(self, "Ключи", "Снимать invalid-пометки можно только после остановки текущих задач.")
+                return
+            if self._clear_invalid_key_states(selected_or_all_keys()):
+                self._update_worker_spinbox_limit()
+                self._update_key_state_ui()
+                self.statusBar().showMessage("Invalid-пометки ключей сняты.")
+            refresh_dialog()
+
+        dlg.btn_refresh.clicked.connect(refresh_dialog)
+        dlg.btn_clear_limits.clicked.connect(clear_limits)
+        dlg.btn_clear_invalid.clicked.connect(clear_invalid)
+        refresh_dialog()
+        dlg.exec()
+
+    def _get_available_api_keys(self, required_model_ids=None):
+        model_ids = [model_id for model_id in (required_model_ids or []) if model_id]
+        invalid_states = self._load_invalid_key_states()
+        available_keys = []
+        for api_key in self.api_keys:
+            if not (api_key or "").strip():
+                continue
+            if api_key in self.disabled_api_keys:
+                continue
+            if api_key in invalid_states:
+                continue
+            if self.settings_manager is None or not model_ids:
+                available_keys.append(api_key)
+                continue
+
+            key_info = self.settings_manager.get_key_info(api_key)
+            if not key_info:
+                available_keys.append(api_key)
+                continue
+
+            is_blocked = any(
+                self.settings_manager.is_key_limit_active(key_info, model_id)
+                for model_id in model_ids
+            )
+            if not is_blocked:
+                available_keys.append(api_key)
+        return available_keys
+
+    def _project_rpd_exhausted_message(self, model_id):
+        if not model_id:
+            return ""
+        rpd_limit = _lookup_model_limit(model_id, "rpd", 0)
+        if not rpd_limit or rpd_limit <= 0:
+            return ""
+        current_count = self.daily_request_limiter.get_count(model_id)
+        if current_count < rpd_limit:
+            return ""
+        reset_text = _next_policy_reset_text(_gemini_reset_policy())
+        return (
+            f"Дневной лимит {rpd_limit} запросов для модели {model_id} уже исчерпан. "
+            f"Следующий сброс около {reset_text}."
+        )
+
+    def _collect_target_chapter_indices(self, prefer_selection=False, include_done=False):
+        if not self.bm:
+            return []
+
+        selected_indices = []
+        if prefer_selection:
+            for item in self.list_chapters.selectedItems():
+                idx = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(idx, int):
+                    selected_indices.append(idx)
+
+        target_indices = selected_indices or list(range(len(self.bm.chapters)))
+        prepared = []
+        for idx in target_indices:
+            if idx < 0 or idx >= len(self.bm.chapters):
+                continue
+            if self.bm.is_chapter_skipped(idx):
+                continue
+            if not include_done and self.bm.is_chapter_done(idx):
+                continue
+            prepared.append(idx)
+        return sorted(dict.fromkeys(prepared))
+
+    def _selected_chapter_indices(self):
+        selected_indices = []
+        for item in self.list_chapters.selectedItems():
+            idx = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(idx, int):
+                selected_indices.append(idx)
+        return sorted(dict.fromkeys(selected_indices))
+
+    def _format_chapter_ranges(self, indices):
+        if not indices:
+            return ""
+        chapter_numbers = sorted({idx + 1 for idx in indices if isinstance(idx, int) and idx >= 0})
+        if not chapter_numbers:
+            return ""
+
+        ranges = []
+        start = chapter_numbers[0]
+        prev = chapter_numbers[0]
+        for number in chapter_numbers[1:]:
+            if number == prev + 1:
+                prev = number
+                continue
+            ranges.append(f"{start}-{prev}" if start != prev else str(start))
+            start = prev = number
+        ranges.append(f"{start}-{prev}" if start != prev else str(start))
+        return ", ".join(ranges)
+
+    def _selected_scope_summary(self):
+        selected_indices = self._selected_chapter_indices()
+        if self.chk_selected_only.isChecked():
+            return self._format_chapter_ranges(selected_indices) if selected_indices else "выбор пуст"
+        if not selected_indices:
+            return "все"
+        selection_text = self._format_chapter_ranges(selected_indices)
+        return f"все (выделено {len(selected_indices)}: {selection_text})"
+
+    def _on_chapter_selection_changed(self, *_args):
+        if not hasattr(self, "lbl_chapter_scope"):
+            return
+        summary = self._selected_scope_summary()
+        self.lbl_chapter_scope.setText(f"Главы: {summary}")
+        self.lbl_chapter_scope.setToolTip(f"Область обработки: {summary}")
+
+    def clear_chapter_selection(self):
+        self.list_chapters.clearSelection()
+        self.chk_selected_only.setChecked(False)
+        self._on_chapter_selection_changed()
+
+    def _update_video_cover_status(self):
+        if not hasattr(self, "lbl_video_cover"):
+            return
+        if not self.bm:
+            self.lbl_video_cover.setText("Видео: откройте книгу")
+            self.lbl_video_cover.setToolTip("Сначала откройте книгу, затем выберите картинку для видео.")
             return
 
-        self.btn_play.setText("▶ СТАРТ")
-        self.btn_play.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.btn_clean_stuck.setEnabled(True)
+        video_cover_path = self.bm.get_video_cover_path()
+        if video_cover_path:
+            file_name = os.path.basename(video_cover_path)
+            self.lbl_video_cover.setText(f"Видео: {file_name}")
+            self.lbl_video_cover.setToolTip(video_cover_path)
+        else:
+            self.lbl_video_cover.setText("Видео: картинка не выбрана")
+            self.lbl_video_cover.setToolTip("Выбранная картинка будет скопирована в папку книги и использована для экспорта видео.")
+
+    def select_video_cover(self):
+        if not self.bm:
+            QMessageBox.information(self, "Видео", "Сначала откройте книгу.")
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выбрать картинку для видео",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*.*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            stored_path = self.bm.save_video_cover_image(file_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Видео", f"Не удалось сохранить картинку: {exc}")
+            return
+
+        self._update_video_cover_status()
+        self._refresh_runtime_controls()
+        self.statusBar().showMessage(f"Картинка для видео сохранена: {os.path.basename(stored_path)}")
+
+    def pick_chapters_dialog(self):
+        if not self.bm:
+            QMessageBox.information(self, "Главы", "Сначала откройте книгу.")
+            return
+
+        current_text = self._format_chapter_ranges(self._selected_chapter_indices())
+        prompt = (
+            "Введите номера глав через запятую или диапазоны через дефис.\n"
+            "Пример: 1,3,5-8"
+        )
+        raw_text, ok = QInputDialog.getText(self, "Выбор глав", prompt, text=current_text)
+        if not ok:
+            return
+
+        try:
+            selected_indices = self._parse_chapter_selection_text(raw_text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Выбор глав", str(exc))
+            return
+
+        self.list_chapters.clearSelection()
+        for idx in selected_indices:
+            item = self.list_chapters.item(idx)
+            if item is not None:
+                item.setSelected(True)
+
+        if selected_indices:
+            self.chk_selected_only.setChecked(True)
+            self.list_chapters.scrollToItem(self.list_chapters.item(selected_indices[0]))
+            self.statusBar().showMessage(f"Выбраны главы: {self._format_chapter_ranges(selected_indices)}")
+        else:
+            self.chk_selected_only.setChecked(False)
+            self.statusBar().showMessage("Выбор глав очищен.")
+
+        self._on_chapter_selection_changed()
+
+    def _parse_chapter_selection_text(self, raw_text):
+        text = re.sub(r"\s*-\s*", "-", (raw_text or "").strip())
+        if not text:
+            return []
+        if not self.bm:
+            raise ValueError("Сначала откройте книгу.")
+
+        parsed_indices = []
+        total_chapters = len(self.bm.chapters)
+        tokens = [token for token in re.split(r"[\s,;]+", text) if token]
+        if not tokens:
+            return []
+
+        for token in tokens:
+            range_match = re.fullmatch(r"(\d+)-(\d+)", token)
+            if range_match:
+                start_num = int(range_match.group(1))
+                end_num = int(range_match.group(2))
+                if start_num > end_num:
+                    start_num, end_num = end_num, start_num
+                if start_num < 1 or end_num > total_chapters:
+                    raise ValueError(f"Диапазон {token} выходит за пределы книги (1-{total_chapters}).")
+                parsed_indices.extend(range(start_num - 1, end_num))
+                continue
+
+            if token.isdigit():
+                chapter_number = int(token)
+                if chapter_number < 1 or chapter_number > total_chapters:
+                    raise ValueError(f"Глава {chapter_number} вне диапазона 1-{total_chapters}.")
+                parsed_indices.append(chapter_number - 1)
+                continue
+
+            raise ValueError(
+                f"Не удалось разобрать '{token}'. Используйте формат вроде 1,3,5-8."
+            )
+
+        return sorted(dict.fromkeys(parsed_indices))
+
+    def _collect_run_scope_indices(self, include_done=False, action_label="обработки"):
+        prefer_selection = bool(self.chk_selected_only.isChecked())
+        if prefer_selection and not self._selected_chapter_indices():
+            QMessageBox.information(
+                self,
+                "Главы",
+                f"Включён режим 'Только выбранные главы', но главы не выделены для {action_label}.",
+            )
+            return None
+        return self._collect_target_chapter_indices(prefer_selection=prefer_selection, include_done=include_done)
+
+    def _load_script_for_chapter(self, chapter_index):
+        if not self.bm or chapter_index is None or chapter_index < 0 or chapter_index >= len(self.bm.chapters):
+            self._current_chapter_index = None
+            self.script_view.setPlainText("")
+            return
+
+        self._current_chapter_index = chapter_index
+        script_text = self.bm.load_tts_script(chapter_index)
+        if script_text.strip():
+            self.script_view.setPlainText(script_text)
+        else:
+            self.script_view.setPlainText(self.bm.chapters[chapter_index].raw_text)
+
+    def save_current_script(self):
+        if not self.bm or self._current_chapter_index is None:
+            QMessageBox.information(self, "Сценарий", "Сначала выберите главу.")
+            return
+        script_text = self.script_view.toPlainText().strip()
+        if not script_text:
+            QMessageBox.warning(self, "Сценарий", "Нельзя сохранить пустой сценарий.")
+            return
+        self.bm.save_tts_script(self._current_chapter_index, script_text)
+        self.refresh_chapters_list()
+        self.statusBar().showMessage(f"Сценарий главы {self._current_chapter_index + 1} сохранён.")
+
+    def edit_flash_tts_prompts(self):
+        dialog = PromptTuningDialog(self.preprocess_directive, self.tts_directive, self)
+        if dialog.exec():
+            preprocess_directive, tts_directive = dialog.get_values()
+            self.preprocess_directive = preprocess_directive or DEFAULT_PREPROCESS_DIRECTIVE
+            self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
+            self.save_settings()
+            self.statusBar().showMessage("Промпты Flash TTS обновлены.")
+
+    def prepare_selected_scripts(self):
+        if not self._is_flash_tts_mode():
+            QMessageBox.information(self, "Режим", "AI-подготовка сценария доступна только в режиме Flash TTS.")
+            return
+        if genai is None or genai_types is None:
+            QMessageBox.warning(self, "Зависимости", "Для AI-подготовки сценария требуется пакет google-genai.")
+            return
+        if not self.api_keys:
+            self.set_api_keys()
+            if not self.api_keys:
+                return
+        if not self.bm:
+            QMessageBox.warning(self, "Внимание", "Сначала откройте книгу!")
+            return
+        if self.workers:
+            QMessageBox.warning(self, "Внимание", "Сначала дождитесь завершения текущей задачи или остановите её.")
+            return
+
+        target_indices = self._collect_run_scope_indices(include_done=True, action_label="AI-подготовки сценария")
+        if target_indices is None:
+            return
+        if not target_indices:
+            if self.chk_selected_only.isChecked():
+                QMessageBox.information(self, "Сценарии", "Среди выбранных глав нет доступных для AI-подготовки.")
+                return
+            QMessageBox.information(self, "Сценарии", "Нет глав для AI-подготовки.")
+            return
+
+        self._launch_flash_workers(target_indices, run_mode="prepare")
+
+    def clear_selected_scripts(self, selected_items):
+        if not self.bm:
+            return
+        removed_count = 0
+        for item in selected_items:
+            idx = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(idx, int):
+                continue
+            path = self.bm.get_tts_script_path(idx)
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    removed_count += 1
+                except Exception as exc:
+                    logger.warning(f"Не удалось удалить TTS-сценарий главы {idx + 1}: {exc}")
+
+        self.refresh_chapters_list()
+        if self._current_chapter_index is not None:
+            self._load_script_for_chapter(self._current_chapter_index)
+        if removed_count:
+            self.statusBar().showMessage(f"Удалено сценариев: {removed_count}.")
 
     def set_return_to_menu_handler(self, handler):
         self._return_to_menu_handler = handler
@@ -1255,12 +4239,9 @@ class MainWindow(QMainWindow):
         runtime_notes = []
 
         if genai is None or genai_types is None:
-            self.btn_play.setEnabled(False)
-            self.btn_test_voice.setEnabled(False)
             runtime_notes.append("нет google-genai: озвучка Gemini недоступна")
 
         if pyaudio is None:
-            self.btn_test_voice.setEnabled(False)
             runtime_notes.append("нет PyAudio: live-воспроизведение отключено")
 
         if AudioSegment is None:
@@ -1271,19 +4252,35 @@ class MainWindow(QMainWindow):
 
         if _resolve_tool_path("ffmpeg") is None or _resolve_tool_path("ffprobe") is None:
             self.btn_combine.setEnabled(False)
+            self.btn_export_video.setEnabled(False)
             runtime_notes.append("нет ffmpeg/ffprobe: склейка MP3 недоступна")
+
+        self._refresh_runtime_controls()
 
         if runtime_notes:
             self.statusBar().showMessage(" | ".join(runtime_notes))
 
     def _reader_ui_settings_payload(self):
         return {
+            "engine": self._current_engine_id(),
             "model": self.combo_model.currentText(),
             "voice": self.combo_voices.currentData(),
+            "voice_mode": self._selected_voice_mode(),
+            "voice_secondary": self.combo_voice_secondary.currentData(),
             "speed": self.combo_speed.currentText(),
+            "live_segment_mode": self._selected_live_segment_mode(),
             "chunk": self.spin_chunk.value(),
+            "worker_count": self.spin_workers.value(),
+            "num_instances": self.spin_workers.value(),
+            "selected_only": self.chk_selected_only.isChecked(),
+            "parallel_single_chapter": self.chk_parallel_single_chapter.isChecked(),
             "record": self.chk_mp3.isChecked(),
             "fast": self.chk_fast.isChecked(),
+            "preprocess_model": self.combo_preprocess_model.currentText(),
+            "preprocess_profile": self.combo_preprocess_profile.currentText(),
+            "pipeline_mode": self._selected_pipeline_mode(),
+            "preprocess_directive": self.preprocess_directive,
+            "tts_directive": self.tts_directive,
         }
 
     def closeEvent(self, event):
@@ -1334,12 +4331,23 @@ class MainWindow(QMainWindow):
         self.btn_test_voice.setText("⏳ Загрузка...")
         
         api_key = self.api_keys[0]
-        selected_model_name = self.combo_model.currentText()
-        actual_model_id = self.models_map.get(selected_model_name, "gemini-3.1-flash-live-preview")
-        voice = self.combo_voices.currentData() # Берем чистый ID голоса
+        actual_model_id = self._selected_model_id()
+        voice = self.combo_voices.currentData()
+        engine_mode = self._current_engine_id()
+        voice_mode = self._selected_voice_mode()
+        secondary_voice = self.combo_voice_secondary.currentData()
         
         # Создаем и запускаем независимый мини-воркер
-        self.tester_worker = VoiceSampleWorker(api_key, actual_model_id, voice)
+        self.tester_worker = VoiceSampleWorker(
+            api_key,
+            actual_model_id,
+            voice,
+            engine_mode=engine_mode,
+            voice_mode=voice_mode,
+            secondary_voice=secondary_voice,
+            tts_directive=self.tts_directive,
+            daily_request_limiter=self.daily_request_limiter,
+        )
         
         def on_test_finish():
             self.btn_test_voice.setEnabled(True)
@@ -1456,8 +4464,14 @@ class MainWindow(QMainWindow):
     def load_book(self, path):
         try:
             self.bm = BookManager(path, base_dir=self.reader_books_dir)
+            self._refresh_project_settings_manager()
+            self.load_settings()
             self.lbl_info.setText(f"📘 {self.bm.title}")
+            self._current_chapter_index = None
+            self.script_view.setPlainText("")
             self.refresh_chapters_list()
+            self._update_video_cover_status()
+            self._refresh_runtime_controls()
             self.tabs.setCurrentIndex(0)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
@@ -1479,8 +4493,11 @@ class MainWindow(QMainWindow):
             elif self.bm.is_chapter_done(i):
                 item.setText(f"✅ {chap.title}")
                 item.setForeground(QColor("#4CAF50"))
+            elif self.bm.has_tts_script(i):
+                item.setText(f"📝 {chap.title}")
                 
             self.list_chapters.addItem(item)
+        self._on_chapter_selection_changed()
 
     def show_chapter_context_menu(self, pos):
         if not self.bm:
@@ -1507,6 +4524,17 @@ class MainWindow(QMainWindow):
         revoice_action.triggered.connect(lambda: self.revoice_selected_chapters(selected_items))
         menu.addAction(revoice_action)
         
+        menu.addSeparator()
+
+        prepare_action = QAction("🪄 Подготовить AI-сценарий", self)
+        prepare_action.triggered.connect(self.prepare_selected_scripts)
+        prepare_action.setEnabled(self._is_flash_tts_mode())
+        menu.addAction(prepare_action)
+
+        clear_script_action = QAction("🗑️ Удалить сценарий", self)
+        clear_script_action.triggered.connect(lambda: self.clear_selected_scripts(selected_items))
+        menu.addAction(clear_script_action)
+
         menu.addSeparator()
         
         # Действие: Пропустить группу
@@ -1538,6 +4566,7 @@ class MainWindow(QMainWindow):
         idx = item.data(Qt.ItemDataRole.UserRole)
         if self.bm:
             self.txt_view.setPlainText(self.bm.chapters[idx].raw_text)
+            self._load_script_for_chapter(idx)
 
     def on_chapter_done_ui(self, idx):
         item = self.list_chapters.item(idx)
@@ -1545,87 +4574,482 @@ class MainWindow(QMainWindow):
             item.setText(f"✅ {self.bm.chapters[idx].title}")
             item.setForeground(QColor("#4CAF50"))
 
+    def on_script_ready_ui(self, idx):
+        self.refresh_chapters_list()
+        if self._current_chapter_index == idx:
+            self._load_script_for_chapter(idx)
+
+    def _reset_dashboard(self):
+        for i in reversed(range(self.dash_layout.count())):
+            widget = self.dash_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+        self.worker_widgets = {}
+
+    def _on_worker_finished(self, worker_id):
+        row_widget = self.worker_widgets.pop(worker_id, None)
+        if row_widget:
+            row_widget.setParent(None)
+
+        self.workers = [worker for worker in self.workers if getattr(worker, "worker_id", None) != worker_id]
+        if not self.workers:
+            if self.player:
+                self.player.stop()
+                self.player = None
+            self._set_reading_controls_running(False)
+            self.refresh_chapters_list()
+            if self._current_chapter_index is not None:
+                self._load_script_for_chapter(self._current_chapter_index)
+            remaining_chapters = self._active_manager_queue.qsize() if self._active_manager_queue is not None else 0
+            if self._active_job_kind == "tts_parallel_live" and self._parallel_live_state is not None:
+                final_message = self._finalize_parallel_live_chapter()
+            elif self._project_quota_message:
+                final_message = self._project_quota_message
+            elif remaining_chapters > 0:
+                final_message = (
+                    f"Задача остановлена: осталось {remaining_chapters} глав(ы). "
+                    "Проверьте пул API-ключей."
+                )
+            else:
+                final_message = "AI-сценарии подготовлены." if self._active_job_kind == "prepare" else "Озвучка завершена."
+                if self._run_had_invalid_keys:
+                    final_message += " Невалидные ключи были исключены из запуска."
+            self._active_manager_queue = None
+            self._run_had_invalid_keys = False
+            self._project_quota_message = ""
+            self.statusBar().showMessage(final_message)
+
+    def _on_invalid_worker_key(self, worker_id, api_key, error_text, chapter_index):
+        self.disabled_api_keys.add(api_key)
+        self._run_had_invalid_keys = True
+        self._mark_key_invalid(api_key, error_text, self._selected_model_id())
+        self._update_worker_spinbox_limit()
+        self._update_key_state_ui()
+        chapter_label = f"глава {chapter_index + 1}" if chapter_index >= 0 else "текущая глава"
+        masked_key = _mask_api_key(api_key)
+        self.statusBar().showMessage(
+            f"Отключён невалидный API-ключ {masked_key}; {chapter_label} возвращена в очередь."
+        )
+
+    def _on_quota_worker_key(self, worker_id, api_key, model_id, error_text, chapter_index):
+        self.disabled_api_keys.add(api_key)
+        self._run_had_invalid_keys = True
+        if self.settings_manager is not None and model_id:
+            try:
+                self.settings_manager.mark_key_as_exhausted(api_key, model_id)
+            except Exception:
+                pass
+        self._update_worker_spinbox_limit()
+        self._update_key_state_ui()
+        chapter_label = f"глава {chapter_index + 1}" if chapter_index >= 0 else "текущая глава"
+        masked_key = _mask_api_key(api_key)
+        self.statusBar().showMessage(
+            f"Ключ {masked_key} упёрся в лимит {model_id}; {chapter_label} возвращена в очередь."
+        )
+
+    def _on_project_quota_worker(self, worker_id, model_id, error_text, chapter_index):
+        chapter_label = f"глава {chapter_index + 1}" if chapter_index >= 0 else "текущая глава"
+        self._project_quota_message = (
+            f"Дневной лимит проекта для {model_id} исчерпан; {chapter_label} возвращена в очередь."
+        )
+        self.statusBar().showMessage(self._project_quota_message)
+        for worker in list(self.workers):
+            if getattr(worker, "worker_id", None) != worker_id:
+                worker.stop()
+
+    def _chapter_live_segments_for_parallel(self, chapter_index):
+        chapter = self.bm.chapters[chapter_index]
+        if self._selected_live_segment_mode() == "paragraphs":
+            paragraphs = []
+            for part in getattr(chapter, "paragraphs", []) or []:
+                paragraphs.extend(_split_live_paragraph(part))
+            paragraphs = [part.strip() for part in paragraphs if (part or "").strip()]
+            if paragraphs:
+                return paragraphs
+            raw_text = (chapter.raw_text or "").strip()
+            return [raw_text] if raw_text else []
+        return [part.strip() for part in chapter.flat_sentences if (part or "").strip()]
+
+    def _build_parallel_live_tasks(self, chapter_index):
+        segments = self._chapter_live_segments_for_parallel(chapter_index)
+        chunk_size = max(1, self.spin_chunk.value())
+        tasks = []
+        for start_idx in range(0, len(segments), chunk_size):
+            task_segments = segments[start_idx:start_idx + chunk_size]
+            if not task_segments:
+                continue
+            task_index = len(tasks)
+            text_value = "\n\n".join(task_segments).strip() if self._selected_live_segment_mode() == "paragraphs" else " ".join(task_segments).strip()
+            tasks.append(
+                {
+                    "chapter_index": chapter_index,
+                    "task_index": task_index,
+                    "text": text_value,
+                }
+            )
+        total_tasks = len(tasks)
+        for task in tasks:
+            task["total_tasks"] = total_tasks
+        return tasks
+
+    def _parallel_live_temp_dir(self, chapter_index):
+        return os.path.join(self.bm.book_dir, LIVE_PARALLEL_DIRNAME, f"Ch{chapter_index + 1}")
+
+    def _cleanup_parallel_live_state(self, remove_files=True):
+        state = self._parallel_live_state
+        self._parallel_live_state = None
+        if not state:
+            return
+        if remove_files:
+            temp_dir = state.get("temp_dir")
+            if temp_dir and os.path.isdir(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    def _finalize_parallel_live_chapter(self):
+        state = self._parallel_live_state
+        if not state:
+            return ""
+
+        chapter_index = state["chapter_index"]
+        total_tasks = int(state.get("total_tasks", 0) or 0)
+        completed_count = int(state.get("completed_count", 0) or 0)
+        remaining_tasks = state["task_queue"].qsize() if state.get("task_queue") is not None else 0
+
+        if state.get("cancelled"):
+            self._cleanup_parallel_live_state(remove_files=True)
+            return "Параллельная озвучка главы остановлена."
+
+        if remaining_tasks > 0 or completed_count < total_tasks:
+            self._cleanup_parallel_live_state(remove_files=False)
+            return (
+                f"Параллельная озвучка главы {chapter_index + 1} остановлена: "
+                f"готово {completed_count}/{total_tasks}, осталось {max(0, total_tasks - completed_count)} блок(ов)."
+            )
+
+        output_paths = [task["output_path"] for task in sorted(state.get("tasks", []), key=lambda item: item["task_index"])]
+        missing_files = [path for path in output_paths if not os.path.exists(path)]
+        if missing_files:
+            self._cleanup_parallel_live_state(remove_files=False)
+            return (
+                f"Ошибка сборки главы {chapter_index + 1}: отсутствуют временные блоки "
+                f"({len(missing_files)} шт.)."
+            )
+
+        chapter_path = self.bm.get_mp3_path(chapter_index)
+        try:
+            _combine_mp3_sequence(output_paths, chapter_path)
+            self.bm.mark_chapter_done(chapter_index)
+            self.on_chapter_done_ui(chapter_index)
+            self._cleanup_parallel_live_state(remove_files=True)
+            return (
+                f"Глава {chapter_index + 1} озвучена параллельно: "
+                f"{total_tasks} блок(ов), {state.get('worker_count', 1)} воркер(ов)."
+            )
+        except Exception as exc:
+            self._cleanup_parallel_live_state(remove_files=False)
+            return f"Ошибка сборки главы {chapter_index + 1}: {exc}"
+
+    def _launch_parallel_live_workers(self, chapter_index, available_api_keys, requested_workers):
+        if not self.chk_mp3.isChecked():
+            QMessageBox.warning(
+                self,
+                "Режим вывода",
+                "Для нескольких воркеров на одной главе нужна запись MP3. Включите 'Запись MP3'.",
+            )
+            return False
+
+        tasks = self._build_parallel_live_tasks(chapter_index)
+        if len(tasks) < 2:
+            self.statusBar().showMessage("В главе слишком мало блоков для распараллеливания; используется обычный режим.")
+            return False
+
+        temp_dir = self._parallel_live_temp_dir(chapter_index)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        os.makedirs(temp_dir, exist_ok=True)
+
+        task_queue = queue.Queue()
+        for task in tasks:
+            task["output_path"] = os.path.join(temp_dir, f"seg_{task['task_index']:05d}.mp3")
+            task_queue.put(task)
+
+        num_workers = min(requested_workers, len(available_api_keys), len(tasks))
+        if num_workers <= 1:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return False
+
+        self._parallel_live_state = {
+            "chapter_index": chapter_index,
+            "total_tasks": len(tasks),
+            "completed_count": 0,
+            "completed_tasks": set(),
+            "task_queue": task_queue,
+            "temp_dir": temp_dir,
+            "tasks": tasks,
+            "segment_mode": self._selected_live_segment_mode(),
+            "worker_count": num_workers,
+            "cancelled": False,
+            "lock": threading.Lock(),
+        }
+
+        self._active_job_kind = "tts_parallel_live"
+        self._active_manager_queue = task_queue
+        self._run_had_invalid_keys = False
+        self._reset_dashboard()
+
+        self.statusBar().showMessage(
+            f"Параллельная озвучка главы {chapter_index + 1}: {len(tasks)} блок(ов), {num_workers} воркер(ов). "
+            "Live-воспроизведение для этого режима отключено."
+        )
+
+        for i in range(num_workers):
+            row = DashboardRow(i)
+            self.dash_layout.addWidget(row)
+            self.worker_widgets[i] = row
+
+            worker = GeminiParallelChapterWorker(
+                i,
+                available_api_keys[i],
+                self.bm,
+                self._selected_model_id(),
+                self.combo_voices.currentData(),
+                self.combo_speed.currentText(),
+                task_queue,
+                self._parallel_live_state,
+                daily_request_limiter=self.daily_request_limiter,
+            )
+            worker.worker_progress.connect(row.update_progress)
+            worker.finished_signal.connect(self._on_worker_finished)
+            worker.invalid_key_signal.connect(self._on_invalid_worker_key)
+            worker.quota_key_signal.connect(self._on_quota_worker_key)
+            worker.project_quota_signal.connect(self._on_project_quota_worker)
+            worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
+            self.workers.append(worker)
+            worker.start()
+
+        self._set_reading_controls_running(True)
+        self.tabs.setCurrentIndex(2)
+        return True
+
+    def _launch_live_workers(self, target_indices):
+        self._parallel_live_state = None
+        q = queue.Queue()
+        for idx in target_indices:
+            q.put(idx)
+
+        actual_model_id = self._selected_model_id()
+        exhausted_message = self._project_rpd_exhausted_message(actual_model_id)
+        if exhausted_message:
+            QMessageBox.warning(self, "Лимит RPD", exhausted_message)
+            return False
+        available_api_keys = self._get_available_api_keys([actual_model_id])
+        if not available_api_keys:
+            QMessageBox.warning(
+                self,
+                "Ключи API",
+                "Нет рабочих API-ключей для выбранной live-модели. "
+                "Проверьте ключи или дождитесь сброса лимитов.",
+            )
+            return False
+
+        requested_workers = max(1, self.spin_workers.value())
+        num_workers = min(requested_workers, len(available_api_keys), q.qsize())
+        if num_workers == 0:
+            num_workers = 1
+
+        parallel_single_chapter = (
+            self.chk_parallel_single_chapter.isChecked()
+            and len(target_indices) == 1
+            and requested_workers > 1
+        )
+        if parallel_single_chapter:
+            launched = self._launch_parallel_live_workers(target_indices[0], available_api_keys, requested_workers)
+            if launched:
+                return True
+
+        multi = num_workers > 1
+        live_playback = not self.chk_fast.isChecked() and not multi and pyaudio is not None
+        if not live_playback and not self.chk_fast.isChecked() and not multi and pyaudio is None:
+            self.statusBar().showMessage("PyAudio не найден: live-воспроизведение отключено, используется только экспорт.")
+        if not live_playback and not self.chk_mp3.isChecked():
+            QMessageBox.warning(self, "Режим вывода", "Отключены и live-воспроизведение, и запись MP3. Включите запись MP3 или установите PyAudio.")
+            return False
+
+        if num_workers < requested_workers:
+            self.statusBar().showMessage(
+                f"Запуск {num_workers} воркеров вместо {requested_workers}: ограничение по доступным ключам или числу глав."
+            )
+
+        if live_playback:
+            self.player = AudioPlayer(self.audio_queue, 80)
+            self.player.start()
+
+        self._active_job_kind = "tts"
+        self._active_manager_queue = q
+        self._run_had_invalid_keys = False
+        self._reset_dashboard()
+
+        for i in range(num_workers):
+            row = DashboardRow(i)
+            self.dash_layout.addWidget(row)
+            self.worker_widgets[i] = row
+
+            worker = GeminiWorker(
+                i,
+                available_api_keys[i],
+                self.bm,
+                self.audio_queue if live_playback else None,
+                actual_model_id,
+                self.combo_voices.currentData(),
+                "Ты диктор.",
+                self.combo_speed.currentText(),
+                self.chk_mp3.isChecked(),
+                self.chk_fast.isChecked(),
+                self.spin_chunk.value(),
+                self._selected_live_segment_mode(),
+                q,
+                daily_request_limiter=self.daily_request_limiter,
+            )
+            worker.worker_progress.connect(row.update_progress)
+            worker.finished_signal.connect(self._on_worker_finished)
+            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
+            worker.invalid_key_signal.connect(self._on_invalid_worker_key)
+            worker.quota_key_signal.connect(self._on_quota_worker_key)
+            worker.project_quota_signal.connect(self._on_project_quota_worker)
+            worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
+            self.workers.append(worker)
+            worker.start()
+
+        self._set_reading_controls_running(True)
+        self.tabs.setCurrentIndex(2)
+        return True
+
+    def _launch_flash_workers(self, target_indices, run_mode):
+        self._parallel_live_state = None
+        q = queue.Queue()
+        for idx in target_indices:
+            q.put(idx)
+
+        required_model_ids = []
+        if run_mode in {"auto", "prepare"}:
+            required_model_ids.append(self._selected_preprocess_model_id())
+        if run_mode != "prepare":
+            required_model_ids.append(self._selected_model_id())
+
+        for model_id in required_model_ids:
+            exhausted_message = self._project_rpd_exhausted_message(model_id)
+            if exhausted_message:
+                QMessageBox.warning(self, "Лимит RPD", exhausted_message)
+                return False
+
+        available_api_keys = self._get_available_api_keys(required_model_ids)
+        if not available_api_keys:
+            QMessageBox.warning(
+                self,
+                "Ключи API",
+                "Нет рабочих API-ключей для выбранного Flash TTS pipeline. "
+                "Проверьте ключи или дождитесь сброса лимитов.",
+            )
+            return False
+
+        requested_workers = max(1, self.spin_workers.value())
+        num_workers = min(requested_workers, len(available_api_keys), q.qsize())
+        if num_workers == 0:
+            num_workers = 1
+
+        if run_mode == "raw" and self._selected_voice_mode() == "duo":
+            QMessageBox.warning(self, "Режим", "Двухголосый режим требует AI-сценарий. Выберите 'Авто' или 'По шагам'.")
+            return False
+
+        live_playback = run_mode != "prepare" and not self.chk_fast.isChecked() and num_workers == 1 and pyaudio is not None
+        if live_playback:
+            self.player = AudioPlayer(self.audio_queue, 80)
+            self.player.start()
+        elif run_mode != "prepare" and not self.chk_fast.isChecked() and num_workers == 1 and pyaudio is None:
+            self.statusBar().showMessage("PyAudio не найден: live-воспроизведение для Flash TTS отключено, используется экспорт.")
+
+        if num_workers < requested_workers:
+            self.statusBar().showMessage(
+                f"Запуск {num_workers} воркеров вместо {requested_workers}: ограничение по доступным ключам или числу глав."
+            )
+
+        self._active_job_kind = "prepare" if run_mode == "prepare" else "tts"
+        self._active_manager_queue = q
+        self._run_had_invalid_keys = False
+        self._reset_dashboard()
+
+        for i in range(num_workers):
+            row = DashboardRow(i)
+            self.dash_layout.addWidget(row)
+            self.worker_widgets[i] = row
+
+            worker = FlashTtsWorker(
+                i,
+                available_api_keys[i],
+                self.bm,
+                self.audio_queue if live_playback else None,
+                self._selected_model_id(),
+                self.combo_voices.currentData(),
+                self.combo_voice_secondary.currentData(),
+                self.combo_speed.currentText(),
+                self.chk_mp3.isChecked() if run_mode != "prepare" else False,
+                self.chk_fast.isChecked() if run_mode != "prepare" else True,
+                self.spin_chunk.value(),
+                q,
+                self._selected_preprocess_model_id(),
+                self.combo_preprocess_profile.currentData(),
+                self._selected_voice_mode(),
+                run_mode,
+                self.preprocess_directive,
+                self.tts_directive,
+                self.daily_request_limiter,
+            )
+            worker.worker_progress.connect(row.update_progress)
+            worker.finished_signal.connect(self._on_worker_finished)
+            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
+            worker.script_ready_signal.connect(self.on_script_ready_ui)
+            worker.invalid_key_signal.connect(self._on_invalid_worker_key)
+            worker.quota_key_signal.connect(self._on_quota_worker_key)
+            worker.project_quota_signal.connect(self._on_project_quota_worker)
+            worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
+            self.workers.append(worker)
+            worker.start()
+
+        self._set_reading_controls_running(True)
+        self.tabs.setCurrentIndex(2 if run_mode != "prepare" else 1)
+        return True
+
     def toggle_play(self):
         if genai is None or genai_types is None:
             QMessageBox.warning(self, "Зависимости", "Для озвучки Gemini Reader требуется пакет google-genai.")
             return
         if not self.api_keys:
             self.set_api_keys()
-            return
+            if not self.api_keys:
+                return
         
         if not self.workers:
             if not self.bm:
                 QMessageBox.warning(self, "Внимание", "Сначала откройте книгу!")
                 return
 
-            # Очистка дашборда
-            for i in reversed(range(self.dash_layout.count())):
-                widget = self.dash_layout.itemAt(i).widget()
-                if widget: widget.setParent(None)
-            self.worker_widgets = {}
-
-            q = queue.Queue()
-            for i in range(len(self.bm.chapters)):
-                if not self.bm.is_chapter_done(i) and not self.bm.is_chapter_skipped(i):
-                    q.put(i)
-            
-            if q.empty():
+            target_indices = self._collect_run_scope_indices(include_done=False, action_label="озвучки")
+            if target_indices is None:
+                return
+            if not target_indices and self.chk_selected_only.isChecked():
+                QMessageBox.information(self, "Главы", "Среди выбранных глав нет доступных для озвучки.")
+                return
+            if not target_indices:
                 QMessageBox.information(self, "Готово", "Все главы для озвучки уже завершены или пропущены!")
                 return
 
-            num_workers = min(len(self.api_keys), q.qsize())
-            if num_workers == 0: num_workers = 1
-
-            multi = len(self.api_keys) > 1
-            live_playback = not self.chk_fast.isChecked() and not multi and pyaudio is not None
-            if not live_playback and not self.chk_fast.isChecked() and not multi and pyaudio is None:
-                self.statusBar().showMessage("PyAudio не найден: live-воспроизведение отключено, используется только экспорт.")
-            if not live_playback and not self.chk_mp3.isChecked():
-                QMessageBox.warning(self, "Режим вывода", "Отключены и live-воспроизведение, и запись MP3. Включите запись MP3 или установите PyAudio.")
-                return
-
-            if live_playback:
-                self.player = AudioPlayer(self.audio_queue, 80)
-                self.player.start()
-
-            for i in range(num_workers):
-                row = DashboardRow(i)
-                self.dash_layout.addWidget(row)
-                self.worker_widgets[i] = row
-                
-                selected_model_name = self.combo_model.currentText()
-                actual_model_id = self.models_map.get(selected_model_name, "gemini-3.1-flash-live-preview")
-                
-                w = GeminiWorker(i, self.api_keys[i], self.bm, 
-                                 self.audio_queue if live_playback else None,
-                                 actual_model_id, 
-                                 self.combo_voices.currentData(), # Передаем чистый ID голоса
-                                 "Ты диктор.", self.combo_speed.currentText(),
-                                 self.chk_mp3.isChecked(), self.chk_fast.isChecked(),
-                                 self.spin_chunk.value(), q)
-                
-                w.worker_progress.connect(row.update_progress)
-                
-                def on_finished(wid):
-                    row_widget = self.worker_widgets.pop(wid, None)
-                    if row_widget:
-                        row_widget.setParent(None)
-
-                    self.workers = [worker for worker in self.workers if getattr(worker, "worker_id", None) != wid]
-                    if not self.workers:
-                        if self.player:
-                            self.player.stop()
-                            self.player = None
-                        self._set_reading_controls_running(False)
-                        self.statusBar().showMessage("Озвучка завершена.")
-                
-                w.finished_signal.connect(on_finished)
-                w.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
-                self.workers.append(w)
-                w.start()
-            
-            self._set_reading_controls_running(True)
-            self.tabs.setCurrentIndex(1)
+            if self._is_flash_tts_mode():
+                pipeline_mode = self._selected_pipeline_mode()
+                self._launch_flash_workers(target_indices, run_mode=pipeline_mode)
+            else:
+                self._launch_live_workers(target_indices)
         else:
             self.force_stop()
 
@@ -1633,9 +5057,14 @@ class MainWindow(QMainWindow):
 
 
     def force_stop(self):
+        if self._parallel_live_state is not None:
+            self._parallel_live_state["cancelled"] = True
         for w in self.workers:
             w.stop()
         self.workers = []
+        self._active_manager_queue = None
+        self._run_had_invalid_keys = False
+        self._project_quota_message = ""
         
         if self.player:
             self.player.stop()
@@ -1644,25 +5073,64 @@ class MainWindow(QMainWindow):
         self._set_reading_controls_running(False)
         self.statusBar().showMessage("Процесс остановлен.")
 
-    def run_combine(self):
+    def _start_audio_combiner(self, video_image_path=None):
         if not self.bm:
             return
         ffmpeg_path = _resolve_tool_path("ffmpeg")
         ffprobe_path = _resolve_tool_path("ffprobe")
         if ffmpeg_path is None or ffprobe_path is None:
-            QMessageBox.warning(self, "Зависимости", "Для склейки MP3 нужны ffmpeg и ffprobe рядом с приложением или в PATH.")
+            QMessageBox.warning(self, "Зависимости", "Для склейки MP3 и видео нужны ffmpeg и ffprobe рядом с приложением или в PATH.")
             return
-        # Передаем текущий выбранный чистый ID голоса в воркер склейки
-        self.combiner = AudioCombinerWorker(self.bm, self.combo_voices.currentData(), ffmpeg_path=ffmpeg_path, ffprobe_path=ffprobe_path)
+
+        chapter_indices = None
+        if self.chk_selected_only.isChecked():
+            chapter_indices = self._collect_run_scope_indices(include_done=True, action_label="экспорта")
+            if chapter_indices is None:
+                return
+            if not chapter_indices:
+                QMessageBox.information(
+                    self,
+                    "Экспорт",
+                    "Среди выбранных глав нет доступных MP3 для экспорта.",
+                )
+                return
+
+        self.combiner = AudioCombinerWorker(
+            self.bm,
+            self.combo_voices.currentData(),
+            ffmpeg_path=ffmpeg_path,
+            ffprobe_path=ffprobe_path,
+            video_image_path=video_image_path,
+            chapter_indices=chapter_indices,
+        )
         self.combiner.progress_signal.connect(lambda m: self.statusBar().showMessage(m))
-        
-        def on_combine_finished(m):
-            self.statusBar().showMessage("✅ Склейка завершена!")
-            QApplication.processEvents() # Принудительно обновляем нижнюю панель до появления окна
-            QMessageBox.information(self, "Склейка", m)
-            
+
+        def on_combine_finished(message):
+            self.combiner = None
+            self._refresh_runtime_controls()
+            if str(message).lower().startswith("ошибка"):
+                self.statusBar().showMessage(message)
+            else:
+                self.statusBar().showMessage("✅ Экспорт видео завершён!" if video_image_path else "✅ Склейка завершена!")
+            QApplication.processEvents()
+            QMessageBox.information(self, "Видео" if video_image_path else "Склейка", message)
+
         self.combiner.finished_signal.connect(on_combine_finished)
+        self._refresh_runtime_controls()
         self.combiner.start()
+
+    def run_combine(self):
+        self._start_audio_combiner()
+
+    def run_export_video(self):
+        if not self.bm:
+            return
+
+        video_cover_path = self.bm.get_video_cover_path()
+        if not video_cover_path:
+            QMessageBox.information(self, "?????", "??????? ???????? ???????? ??? ?????.")
+            return
+        self._start_audio_combiner(video_image_path=video_cover_path)
 
     def on_vol(self, v):
         if self.player: self.player.set_volume(v)
@@ -1670,28 +5138,29 @@ class MainWindow(QMainWindow):
     def set_api_keys(self):
         dlg = ApiKeysDialog("\n".join(self.api_keys), self)
         if dlg.exec():
-            self.api_keys = dlg.get_keys()
-            if self.settings_manager is not None:
-                self.settings_manager.save_api_keys(self.api_keys)
-            else:
-                legacy_data = _load_legacy_settings()
-                legacy_data["api_keys"] = self.api_keys
-                with open(LEGACY_SETTINGS_FILE, "w", encoding="utf-8") as file_obj:
-                    json.dump(legacy_data, file_obj, ensure_ascii=False, indent=2)
+            new_keys = dlg.get_keys()
+            self.disabled_api_keys.clear()
+            self._save_api_keys_with_status_preservation(new_keys)
+            self._update_worker_spinbox_limit()
+            self._update_key_state_ui()
 
 
 
     def save_settings(self):
+        if self._loading_settings:
+            return
         data = self._reader_ui_settings_payload()
         if self.settings_manager is not None:
             self.settings_manager.save_ui_state({READER_SETTINGS_KEY: data})
-            return
+        else:
+            legacy_data = _load_legacy_settings()
+            legacy_data.update(data)
+            legacy_data["api_keys"] = self.api_keys
+            with open(LEGACY_SETTINGS_FILE, "w", encoding="utf-8") as file_obj:
+                json.dump(legacy_data, file_obj, ensure_ascii=False, indent=2)
 
-        legacy_data = _load_legacy_settings()
-        legacy_data.update(data)
-        legacy_data["api_keys"] = self.api_keys
-        with open(LEGACY_SETTINGS_FILE, "w", encoding="utf-8") as file_obj:
-            json.dump(legacy_data, file_obj, ensure_ascii=False, indent=2)
+        if self.project_settings_manager is not None:
+            self.project_settings_manager.save_full_session_settings(data)
         return
 
         data = {
@@ -1708,6 +5177,103 @@ class MainWindow(QMainWindow):
 
 
 
+
+    def _refresh_project_settings_manager(self):
+        if SettingsManager is None or not self.bm or not self.bm.book_dir:
+            self.project_settings_manager = None
+            return
+        project_settings_path = os.path.join(self.bm.book_dir, READER_PROJECT_SETTINGS_FILENAME)
+        self.project_settings_manager = SettingsManager(config_file=project_settings_path)
+
+    def _apply_reader_settings(self, data):
+        self._loading_settings = True
+        try:
+            engine_id = data.get("engine", "live")
+            engine_idx = self.combo_engine.findData(engine_id)
+            if engine_idx >= 0:
+                self.combo_engine.setCurrentIndex(engine_idx)
+            else:
+                self.combo_engine.setCurrentIndex(0)
+
+            model_label = data.get("model")
+            if model_label and model_label in [self.combo_model.itemText(i) for i in range(self.combo_model.count())]:
+                self.combo_model.setCurrentText(model_label)
+
+            voice_mode = data.get("voice_mode", "single")
+            if engine_id == "flash_tts":
+                voice_mode_idx = self.combo_voice_mode.findData(voice_mode)
+                if voice_mode_idx >= 0:
+                    self.combo_voice_mode.setCurrentIndex(voice_mode_idx)
+            else:
+                single_idx = self.combo_voice_mode.findData("single")
+                if single_idx >= 0:
+                    self.combo_voice_mode.setCurrentIndex(single_idx)
+
+            voice_id = data.get("voice")
+            if voice_id and voice_id in VOICES_MAP:
+                voice_idx = self.combo_voices.findData(voice_id)
+                if voice_idx >= 0:
+                    self.combo_voices.setCurrentIndex(voice_idx)
+
+            voice_secondary = data.get("voice_secondary")
+            if voice_secondary and voice_secondary in VOICES_MAP:
+                secondary_idx = self.combo_voice_secondary.findData(voice_secondary)
+                if secondary_idx >= 0:
+                    self.combo_voice_secondary.setCurrentIndex(secondary_idx)
+
+            speed_label = data.get("speed")
+            if speed_label in SPEED_PROMPTS:
+                self.combo_speed.setCurrentText(speed_label)
+
+            live_segment_mode = data.get("live_segment_mode", "sentences")
+            live_segment_idx = self.combo_live_segment_mode.findData(live_segment_mode)
+            if live_segment_idx >= 0:
+                self.combo_live_segment_mode.setCurrentIndex(live_segment_idx)
+
+            preprocess_model = data.get("preprocess_model")
+            if preprocess_model and preprocess_model in [self.combo_preprocess_model.itemText(i) for i in range(self.combo_preprocess_model.count())]:
+                self.combo_preprocess_model.setCurrentText(preprocess_model)
+            else:
+                default_preprocess_label = _default_preprocess_model_label(self.preprocess_models_map)
+                if default_preprocess_label:
+                    self.combo_preprocess_model.setCurrentText(default_preprocess_label)
+
+            preprocess_profile = data.get("preprocess_profile")
+            if preprocess_profile and preprocess_profile in [self.combo_preprocess_profile.itemText(i) for i in range(self.combo_preprocess_profile.count())]:
+                self.combo_preprocess_profile.setCurrentText(preprocess_profile)
+
+            pipeline_mode = data.get("pipeline_mode", "auto")
+            pipeline_idx = self.combo_pipeline_mode.findData(pipeline_mode if engine_id == "flash_tts" else "auto")
+            if pipeline_idx >= 0:
+                self.combo_pipeline_mode.setCurrentIndex(pipeline_idx)
+
+            self.preprocess_directive = data.get("preprocess_directive") or DEFAULT_PREPROCESS_DIRECTIVE
+            self.tts_directive = data.get("tts_directive") or DEFAULT_TTS_DIRECTIVE
+
+            chunk_value = data.get("chunk", 2)
+            try:
+                chunk_value = int(chunk_value)
+            except (TypeError, ValueError):
+                chunk_value = 2
+            self.spin_chunk.setValue(max(self.spin_chunk.minimum(), min(chunk_value, self.spin_chunk.maximum())))
+
+            self.chk_mp3.setChecked(data.get("record", True))
+            self.chk_fast.setChecked(data.get("fast", False))
+            self.chk_selected_only.setChecked(bool(data.get("selected_only", False)))
+            self.chk_parallel_single_chapter.setChecked(bool(data.get("parallel_single_chapter", False)))
+
+            self._update_worker_spinbox_limit()
+            worker_count = data.get("worker_count", data.get("num_instances", 1))
+            try:
+                worker_count = int(worker_count)
+            except (TypeError, ValueError):
+                worker_count = 1
+            self.spin_workers.setValue(max(1, min(worker_count, self.spin_workers.maximum())))
+        finally:
+            self._loading_settings = False
+            self._on_chapter_selection_changed()
+            self._refresh_live_segment_controls()
+            self._refresh_runtime_controls()
 
     def load_settings(self):
         legacy_data = _load_legacy_settings()
@@ -1726,9 +5292,40 @@ class MainWindow(QMainWindow):
         else:
             self.api_keys = legacy_data.get("api_keys", [])
 
+        self._prune_invalid_key_states(self.api_keys)
+
+        if self.project_settings_manager is not None:
+            try:
+                project_settings = self.project_settings_manager.load_full_session_settings()
+            except Exception:
+                project_settings = {}
+            if isinstance(project_settings, dict):
+                data.update(project_settings)
+
+        self._apply_reader_settings(data)
+        self._update_key_state_ui()
+        return
+
+        engine_id = data.get("engine", "live")
+        engine_idx = self.combo_engine.findData(engine_id)
+        if engine_idx >= 0:
+            self.combo_engine.setCurrentIndex(engine_idx)
+        else:
+            self.combo_engine.setCurrentIndex(0)
+
         m = data.get("model")
         if m and m in [self.combo_model.itemText(i) for i in range(self.combo_model.count())]:
             self.combo_model.setCurrentText(m)
+
+        voice_mode = data.get("voice_mode", "single")
+        if engine_id == "flash_tts":
+            voice_mode_idx = self.combo_voice_mode.findData(voice_mode)
+            if voice_mode_idx >= 0:
+                self.combo_voice_mode.setCurrentIndex(voice_mode_idx)
+        else:
+            single_idx = self.combo_voice_mode.findData("single")
+            if single_idx >= 0:
+                self.combo_voice_mode.setCurrentIndex(single_idx)
 
         v = data.get("voice")
         if v and v in VOICES_MAP:
@@ -1736,9 +5333,35 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.combo_voices.setCurrentIndex(idx)
 
+        v_secondary = data.get("voice_secondary")
+        if v_secondary and v_secondary in VOICES_MAP:
+            idx = self.combo_voice_secondary.findData(v_secondary)
+            if idx >= 0:
+                self.combo_voice_secondary.setCurrentIndex(idx)
+
         s = data.get("speed")
         if s in SPEED_PROMPTS:
             self.combo_speed.setCurrentText(s)
+
+        preprocess_model = data.get("preprocess_model")
+        if preprocess_model and preprocess_model in [self.combo_preprocess_model.itemText(i) for i in range(self.combo_preprocess_model.count())]:
+            self.combo_preprocess_model.setCurrentText(preprocess_model)
+        else:
+            default_preprocess_label = _default_preprocess_model_label(self.preprocess_models_map)
+            if default_preprocess_label:
+                self.combo_preprocess_model.setCurrentText(default_preprocess_label)
+
+        preprocess_profile = data.get("preprocess_profile")
+        if preprocess_profile and preprocess_profile in [self.combo_preprocess_profile.itemText(i) for i in range(self.combo_preprocess_profile.count())]:
+            self.combo_preprocess_profile.setCurrentText(preprocess_profile)
+
+        pipeline_mode = data.get("pipeline_mode", "auto")
+        pipeline_idx = self.combo_pipeline_mode.findData(pipeline_mode if engine_id == "flash_tts" else "auto")
+        if pipeline_idx >= 0:
+            self.combo_pipeline_mode.setCurrentIndex(pipeline_idx)
+
+        self.preprocess_directive = data.get("preprocess_directive") or DEFAULT_PREPROCESS_DIRECTIVE
+        self.tts_directive = data.get("tts_directive") or DEFAULT_TTS_DIRECTIVE
 
         self.spin_chunk.setValue(data.get("chunk", 2))
         self.chk_mp3.setChecked(data.get("record", True))
