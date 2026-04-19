@@ -22,6 +22,17 @@ from ...utils.settings import SettingsManager
 from ...api import config as api_config
 from collections import defaultdict
 
+
+def sorted_glossary_entries(entries: list[dict]) -> list[dict]:
+    """Стабильно сортирует записи по original, оставляя пустые строки в конце."""
+    return sorted(
+        entries,
+        key=lambda entry: (
+            not str(entry.get("original", "") or "").strip(),
+            str(entry.get("original", "") or "").strip().casefold(),
+        ),
+    )
+
 class GlossaryWidget(QWidget):
     """
     Виджет для управления глоссарием проекта, включая таблицу и кнопки управления.
@@ -140,6 +151,15 @@ class GlossaryWidget(QWidget):
         # Теперь этот метод всегда возвращает полный список
         return self._full_glossary_data
 
+    def _sort_full_glossary_data(self):
+        self._full_glossary_data = sorted_glossary_entries(self._full_glossary_data)
+
+    def _find_entry_index(self, target_entry) -> int | None:
+        for index, entry in enumerate(self._full_glossary_data):
+            if entry is target_entry:
+                return index
+        return None
+
     def set_glossary(self, glossary_data, emit_signal: bool = True):
         self.table.blockSignals(True)
         entries_to_load = []
@@ -171,7 +191,7 @@ class GlossaryWidget(QWidget):
             
             entries_to_load.append(clean_entry)
 
-        self._full_glossary_data = entries_to_load
+        self._full_glossary_data = sorted_glossary_entries(entries_to_load)
         self._load_current_page()
         
         self.table.blockSignals(False)
@@ -255,6 +275,19 @@ class GlossaryWidget(QWidget):
             elif col == 2:
                 entry["note"] = text_value
 
+            if col == 0:
+                self._sort_full_glossary_data()
+                new_index = self._find_entry_index(entry)
+                if new_index is not None:
+                    self.current_page = new_index // self.items_per_page
+                    self._load_current_page()
+                    new_row = new_index % self.items_per_page
+                    if 0 <= new_row < self.table.rowCount():
+                        self.table.selectRow(new_row)
+                        target_item = self.table.item(new_row, 0)
+                        if target_item:
+                            self.table.scrollToItem(target_item)
+
         self.glossary_changed.emit()
         
     def commit_active_editor(self):
@@ -306,7 +339,6 @@ class GlossaryWidget(QWidget):
             self.table.setItem(i, 1, item_translation)
             self.table.setItem(i, 2, item_note)
         
-        self.table.setSortingEnabled(True)
         self.table.blockSignals(False)
         self._update_pagination_controls()
         

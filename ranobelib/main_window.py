@@ -452,6 +452,8 @@ class RanobeUploaderApp(QMainWindow):
     def _return_to_menu(self):
         self._save_settings()
         if callable(self._return_to_menu_handler):
+            self.hide()
+            self.close()
             self._return_to_menu_handler()
             return
         self.close()

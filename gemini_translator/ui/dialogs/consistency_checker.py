@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush
+from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption
 
 from ...core.consistency_engine import ConsistencyEngine
 from ...api.config import _load_providers_config
@@ -45,6 +45,22 @@ ERROR_TYPE_TRANSLATIONS = {
     'typo': 'Опечатка',
     'meta_comment': 'Мета-комментарий'
 }
+
+def configure_wrapped_text_edit(editor: QTextEdit, *, read_only: bool | None = None) -> QTextEdit:
+    """Настраивает QTextEdit для переноса по словам внутри виджета."""
+    if read_only is not None:
+        editor.setReadOnly(read_only)
+    editor.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+    editor.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    return editor
+
+
+def build_changed_line_format() -> QTextCharFormat:
+    """Возвращает более контрастную подсветку изменённых строк."""
+    changed_format = QTextCharFormat()
+    changed_format.setBackground(QColor('#c8e6c9'))
+    changed_format.setForeground(QColor('#0f2411'))
+    return changed_format
 
 
 def _append_fix_trace(trace_file, stage: str, **data):
@@ -371,7 +387,7 @@ class ConsistencyValidatorDialog(QDialog):
         
         # Поле деталей (внизу списка проблем)
         self.problem_info_box = QTextEdit()
-        self.problem_info_box.setReadOnly(True)
+        configure_wrapped_text_edit(self.problem_info_box, read_only=True)
         self.problem_info_box.setMaximumHeight(200) # Увеличено по просьбе
         self.problem_info_box.setPlaceholderText("Выберите проблему для просмотра деталей...")
         # Используем цвета, совместимые с темной темой
@@ -426,7 +442,7 @@ class ConsistencyValidatorDialog(QDialog):
         orig_layout = QVBoxLayout(orig_group)
         orig_layout.setContentsMargins(0, 5, 0, 0)
         self.original_text = QTextEdit()
-        self.original_text.setReadOnly(True)
+        configure_wrapped_text_edit(self.original_text, read_only=True)
         self.original_text.setFont(QFont("Consolas", 10))
         orig_layout.addWidget(self.original_text)
         self.diff_splitter.addWidget(orig_group)
@@ -436,6 +452,7 @@ class ConsistencyValidatorDialog(QDialog):
         fix_layout = QVBoxLayout(fix_group)
         fix_layout.setContentsMargins(0, 5, 0, 0)
         self.corrected_text = QTextEdit()
+        configure_wrapped_text_edit(self.corrected_text)
         self.corrected_text.setFont(QFont("Consolas", 10))
         self.corrected_text.setPlaceholderText("Здесь появится сгенерированный вариант исправления...")
         fix_layout.addWidget(self.corrected_text)
@@ -1546,8 +1563,7 @@ class ConsistencyValidatorDialog(QDialog):
             old_line_counts[line] = old_line_counts.get(line, 0) + 1
 
         seen_new_lines = {}
-        changed_format = QTextCharFormat()
-        changed_format.setBackground(QColor('#c8e6c9'))
+        changed_format = build_changed_line_format()
 
         cursor = self.corrected_text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.Start)
