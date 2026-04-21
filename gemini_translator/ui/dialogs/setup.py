@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QStyle,
     QTableWidget, QTableWidgetItem, QGroupBox, QFormLayout, QHBoxLayout, QHeaderView,
     QScrollArea, QWidget, QTabWidget, QGridLayout,
-    QPlainTextEdit, QComboBox, QSpinBox, QSplitter, QAbstractItemView
+    QPlainTextEdit, QComboBox, QSpinBox, QSplitter, QAbstractItemView, QFrame
 )
 
 from PyQt6.QtCore import QMimeData, pyqtSlot, pyqtSignal, QThread, QItemSelectionModel, QItemSelection
@@ -221,12 +221,12 @@ class InitialSetupDialog(QDialog):
     tasks_changed = pyqtSignal()
     def __init__(self, parent=None, prefill_data=None):
         super().__init__(parent)
-        
+
         # --- Флаги и базовые атрибуты (быстрая инициализация) ---
         self._initial_show_done = False
         self.prefill_data = prefill_data
-        
-        
+
+
         self.setMinimumSize(700, 550) # Компактный размер
         self.setWindowFlags(
             QtCore.Qt.WindowType.Dialog |
@@ -235,22 +235,22 @@ class InitialSetupDialog(QDialog):
             QtCore.Qt.WindowType.WindowCloseButtonHint
         )
         self._apply_initial_geometry()
-        
+
         app = QtWidgets.QApplication.instance()
         self.app = app
-        
+
         self.version = ""
         if app and app.global_version:
             self.version = app.global_version
         self.setWindowTitle(f"Настройка сессии перевода {self.version}")
-        
+
         self.settings_manager = app.get_settings_manager()
         self.context_manager = app.context_manager
         self.bus = app.event_bus
         self.engine = app.engine
         self.engine_thread = app.engine_thread
         self.task_manager = app.task_manager if hasattr(app, 'task_manager') else None
-        
+
         self.selected_file = None
         self.html_files = []
         self.output_folder = None
@@ -262,7 +262,7 @@ class InitialSetupDialog(QDialog):
         self.cpu_performance_index = None
         self.is_fuzzy_disabled_by_system = False
         self.global_settings = None
-        
+
         self.initial_glossary_state = {}
         self.active_session_id = None
         self.this_dialog_started_the_session = False # <<< ДОБАВЬТЕ ЭТУ СТРОКУ
@@ -271,6 +271,7 @@ class InitialSetupDialog(QDialog):
         self._snapshot_autosave_worker = None
         self._snapshot_restore_in_progress = False
         self._snapshot_prompted_projects = set()
+        self._snapshot_save_requested = False
         self._base_glossary_prompt_seen_projects = set()
         self._pending_old_project_cleanup_offer = False
         self._returning_to_main_menu = False
@@ -293,7 +294,7 @@ class InitialSetupDialog(QDialog):
 
         self._snapshot_save_timer = QtCore.QTimer(self)
         self._snapshot_save_timer.setSingleShot(True)
-        self._snapshot_save_timer.setInterval(1800)
+        self._snapshot_save_timer.setInterval(15000)
         self._snapshot_save_timer.timeout.connect(self._save_snapshot_async)
 
         # --- Создание "скелета" UI ---
@@ -301,7 +302,7 @@ class InitialSetupDialog(QDialog):
 
         # --- Подключение к глобальным событиям ---
         app.event_bus.event_posted.connect(self.on_event)
-       
+
 
     def _apply_initial_geometry(self):
         """Задает стартовый размер и позицию до первого показа окна."""
@@ -313,10 +314,10 @@ class InitialSetupDialog(QDialog):
             return
 
         available_geometry = screen.availableGeometry()
-        width = int(self.minimumWidth() * 1.5)
-        width = min(width, int(available_geometry.width() * 0.90))
-        height = int(available_geometry.height() * 0.75)
-        height = min(height, int(available_geometry.height() * 0.90))
+        width = int(self.minimumWidth() * 1.6)
+        width = min(width, int(available_geometry.width() * 0.92))
+        height = int(available_geometry.height() * 0.88)
+        height = min(height, int(available_geometry.height() * 0.92))
 
         # Делаем первичную геометрию заранее, чтобы окно не "отскакивало",
         # если пользователь начинает перетаскивать его сразу после запуска.
@@ -334,13 +335,14 @@ class InitialSetupDialog(QDialog):
         """
         content_layout = QVBoxLayout(self.main_content_widget)
         content_layout.setContentsMargins(10, 10, 10, 0)
-    
+        content_layout.setSpacing(8)
+
         # --- ШАГ 1: СОЗДАЕМ ВСЕ КАСТОМНЫЕ ВИДЖЕТЫ-КОМПОНЕНТЫ ---
         self.paths_widget = ProjectPathsWidget(self)
         self.task_management_widget = TaskManagementWidget(self)
         self.log_widget = LogWidget(self)
         self.glossary_widget = GlossaryWidget(self, settings_manager=self.settings_manager)
-        
+
         self.preset_widget = PresetWidget(
             parent=self, preset_name="Промпт", default_prompt_func=api_config.default_prompt,
             load_presets_func=self.settings_manager.load_named_prompts,
@@ -350,7 +352,7 @@ class InitialSetupDialog(QDialog):
             save_last_preset_func=self.settings_manager.save_last_prompt_preset_name
         )
         self.preset_widget.load_last_session_state()
-        
+
         self.translation_options_widget = TranslationOptionsWidget(self)
         server_manager = self.app.get_server_manager() if hasattr(self.app, 'get_server_manager') else None
         self.model_settings_widget = ModelSettingsWidget(self, settings_manager=self.settings_manager, server_manager=server_manager)
@@ -366,19 +368,19 @@ class InitialSetupDialog(QDialog):
         )
         self.project_actions_widget = ProjectActionsWidget(self)
         self.status_bar = StatusBarWidget(self, event_bus=self.bus, engine=self.engine)
-    
+
         # --- ШАГ 2: СОЗДАЕМ ОБЪЕДИНЕННУЮ ВКЛАДКУ "НАСТРОЙКИ" ---
         settings_tab = QWidget()
         settings_layout = QVBoxLayout(settings_tab)
-        settings_layout.setContentsMargins(5, 5, 5, 5)
-        settings_layout.setSpacing(10)
+        settings_layout.setContentsMargins(4, 4, 4, 4)
+        settings_layout.setSpacing(8)
 
         # 2.1. Группа Ключей и Распределения (Верхняя часть)
         # Сначала создаем виджет распределения, который внедрится в KeyManagementWidget
         distribution_group = QGroupBox("Параллельная обработка")
         dist_controls_layout = QHBoxLayout(distribution_group)
         dist_controls_layout.addWidget(QLabel("Обработчиков:  "))
-        
+
         self.instances_spin = NoScrollSpinBox()
         self.instances_spin.setRange(1, 1)
         self.instances_spin.setToolTip(
@@ -389,11 +391,11 @@ class InitialSetupDialog(QDialog):
         self.instances_spin.valueChanged.connect(self._update_distribution_info_from_widget)
         dist_controls_layout.addWidget(self.instances_spin)
         dist_controls_layout.addStretch()
-        
+
         self.distribution_label = QLabel("…")
-        self.distribution_label.setStyleSheet("color: #90EE90; font-size: 10pt; font-weight: bold;") 
+        self.distribution_label.setStyleSheet("color: #90EE90; font-size: 10pt; font-weight: bold;")
         dist_controls_layout.addWidget(self.distribution_label)
-    
+
         # Теперь создаем сам KeyManagementWidget
         server_manager = self.app.get_server_manager() if hasattr(self.app, 'get_server_manager') else None
         self.key_management_widget = KeyManagementWidget(
@@ -411,7 +413,7 @@ class InitialSetupDialog(QDialog):
         keys_container_layout = QVBoxLayout(keys_container_group)
         keys_container_layout.setContentsMargins(2, 8, 2, 2)
         keys_container_layout.addWidget(self.key_management_widget)
-        
+
         # Добавляем группу ключей наверх (stretch=1, чтобы она занимала все свободное место)
         settings_layout.addWidget(keys_container_group, 1)
 
@@ -422,16 +424,22 @@ class InitialSetupDialog(QDialog):
         self.model_settings_widget.prettify_checkbox.setVisible(True)
         # --- ШАГ 3: СОБИРАЕМ QTabWidget ---
         self.tabs_group = QTabWidget()
+        self.tabs_group.setDocumentMode(True)
         tabs_group = self.tabs_group
-        
+
         # Вкладка 1: Настройки (Объединенная)
-        tabs_group.addTab(settings_tab, "Настройки")
-        
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        settings_scroll.setWidget(settings_tab)
+        tabs_group.addTab(settings_scroll, "Настройки")
+
         # Вкладка 2: Список Задач + Оптимизация
         tasks_tab_container = QWidget()
         tasks_tab_layout = QVBoxLayout(tasks_tab_container)
-        tasks_tab_layout.setContentsMargins(5, 5, 5, 5)
-        tasks_tab_layout.addWidget(self.task_management_widget, 1) 
+        tasks_tab_layout.setContentsMargins(4, 4, 4, 4)
+        tasks_tab_layout.setSpacing(8)
+        tasks_tab_layout.addWidget(self.task_management_widget, 1)
         tasks_tab_layout.addWidget(self.translation_options_widget, 0)
         tabs_group.addTab(tasks_tab_container, "Список Задач")
 
@@ -442,45 +450,58 @@ class InitialSetupDialog(QDialog):
         tabs_group.addTab(self.manual_translation_widget, "Ручной перевод")
         self.auto_translate_tab_index = tabs_group.addTab(self.auto_translate_widget, "Автоперевод")
         tabs_group.currentChanged.connect(self._on_main_tab_changed)
-        
+
         # --- ШАГ 4: КОМПОНОВКА ОСНОВНОГО ОКНА ---
         content_layout.addWidget(self.paths_widget)
         content_layout.addWidget(tabs_group, 1)
-        
+
         # Нижняя панель с кнопками
-        bottom_panel_layout = QHBoxLayout()
-        bottom_panel_layout.setContentsMargins(6, 6, 6, 6)
-        
-        self.use_project_settings_btn = QtWidgets.QPushButton("🌐 Глобальные настройки")
+        action_bar = QFrame(self.main_content_widget)
+        action_bar.setObjectName("actionBar")
+        bottom_panel_layout = QHBoxLayout(action_bar)
+        bottom_panel_layout.setContentsMargins(10, 8, 10, 8)
+        bottom_panel_layout.setSpacing(10)
+
+        self.use_project_settings_btn = QtWidgets.QPushButton("Глобальные настройки")
+        self.use_project_settings_btn.setObjectName("contextToggleButton")
         self.use_project_settings_btn.setCheckable(True)
         self.use_project_settings_btn.setChecked(False)
         self.use_project_settings_btn.setVisible(False)
-        
-        self.start_btn = QPushButton("🚀 Старт")
-        self.stop_btn = QPushButton("⏹ Плавный стоп")
+
+        self.start_btn = QPushButton("Старт перевода")
+        self.start_btn.setObjectName("primaryActionButton")
+        self.start_btn.setMinimumHeight(36)
+        self.stop_btn = QPushButton("Плавный стоп")
+        self.stop_btn.setObjectName("dangerActionButton")
+        self.stop_btn.setMinimumHeight(36)
         self.stop_btn.setEnabled(False)
-        self.dry_run_btn = QPushButton("🧪 Пробный запуск")
-        self.close_btn = QPushButton("Выход")
+        self.dry_run_btn = QPushButton("Пробный запуск")
+        self.dry_run_btn.setObjectName("compactActionButton")
+        self.dry_run_btn.setMinimumHeight(36)
+        self.close_btn = QPushButton("В меню")
+        self.close_btn.setObjectName("ghostActionButton")
+        self.close_btn.setMinimumHeight(36)
         self._set_stop_button_mode(False)
-        
-        bottom_panel_layout.addWidget(self.project_actions_widget)
+
+        bottom_panel_layout.addWidget(self.project_actions_widget, 1)
         bottom_panel_layout.addWidget(self.use_project_settings_btn)
-        
+
         right_buttons_layout = QHBoxLayout()
+        right_buttons_layout.setSpacing(8)
         right_buttons_layout.addStretch()
         right_buttons_layout.addWidget(self.dry_run_btn)
         right_buttons_layout.addWidget(self.start_btn)
         right_buttons_layout.addWidget(self.stop_btn)
         right_buttons_layout.addWidget(self.close_btn)
-        
+
         bottom_panel_layout.addLayout(right_buttons_layout)
-        content_layout.addLayout(bottom_panel_layout)
-        
+        content_layout.addWidget(action_bar)
+
         content_layout.addWidget(self.status_bar)
-        
+
         self._connect_signals()
         self.check_ready()
-        
+
     def _connect_signals(self):
         """Подключает все сигналы и слоты для виджетов диалога."""
         self.use_project_settings_btn.toggled.connect(self._toggle_project_settings_mode)
@@ -489,12 +510,12 @@ class InitialSetupDialog(QDialog):
         self.paths_widget.chapters_reselection_requested.connect(self.reselect_chapters)
         self.paths_widget.swap_file_requested.connect(self._on_swap_file_requested)
         self.project_actions_widget.open_history_requested.connect(self._open_project_history)
-        self.project_actions_widget.sync_project_requested.connect(self._run_project_sync) 
-        
+        self.project_actions_widget.sync_project_requested.connect(self._run_project_sync)
+
         self.translation_options_widget.settings_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=False))
         self.translation_options_widget.task_size_spin.valueChanged.connect(self._refresh_auto_translate_runtime_context)
         self.task_management_widget.tasks_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=True))
-        
+
         self.model_settings_widget.recalibrate_requested.connect(self._calibrate_cpu)
         self.model_settings_widget.model_combo.currentIndexChanged.connect(self._refresh_auto_translate_runtime_context)
         self.model_settings_widget.settings_changed.connect(self._refresh_auto_translate_runtime_context)
@@ -503,7 +524,7 @@ class InitialSetupDialog(QDialog):
         self.key_management_widget.provider_combo.currentIndexChanged.connect(self._update_instances_spinbox_limit)
         self.key_management_widget.provider_combo.currentIndexChanged.connect(self.check_ready)
         self.key_management_widget.provider_combo.currentIndexChanged.connect(self._refresh_auto_translate_runtime_context)
-        
+
         # --- ИЕРАРХИЯ Подключаемся только к TaskManagementWidget ---
         self.task_management_widget.tasks_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=True))
         self.task_management_widget.reorder_requested.connect(self._handle_task_reorder)
@@ -520,13 +541,13 @@ class InitialSetupDialog(QDialog):
         self.task_management_widget.validation_requested.connect(self.open_translation_validator)
         self.task_management_widget.backup_restore_requested.connect(self._handle_backup_restore)
         # --------------------------------------------------------------------------
-        
+
         self.start_btn.clicked.connect(self._start_translation)
         self.stop_btn.clicked.connect(self._stop_translation)
         self.dry_run_btn.clicked.connect(self.perform_dry_run)
         self.close_btn.clicked.connect(self._return_to_main_menu_from_button)
         self.project_actions_widget.build_epub_requested.connect(self._open_epub_builder_standalone)
-    
+
         self.model_settings_widget.settings_changed.connect(self._mark_settings_as_dirty)
         self.translation_options_widget.settings_changed.connect(self._mark_settings_as_dirty)
         self.key_management_widget.active_keys_changed.connect(self._mark_settings_as_dirty)
@@ -539,7 +560,7 @@ class InitialSetupDialog(QDialog):
         self.auto_translate_widget.open_validator_requested.connect(self.open_translation_validator)
         self.auto_translate_widget.open_consistency_requested.connect(self.open_ai_consistency_checker)
         self._refresh_auto_translate_runtime_context()
-    
+
     def _on_main_tab_changed(self, index: int):
         if index == getattr(self, 'glossary_tab_index', -1):
             QtCore.QTimer.singleShot(0, self._maybe_offer_base_glossaries_for_empty_project)
@@ -675,7 +696,7 @@ class InitialSetupDialog(QDialog):
     def _create_glossary_tab_content(self) -> QWidget:
         """Просто возвращает уже созданный GlossaryWidget."""
         return self.glossary_widget
-    
+
     def _create_prompt_tab_content(self) -> QWidget:
         """Просто возвращает уже созданный PresetWidget."""
         return self.preset_widget
@@ -754,19 +775,19 @@ class InitialSetupDialog(QDialog):
     def _set_stop_button_mode(self, hard_stop: bool):
         self._hard_stop_enabled = hard_stop
         if hard_stop:
-            self.stop_btn.setText("❌ Стоп")
+            self.stop_btn.setText("Экстренный стоп")
             self.stop_btn.setToolTip("Немедленно остановить сессию.")
         else:
-            self.stop_btn.setText("⏹ Плавный стоп")
+            self.stop_btn.setText("Плавный стоп")
             self.stop_btn.setToolTip("Не брать новые задачи и дождаться завершения уже взятых.")
-    
+
     def _load_initial_data(self):
         """
         Выполняет всю долгую инициализацию виджетов после того,
         как окно было показано.
         """
         print("[DEBUG] Запуск отложенной загрузки данных для InitialSetupDialog…")
-        
+
         # 1. Первоначальная синхронизация провайдера и ключей.
         #    Это может читать с диска, поэтому делаем это здесь.
         self.key_management_widget.provider_combo.currentIndexChanged.emit(
@@ -778,11 +799,11 @@ class InitialSetupDialog(QDialog):
         # 3. Проверяем, нужно ли автозаполнение из валидатора
         if self.prefill_data and self.prefill_data.get("is_restarting"):
             self.autofill_from_validator()
-        
+
         # 4. Финальная проверка состояния кнопок после загрузки всех данных
         self.check_ready()
         print("[DEBUG] Отложенная загрузка данных для InitialSetupDialog завершена.")
-    
+
     # --------------------------------------------------------------------
     # МЕТОДЫ СОЗДАНИЯ ЭЛЕМЕНТОВ UI
     # --------------------------------------------------------------------
@@ -803,25 +824,25 @@ class InitialSetupDialog(QDialog):
             self.distribution_label.setText("…")
             self.distribution_label.setStyleSheet("color: grey;")
             return
-    
+
         session_capacity = self._get_available_session_capacity()
         self.instances_spin.setMaximum(session_capacity if session_capacity > 0 else 1)
-        
+
         num_instances = self.instances_spin.value()
-        
+
         if session_capacity == 0 or num_instances == 0:
             self.distribution_label.setText("Нет активной сессии")
             self.distribution_label.setStyleSheet("color: orange; font-weight: bold;")
             return
-            
+
         if num_instances > num_chapters:
             self.distribution_label.setText(f"Клиентов ({num_instances}) > глав ({num_chapters})")
             self.distribution_label.setStyleSheet("color: orange; font-weight: bold;")
             return
-        
+
         # Расчет среднего с округлением вверх
         avg_chapters = math.ceil(num_chapters / num_instances)
-        
+
         text = f"≈ {avg_chapters} глав / обработчик"
         self.distribution_label.setText(text)
         self.distribution_label.setStyleSheet("color: #90EE90; font-size: 10pt; font-weight: bold;")
@@ -844,15 +865,15 @@ class InitialSetupDialog(QDialog):
         # Просто создаем и запускаем наш новый, умный диалог.
         dialog = GeoBlockDialog(self)
         dialog.exec()
-    
+
     def create_glossary_tab(self, tabs_group):
         # 1. Создаем экземпляр нашего виджета, передавая ему settings_manager
         self.glossary_widget = GlossaryWidget(self, settings_manager=self.settings_manager)
-        
+
         # 3. Добавляем его как вкладку
         tabs_group.addTab(self.glossary_widget, "Глоссарий и Контекст Проекта")
-    
-    
+
+
     def save_ui_state(self, ui_state_dict):
         """
         Загружает текущие настройки, обновляет их значениями из UI
@@ -861,7 +882,7 @@ class InitialSetupDialog(QDialog):
         """
         with self.file_lock:
             settings = self.load_settings()
-            
+
             # Обновляем только те ключи, которые приходят из UI
             # (используем префикс 'last_', как в save_last_settings)
             settings['last_model'] = ui_state_dict.get('model')
@@ -882,7 +903,7 @@ class InitialSetupDialog(QDialog):
 
             # Сохраняем обновленный словарь
             return self.save_settings(settings)
-            
+
     def create_prompt_tab(self, tabs_group):
         # 1. Создаем экземпляр нашего виджета с полной конфигурацией
         self.preset_widget = PresetWidget(
@@ -898,7 +919,7 @@ class InitialSetupDialog(QDialog):
         self.preset_widget.load_last_session_state()
         # 3. Добавляем его как вкладку
         tabs_group.addTab(self.preset_widget, "Промпт (опционально)")
-        
+
 
     def _update_recommendations(self):
         """
@@ -907,7 +928,7 @@ class InitialSetupDialog(QDialog):
         """
         if not self.model_settings_widget or not self.translation_options_widget:
             return
-        
+
         model_name = self.model_settings_widget.model_combo.currentText()
         self.translation_options_widget.update_recommendations_from_model(model_name)
         self._refresh_auto_translate_runtime_context()
@@ -933,16 +954,16 @@ class InitialSetupDialog(QDialog):
             current_model_settings=self.model_settings_widget.get_settings(),
         )
 
-    
+
     def _update_distribution_info(self):
         num_chapters = len(self.html_files)
         if num_chapters == 0: self.distribution_label.setText("Сначала выберите главы."); return
         num_instances = self.instances_spin.value()
         if num_instances > num_chapters: self.distribution_label.setText(f"<font color='orange'><b>Предупреждение:</b> Обработчиков ({num_instances}) больше, чем заданий ({num_chapters}).</font>"); return
         base, extra = num_chapters // num_instances, num_chapters % num_instances
-        
+
         avg_chapters = math.ceil(num_chapters / num_instances)
-        
+
         text = f"≈ {avg_chapters} глав / обработчик"
         self.distribution_label.setText(text)
 
@@ -954,11 +975,11 @@ class InitialSetupDialog(QDialog):
         Устаревший метод, используйте глобальную функцию calculate_potential_output_size.
         """
         return calculate_potential_output_size(html_content, is_cjk)
-    
+
     # --------------------------------------------------------------------
     # ОБЩАЯ ЛОГИКА И ОБРАБОТЧИКИ
     # --------------------------------------------------------------------
-    
+
     def autofill_from_validator(self):
         """Заполняет поля данными, полученными из валидатора."""
         if not self.prefill_data: return
@@ -968,18 +989,18 @@ class InitialSetupDialog(QDialog):
 
         if epub_path and chapters:
             self.selected_file = epub_path
-            
+
             self.paths_widget.set_file_path(epub_path)
-            
-            
+
+
             self._process_selected_file(pre_selected_chapters=chapters)
-        
+
             if not self.output_folder:
                 self.output_folder = os.path.dirname(epub_path)
-                
+
                 self.paths_widget.set_folder_path(self.output_folder)
-                
-    
+
+
     @pyqtSlot(dict)
     def on_event(self, event_data: dict):
         """
@@ -988,31 +1009,31 @@ class InitialSetupDialog(QDialog):
         """
         event_name = event_data.get('event')
         data = event_data.get('data', {})
-        
+
         if self.is_blocked_by_child_dialog and event_name != 'tasks_for_retry_ready':
             return
-        
+
         # Этот виджет теперь реагирует только на старт и финиш сессии
         if event_name == 'session_started':
             self.is_session_active = True
             # total_tasks теперь обрабатывается в StatusBarWidget
             self._set_controls_enabled(False)
-            self._save_snapshot_async()
+            self._save_snapshot_async(force=True)
             return
         if event_name == 'assembly_finished' and self.is_session_active == False:
             if self.project_manager:
                 self.project_manager.reload_data_from_disk()
-        
+
         if event_name == 'session_finished':
             self._shutdown_reason = data.get('reason')
             self._log_session_id = data.get('session_id_log')
             QtCore.QMetaObject.invokeMethod(
-                self, "_on_session_finished", 
+                self, "_on_session_finished",
                 QtCore.Qt.ConnectionType.QueuedConnection
             )
             self.this_dialog_started_the_session = False
             return
-    
+
         if event_name == 'tasks_for_retry_ready':
             epub_path, chapter_paths = data.get('epub_path'), data.get('chapter_paths')
             if epub_path and chapter_paths: self.add_files_for_retry(epub_path, chapter_paths)
@@ -1025,7 +1046,7 @@ class InitialSetupDialog(QDialog):
         # Логика для geoblock остается здесь, так как она показывает модальное окно
         if self.is_session_active and event_name == 'geoblock_detected':
             self._handle_geoblock_detected()
-    
+
     def reselect_chapters(self):
         """
         Повторно открывает диалог выбора глав для уже выбранного файла.
@@ -1035,14 +1056,14 @@ class InitialSetupDialog(QDialog):
             # Эта проверка на всякий случай, если кнопка будет видна, когда не должна
             QMessageBox.warning(self, "Ошибка", "Сначала выберите EPUB файл.")
             return
-        
+
         # --- НОВЫЙ БЛОК: Принудительная синхронизация ---
         if self.project_manager:
             self.project_manager.reload_data_from_disk()
             print("[INFO] Карта проекта принудительно обновлена перед выбором глав.")
         # --- КОНЕЦ НОВОГО БЛОКА ---
         self._process_selected_file()
-    
+
 
     def _process_selected_file(self, pre_selected_chapters=None):
         """
@@ -1055,8 +1076,8 @@ class InitialSetupDialog(QDialog):
         try:
             success, selected_files = EpubHtmlSelectorDialog.get_selection(
                 parent=self,
-                epub_filename=self.selected_file, 
-                output_folder=self.output_folder, 
+                epub_filename=self.selected_file,
+                output_folder=self.output_folder,
                 pre_selected_chapters=pre_selected_chapters if pre_selected_chapters is not None else self.html_files,
                 project_manager=self.project_manager
             )
@@ -1079,7 +1100,7 @@ class InitialSetupDialog(QDialog):
                 f"--- Полный Traceback ---\n{tb_str}" # <--- Детали
             )
             print(f"[ERROR] Локальная ошибка в _process_selected_file:\n{error_message}")
-            
+
             # Просто вызываем наш "патченный" метод
             QtWidgets.QMessageBox.critical(self, "Ошибка обработки EPUB", error_message)
             # --- КОНЕЦ БЛОКА ---
@@ -1087,7 +1108,7 @@ class InitialSetupDialog(QDialog):
             self.html_files = []
             self.paths_widget.set_file_path(None)
             self.check_ready()
-    
+
     def _mark_settings_as_dirty(self):
         """Слот, который устанавливает флаг 'грязного' состояния и обновляет заголовок окна."""
         if self.is_settings_dirty or self.is_session_active:
@@ -1170,8 +1191,8 @@ class InitialSetupDialog(QDialog):
     def _save_current_ui_settings(self):
         """Сохраняет текущее состояние UI в активный файл настроек."""
         self._save_global_ui_settings()
-    
-    
+
+
     @QtCore.pyqtSlot()
     def _continue_loading_project_and_update_all(self):
         """
@@ -1181,7 +1202,7 @@ class InitialSetupDialog(QDialog):
         # Этот метод теперь просто "пробрасывает" вызов дальше,
         # обеспечивая единую точку входа для разных сценариев.
         self._process_selected_file()
-    
+
     def _ask_and_filter_chapters(self):
         """
         Показывает диалог с опциями фильтрации для уже существующего списка глав.
@@ -1197,11 +1218,11 @@ class InitialSetupDialog(QDialog):
         msg_box.setWindowTitle("Обновление списка глав")
         msg_box.setIcon(QMessageBox.Icon.Question)
         msg_box.setText("Проект уже содержит переведенные главы. Что делать с текущим списком?")
-        
+
         btn_skip_all = msg_box.addButton("Пропустить все переведенные", QMessageBox.ButtonRole.ActionRole)
         btn_skip_validated = msg_box.addButton("Пропустить только 'готовые'", QMessageBox.ButtonRole.ActionRole)
         btn_keep_all = msg_box.addButton("Оставить все как есть", QMessageBox.ButtonRole.AcceptRole)
-        
+
         msg_box.exec()
         clicked_button = msg_box.clickedButton()
 
@@ -1210,45 +1231,45 @@ class InitialSetupDialog(QDialog):
         elif clicked_button == btn_skip_validated:
             self._filter_validated_chapters(silent=True)
         # Если нажата "Оставить все", ничего не делаем
-    
-    
+
+
     def _handle_project_initialization(self, select_mode=True):
         """
         Главный оркестратор. Вызывается, когда и файл, и папка, и главы заданы.
         Версия 2.0: Корректно обрабатывает создание подпапки и перемещает оригинал.
         """
         import shutil
-    
+
         file_path = self.selected_file
         folder_path = self.output_folder
         pending_cleanup_offer = self._pending_old_project_cleanup_offer
         self._pending_old_project_cleanup_offer = False
-        
+
         history = self.settings_manager.load_project_history()
         is_known_project = any(p.get('epub_path') == file_path and p.get('output_folder') == folder_path for p in history)
         is_folder_reused = False
-    
+
         # Изначально считаем, что будем работать с выбранными путями
         effective_folder = folder_path.replace('\\', '/')
         effective_file_path = file_path.replace('\\', '/')
-    
+
         if not is_known_project:
             is_folder_reused = any(p.get('output_folder') == folder_path and p.get('epub_path') != file_path for p in history)
             main_text = f"Вы выбрали папку <b>'{os.path.basename(folder_path)}'</b> для нового проекта."
             if is_folder_reused:
                 main_text += "<br><br><b style='color: orange;'>Внимание:</b> Эта папка уже используется для другого проекта. Настоятельно рекомендуется создать подпапку."
             base_name = os.path.splitext(os.path.basename(file_path))[0]
-            
+
             dialog = ProjectFolderDialog(self, main_text, base_name)
             if not dialog.exec():
                 self.output_folder = None
                 self.paths_widget.set_folder_path(None)
                 self._on_project_data_changed()
                 return
-            
+
             choice = dialog.choice
             copy_original = dialog.copy_file_checked # Теперь это флаг "переместить"
-    
+
             if choice == 'subfolder':
                 subfolder_path = os.path.join(folder_path, base_name)
                 try:
@@ -1258,16 +1279,16 @@ class InitialSetupDialog(QDialog):
                 except OSError as e:
                     QMessageBox.critical(self, "Ошибка", f"Не удалось создать подпапку:\n{e}")
                     return
-            
+
             if copy_original: # Теперь это "переместить"
                 try:
                     # os.path.join сам все нормализует
                     destination_path = os.path.join(effective_folder, os.path.basename(file_path))
-                    
+
                     if os.path.abspath(file_path) != os.path.abspath(destination_path):
                         shutil.move(file_path, destination_path)
                         # Обновляем путь к файлу, с которым будет работать сессия
-                        effective_file_path = destination_path 
+                        effective_file_path = destination_path
                         print(f"[INFO] Оригинальный файл перемещен в папку проекта: {destination_path}")
                 except (shutil.Error, OSError) as e:
                     QMessageBox.critical(self, "Ошибка перемещения", f"Не удалось переместить исходный файл:\n{e}")
@@ -1278,17 +1299,17 @@ class InitialSetupDialog(QDialog):
 
         # Добавляем в историю уже финальные, эффективные пути
         self.settings_manager.add_to_project_history(effective_file_path, effective_folder)
-    
+
         # Финально устанавливаем правильные пути в состояние диалога и UI
         self.selected_file = effective_file_path
         self.output_folder = effective_folder
         self.project_manager = TranslationProjectManager(self.output_folder)
         self.paths_widget.set_file_path(self.selected_file)
         self.paths_widget.set_folder_path(self.output_folder)
-        
+
         if self.html_files:
             self._ask_and_filter_chapters()
-    
+
         self._on_project_data_changed()
 
     def _update_cjk_options_for_widgets(self):
@@ -1305,11 +1326,11 @@ class InitialSetupDialog(QDialog):
         if not compositions:
             self.model_settings_widget.update_cjk_options_availability(enabled=True, error=True)
             return
-            
+
         is_any_cjk = any(comp.get('is_cjk', False) for comp in compositions.values())
-        
+
         self.model_settings_widget.update_cjk_options_availability(enabled=True, is_cjk_recommended=is_any_cjk)
-    
+
     @pyqtSlot(str)
     def on_file_selected(self, file_path):
         """Слот с логикой "разрыва связи" при смене файла."""
@@ -1344,10 +1365,10 @@ class InitialSetupDialog(QDialog):
         if self.selected_file and self.output_folder and not switching_to_new_source:
             temp_pm = TranslationProjectManager(self.output_folder)
             cache_data = temp_pm.load_size_cache()
-            
+
             if cache_data:
                 _, is_cache_valid = get_epub_chapter_sizes_with_cache(temp_pm, file_path, return_cache_status=True)
-                
+
                 if not is_cache_valid:
                     QMessageBox.information(self, "Связь с проектом разорвана",
                                             f"Выбранный файл '{os.path.basename(file_path)}' не соответствует проекту в папке '{os.path.basename(self.output_folder)}'.\n\n"
@@ -1361,29 +1382,29 @@ class InitialSetupDialog(QDialog):
                     if self.task_manager:
                         self.task_manager.clear_all_queues()
                     # --- КОНЕЦ ОЧИСТКИ ---
-    
+
         # Устанавливаем новый выбранный файл
         self.selected_file = file_path
         self.paths_widget.set_file_path(file_path)
-        
+
         # Запускаем дальнейшую обработку
         if self.output_folder:
             self._handle_project_initialization()
         else:
             self._process_selected_file()
         self.check_ready()
-        
+
     def on_folder_selected(self, folder):
         """Слот с логикой "разрыва связи" при смене папки."""
         if not folder: return
-    
+
         if self.selected_file and self.output_folder:
             temp_pm = TranslationProjectManager(folder)
             cache_data = temp_pm.load_size_cache()
-            
+
             if cache_data:
                 _, is_cache_valid = get_epub_chapter_sizes_with_cache(temp_pm, self.selected_file, return_cache_status=True)
-                
+
                 if not is_cache_valid:
                     QMessageBox.information(self, "Связь с проектом разорвана",
                                             f"Папка '{os.path.basename(folder)}' содержит проект для другого файла.\n\n"
@@ -1397,10 +1418,10 @@ class InitialSetupDialog(QDialog):
                     if self.task_manager:
                         self.task_manager.clear_all_queues()
                     # --- КОНЕЦ ОЧИСТКИ ---
-    
+
         self.output_folder = folder
         self.paths_widget.set_folder_path(folder)
-    
+
         if self.selected_file:
             self._handle_project_initialization()
         else:
@@ -1417,7 +1438,7 @@ class InitialSetupDialog(QDialog):
 
         # 1. Выбор нового файла
         new_file_source, _ = QFileDialog.getOpenFileName(
-            self, "Выберите НОВУЮ версию EPUB файла", 
+            self, "Выберите НОВУЮ версию EPUB файла",
             os.path.dirname(self.selected_file), "EPUB файлы (*.epub)"
         )
         if not new_file_source or os.path.abspath(new_file_source) == os.path.abspath(self.selected_file):
@@ -1426,10 +1447,10 @@ class InitialSetupDialog(QDialog):
         # 2. Анализ совместимости
         self.status_bar.set_permanent_message("Анализ совместимости глав...")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
-        
+
         from ...utils.epub_tools import compare_epubs_for_swap, get_epub_chapter_order
         comparison_results = compare_epubs_for_swap(self.selected_file, new_file_source)
-        
+
         QtWidgets.QApplication.restoreOverrideCursor()
         self.status_bar.clear_message()
 
@@ -1441,7 +1462,7 @@ class InitialSetupDialog(QDialog):
         matches = [p for p, s in comparison_results.items() if s == 'match']
         mismatches = [p for p, s in comparison_results.items() if s == 'mismatch']
         new_chaps = [p for p, s in comparison_results.items() if s == 'new']
-        
+
         msg = QMessageBox(self)
         msg.setWindowTitle("Переезд на новую версию файла")
         msg.setIcon(QMessageBox.Icon.Question)
@@ -1458,7 +1479,7 @@ class InitialSetupDialog(QDialog):
         btn_proceed = msg.addButton("Да, выполнить переезд", QMessageBox.ButtonRole.AcceptRole)
         msg.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
         msg.exec()
-        
+
         if msg.clickedButton() != btn_proceed:
             return
 
@@ -1474,15 +1495,15 @@ class InitialSetupDialog(QDialog):
 
             # Б. Архивируем старый (переименовываем)
             os.rename(self.selected_file, old_version_path)
-            
+
             # В. Перемещаем новый файл на место старого (или рядом, если имена разные)
             # Мы будем использовать путь в папке проекта для нового файла
             target_new_path = os.path.join(os.path.dirname(self.selected_file), os.path.basename(new_file_source))
-            
+
             # Если пользователь выбрал файл, который и так лежит в этой папке (но под другим именем)
             if os.path.abspath(new_file_source) != os.path.abspath(target_new_path):
                 shutil.copy2(new_file_source, target_new_path)
-            
+
             # Запоминаем новый путь
             new_active_file = target_new_path
 
@@ -1493,7 +1514,7 @@ class InitialSetupDialog(QDialog):
         # 4. ЧИСТКА КАРТЫ ПРОЕКТА И ДИСКА
         self.project_manager.reload_data_from_disk()
         files_deleted_count = 0
-        
+
         # Удаляем переводы для несовпавших глав
         for path in mismatches:
             versions = self.project_manager.get_versions_for_original(path)
@@ -1502,7 +1523,7 @@ class InitialSetupDialog(QDialog):
                 if os.path.exists(full_path):
                     try: os.remove(full_path); files_deleted_count += 1
                     except: pass
-            
+
             # Сносим ветку из JSON
             with self.project_manager.lock:
                 current_data = self.project_manager._load_unsafe()
@@ -1528,22 +1549,22 @@ class InitialSetupDialog(QDialog):
         # 5. ОБНОВЛЕНИЕ UI
         self.selected_file = new_active_file
         self.paths_widget.set_file_path(self.selected_file)
-        
+
         # Обновляем историю проектов
         self.settings_manager.add_to_project_history(self.selected_file, self.output_folder)
-        
+
         # Берем все главы из нового файла как текущий выбор
         self.html_files = get_epub_chapter_order(self.selected_file)
-        
+
         # Полная перерисовка
         self._on_project_data_changed(offer_snapshot_restore=False)
-        
-        QMessageBox.information(self, "Переезд завершен", 
+
+        QMessageBox.information(self, "Переезд завершен",
             f"Новый файл: {os.path.basename(new_active_file)}\n"
             f"Старая версия сохранена как: {os.path.basename(old_version_path)}\n\n"
             f"Удалено неактуальных переводов: {files_deleted_count}.")
 
-      
+
     def _on_folder_sync_finished(self, is_project_ready, message):
         """
         Слот, который вызывается после завершения фоновой синхронизации папки.
@@ -1559,17 +1580,17 @@ class InitialSetupDialog(QDialog):
             self.paths_widget.set_folder_path(None)
             self.check_ready()
             return
-            
+
         # 1. Загружаем ассеты проекта (например, глоссарий).
         self._process_project_folder(self.output_folder)
 
         # 2. Вызываем "умный" диалог, который предложит отфильтровать список глав, если это необходимо.
         self._ask_and_filter_chapters()
-        
+
         # 3. Вызываем единый "оркестратор" для обновления всего UI на основе
         #    (возможно, измененного) списка глав.
         self._on_project_data_changed()
-    
+
     def _handle_backup_restore(self):
         """
         Обрабатывает нажатие на кнопку 'Очередь...'.
@@ -1588,7 +1609,7 @@ class InitialSetupDialog(QDialog):
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setWindowTitle("Управление очередью задач")
         msg_box.setText("Вы можете сохранить текущее состояние очереди на диск или загрузить ранее сохраненное.")
-        
+
         if has_snapshot:
             # Получаем время изменения файла для инфо
             import datetime
@@ -1601,9 +1622,9 @@ class InitialSetupDialog(QDialog):
         btn_save = msg_box.addButton("💾 Сохранить текущую", QtWidgets.QMessageBox.ButtonRole.ActionRole)
         btn_load = msg_box.addButton("📂 Загрузить с диска", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
         btn_cancel = msg_box.addButton("Отмена", QtWidgets.QMessageBox.ButtonRole.RejectRole)
-        
+
         btn_load.setEnabled(has_snapshot)
-        
+
         msg_box.exec()
         clicked = msg_box.clickedButton()
 
@@ -1614,17 +1635,17 @@ class InitialSetupDialog(QDialog):
                 QtWidgets.QMessageBox.information(self, "Успех", "Очередь задач успешно сохранена в файл проекта.")
             else:
                 QtWidgets.QMessageBox.critical(self, "Ошибка", "Не удалось сохранить очередь.")
-                
+
         elif clicked == btn_load:
             # ЗАГРУЗКА
             try:
                 self._restore_queue_snapshot(snapshot_path, show_success=True)
-                
+
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось загрузить очередь:\n{e}")
                 # Если загрузка провалилась (например, хеш не совпал), лучше очистить текущий UI от греха подальше,
                 # или оставить как есть, если ошибка была перехвачена до деструктивных действий.
-                # В load_queue_snapshot база восстанавливается атомарно, так что если исключение вылетело - 
+                # В load_queue_snapshot база восстанавливается атомарно, так что если исключение вылетело -
                 # скорее всего база в памяти осталась старой (если ошибка до backup) или пустой.
                 # Обновим UI на всякий случай.
                 self._on_project_data_changed()
@@ -1641,6 +1662,9 @@ class InitialSetupDialog(QDialog):
             return
         if not (self.selected_file and self.output_folder and self.engine and self.engine.task_manager):
             return
+        self._snapshot_save_requested = True
+        if self._snapshot_autosave_worker and self._snapshot_autosave_worker.isRunning():
+            return
         self._snapshot_save_timer.start()
 
     def _on_snapshot_autosave_finished(self):
@@ -1652,22 +1676,27 @@ class InitialSetupDialog(QDialog):
         ):
             self._write_snapshot_ui_settings(snapshot_path, self._get_full_ui_settings())
         self._snapshot_autosave_worker = None
+        if self._snapshot_save_requested and self.is_session_active:
+            self._snapshot_save_timer.start()
 
-    def _save_snapshot_async(self):
+    def _save_snapshot_async(self, force=False):
         snapshot_path = self._get_snapshot_path()
         if not snapshot_path or not self.selected_file:
             return
         if not (self.engine and self.engine.task_manager):
             return
-        if self._snapshot_autosave_worker and self._snapshot_autosave_worker.isRunning():
-            if not self.is_session_active:
-                self._snapshot_save_timer.start()
+        if not force and not self._snapshot_save_requested:
             return
+        if self._snapshot_autosave_worker and self._snapshot_autosave_worker.isRunning():
+            self._snapshot_save_requested = True
+            return
+        self._snapshot_save_requested = False
 
         self._snapshot_autosave_worker = TaskDBWorker(
             self.engine.task_manager.save_queue_snapshot,
             snapshot_path,
-            self.selected_file
+            self.selected_file,
+            True
         )
         self._snapshot_autosave_worker.finished.connect(self._on_snapshot_autosave_finished)
         self._snapshot_autosave_worker.start()
@@ -1996,7 +2025,7 @@ class InitialSetupDialog(QDialog):
 
         # 2. Создаем и запускаем "грузчика"
         self.db_worker = TaskDBWorker(target_method, *args)
-        
+
         # 3. После того как грузчик закончит, разблокируем UI
         self.db_worker.finished.connect(self._on_db_worker_finished)
         self.db_worker.start()
@@ -2006,13 +2035,13 @@ class InitialSetupDialog(QDialog):
         self.status_bar.clear_message()
         self.task_management_widget.setEnabled(True)
 
-    
+
     def _handle_task_reorder(self, action: str, task_ids: list):
         self._emit_task_manipulation_signal(action, task_ids)
-    
+
     def _handle_task_duplication(self, task_ids: list):
         self._emit_task_manipulation_signal('duplicate', task_ids)
-    
+
     def _handle_task_removal(self, task_ids: list):
         self._emit_task_manipulation_signal('remove', task_ids)
 
@@ -2158,7 +2187,7 @@ class InitialSetupDialog(QDialog):
             for chapter_path in chapters_to_filter:
                 base_name = os.path.splitext(os.path.basename(chapter_path))[0]
                 internal_dir = os.path.dirname(chapter_path)
-                
+
                 is_translated = False
                 for suffix in all_possible_suffixes:
                     full_disk_path = os.path.join(self.project_manager.project_folder, internal_dir, f"{base_name}{suffix}")
@@ -2170,14 +2199,14 @@ class InitialSetupDialog(QDialog):
                             relative_path = os.path.relpath(full_disk_path, self.project_manager.project_folder)
                             untracked.append((chapter_path, suffix, relative_path))
                         break # Нашли перевод, дальше не ищем
-                
+
                 if not is_translated:
                     chapters_to_keep.append(chapter_path)
-            
+
             return chapters_to_keep, untracked
 
         filtered_chapters, original_count = self._flatten_and_filter_tasks(filter_logic)
-        
+
         if filtered_chapters is None: # Если была ошибка
             return
 
@@ -2185,7 +2214,7 @@ class InitialSetupDialog(QDialog):
             QMessageBox.information(self, "Нет изменений", "Не найдено переведенных глав для скрытия.")
         else:
             QMessageBox.information(self, "Готово", "Список задач отфильтрован и пересобран.")
-       
+
     def _flatten_and_filter_tasks(self, filter_function):
         """
         Универсальный оркестратор фильтрации.
@@ -2212,17 +2241,17 @@ class InitialSetupDialog(QDialog):
                 chapters_in_task.append(task_payload[2])
             elif task_type == 'epub_batch':
                 chapters_in_task.extend(task_payload[2])
-            
+
             for chapter in chapters_in_task:
                 if chapter not in seen_chapters:
                     ordered_unique_chapters.append(chapter)
                     seen_chapters.add(chapter)
-        
+
         original_chapter_count = len(ordered_unique_chapters)
 
         # Шаг 2: Фильтрация
         self.project_manager.reload_data_from_disk()
-        
+
         # Функция filter_function вернет отфильтрованный список глав и список "беспризорников"
         filtered_chapters, untracked_files = filter_function(ordered_unique_chapters)
         if untracked_files:
@@ -2232,11 +2261,11 @@ class InitialSetupDialog(QDialog):
         # Шаг 3: Пересборка
         # Обновляем self.html_files - это наш новый источник правды для UI
         self.html_files = filtered_chapters
-        
+
         # Запускаем единый "оркестратор" для полного и консистентного
         # обновления всего UI на основе нового списка глав.
         self._on_project_data_changed(offer_snapshot_restore=False)
-        
+
         # Возвращаем результат для отображения сообщения пользователю.
         return filtered_chapters, original_chapter_count
 
@@ -2290,7 +2319,7 @@ class InitialSetupDialog(QDialog):
             )
 
         return True
-       
+
     def _filter_validated_tasks(self):
         """Фильтрует задачи, убирая 'готовые'."""
         VALIDATED_SUFFIX = "_validated.html"
@@ -2299,7 +2328,7 @@ class InitialSetupDialog(QDialog):
             # Мы можем просто переиспользовать существующий _is_chapter_validated!
             untracked = []
             chapters_to_keep = [
-                ch for ch in chapters_to_filter 
+                ch for ch in chapters_to_filter
                 if not self._is_chapter_validated(ch, VALIDATED_SUFFIX, untracked)
             ]
             return chapters_to_keep, untracked
@@ -2333,7 +2362,7 @@ class InitialSetupDialog(QDialog):
                 relative_path = os.path.relpath(full_disk_path, self.project_manager.project_folder)
                 untracked_list.append((chapter_path, validated_suffix, relative_path))
             return True # Глава "готова"
-            
+
         return False # Файл не найден, глава не "готова"
 
     def _ask_and_run_migration(self, migrator, file_count):
@@ -2342,7 +2371,7 @@ class InitialSetupDialog(QDialog):
         msg_box.setWindowTitle("Обнаружен старый проект")
         msg_box.setIcon(QMessageBox.Icon.Question)
         msg_box.setText(f"В выбранной папке найдено {file_count} файлов в старом 'плоском' формате.")
-        
+
         msg_box.setInformativeText(
             "Программа может попытаться автоматически преобразовать этот проект в новую структурированную систему "
             "(с вложенными папками и файлом-картой 'translation_map.json').\n\n"
@@ -2350,23 +2379,23 @@ class InitialSetupDialog(QDialog):
             "<b>Рекомендуется сделать резервную копию папки перед миграцией.</b>\n\n"
             "Выполнить миграцию?"
         )
-        
+
         migrate_button = msg_box.addButton("Да, мигрировать", QMessageBox.ButtonRole.YesRole)
         cancel_button = msg_box.addButton("Нет, пропустить", QMessageBox.ButtonRole.NoRole)
-        
+
         msg_box.exec()
-        
+
         if msg_box.clickedButton() == migrate_button:
             moved, errors = migrator.run_migration()
-            
+
             summary_message = f"Миграция завершена.\n\n- Успешно перемещено и зарегистрировано: {moved}\n- Ошибок (файлы оставлены на месте): {errors}"
-            
+
             if errors > 0:
                 QMessageBox.warning(self, "Миграция завершена с ошибками", summary_message)
             else:
                 QMessageBox.information(self, "Миграция завершена успешно", summary_message)
 
-   
+
     def _copy_original_chapters(self):
         """
         Копирует оригиналы выбранных глав, управляя пакетной обработкой
@@ -2376,11 +2405,11 @@ class InitialSetupDialog(QDialog):
         if not selected_rows:
             self._show_custom_message("Нет выбора", "Пожалуйста, выберите задачи в списке.", QMessageBox.Icon.Information)
             return
-    
+
         if not all([self.selected_file, self.output_folder, self.project_manager]):
             self._show_custom_message("Ошибка проекта", "Для операции нужен EPUB и папка проекта.", QMessageBox.Icon.Warning)
             return
-    
+
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Способ копирования")
         msg_box.setIcon(QMessageBox.Icon.Question)
@@ -2389,19 +2418,19 @@ class InitialSetupDialog(QDialog):
             "<b>'Скопировать как есть'</b>: Создает точную копию исходного файла.\n\n"
             "<b>'Обработать по глоссарию'</b>: Находит в тексте термины из глоссария и заменяет их на переводы. Полезно для подготовки к ручному переводу."
         )
-        
+
         btn_as_is = msg_box.addButton("Скопировать как есть", QMessageBox.ButtonRole.ActionRole)
         btn_process = msg_box.addButton("Обработать по глоссарию", QMessageBox.ButtonRole.AcceptRole)
         msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-        
+
         glossary_list = self.glossary_widget.get_glossary()
         if not glossary_list:
             btn_process.setEnabled(False)
             btn_process.setToolTip("Кнопка неактивна, так как глоссарий проекта пуст.")
-    
+
         msg_box.exec()
         clicked_button = msg_box.clickedButton()
-    
+
         if clicked_button == btn_as_is:
             process_with_glossary = False
             mode_text = "(копии оригиналов)"
@@ -2410,34 +2439,34 @@ class InitialSetupDialog(QDialog):
             mode_text = "(обработано по глоссарию)"
         else:
             return
-    
+
         provider_id = self.key_management_widget.get_selected_provider()
         provider_config = api_config.api_providers().get(provider_id, {})
         file_suffix = provider_config.get('file_suffix')
-    
+
         if not file_suffix:
             self._show_custom_message("Ошибка конфигурации", f"Не удалось определить суффикс для провайдера '{provider_id}'.", QMessageBox.Icon.Critical)
             return
-    
+
         selected_tasks = []
         chapters_to_process = set()
         for row in selected_rows:
             task_item = self.task_management_widget.chapter_list_widget.table.item(row, 0)
             if not task_item: continue
-            
+
             task_tuple = task_item.data(QtCore.Qt.ItemDataRole.UserRole)
             selected_tasks.append(task_tuple)
-            
+
             task_type = task_tuple[1][0]
             if task_type in ('epub', 'epub_chunk'):
                 chapters_to_process.add(task_tuple[1][2])
             elif task_type == 'epub_batch':
                 chapters_to_process.update(task_tuple[1][2])
-    
+
         if not chapters_to_process:
             self._show_custom_message("Нечего обрабатывать", "Выбранные задачи не содержат глав.", QMessageBox.Icon.Warning)
             return
-    
+
         replacer = None
         if process_with_glossary:
             full_glossary_data = {
@@ -2450,38 +2479,38 @@ class InitialSetupDialog(QDialog):
             }
             if full_glossary_data:
                 replacer = GlossaryReplacer(full_glossary_data)
-    
+
         copied_count, skipped_count, errors = 0, 0, []
         successfully_processed_chapters = set()
-    
+
         try:
             if replacer:
                 replacer.prepare()
-    
+
             with zipfile.ZipFile(open(self.selected_file, 'rb'), 'r') as epub_zip:
                 for chapter_path in chapters_to_process:
                     try:
                         base_name = os.path.splitext(os.path.basename(chapter_path))[0]
                         internal_dir = os.path.dirname(chapter_path)
-                        
+
                         new_filename = f"{base_name}{file_suffix}"
                         destination_dir = os.path.join(self.output_folder, internal_dir)
                         os.makedirs(destination_dir, exist_ok=True)
                         full_dest_path = os.path.join(destination_dir, new_filename)
-    
+
                         if os.path.exists(full_dest_path):
                             skipped_count += 1
                         else:
                             html_str = epub_zip.read(chapter_path).decode('utf-8', 'ignore')
                             content_to_write = (replacer.process_html(html_str).encode('utf-8') if replacer else html_str.encode('utf-8'))
-                            
+
                             with open(full_dest_path, 'wb') as f:
                                 f.write(content_to_write)
                             copied_count += 1
-                        
+
                         relative_path = os.path.relpath(full_dest_path, self.output_folder)
                         self.project_manager.register_translation(chapter_path, file_suffix, relative_path)
-                        
+
                         successfully_processed_chapters.add(chapter_path)
                     except Exception as e:
                         errors.append(f"Ошибка для главы '{chapter_path}': {e}")
@@ -2491,7 +2520,7 @@ class InitialSetupDialog(QDialog):
         finally:
             if replacer:
                 replacer.cleanup()
-    
+
         for task_tuple in selected_tasks:
             task_type = task_tuple[1][0]
             chapters_in_task = []
@@ -2499,24 +2528,24 @@ class InitialSetupDialog(QDialog):
                 chapters_in_task.append(task_tuple[1][2])
             elif task_type == 'epub_batch':
                 chapters_in_task.extend(task_tuple[1][2])
-    
+
             if all(ch in successfully_processed_chapters for ch in chapters_in_task):
                 self.task_manager.task_done("UI_ACTION", task_tuple)
-    
+
         total_processed = copied_count + skipped_count
         summary_text = f"Успешно обработано {total_processed} глав {mode_text}:"
         informative_text = f"- Скопировано новых: {copied_count}\n- Пропущено (уже существуют): {skipped_count}"
-        
+
         if errors:
             informative_text += f"\n\nПроизошли ошибки ({len(errors)}):\n" + "\n".join(errors[:3])
             self._show_custom_message("Завершено с ошибками", summary_text, QMessageBox.Icon.Warning, informative_text, button_text="Принял")
         else:
             self._show_custom_message("Готово", summary_text, QMessageBox.Icon.Information, informative_text, button_text="Отлично")
-    
+
     def _get_full_ui_settings(self):
         """Собирает полный 'слепок' настроек из всех релевантных виджетов (БЕЗ глоссария)."""
         settings = self.get_settings()
-        
+
         settings.update(self.translation_options_widget.get_settings())
         settings['auto_translation'] = self.auto_translate_widget.get_settings()
         settings['active_keys_by_provider'] = {
@@ -2524,17 +2553,17 @@ class InitialSetupDialog(QDialog):
             for provider_id, keys in self.key_management_widget.current_active_keys_by_provider.items()
             if keys
         }
-        
+
         # Удаляем данные, которые не должны сохраняться как "настройки"
         settings.pop('selected_chapters', None)
         settings.pop('file_path', None)
         settings.pop('output_folder', None)
         settings.pop('full_glossary_data', None)
         settings.pop('project_manager', None)
-        
+
         return settings
-        
-        
+
+
     def _apply_full_ui_settings(self, settings: dict):
         """
         Применяет полный 'слепок' настроек ко всем виджетам (БЕЗ глоссария),
@@ -2560,7 +2589,7 @@ class InitialSetupDialog(QDialog):
             auto_translation_settings = settings.get('auto_translation')
             if isinstance(auto_translation_settings, dict):
                 self.auto_translate_widget.set_settings(auto_translation_settings)
-            
+
             if 'custom_prompt' in settings:
                 self.preset_widget.set_prompt(settings['custom_prompt'])
 
@@ -2656,19 +2685,19 @@ class InitialSetupDialog(QDialog):
     def _save_project_settings_only(self):
         """Сохраняет только настройки UI в файл проекта."""
         if not self.output_folder: return
-        
+
         project_settings_path = os.path.join(self.output_folder, "project_settings.json")
         manager_to_save = SettingsManager(config_file=project_settings_path)
         manager_to_save.save_full_session_settings(self._get_full_ui_settings())
-        
+
         self.is_settings_dirty = False
         self.setWindowTitle(self.windowTitle().replace("*", ""))
         print("[SETTINGS] Настройки проекта сохранены.")
 
-    
-    
-    
-    
+
+
+
+
     def _save_project_glossary_only(self):
         """Сохраняет только глоссарий в файл проекта и обновляет 'чистое' состояние."""
         if not self.output_folder: return
@@ -2678,10 +2707,10 @@ class InitialSetupDialog(QDialog):
         try:
             with open(project_glossary_path, 'w', encoding='utf-8') as f:
                 json.dump(current_glossary, f, ensure_ascii=False, indent=2, sort_keys=True)
-            
+
             # --- ИСПРАВЛЕНИЕ: Создаем независимую копию списка для фиксации состояния ---
             self.initial_glossary_state = [item.copy() for item in current_glossary]
-            
+
             print("[SETTINGS] Глоссарий проекта сохранен.")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить глоссарий проекта: {e}")
@@ -2694,42 +2723,37 @@ class InitialSetupDialog(QDialog):
             return
         self._save_project_settings_only()
         self._save_project_glossary_only()
-        
+
     def check_ready(self):
         """
         Проверяет, все ли условия выполнены для запуска, и обновляет
         состояние и СТИЛЬ всех кнопок управления.
         Версия 2.6: Раздельная логика для перевода и генерации глоссария.
         """
-        
+
         # --- НОВАЯ ЗАЩИТА: Синхронизация с реальностью ---
         if self._check_and_sync_active_session():
             # Если мы обнаружили активную сессию, UI уже заблокирован внутри метода синхронизации.
             # Нам не нужно проверять валидность полей для старта. Выходим.
             return
-            
+
         if self.is_session_active:
             return
 
         if self._auto_followup_running or self._auto_glossary_running:
             self.start_btn.setEnabled(False)
-            self.start_btn.setStyleSheet("")
             return
 
         # --- Условие для основного перевода (требует ключи) ---
         num_active_keys = len(self.key_management_widget.get_active_keys())
         can_start_translation = all([
-            self.selected_file, 
-            self.output_folder, 
-            self.html_files, 
+            self.selected_file,
+            self.output_folder,
+            self.html_files,
             num_active_keys > 0
         ])
-        
+
         self.start_btn.setEnabled(can_start_translation)
-        if can_start_translation:
-            self.start_btn.setStyleSheet("background-color: #2ECC71; color: #ffffff;")
-        else:
-            self.start_btn.setStyleSheet("")
 
         # --- Условие для генерации глоссария (НЕ требует ключи здесь) ---
         can_generate_glossary = bool(self.selected_file and self.output_folder and self.html_files)
@@ -2738,15 +2762,15 @@ class InitialSetupDialog(QDialog):
         # --- Остальные проверки ---
         can_dry_run = bool(self.selected_file and self.html_files)
         self.dry_run_btn.setEnabled(can_dry_run)
-        
+
         can_validate_or_build = bool(self.selected_file and self.output_folder)
         self.task_management_widget.set_validation_enabled(can_validate_or_build)
         self.project_actions_widget.set_build_epub_enabled(can_validate_or_build)
         self.project_actions_widget.set_sync_enabled(can_validate_or_build)
-        
+
         if hasattr(self, 'instances_spin'):
             self._update_distribution_info_from_widget()
-    
+
     def _run_project_sync(self):
         """Запускает синхронизацию проекта в фоновом потоке."""
         if not self.project_manager: return
@@ -2758,12 +2782,12 @@ class InitialSetupDialog(QDialog):
         self.wait_dialog.setText("Идет анализ проекта…")
         self.wait_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
         self.wait_dialog.setModal(True)
-        
+
         migrator = ProjectMigrator(self.output_folder, self.selected_file, self.project_manager)
-        
+
         self.sync_thread = SyncThread(migrator, parent_widget=self)
         self.sync_thread.finished_sync.connect(self._on_sync_finished)
-        
+
         self.sync_thread.start()
         self.wait_dialog.show()
 
@@ -2771,11 +2795,11 @@ class InitialSetupDialog(QDialog):
         """Обрабатывает результат фоновой синхронизации."""
         if hasattr(self, 'wait_dialog') and self.wait_dialog:
             self.wait_dialog.accept()
-    
+
         if not is_project_ready:
             QMessageBox.warning(self, "Операция прервана", message)
             return
-            
+
         QMessageBox.information(self, "Синхронизация", message)
 
         # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
@@ -2783,7 +2807,7 @@ class InitialSetupDialog(QDialog):
         # который обновит список задач и UI на основе свежих данных,
         # не заставляя пользователя заново выбирать главы.
         self._on_project_data_changed()
-    
+
     def _update_instances_spinbox_limit(self):
         """
         Этот слот вызывается ТОЛЬКО при изменении списка активных сессий в UI.
@@ -2791,20 +2815,20 @@ class InitialSetupDialog(QDialog):
         """
         if self.is_session_active:
             return # Не трогаем spinbox во время активной сессии!
-        
+
         session_capacity = self._get_available_session_capacity()
-        
-        # Устанавливаем новый максимум. QSpinBox АВТОМАТИЧЕСКИ уменьшит текущее значение, 
-        # если оно больше максимума. Нам не нужно делать это вручную через setValue, 
+
+        # Устанавливаем новый максимум. QSpinBox АВТОМАТИЧЕСКИ уменьшит текущее значение,
+        # если оно больше максимума. Нам не нужно делать это вручную через setValue,
         # так как это может сбить "память" виджета при кратковременных просадках максимума.
         self.instances_spin.setMaximum(session_capacity if session_capacity > 0 else 1)
-        
+
         # Обновляем текстовую метку с распределением, так как она тоже зависит от этого.
         self._update_distribution_info_from_widget()
-    
+
     def _filter_all_translated_chapters(self, silent=False):
         """
-        Фильтрует self.html_files, оставляя только те главы, для которых НЕТ 
+        Фильтрует self.html_files, оставляя только те главы, для которых НЕТ
         ни одной версии перевода в карте проекта.
         """
         if not self.project_manager or not self.html_files:
@@ -2820,10 +2844,10 @@ class InitialSetupDialog(QDialog):
         # Если после фильтрации ничего не осталось
         if not chapters_to_keep and not silent:
             QMessageBox.information(self, "Все переведено", "Все выбранные главы уже имеют хотя бы одну версию перевода. Список будет очищен.")
-        
+
         # Обновляем основной список глав
         self.html_files = chapters_to_keep
-        
+
         # Показываем сообщение, только если мы не в "тихом" режиме
         if not silent:
             if chapters_to_keep:
@@ -2842,7 +2866,7 @@ class InitialSetupDialog(QDialog):
         """
         Собирает настройки и отправляет команду на запуск сессии.
         """
-        
+
         if self._check_and_sync_active_session():
             # Если метод вернул True, значит сессия УЖЕ шла.
             # Мы только что обновили UI (включили Стоп, выключили Старт).
@@ -2886,7 +2910,7 @@ class InitialSetupDialog(QDialog):
             self._auto_log(f"{auto_model_warning} Использую модель из общих настроек.", force=True)
         if auto_settings.get('enabled') and not is_auto_restart and auto_model_name:
             self._auto_log(f"Модель основного автопрогона: {auto_model_name}.", force=True)
-        
+
         # 1. Проверяем, существуют ли задачи, заглядывая напрямую в TaskManager
         tasks_exist = self.engine and self.engine.task_manager and self.engine.task_manager.has_pending_tasks()
 
@@ -2894,10 +2918,10 @@ class InitialSetupDialog(QDialog):
         if not all([self.selected_file, tasks_exist, self.output_folder, self.key_management_widget.get_active_keys()]):
             QMessageBox.warning(self, "Ошибка", "Необходимо выбрать файл, задачи, папку и активную сессию сервиса.")
             return
-        
+
         if self.engine and self.engine.task_manager:
             self.engine.task_manager.release_held_tasks()
-        
+
         # 3. Получаем настройки. В них больше нет 'selected_chapters'.
         settings = self.get_settings()
         auto_settings = settings.get('auto_translation', {})
@@ -2913,7 +2937,7 @@ class InitialSetupDialog(QDialog):
         session_model_id = (settings.get('model_config') or {}).get('id')
         if session_model_id:
             self.key_management_widget.set_current_model(session_model_id)
-        
+
         # 4. Проверяем существование файла (эта проверка остается важной)
         original_epub_path = settings.get('file_path')
         if not original_epub_path or not os.path.exists(original_epub_path):
@@ -2956,11 +2980,11 @@ class InitialSetupDialog(QDialog):
                 self._reset_auto_workflow_state()
         else:
             self._auto_followup_running = False
-        
+
         # 6. Отправляем событие на запуск сессии
         self.this_dialog_started_the_session = True
         self._post_event(name='start_session_requested', data={'settings': settings})
-        
+
         # 7. Обновляем UI
         self.start_btn.setEnabled(False)
         if is_auto_restart:
@@ -2990,7 +3014,7 @@ class InitialSetupDialog(QDialog):
                 self._post_event('log_message', {'message': "[SYSTEM] Отправка запроса на плавную остановку сессии…"})
                 self._post_event('soft_stop_requested')
                 self._set_stop_button_mode(True)
-    
+
     @pyqtSlot()
     def _on_session_finished(self):
         """
@@ -3002,7 +3026,7 @@ class InitialSetupDialog(QDialog):
                 self.engine.task_manager.release_held_tasks()
 
             # --- Кнопка dry_run теперь сбрасывается всегда ---
-            self.dry_run_btn.setText("🧪 Пробный запуск")
+            self.dry_run_btn.setText("Пробный запуск")
 
             self._post_event('log_message', {'message': "[SYSTEM] Получен сигнал завершения. Очистка интерфейса…"})
             if self.project_manager:
@@ -3050,10 +3074,10 @@ class InitialSetupDialog(QDialog):
                 pass
 
         QtCore.QMetaObject.invokeMethod(
-            self, "_finalize_session_state", 
+            self, "_finalize_session_state",
             QtCore.Qt.ConnectionType.QueuedConnection
         )
-    
+
     @pyqtSlot()
     def _finalize_session_state(self):
         """Этот слот вызывается асинхронно для безопасного сброса флага сессии."""
@@ -3061,7 +3085,7 @@ class InitialSetupDialog(QDialog):
             reason = getattr(self, '_shutdown_reason', '')
             self.is_session_active = False
             self._snapshot_save_timer.stop()
-            self._save_snapshot_async()
+            self._save_snapshot_async(force=True)
             self._post_event('log_message', {'message': "[SYSTEM] Интерфейс полностью разблокирован."})
             self.check_ready() # Теперь вызываем проверку, когда флаг точно сброшен
 
@@ -3087,8 +3111,8 @@ class InitialSetupDialog(QDialog):
                 del self._shutdown_reason
             if hasattr(self, '_log_session_id'):
                 del self._log_session_id
-    
-    
+
+
     def _open_filter_packaging_dialog(self):
         """
         Открывает диалог для умной пакетной подготовки отфильтрованных глав.
@@ -3103,7 +3127,7 @@ class InitialSetupDialog(QDialog):
 
         filtered_chapters = set()
         successful_chapters = set()
-        
+
         successful_map = {}
         if self.project_manager:
             for original, versions in self.project_manager.get_full_map().items():
@@ -3112,7 +3136,7 @@ class InitialSetupDialog(QDialog):
                         full_path = os.path.join(self.project_manager.project_folder, rel_path)
                         if os.path.exists(full_path):
                             successful_map[original] = full_path
-                            break 
+                            break
 
         # 2. Итерируемся по актуальному состоянию
         # ВАЖНО: распаковываем details (третий элемент), чтобы проверить ошибки
@@ -3144,18 +3168,18 @@ class InitialSetupDialog(QDialog):
             path: composition.get('total_size', 0)
             for path, composition in self.translation_options_widget.chapter_compositions.items()
         }
-        
+
         if not real_chapter_sizes:
              QMessageBox.warning(self, "Ошибка", "Не удалось получить данные о размерах глав. Попробуйте перезагрузить проект.")
              return
-            
+
         # 4. Создаем и запускаем диалог
         dialog = FilterPackagingDialog(
             filtered_chapters=list(filtered_chapters),
             successful_chapters=list(successful_chapters),
             recommended_size=recommended_size,
             epub_path=self.selected_file,
-            real_chapter_sizes=real_chapter_sizes, 
+            real_chapter_sizes=real_chapter_sizes,
             parent=self
         )
 
@@ -3177,7 +3201,7 @@ class InitialSetupDialog(QDialog):
             data = []
 
         plain_payloads = []
-        
+
         # Создаем "прививку" от фильтров: 2 ошибки CONTENT_FILTER
         # Это сигнал для воркера использовать безопасный (атомарный) режим.
         artificial_history = {'errors': {'CONTENT_FILTER': 2}}
@@ -3187,25 +3211,25 @@ class InitialSetupDialog(QDialog):
             # В этом случае мы не можем легко внедрить историю, так как TaskPreparer внутри.
             # Но обычно диалог фильтрации возвращает payloads (Тип 2).
             self.html_files = data
-            self._prepare_and_display_tasks(clean_rebuild=True) 
+            self._prepare_and_display_tasks(clean_rebuild=True)
 
         elif result_type == 'payloads':
-            # Тип 2: Готовые пейлоады. 
+            # Тип 2: Готовые пейлоады.
             plain_payloads = data
-            
+
             # Обновляем UI счетчик глав
             all_chapters_in_payloads = set()
             for payload in plain_payloads:
                 if payload[0] == 'epub_batch':
                     all_chapters_in_payloads.update(payload[2])
-            
+
             self.html_files = sorted(list(all_chapters_in_payloads), key=extract_number_from_path)
             self.paths_widget.update_chapters_info(len(self.html_files))
-            
+
             # Напрямую перезаписываем очередь в TaskManager с ВАКЦИНАЦИЕЙ
             self.task_manager.set_pending_tasks(plain_payloads, initial_history=artificial_history)
             self.translation_options_widget._update_info_text()
-        
+
         # Общие действия после обработки
         self._post_event('log_message', {'message': f"[INFO] Сформированы задачи для обхода фильтров. Активирован безопасный режим (Content Filter x2)."})
         self.task_management_widget.set_retry_filtered_button_visible(False)
@@ -3216,11 +3240,11 @@ class InitialSetupDialog(QDialog):
         Централизованно включает/выключает все элементы управления на время перевода.
         """
         is_session_active = not enabled
-        
+
         # Кнопки Старт/Стоп
         self.start_btn.setEnabled(not is_session_active)
         self.stop_btn.setEnabled(is_session_active)
-        
+
         # Эти виджеты блокируются полностью
         widgets_to_toggle = [
             self.paths_widget,
@@ -3235,20 +3259,17 @@ class InitialSetupDialog(QDialog):
         ]
         for widget in widgets_to_toggle:
             widget.setEnabled(not is_session_active)
-            
+
         # А этот виджет переводится в специальный режим
         self.task_management_widget.set_session_mode(is_session_active)
-        
+
         if not enabled:
             # Сессия НАЧАЛАСЬ
-            self.stop_btn.setStyleSheet("background-color: #C0392B; color: #ffffff;")
-            self.start_btn.setStyleSheet("")
+            self._set_stop_button_mode(self._hard_stop_enabled)
         else:
             # Сессия ЗАВЕРШИЛАСЬ
             self._set_stop_button_mode(False)
-            self.stop_btn.setStyleSheet("")
-            # --- НАША НОВАЯ СТРОКА ---
-            self.dry_run_btn.setText("🧪 Пробный запуск") # Возвращаем кнопке исходный текст
+            self.dry_run_btn.setText("Пробный запуск")
 
 
     @pyqtSlot(str, object, bool, str, str, str)
@@ -3257,7 +3278,7 @@ class InitialSetupDialog(QDialog):
         task_info, _ = (task_info_result, None)
         if isinstance(task_info_result, tuple) and len(task_info_result) == 2:
             task_info, _ = task_info_result
-        
+
         self.task_management_widget.update_task_status(task_info, final_status)
 
         # Обновляем счетчики
@@ -3271,20 +3292,20 @@ class InitialSetupDialog(QDialog):
         текущий список задач и обновляет весь UI.
         """
         if self.selected_file != epub_path:
-            QMessageBox.warning(self, "Конфликт проектов", 
+            QMessageBox.warning(self, "Конфликт проектов",
                                 "Главы для повтора относятся к другому EPUB файлу. "
                                 "Пожалуйста, сначала загрузите соответствующий проект.")
             return
 
         # 1. Заменяем текущий список выбранных глав на новый
         self.html_files = chapter_paths
-        
+
         # 2. Логируем действие
         self._post_event('log_message', {'message': f"[INFO] Загружено {len(chapter_paths)} глав для повторного перевода из Валидатора."})
 
         # 3. Полностью обновляем UI на основе нового списка глав
         self._on_project_data_changed()
-        
+
         # Перепроверяем готовность к запуску
         self.check_ready()
 
@@ -3295,10 +3316,10 @@ class InitialSetupDialog(QDialog):
         if not history:
             QMessageBox.information(self, "История пуста", "Вы еще не запускали ни одного перевода.")
             return
-    
+
         # Передаем settings_manager в диалог
         dialog = ProjectHistoryDialog(history, self.settings_manager, self)
-        
+
         if dialog.exec():
             # Эта часть кода сработает, только если пользователь выбрал проект
             # и нажал "Загрузить". Удаление уже было сохранено внутри диалога.
@@ -3365,7 +3386,7 @@ class InitialSetupDialog(QDialog):
                 history = [p for p in history if p.get("output_folder") != output_folder]
                 self.settings_manager.save_project_history(history)
             return
-        
+
         print("[INFO] Загрузка проекта из истории…")
 
         # --- НАЧАЛО НОВОЙ КЛЮЧЕВОЙ ЛОГИКИ ---
@@ -3387,7 +3408,7 @@ class InitialSetupDialog(QDialog):
         self.paths_widget.set_file_path(epub_path)
         self.paths_widget.set_folder_path(output_folder)
         self.project_manager = TranslationProjectManager(self.output_folder)
-        
+
         # Запускаем процесс выбора глав. Дальнейшее обновление UI произойдет в колбэках.
         # Теперь это безопасно, так как self.html_files гарантированно либо пуст, либо актуален.
         self._process_selected_file()
@@ -3401,7 +3422,7 @@ class InitialSetupDialog(QDialog):
         """
         if not no_log:
             print("[INFO] Запуск ручной калибровки CPU на реальных данных проекта…")
-        
+
         current_glossary_list = self.glossary_widget.get_glossary()
         if not current_glossary_list or not self.html_files:
             QMessageBox.warning(self, "Недостаточно данных", "Для калибровки необходимо выбрать EPUB с главами и загрузить глоссарий.")
@@ -3413,7 +3434,7 @@ class InitialSetupDialog(QDialog):
             entry.get('original', ''): {'rus': entry.get('rus', ''), 'note': entry.get('note', '')}
             for entry in glossary_sample_list if entry.get('original')
         }
-        
+
         text_sample = ""
         if self.html_files and self.selected_file:
             try:
@@ -3430,35 +3451,35 @@ class InitialSetupDialog(QDialog):
             text_sample = "placeholder " * (BENCHMARK_TEXT_SIZE // 12)
 
         filter_instance = SmartGlossaryFilter()
-        
+
         # 1. Получаем ВСЕ актуальные настройки фильтрации из UI.
         current_threshold = self.model_settings_widget.fuzzy_threshold_spin.value()
         use_jieba_for_test = self.model_settings_widget.use_jieba_glossary_checkbox.isChecked()
 
         start_time = time.perf_counter()
-        
+
         # 2. Вызываем главный метод-оркестратор, а не его внутреннюю часть.
         #    Это гарантирует, что мы тестируем всю цепочку оптимизаций.
         settings = self.get_settings()
         self.context_manager.update_settings(settings)
         sim_map = self.context_manager.similarity_map
-        
+
         filter_instance.filter_glossary_for_text(
-            full_glossary=glossary_sample_dict, 
-            text=text_sample, 
+            full_glossary=glossary_sample_dict,
+            text=text_sample,
             fuzzy_threshold=current_threshold,
             use_jieba_for_glossary_search=use_jieba_for_test,
             similarity_map=sim_map
         )
-        
+
         end_time = time.perf_counter()
-        
+
         time_taken = end_time - start_time
         if time_taken < 0.001: time_taken = 0.001
 
         num_operations = len(glossary_sample_dict) * len(text_sample)
         self.cpu_performance_index = num_operations / time_taken
-        
+
         # 3. Добавляем в лог все использованные параметры для полной прозрачности.
         fuzzy_mode_info = f"Fuzzy порог {current_threshold}%" if current_threshold < 100 else "Fuzzy выключен"
         if not no_log:
@@ -3468,7 +3489,7 @@ class InitialSetupDialog(QDialog):
         self._update_fuzzy_status_display()
         if no_log == True:
             QtCore.QTimer.singleShot(600, lambda: self._calibrate_cpu(no_log=False))
-    
+
     @QtCore.pyqtSlot()
     def _update_fuzzy_status_display(self):
         """
@@ -3483,7 +3504,7 @@ class InitialSetupDialog(QDialog):
         # --- Получаем все необходимые данные ---
         glossary_size = len(self.glossary_widget.get_glossary())
         rpm = self.model_settings_widget.rpm_spin.value()
-        
+
         # --- НАЧАЛО КЛЮЧЕВОГО ИСПРАВЛЕНИЯ ---
         # 1. Получаем количество параллельных клиентов из spinbox'а.
         num_clients = self.instances_spin.value()
@@ -3497,23 +3518,23 @@ class InitialSetupDialog(QDialog):
         elif self.html_files:
             total_size = sum(self.translation_options_widget.chapter_compositions.get(f, {}).get('total_size', 0) for f in self.html_files)
             avg_task_size = total_size / len(self.html_files) if self.html_files else 0
-        
+
         # --- Проверки и расчеты ---
         if glossary_size == 0 or rpm == 0 or avg_task_size == 0 or num_clients == 0:
             return
 
         num_operations = glossary_size * avg_task_size
         estimated_time = num_operations / self.cpu_performance_index
-        
+
         # --- НАЧАЛО КЛЮЧЕВОГО ИСПРАВЛЕНИЯ ---
         # 2. Рассчитываем ОБЩУЮ пропускную способность и РЕАЛЬНЫЙ интервал между запросами.
         total_application_rpm = rpm * num_clients
         interval = 60 / total_application_rpm
         # --- КОНЕЦ КЛЮЧЕВОГО ИСПРАВЛЕНИЯ ---
-        
+
         # --- Управление UI (теперь с корректными данными) ---
         label = self.model_settings_widget.fuzzy_status_label
-        
+
         if estimated_time > interval:
             label.setText(f"Fuzzy-поиск: ~{estimated_time:.2f} сек. (Дольше, чем {interval:.2f}с/запрос. 🔴)")
             # Добавляем более детальную подсказку
@@ -3534,8 +3555,8 @@ class InitialSetupDialog(QDialog):
         """
         # Просто загружаем глоссарий проекта, если он есть.
         self._load_project_glossary(folder)
-    
-    
+
+
     def _open_epub_builder_standalone(self):
         """
         Открывает сборщик EPUB, используя уже выбранные файл и папку.
@@ -3559,8 +3580,8 @@ class InitialSetupDialog(QDialog):
         try:
             # --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Передаем project_manager ---
             dialog = TranslatedChaptersManagerDialog(
-                folder, 
-                self, 
+                folder,
+                self,
                 original_epub_path=self.selected_file,
                 project_manager=self.project_manager # <--- ВОТ ОНО
             )
@@ -3583,26 +3604,26 @@ class InitialSetupDialog(QDialog):
         msg_box.setWindowTitle("Синхронизация проекта")
         msg_box.setIcon(QMessageBox.Icon.Warning)
         msg_box.setText(f"Обнаружено {num_dead} записей о переводах, файлы которых отсутствуют.")
-        
+
         details = "\n".join([f"- {rel_path}" for _, _, rel_path in dead_entries[:5]])
         if num_dead > 5:
             details += f"\n… и еще {num_dead - 5}."
-        
+
         msg_box.setInformativeText(f"Рекомендуется очистить эти 'мертвые' записи из карты проекта.\n\nПримеры:\n{details}")
-        
+
         cleanup_button = msg_box.addButton("Очистить записи", QMessageBox.ButtonRole.AcceptRole)
         msg_box.addButton("Оставить как есть", QMessageBox.ButtonRole.RejectRole)
-        
+
         msg_box.exec()
-        
+
         if msg_box.clickedButton() == cleanup_button:
             # Выполняем запись в файл немедленно. Это гарантирует целостность данных.
             project_manager.cleanup_dead_entries(dead_entries)
             # --- ИСПРАВЛЕНИЕ: Убираем лишнее и проблемное окно "Выполнено" ---
             return True
-        
+
         return False
-        
+
 # gemini_translator/ui/dialogs/setup.py
 
     def _estimate_auto_task_size_limit(self, token_limit: int):
@@ -3812,32 +3833,34 @@ class InitialSetupDialog(QDialog):
         else:
             # "Режим Реорганизации": источник - текущее состояние TaskManager'а.
             source_chapters = self._unpack_tasks_to_chapters()
-        
+
         if not source_chapters or not self.selected_file:
             QtCore.QTimer.singleShot(10, lambda: self.task_manager.set_pending_tasks([]))
         else:
             from ...utils.glossary_tools import TaskPreparer
             import zipfile
             import os
-            import traceback
 
-            virtual_epub_path = os.copy_to_mem(self.selected_file)
-            if not virtual_epub_path:
-                error_message = f"Не удалось скопировать EPUB в виртуальную память: {self.selected_file}"
-                QtWidgets.QMessageBox.critical(self, "Критическая ошибка файла", error_message)
-                return
+            cached_sizes = get_epub_chapter_sizes_with_cache(self.project_manager, self.selected_file)
+            real_chapter_sizes = {
+                chapter: int(cached_sizes.get(chapter, 0) or 0)
+                for chapter in set(source_chapters)
+            }
+            missing_size_chapters = [chapter for chapter, size in real_chapter_sizes.items() if size <= 0]
 
-            real_chapter_sizes = {}
-            try:
-                with zipfile.ZipFile(open(virtual_epub_path, 'rb'), 'r') as zf:
-                    for chapter in set(source_chapters):
-                        real_chapter_sizes[chapter] = len(zf.read(chapter).decode('utf-8', 'ignore'))
-            except Exception as e:
-                tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-                error_message = f"Не удалось прочитать EPUB из виртуальной памяти.\n\n--- Traceback ---\n{tb_str}"
-                QtWidgets.QMessageBox.critical(self, "Ошибка обработки EPUB", error_message)
-                return
-            
+            if missing_size_chapters:
+                try:
+                    with open(self.selected_file, 'rb') as epub_file, zipfile.ZipFile(epub_file, 'r') as zf:
+                        for chapter in missing_size_chapters:
+                            real_chapter_sizes[chapter] = len(zf.read(chapter).decode('utf-8', 'ignore'))
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(
+                        self,
+                        "Ошибка обработки EPUB",
+                        f"Не удалось прочитать EPUB для расчёта размеров глав.\n\n{e}"
+                    )
+                    return
+
             settings = self.get_settings()
             if isinstance(translation_options_override, dict):
                 settings.update(translation_options_override)
@@ -3851,64 +3874,64 @@ class InitialSetupDialog(QDialog):
             preparer = TaskPreparer(display_tasks_settings, real_chapter_sizes)
             plain_payloads = preparer.prepare_tasks(source_chapters)
             self.task_manager.set_pending_tasks(plain_payloads)
-        
+
         QtCore.QTimer.singleShot(15, lambda: self.translation_options_widget._update_info_text())
-        
+
 
         if self.cpu_performance_index is None and self.html_files and self.glossary_widget.get_glossary():
             print("[INFO] Условия для калибровки выполнены. Запуск будет отложен…")
-            self.cpu_performance_index = 1 
+            self.cpu_performance_index = 1
             QtCore.QTimer.singleShot(20, lambda: self._calibrate_cpu(no_log=True))
 
 
-    
-    
+
+
     def _load_project_glossary(self, folder_path):
         project_glossary_path = os.path.join(folder_path, "project_glossary.json")
         try:
             if os.path.exists(project_glossary_path):
                 with open(project_glossary_path, 'r', encoding='utf-8') as f:
                     saved_data = json.load(f)
-                
+
                 self.glossary_widget.set_glossary(saved_data)
                 print(f"[ИНФО] Глоссарий проекта загружен из: {project_glossary_path}")
             else:
                 self.glossary_widget.clear()
         except Exception as e:
             QMessageBox.warning(self, "Ошибка загрузки", f"Не удалось загрузить project_glossary.json: {e}")
-    
+
         # --- ИСПРАВЛЕНИЕ: Создаем независимую копию списка. Это критически важно для определения изменений. ---
         self.initial_glossary_state = [item.copy() for item in self.glossary_widget.get_glossary()]
 
     def open_translation_validator(self):
         """Открывает инструмент проверки качества переводов."""
-        
+
         # Проверяем, есть ли папка для перевода (она нужна валидатору)
         if not self.output_folder or not os.path.isdir(self.output_folder):
             QMessageBox.warning(self, "Папка не выбрана", "Для запуска проверки необходимо выбрать папку проекта.")
             return
-    
+
         # Проверяем, есть ли исходный EPUB (он тоже нужен)
         if not self.selected_file or not os.path.exists(self.selected_file):
             QMessageBox.warning(self, "Файл не выбран", "Для сравнения переводов необходимо выбрать исходный EPUB-файл.")
             return
-    
+
         self._post_event('log_message', {'message': "[INFO] Открытие инструмента проверки переводов…"})
-        
-        
+
+
         self.setEnabled(False)
         self.is_blocked_by_child_dialog = True
         # Импортируем диалог прямо здесь, чтобы избежать циклических зависимостей
         from .validation import TranslationValidatorDialog
         self.validator_dialog = TranslationValidatorDialog(self.output_folder, self.selected_file, self, project_manager=self.project_manager)
-        
-        
+
+
         self.validator_dialog.exec()
-        
+
         self.setEnabled(True)
         self.is_blocked_by_child_dialog = False
         self._check_and_sync_active_session()
-        
+
         self._post_event('log_message', {'message': "[INFO] Инструмент проверки переводов закрыт."})
 
     def open_ai_glossary_generation(self):
@@ -4934,11 +4957,11 @@ class InitialSetupDialog(QDialog):
         self._auto_log(f"AI-consistency завершился ошибкой: {error_text}", force=True)
         self._reset_auto_workflow_state()
         self.check_ready()
-    
+
     def get_settings(self):
         active_keys = self.key_management_widget.get_active_keys()
         provider_id = self.key_management_widget.get_selected_provider()
-        
+
         glossary_list = self.glossary_widget.get_glossary()
         full_glossary_data = {
             entry['original']: {
@@ -4948,33 +4971,33 @@ class InitialSetupDialog(QDialog):
             for entry in glossary_list
             if entry.get('original')
         }
-        
+
         model_settings = self.model_settings_widget.get_settings()
         translation_options = self.translation_options_widget.get_settings()
-    
+
         model_name = model_settings.get('model')
         model_config = api_config.all_models().get(model_name)
-        
+
         settings = {
             'provider': provider_id,
             'model_config': model_config,
-            'file_path': self.selected_file, 
+            'file_path': self.selected_file,
             'output_folder': self.output_folder,
-            'api_keys': active_keys, 
+            'api_keys': active_keys,
             'full_glossary_data': full_glossary_data,
             'custom_prompt': self.preset_widget.get_prompt() or api_config.default_prompt(),
             'auto_translation': self.auto_translate_widget.get_settings(),
-            'auto_start': True, 
+            'auto_start': True,
             'num_instances': self.instances_spin.value(),
         }
-        
+
         if self.output_folder:
             project_manager = TranslationProjectManager(self.output_folder)
             settings['project_manager'] = project_manager
-        
+
         settings.update(model_settings)
         settings.update(translation_options)
-        
+
         return settings
 
 
@@ -4988,34 +5011,34 @@ class InitialSetupDialog(QDialog):
         if not (self.engine and self.engine.task_manager and self.engine.task_manager.has_pending_tasks() ):
             QMessageBox.warning(self, "Ошибка", "Нет задач для пробного запуска.")
             return
-    
+
         try:
             # 1. "Замораживаем" задачи
             self.engine.task_manager.hold_all_except_first()
-            
+
             # 2. Получаем настройки и модифицируем их для dry_run
             settings = self.get_settings()
             dry_run_settings = settings.copy()
             dry_run_settings.update({
                 'provider': 'dry_run', 'api_keys': ['dry_run_dummy_key'], 'num_instances': 1, 'rpm_limit': 1000
             })
-            
+
             # 3. Запускаем сессию (остальное без изменений)
             self.dry_run_start_time = time.perf_counter()
             self._post_event(name='start_session_requested', data={'settings': dry_run_settings})
-            
+
             self.dry_run_btn.setText("Обработка…")
             self.dry_run_btn.setEnabled(False)
-    
+
         except Exception as e:
             # В случае ошибки, "размораживаем" задачи обратно
             if self.engine and self.engine.task_manager:
                 self.engine.task_manager.release_held_tasks()
-            
+
             QMessageBox.critical(self, "Ошибка запуска", f"Не удалось запустить пробный запуск:\n{e}")
-            self.dry_run_btn.setText("🧪 Пробный запуск")
+            self.dry_run_btn.setText("Пробный запуск")
             self.dry_run_btn.setEnabled(True)
-    
+
 
     def check_unvalidated_chapters(self):
         """Проверяет, какие главы уже переведены, и предлагает их исключить."""
@@ -5027,7 +5050,7 @@ class InitialSetupDialog(QDialog):
         validated_chapters, unvalidated_chapters, untranslated_chapters = set(), set(), []
         epub_base_name = os.path.splitext(os.path.basename(self.selected_file))[0]
         validated_folder = os.path.join(self.output_folder, "validated_ok")
-        
+
         for html_file in self.html_files:
             safe_html_name = re.sub(r'[\\/*?:"<>|]', "_", os.path.splitext(os.path.basename(html_file))[0])
             base_filename = f"{epub_base_name}_{safe_html_name}"
@@ -5045,12 +5068,12 @@ class InitialSetupDialog(QDialog):
                 if os.path.exists(unvalidated_filepath):
                     is_unvalidated = True
                     break
-            
+
             if is_unvalidated:
                 unvalidated_chapters.add(html_file)
             else:
                 untranslated_chapters.append(html_file)
-        
+
 
         if not validated_chapters and not unvalidated_chapters:
             return
@@ -5058,7 +5081,7 @@ class InitialSetupDialog(QDialog):
         msg = QMessageBox()
         msg.setWindowTitle("Обнаружены переведенные главы")
         msg.setIcon(QtWidgets.QMessageBox.Icon.Information)
-    
+
         msg.setText(
             f"<b>Анализ выбранных глав ({len(self.html_files)}):</b>\n\n"
             f"✅ <font color='green'>Проверенные ('готовые'):</font> <b>{len(validated_chapters)}</b>\n"
@@ -5066,17 +5089,17 @@ class InitialSetupDialog(QDialog):
             f"⚪ Непереведенные: <b>{len(untranslated_chapters)}</b>"
         )
         msg.setInformativeText("Выберите, какие главы вы хотите включить в текущую сессию перевода:")
-            
+
         btn_skip_all = msg.addButton("Пропустить всё переведенное", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
         btn_retranslate_unvalidated = msg.addButton("Перевести непроверенные", QtWidgets.QMessageBox.ButtonRole.ActionRole)
         btn_retranslate_all = msg.addButton("Перевести всё заново", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
-        
+
         btn_skip_all.setToolTip("Будут переведены только непереведенные главы.")
         btn_retranslate_unvalidated.setToolTip("Перезапишет 'непроверенные', но сохранит 'готовые'.")
         btn_retranslate_all.setToolTip("Полностью перезапишет все существующие переводы.")
-        
+
         msg.exec()
-        
+
         clicked_button = msg.clickedButton()
         original_html_files = self.html_files.copy() # Сохраняем исходный выбор
 
@@ -5093,10 +5116,10 @@ class InitialSetupDialog(QDialog):
             self.html_files, self.selected_file = [], None
             self.paths_widget.set_file_path(None)
             info = ""
-        
+
         self._on_project_data_changed()
-  
-  
+
+
     def reject(self):
         """
         Перехватывает событие закрытия. Корректно проверяет наличие ИЗМЕНЕНИЙ
@@ -5106,8 +5129,8 @@ class InitialSetupDialog(QDialog):
             return
 
         super().reject()
-    
-    
+
+
     # --------------------------------------------------------------------
     # ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (общие для обоих режимов)
     # --------------------------------------------------------------------
@@ -5119,22 +5142,22 @@ class InitialSetupDialog(QDialog):
             return
         counter = TokenCounter()
         prompt_text = self.custom_prompt_edit.toPlainText() or " "
-        
+
         # Собираем данные из новой таблицы глоссария в одну строку,
         # чтобы симулировать текстовое представление для подсчета токенов.
         glossary_lines = []
         for row in range(self.glossary_table.rowCount()):
             original_item = self.glossary_table.item(row, 0)
             translation_item = self.glossary_table.item(row, 1)
-            
+
             original = original_item.text().strip() if original_item else ""
             rus = translation_item.text().strip() if translation_item else ""
-            
+
             if original and rus:
                 glossary_lines.append(f"{original} = {rus}")
-        
+
         glossary_text = "\n".join(glossary_lines)
-        
+
         try:
             with zipfile.ZipFile(open(self.selected_file, 'rb'), 'r') as epub_zip:
                 for html_file in self.html_files[:10]:
@@ -5144,7 +5167,7 @@ class InitialSetupDialog(QDialog):
                             chapter_name=os.path.basename(html_file),
                             html_size=len(html_content),
                             prompt_size=len(prompt_text),
-                            glossary_size=len(glossary_text), 
+                            glossary_size=len(glossary_text),
                             estimated_output=len(html_content)
                         )
                     except Exception as e:
@@ -5166,8 +5189,8 @@ class InitialSetupDialog(QDialog):
                 dialog.exec()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось оценить токены: {e}")
-    
-    
+
+
     @QtCore.pyqtSlot()
     def _on_project_data_changed(self, offer_snapshot_restore=True, rebuild_tasks=True):
         """
@@ -5185,11 +5208,11 @@ class InitialSetupDialog(QDialog):
         # --------------------------------------------------------
 
         # 1. Обновляем данные о главах в виджете опций (это быстро и нужно для расчетов)
-        self.translation_options_widget.update_chapter_data(self.html_files, self.selected_file)
-        
+        self.translation_options_widget.update_chapter_data(self.html_files, self.selected_file, self.project_manager)
+
         # 2. Обновляем CJK-опции на основе новых данных о главах
         self._update_cjk_options_for_widgets()
-        
+
         # 3. Пересобираем список задач
         if rebuild_tasks:
             self._prepare_and_display_tasks(clean_rebuild=True)
@@ -5197,7 +5220,7 @@ class InitialSetupDialog(QDialog):
         # 4. Вызываем пересчет рекомендаций, так как данные о главах изменились
         self._update_recommendations()
         self._refresh_auto_translate_runtime_context()
-        
+
         # 5. Обновляем все остальные зависимые UI элементы
         self.check_ready()
         self._update_distribution_info_from_widget()
@@ -5209,7 +5232,7 @@ class InitialSetupDialog(QDialog):
         if (hasattr(self, 'tabs_group') and
                 self.tabs_group.currentIndex() == getattr(self, 'glossary_tab_index', -1)):
             QtCore.QTimer.singleShot(0, self._maybe_offer_base_glossaries_for_empty_project)
-        
+
         # --- НОВАЯ ЛОГИКА ДЛЯ КНОПКИ-МЕТАМОРФА ---
         is_project_defined = bool(self.selected_file and self.output_folder)
         self.use_project_settings_btn.setVisible(is_project_defined)
@@ -5218,7 +5241,7 @@ class InitialSetupDialog(QDialog):
             self.use_project_settings_btn.setChecked(False)
 
         self._update_context_button_style(self.use_project_settings_btn.isChecked())
-    
+
     def _toggle_project_settings_mode(self, use_local):
         """
         Переключает UI между глобальными настройками и настройками проекта,
@@ -5230,7 +5253,7 @@ class InitialSetupDialog(QDialog):
             msg_box = QMessageBox(self)
             msg_box.setIcon(QMessageBox.Icon.Question)
             msg_box.setWindowTitle("Несохраненные изменения")
-            
+
             if is_currently_local:
                 msg_box.setText("Вы изменили настройки текущего проекта.")
                 msg_box.setInformativeText("Сохранить изменения в файл 'project_settings.json' перед переключением на глобальные?")
@@ -5239,7 +5262,7 @@ class InitialSetupDialog(QDialog):
                 msg_box.setText("Вы изменили глобальные настройки.")
                 msg_box.setInformativeText("Перезаписать глобальные настройки перед переключением на проект?")
                 save_btn_text = "Перезаписать Глобальные"
-            
+
             save_btn = msg_box.addButton(save_btn_text, QMessageBox.ButtonRole.AcceptRole)
             discard_btn = msg_box.addButton("Не сохранять", QMessageBox.ButtonRole.DestructiveRole)
             cancel_btn = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
@@ -5278,19 +5301,19 @@ class InitialSetupDialog(QDialog):
         # Теперь это работает корректно, т.к. _apply_full_ui_settings не генерирует сигналы.
         self.is_settings_dirty = False
         self.setWindowTitle(self.windowTitle().replace("*", ""))
-        
+
         self._update_context_button_style(use_local)
-    
+
     def _handle_task_reanimation(self, task_ids: list):
         if self.engine and self.engine.task_manager:
             # --- ПЕРЕНОСИМ В ФОНОВЫЙ ПОТОК ---
             self.task_management_widget.setEnabled(False)
             self.status_bar.set_permanent_message("Обновление статусов...")
-            
+
             self.db_worker = TaskDBWorker(self.engine.task_manager.reanimate_tasks, task_ids)
             self.db_worker.finished.connect(self._on_db_worker_finished)
             self.db_worker.start()
-        
+
     def _unpack_tasks_to_chapters(self):
         """
         Извлекает все главы из АКТУАЛЬНОГО списка задач в TaskManager,
@@ -5299,16 +5322,16 @@ class InitialSetupDialog(QDialog):
         """
         if not (self.engine and self.engine.task_manager):
             return []
-        
+
         tasks_with_uuid = self.engine.task_manager.get_all_pending_tasks()
-        
+
         unpacked_chapters_in_order = []
         # --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Отслеживаем ПОСЛЕДНЮЮ добавленную главу ---
-        last_added_chapter_from_chunk = None 
-            
+        last_added_chapter_from_chunk = None
+
         for task_id, task_payload in tasks_with_uuid:
             task_type = task_payload[0]
-            
+
             if task_type == 'epub_chunk':
                 chapter_path = task_payload[2]
                 # Если текущий чанк относится к той же главе, что и предыдущий,
@@ -5325,46 +5348,35 @@ class InitialSetupDialog(QDialog):
                 unpacked_chapters_in_order.append(chapter_path)
                 # Сбрасываем "память о чанках", так как следующая задача может быть чанком
                 last_added_chapter_from_chunk = None
-                
+
             elif task_type == 'epub_batch':
                 # Для пакетов просто добавляем все главы как есть, включая дубликаты
                 unpacked_chapters_in_order.extend(task_payload[2])
                 # Сбрасываем "память о чанках"
                 last_added_chapter_from_chunk = None
-                
+
         return unpacked_chapters_in_order
-    
+
     def _update_context_button_style(self, is_local_mode):
         """Обновляет текст, подсказку и стиль кнопки контекста."""
         if is_local_mode:
-            # --- ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ ---
-            # Используем селектор 'QPushButton', чтобы стиль не "протекал" в QToolTip
-            style = """
-                QPushButton {
-                    background-color: #1A5276;
-                    color: white;
-                }
-            """
-            self.use_project_settings_btn.setStyleSheet(style)
-            self.use_project_settings_btn.setText("⚙️ Настройки Проекта")
+            self.use_project_settings_btn.setText("Настройки проекта")
             self.use_project_settings_btn.setToolTip("Используются локальные настройки из файла project_settings.json\nНажмите, чтобы вернуться к глобальным.")
-            
+
         else:
-            # Сбрасываем стиль, чтобы вернуть его к системному по умолчанию
-            self.use_project_settings_btn.setStyleSheet("")
-            self.use_project_settings_btn.setText("🌐 Глобальные настройки")
+            self.use_project_settings_btn.setText("Глобальные настройки")
             self.use_project_settings_btn.setToolTip("Используются глобальные настройки из домашней директории.\nНажмите, чтобы переключиться на настройки проекта (будет создан файл, если его нет).")
-    
+
     def update_keys_count(self):
         """Обновляет счетчик API ключей"""
         keys = [k.strip() for k in self.keys_edit.toPlainText().splitlines() if k.strip()]
         unique_keys = list(set(keys))
-        
-        
+
+
         num_keys = len(unique_keys)
         self.instances_spin.setMaximum(num_keys if num_keys > 0 else 1)
-        
-        
+
+
         if len(keys) != len(unique_keys):
             self.keys_count_label.setText(f"Ключей: {len(unique_keys)} (уникальных из {len(keys)})")
             self.keys_count_label.setStyleSheet("color: orange; font-size: 10px;")
@@ -5372,18 +5384,18 @@ class InitialSetupDialog(QDialog):
             self.keys_count_label.setText(f"Ключей: {len(keys)}")
             self.keys_count_label.setStyleSheet("color: blue; font-size: 10px;")
         self._update_distribution_info() # <--- ДОБАВЬ ЭТУ СТРОКУ
-        
-        
+
+
     def update_glossary_count(self):
         """Обновляет счетчик терминов в глоссарии"""
         self.glossary_count_label.setText(f"Терминов: {self.glossary_table.rowCount()}")
 
-    
+
     def _init_lazy_ui_skeleton(self):
         """Создает минимальный 'скелет' UI для мгновенного отображения."""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        
+
         self.loading_label = QLabel("<h2>Загрузка интерфейса…</h2>")
         self.loading_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.loading_label)
@@ -5392,27 +5404,27 @@ class InitialSetupDialog(QDialog):
         self.main_content_widget = QWidget()
         self.main_content_widget.setVisible(False)
         main_layout.addWidget(self.main_content_widget, 1)
-    
+
     def showEvent(self, event):
         """
         Перехватывает событие первого показа окна и запускает отложенную
         загрузку тяжелых компонентов UI.
         """
         super().showEvent(event)
-        
+
         # Если пока мы были скрыты/свернуты, сессия началась или закончилась — синхронизируемся.
-        
-        
+
+
         if not self._initial_show_done:
             self._initial_show_done = True
-            
+
             # --- Отложенный запуск ---
             # QTimer.singleShot(0, …) выполнит функцию в следующем цикле событий,
             # дав Qt время полностью отрисовать текущее окно.
             QtCore.QTimer.singleShot(50, self._async_populate_and_load)
         else:
             self._check_and_sync_active_session()
-            
+
     def _check_and_sync_active_session(self):
         """
         Принудительно проверяет наличие активной сессии в глобальном состоянии (EventBus/Engine).
@@ -5423,7 +5435,7 @@ class InitialSetupDialog(QDialog):
         active_session_id = None
         if self.bus and hasattr(self.bus, 'get_data'):
             active_session_id = self.bus.get_data("current_active_session")
-        
+
         # 2. Если Шина молчит, спрашиваем у Движка напрямую (Резерв)
         if not active_session_id and self.engine and self.engine.session_id:
              active_session_id = self.engine.session_id
@@ -5432,10 +5444,10 @@ class InitialSetupDialog(QDialog):
         if active_session_id and not self.is_session_active:
             print(f"[UI RECOVERY] ⚠️ Обнаружена рассинхронизация! Сессия {active_session_id} работает, а диалог спит. Блокирую интерфейс.")
             self.is_session_active = True
-            
+
             # Принудительно переводим UI в режим "Сессия идет" (блокируем инпуты, включаем Стоп)
             self._set_controls_enabled(False)
-            
+
             # Если это первая синхронизация, обновляем статус бар с актуальным количеством задач
             if self.status_bar:
                 current_total = 0
@@ -5446,9 +5458,9 @@ class InitialSetupDialog(QDialog):
                     except Exception:
                         current_total = 0
                 self.status_bar.start_session(current_total)
-                
+
             return True
-        
+
         # 4. Если сессия ЕСТЬ и мы ЗНАЕМ об этом — просто подтверждаем статус
         if active_session_id and self.is_session_active:
             self._set_controls_enabled(False)
@@ -5457,19 +5469,19 @@ class InitialSetupDialog(QDialog):
         # Сессии нет
         self._set_controls_enabled(True)
         return False
-        
+
     def _async_populate_and_load(self):
         """Асинхронный orchestrator: сначала строит UI, потом загружает данные."""
         # 1. Создаем все тяжелые виджеты
         self._populate_full_ui()
-        
+
         # 2. Загружаем данные в уже созданные виджеты
         self._load_initial_data()
 
         # 3. "Подменяем" заглушку на готовый интерфейс
         self.loading_label.setVisible(False)
         self.main_content_widget.setVisible(True)
-        
+
     def _show_custom_message(self, title, text, icon=QMessageBox.Icon.Information, informative_text="", button_text="ОК"):
         """Показывает QMessageBox с кастомной кнопкой 'ОК'."""
         msg_box = QMessageBox(self)
