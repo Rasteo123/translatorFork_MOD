@@ -150,11 +150,12 @@ class EpubChunkProcessor(BaseTaskProcessor):
                 })
                 result_payload = (
                     (task_id, tuple(base_payload)),
-                    {
-                        'translated_content': final_restored_html,
-                        'success_details': raw_response,
-                        'success_details_title': f"JSON-пакет для '{os.path.basename(chapter_path)}' [{chunk_index + 1}/{total_chunks}]"
-                    }
+                    self._build_success_payload(
+                        translated_content=final_restored_html,
+                        details_text=raw_response,
+                        details_title=f"JSON-пакет для '{os.path.basename(chapter_path)}' [{chunk_index + 1}/{total_chunks}]",
+                        preview_limit=0,
+                    )
                 )
                 return result_payload, True, 'SUCCESS', "Успешно"
             except (ValidationFailedError, PartialGenerationError, ValueError) as json_error:
@@ -233,13 +234,14 @@ class EpubChunkProcessor(BaseTaskProcessor):
         base_payload = task_payload[:-1] if len(task_payload) > 8 else task_payload
         result_payload = (
             (task_id, tuple(base_payload)),
-            {
-                'translated_content': final_restored_html,
-                'success_details': accumulated_raw_html or newly_generated_part_raw,
-                'success_details_title': (
+            self._build_success_payload(
+                translated_content=final_restored_html,
+                details_text=accumulated_raw_html or newly_generated_part_raw,
+                details_title=(
                     f"Полученный пакет для '{os.path.basename(chapter_path)}' [{chunk_index + 1}/{total_chunks}]"
                     + (f" [anti-dup overlap: {overlap_len}]" if overlap_len else "")
-                )
-            }
+                ),
+                preview_limit=0,
+            )
         )
         return result_payload, True, 'SUCCESS', "Успешно"

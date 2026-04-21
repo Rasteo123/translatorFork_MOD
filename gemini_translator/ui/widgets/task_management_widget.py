@@ -45,6 +45,11 @@ class TaskManagementWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._is_session_active = False # <--- НОВАЯ СТРОКА
+        self._pending_ui_state = None
+        self._redraw_timer = QtCore.QTimer(self)
+        self._redraw_timer.setSingleShot(True)
+        self._redraw_timer.setInterval(35)
+        self._redraw_timer.timeout.connect(self._do_redraw)
         self._init_ui()
         # --- ВСЕ СВЯЗИ ТЕПЕРЬ ВНУТРИ И ОНИ ПОЛНЫЕ ---
         self.chapter_list_widget.reorder_requested.connect(self.reorder_requested.emit)
@@ -165,8 +170,7 @@ class TaskManagementWidget(QWidget):
         у TaskManager и передает его в "умный" метод update_list.
         Задержка помогает избежать состояний гонки при чтении из БД.
         """
-        # Оборачиваем всю логику в QTimer.singleShot
-        QtCore.QTimer.singleShot(10, self._do_redraw) # 10 мс - небольшая, но задержка
+        self._redraw_timer.start()
 
 
     def set_session_mode(self, is_session_active):
@@ -203,7 +207,10 @@ class TaskManagementWidget(QWidget):
             event_name = event_data.get('event')
 
             if event_name == 'task_state_changed':
-                QtCore.QTimer.singleShot(20, self.redraw_ui)
+                full_state = event_data.get('data', {}).get('full_state')
+                if isinstance(full_state, list):
+                    self._pending_ui_state = full_state
+                self.redraw_ui()
 
             if event_name == 'session_finished':
                 QtCore.QTimer.singleShot(100, self.check_and_update_retry_button_visibility)
@@ -219,7 +226,10 @@ class TaskManagementWidget(QWidget):
                 return
 
             if self and self.chapter_list_widget:
-                ui_state_list = app.engine.task_manager.get_ui_state_list() or []
+                ui_state_list = self._pending_ui_state
+                if not isinstance(ui_state_list, list):
+                    ui_state_list = app.engine.task_manager.get_ui_state_list() or []
+                self._pending_ui_state = None
 
                 selected_filter = self.category_filter_combo.currentText()
                 filter_key = self.ERROR_FILTERS.get(selected_filter)

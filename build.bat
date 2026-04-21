@@ -145,7 +145,6 @@ call :build_app_base "ПОЛНОСТЬЮ ПОРТАТИВНАЯ"
 --collect-data="emoji" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
---collect-data="setuptools" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
@@ -193,36 +192,13 @@ call :build_app_base "ГИБРИДНАЯ"
 --collect-data="emoji" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
---collect-data="setuptools" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
 --hidden-import="google.genai" ^
 --hidden-import="google.genai.types" ^
---onefile ^
---add-data "config;config" ^
---add-data "README.md;." ^
---add-data "ffmpeg.exe;." ^
---add-data "ffprobe.exe;." ^
---add-data "gemini_translator\scripts\chatgpt_workascii_bridge.cjs;gemini_translator\scripts" ^
---add-data "gemini_translator\scripts\chatgpt_profile_launcher.cjs;gemini_translator\scripts" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\__init__.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\api_upload.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\constants.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\dependencies.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\dialogs.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\main.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\main_window.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\models.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\parsers.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\ranobelib-upload.mjs;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\ranobelib_uploader_v12.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\utils.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\workers.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\playwright_runtime\node.exe;playwright_runtime" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\playwright_runtime\package;playwright_runtime\package" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\playwright_runtime\ms-playwright;playwright_runtime\ms-playwright"
+--onefile
 if %ERRORLEVEL% EQU 0 (
     echo.
     echo [+] Этап 3 из 3: Копирование внешних данных...
@@ -284,35 +260,12 @@ call :build_app_base "ПРОДВИНУТАЯ"
 --collect-data="emoji" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
---collect-data="setuptools" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
 --hidden-import="google.genai" ^
---hidden-import="google.genai.types" ^
---add-data "config;config" ^
---add-data "README.md;." ^
---add-data "ffmpeg.exe;." ^
---add-data "ffprobe.exe;." ^
---add-data "gemini_translator\scripts\chatgpt_workascii_bridge.cjs;gemini_translator\scripts" ^
---add-data "gemini_translator\scripts\chatgpt_profile_launcher.cjs;gemini_translator\scripts" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\__init__.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\api_upload.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\constants.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\dependencies.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\dialogs.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\main.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\main_window.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\models.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\parsers.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\ranobelib-upload.mjs;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\ranobelib_uploader_v12.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\utils.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\ranobelib\workers.py;ranobelib" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\playwright_runtime\node.exe;playwright_runtime" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\playwright_runtime\package;playwright_runtime\package" ^
---add-data "C:\Users\shest\Downloads\rulate\translatorFork 1.1\playwright_runtime\ms-playwright;playwright_runtime\ms-playwright"
+--hidden-import="google.genai.types"
 if %ERRORLEVEL% EQU 0 (
     echo.
     echo [+] Этап 3 из 3: Копирование внешних данных...
@@ -372,6 +325,10 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     goto menu
 )
+if exist "dist\chatgpt-profile-run" rmdir /S /Q "dist\chatgpt-profile-run"
+if exist "dist\logs" rmdir /S /Q "dist\logs"
+if exist "dist\%AppName%\chatgpt-profile-run" rmdir /S /Q "dist\%AppName%\chatgpt-profile-run"
+if exist "dist\%AppName%\logs" rmdir /S /Q "dist\%AppName%\logs"
 echo [+] Инструменты для сборки готовы.
 echo.
 echo [+] Этап 2 из 3: Запуск PyInstaller для сборки "%AppName%"...

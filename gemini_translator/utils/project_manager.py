@@ -30,6 +30,7 @@ class TranslationProjectManager:
         self.user_problem_terms_path = os.path.join(project_folder, 'user_problem_terms.json')
         self.validation_cache_path = os.path.join(project_folder, 'validation_analysis_cache.json')
         self.term_frequency_cache_path = os.path.join(project_folder, 'term_frequency_cache.json')
+        self.chapter_analysis_cache_path = os.path.join(project_folder, 'chapter_analysis_cache.json')
         self.lock = PatientLock()
         self.data = self._load()
 
@@ -666,6 +667,27 @@ class TranslationProjectManager:
                 except (json.JSONDecodeError, IOError):
                     return None # Возвращаем None при ошибке, чтобы инициировать пересчет
             return None
+
+    def load_chapter_analysis_cache(self):
+        """Потокобезопасно загружает кэш анализа состава глав."""
+        with self.lock:
+            if os.path.exists(self.chapter_analysis_cache_path):
+                try:
+                    with open(self.chapter_analysis_cache_path, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    return None
+            return None
+
+    def save_chapter_analysis_cache(self, cache_data):
+        """Потокобезопасно сохраняет кэш анализа состава глав."""
+        with self.lock:
+            try:
+                os.makedirs(os.path.dirname(self.chapter_analysis_cache_path), exist_ok=True)
+                with open(self.chapter_analysis_cache_path, 'w', encoding='utf-8') as f:
+                    json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            except IOError as e:
+                print(f"[ERROR] Не удалось сохранить кэш анализа глав: {e}")
 
     def save_size_cache(self, cache_data):
         """Потокобезопасно сохраняет кэш размеров глав."""

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
+
 PROJECT_ROOT = Path.cwd()
 
 
@@ -61,7 +62,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='translatorFork 1.1',
+    name='translatorFork-full',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

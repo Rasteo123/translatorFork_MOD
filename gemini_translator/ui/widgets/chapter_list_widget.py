@@ -608,9 +608,13 @@ class ChapterListWidget(QWidget):
             if current_task_ids == new_task_ids:
                 self._selective_update(tasks_data)
             else:
-                # Определяем, нужна ли полная перерисовка или "хирургическое" вмешательство
-                # (здесь можно оставить вашу логику с Levenshtein или порогом)
-                self._surgical_update(tasks_data)
+                old_count = len(current_task_ids)
+                new_count = len(new_task_ids)
+                lcs_matrix_cells = old_count * new_count
+                if max(old_count, new_count) > 400 or lcs_matrix_cells > 120000:
+                    self._full_redraw(tasks_data)
+                else:
+                    self._surgical_update(tasks_data)
         finally:
             # Шаг 3: Восстанавливаем все в обратном порядке в блоке finally,
             # чтобы это выполнилось даже в случае ошибки.

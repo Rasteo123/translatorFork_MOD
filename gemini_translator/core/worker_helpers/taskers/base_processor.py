@@ -78,6 +78,41 @@ class BaseTaskProcessor:
         """
         return bool(getattr(self.worker, 'use_json_epub_pipeline', False))
 
+    def _prepare_success_details(self, details_text, *, preview_limit=0):
+        if not isinstance(details_text, str):
+            return None
+
+        normalized_text = details_text.strip()
+        if not normalized_text:
+            return None
+
+        if bool(getattr(self.worker, 'store_success_details', False)):
+            return normalized_text
+
+        if preview_limit <= 0:
+            return None
+
+        if len(normalized_text) <= preview_limit:
+            return normalized_text
+
+        truncated_chars = len(normalized_text) - preview_limit
+        return (
+            normalized_text[:preview_limit].rstrip()
+            + f"\n\n[details truncated: {truncated_chars} chars omitted]"
+        )
+
+    def _build_success_payload(self, *, translated_content=None, details_text=None, details_title=None, preview_limit=0):
+        payload = {}
+        if translated_content is not None:
+            payload['translated_content'] = translated_content
+
+        prepared_details = self._prepare_success_details(details_text, preview_limit=preview_limit)
+        if prepared_details:
+            payload['success_details'] = prepared_details
+            payload['success_details_title'] = details_title or "Полученный пакет"
+
+        return payload
+
     async def execute(self, task_info, use_stream=True):
         """
         Основной метод, который должен быть переопределен в дочерних классах.

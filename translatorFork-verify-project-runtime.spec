@@ -6,7 +6,6 @@ datas += collect_data_files('PyQt6')
 datas += collect_data_files('emoji')
 datas += collect_data_files('jieba')
 datas += collect_data_files('lxml')
-datas += collect_data_files('setuptools')
 datas += collect_data_files('werkzeug')
 
 

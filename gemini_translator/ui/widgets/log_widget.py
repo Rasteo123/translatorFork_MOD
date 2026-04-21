@@ -55,6 +55,9 @@ LOG_STYLES = [
         'bold': True
     }
 ]
+MAX_LOG_BLOCKS = 1200
+MAX_STORED_DETAILS = 200
+MAX_DETAIL_TEXT_CHARS = 16000
 
 
 class LogWidget(QWidget):
@@ -83,6 +86,7 @@ class LogWidget(QWidget):
         self.log_view = QTextBrowser()
         self.log_view.setReadOnly(True)
         self.log_view.setOpenLinks(False)
+        self.log_view.document().setMaximumBlockCount(MAX_LOG_BLOCKS)
         self.log_view.anchorClicked.connect(self._on_anchor_clicked)
 
         controls_layout = QHBoxLayout()
@@ -195,17 +199,20 @@ class LogWidget(QWidget):
 
         details_text = data.get('details_text')
         if isinstance(details_text, str) and details_text.strip():
+            details_text = self._truncate_details_text(details_text)
             detail_id = uuid.uuid4().hex
             self._details_map[detail_id] = {
                 'title': data.get('details_title') or "Детали сообщения",
                 'text': details_text
             }
+            self._trim_details_map()
             links_html.append(f"<a href='logdetail:{detail_id}'>[details]</a>")
 
         file_path = data.get('file_path')
         if isinstance(file_path, str) and file_path.strip():
             file_id = uuid.uuid4().hex
             self._details_map[file_id] = {'path': file_path}
+            self._trim_details_map()
             default_label = "open folder" if os.path.isdir(file_path) else "open log"
             file_label = html.escape(str(data.get('file_label') or default_label))
             links_html.append(f"<a href='logfile:{file_id}'>[{file_label}]</a>")
@@ -225,3 +232,17 @@ class LogWidget(QWidget):
         """Очищает лог."""
         self.log_view.clear()
         self._details_map.clear()
+
+    def _trim_details_map(self):
+        while len(self._details_map) > MAX_STORED_DETAILS:
+            oldest_key = next(iter(self._details_map), None)
+            if oldest_key is None:
+                break
+            self._details_map.pop(oldest_key, None)
+
+    def _truncate_details_text(self, details_text: str) -> str:
+        normalized_text = details_text.strip()
+        if len(normalized_text) <= MAX_DETAIL_TEXT_CHARS:
+            return normalized_text
+        omitted = len(normalized_text) - MAX_DETAIL_TEXT_CHARS
+        return normalized_text[:MAX_DETAIL_TEXT_CHARS].rstrip() + f"\n\n[details truncated: {omitted} chars omitted]"

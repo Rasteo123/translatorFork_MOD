@@ -1,18 +1,31 @@
 # -*- coding: utf-8 -*-
 
+import os
+
 from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
 
 
 EXIT_CODE_REBOOT = 2000
 
 
+def _translator_only_mode_enabled() -> bool:
+    return os.environ.get("GT_TRANSLATOR_ONLY_MODE", "").strip() == "1"
+
+
 def prompt_return_to_menu(parent: QWidget, title="Завершение работы") -> str:
     msg_box = QMessageBox(parent)
     msg_box.setWindowTitle(title)
-    msg_box.setText("Закрыть программу или вернуться в главное меню?")
+
+    if _translator_only_mode_enabled():
+        msg_box.setText("Закрыть программу или открыть переводчик заново?")
+        menu_button_text = "Новый проект"
+    else:
+        msg_box.setText("Закрыть программу или вернуться в главное меню?")
+        menu_button_text = "Вернуться в меню"
+
     msg_box.setIcon(QMessageBox.Icon.Question)
 
-    btn_menu = msg_box.addButton("Вернуться в меню", QMessageBox.ButtonRole.ActionRole)
+    btn_menu = msg_box.addButton(menu_button_text, QMessageBox.ButtonRole.ActionRole)
     btn_exit = msg_box.addButton("Выйти из программы", QMessageBox.ButtonRole.DestructiveRole)
     btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
 

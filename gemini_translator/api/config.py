@@ -105,20 +105,50 @@ _DEFAULT_PROMPT_TEXT = """**I. РОЛЬ И ГЛАВНАЯ ЦЕЛЬ** (встро
 _DEFAULT_GLOSSARY_PROMPT_TEXT = """Проанализируй весь предоставленный текст …"""
 _DEFAULT_WORD_EXCEPTIONS_TEXT = "# Пустой список исключений по умолчанию"
 _DEFAULT_CORRECTION_PROMPT_TEXT = """Проанализируй представленный глоссарий…"""
+_DISABLED_PROVIDER_IDS_ENV = "GT_DISABLED_PROVIDER_IDS"
 _DEFAULT_MANUAL_TRANSLATION_PROMPT_TEXT = (
     "Переведи следующий текст на русский язык.\n"
     "Верни только чистый готовый перевод без HTML-тегов, без пояснений и без комментариев.\n\n"
     "{text}"
 )
 
+def _parse_csv_env_list(env_name: str) -> set[str]:
+    raw_value = str(os.environ.get(env_name, "") or "").strip()
+    if not raw_value:
+        return set()
+    return {item.strip() for item in raw_value.split(",") if item.strip()}
+
+
+def _filter_disabled_providers(providers_config: dict) -> dict:
+    disabled_provider_ids = _parse_csv_env_list(_DISABLED_PROVIDER_IDS_ENV)
+    if not disabled_provider_ids:
+        return providers_config
+
+    removed_provider_ids = sorted(
+        provider_id for provider_id in providers_config.keys()
+        if provider_id in disabled_provider_ids
+    )
+    if removed_provider_ids:
+        print(
+            "[CONFIG INFO] Отключены провайдеры runtime-профиля: "
+            + ", ".join(removed_provider_ids)
+        )
+
+    return {
+        provider_id: provider_data
+        for provider_id, provider_data in providers_config.items()
+        if provider_id not in disabled_provider_ids
+    }
+
+
 def _load_providers_config():
     if _PROVIDERS_FILE.exists():
         try:
             with open(_PROVIDERS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return _filter_disabled_providers(json.load(f))
         except Exception:
-            return _DEFAULT_API_PROVIDERS_CONFIG
-    return _DEFAULT_API_PROVIDERS_CONFIG
+            return _filter_disabled_providers(_DEFAULT_API_PROVIDERS_CONFIG)
+    return _filter_disabled_providers(_DEFAULT_API_PROVIDERS_CONFIG)
 
 def _load_default_prompt():
     if _PROMPT_FILE.exists():
