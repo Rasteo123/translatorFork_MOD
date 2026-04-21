@@ -5,7 +5,8 @@ from ...utils.settings import SettingsManager
 from PyQt6.QtCore import pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QGroupBox, QHBoxLayout,
-    QMessageBox, QAbstractItemView, QSplitter, QLabel, QDialog, QComboBox, QDialogButtonBox
+    QMessageBox, QAbstractItemView, QSplitter, QLabel, QDialog, QComboBox, QDialogButtonBox,
+    QLineEdit
 )
 from PyQt6 import QtWidgets, QtCore, QtGui
 import time
@@ -130,15 +131,21 @@ class KeyManagementWidget(QWidget):
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         key_splitter = QSplitter(QtCore.Qt.Orientation.Horizontal)
+        key_splitter.setChildrenCollapsible(False)
 
         # Левая панель
         left_panel_widget = QWidget()
+        left_panel_widget.setObjectName("keyPanelSurface")
         left_panel_layout = QVBoxLayout(left_panel_widget)
+        left_panel_layout.setContentsMargins(0, 0, 0, 0)
+        left_panel_layout.setSpacing(10)
 
         provider_group = QGroupBox("1. Выбор сервиса")
         provider_layout = QHBoxLayout(provider_group)
+        provider_layout.setSpacing(10)
 
         self.provider_combo = NoScrollComboBox()
         self.provider_combo.clear()
@@ -148,7 +155,7 @@ class KeyManagementWidget(QWidget):
                     p_data['display_name'], userData=p_id)
 
         self.key_count_label = QLabel("Ключи: 0 (✅ 0 / ❌ 0)")
-        self.key_count_label.setStyleSheet("font-size: 10pt; color: #aaa;")
+        self.key_count_label.setObjectName("mutedLabel")
 
         self.server_button = QPushButton("Запустить сервер")
         self.server_button.setStyleSheet("""
@@ -167,7 +174,38 @@ class KeyManagementWidget(QWidget):
 
         self.available_keys_group = QGroupBox("2. Доступные ключи (общий пул)")
         available_layout = QVBoxLayout(self.available_keys_group)
+
+        legend_layout = QHBoxLayout()
+        legend_layout.setContentsMargins(0, 0, 0, 0)
+        legend_layout.setSpacing(6)
+        for text, state in (
+            ("Активный", "ok"),
+            ("Пауза", "warm"),
+            ("Исчерпан", "bad"),
+        ):
+            chip = QLabel(text)
+            chip.setObjectName("legendChip")
+            chip.setProperty("state", state)
+            legend_layout.addWidget(chip)
+        legend_layout.addStretch(1)
+        available_layout.addLayout(legend_layout)
+
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(8)
+        search_label = QLabel("Фильтр")
+        search_label.setObjectName("mutedCaptionLabel")
+        self.available_search_edit = QLineEdit()
+        self.available_search_edit.setObjectName("keySearchField")
+        self.available_search_edit.setPlaceholderText("Поиск по ключам и запросам")
+        self.available_search_edit.textChanged.connect(self._apply_available_search_filter)
+        search_row.addWidget(search_label)
+        search_row.addWidget(self.available_search_edit, 1)
+        available_layout.addLayout(search_row)
+
         self.available_keys_list = CustomListWidget()
+        self.available_keys_list.setObjectName("keyListWidget")
+        self.available_keys_list.setAlternatingRowColors(True)
         self.available_keys_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self.available_keys_list.doubleClicked.connect(
@@ -232,11 +270,15 @@ class KeyManagementWidget(QWidget):
 
         controls_widget = AdaptiveControlsWidget(
             arrow_buttons, action_buttons, separator, self)
+        controls_widget.setObjectName("keyTransferColumn")
         key_splitter.addWidget(controls_widget)
 
         # Правая панель
         right_panel_container = QWidget()
+        right_panel_container.setObjectName("keyPanelSurface")
         right_panel_layout = QVBoxLayout(right_panel_container)
+        right_panel_layout.setContentsMargins(0, 0, 0, 0)
+        right_panel_layout.setSpacing(10)
 
         if self.distribution_group_widget:
             self.distribution_group_widget.setObjectName("distribution_group")
@@ -250,14 +292,22 @@ class KeyManagementWidget(QWidget):
         active_header_layout.setContentsMargins(0, 0, 0, 0)
 
         self.active_key_count_label = QLabel("Выбрано: 0")
-        self.active_key_count_label.setStyleSheet(
-            "font-size: 10pt; color: #aaa;")
+        self.active_key_count_label.setObjectName("mutedLabel")
 
         active_header_layout.addStretch()
         active_header_layout.addWidget(self.active_key_count_label)
         active_layout.addWidget(active_header_widget)
 
+        self.active_empty_label = QLabel(
+            "Активные ключи пока не выбраны. Перенесите их из общего пула."
+        )
+        self.active_empty_label.setObjectName("helperLabel")
+        self.active_empty_label.setWordWrap(True)
+        active_layout.addWidget(self.active_empty_label)
+
         self.active_keys_list = CustomListWidget()
+        self.active_keys_list.setObjectName("keyListWidget")
+        self.active_keys_list.setAlternatingRowColors(True)
         self.active_keys_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self.active_keys_list.doubleClicked.connect(
@@ -412,6 +462,7 @@ class KeyManagementWidget(QWidget):
         self.active_keys_group.setTitle(active_title)
 
         self.available_keys_list.setEnabled(requires_api_key)
+        self.available_search_edit.setEnabled(requires_api_key)
         self.add_selected_btn.setEnabled(requires_api_key)
         self.remove_selected_btn.setEnabled(requires_api_key)
         self.add_all_btn.setEnabled(requires_api_key)
@@ -455,9 +506,11 @@ class KeyManagementWidget(QWidget):
     def _update_active_key_count(self):
         if not self._provider_requires_api_key():
             self.active_key_count_label.setText("Выбрано: встроенная сессия")
+            self.active_empty_label.setVisible(False)
             return
         count = self.active_keys_list.count()
         self.active_key_count_label.setText(f"Выбрано: {count}")
+        self.active_empty_label.setVisible(count == 0)
 
     def _update_key_counts(self):
         if not self._provider_requires_api_key():
@@ -477,6 +530,14 @@ class KeyManagementWidget(QWidget):
         total_keys = green_count + red_count
         self.key_count_label.setText(
             f"Ключи: {total_keys} (✅{green_count}/❌{red_count})")
+
+    def _apply_available_search_filter(self, text: str = ""):
+        query = (text or "").strip().lower()
+        for index in range(self.available_keys_list.count()):
+            item = self.available_keys_list.item(index)
+            full_key = item.data(QtCore.Qt.ItemDataRole.UserRole) or ""
+            haystack = f"{item.text()} {full_key}".lower()
+            item.setHidden(bool(query) and query not in haystack)
 
     @pyqtSlot(dict)
     def on_event(self, event: dict):
@@ -584,6 +645,7 @@ class KeyManagementWidget(QWidget):
             self.active_keys_list.addItem(self._create_virtual_session_item(provider_id))
             self._update_key_counts()
             self._update_active_key_count()
+            self.active_empty_label.setVisible(False)
             return
         if self.active_keys_list.count() > 0:
             current_visual_keys = {
@@ -679,6 +741,8 @@ class KeyManagementWidget(QWidget):
 
         self._update_key_counts()
         self._update_active_key_count()
+        self._apply_available_search_filter(self.available_search_edit.text())
+        self.active_empty_label.setVisible(self.active_keys_list.count() == 0)
 
     def _move_items(self, source, dest, all_items=False, filter_func=None):
         if not self._provider_requires_api_key():
@@ -741,6 +805,7 @@ class KeyManagementWidget(QWidget):
 
         self._update_key_counts()
         self._update_active_key_count()
+        self.active_empty_label.setVisible(self.active_keys_list.count() == 0)
         self.active_keys_changed.emit()
 
     def _add_selected_to_active(self): self._move_items(
