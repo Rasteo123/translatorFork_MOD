@@ -190,6 +190,24 @@ python -m playwright install chromium
 - [`run.bat`](./run.bat), [`run.sh`](./run.sh): рекомендуемые скрипты запуска.
 - [`build.bat`](./build.bat), [`build_master.py`](./build_master.py): сборочные скрипты.
 
+## Пользовательская документация
+
+Основная документация для обычного пользователя находится в папке [`docs/user-guide/`](./docs/user-guide/README.md). Она описывает не внутренний код, а инструменты программы, их назначение, пошаговые сценарии и типичные ошибки.
+
+- [`docs/user-guide/README.md`](./docs/user-guide/README.md): главный индекс пользовательской документации.
+- [`docs/user-guide/01-start-here.md`](./docs/user-guide/01-start-here.md): с чего начать и как устроен базовый рабочий процесс.
+- [`docs/user-guide/02-epub-translator.md`](./docs/user-guide/02-epub-translator.md): подробное руководство по основному переводчику EPUB.
+- [`docs/user-guide/03-validator.md`](./docs/user-guide/03-validator.md): проверка, ручная правка и AI-согласованность.
+- [`docs/user-guide/04-glossary-manager.md`](./docs/user-guide/04-glossary-manager.md): работа с глоссариями, конфликтами и импортом.
+- [`docs/user-guide/05-rulate-export.md`](./docs/user-guide/05-rulate-export.md): экспорт EPUB в Rulate Markdown.
+- [`docs/user-guide/06-chapter-splitter.md`](./docs/user-guide/06-chapter-splitter.md): разбиение крупных глав на части.
+- [`docs/user-guide/07-gemini-reader.md`](./docs/user-guide/07-gemini-reader.md): озвучивание EPUB и сборка аудио.
+- [`docs/user-guide/08-ranobelib-uploader.md`](./docs/user-guide/08-ranobelib-uploader.md): публикация глав на RanobeLib и работа с Rulate.
+- [`docs/user-guide/09-providers-models-keys.md`](./docs/user-guide/09-providers-models-keys.md): провайдеры, модели, API-ключи и основные параметры.
+- [`docs/user-guide/10-projects-queue-and-history.md`](./docs/user-guide/10-projects-queue-and-history.md): проекты, очередь и история.
+- [`docs/user-guide/11-proxy-and-network-issues.md`](./docs/user-guide/11-proxy-and-network-issues.md): прокси, геоблоки и сетевые проблемы.
+- [`docs/user-guide/12-common-workflows.md`](./docs/user-guide/12-common-workflows.md): готовые сценарии работы под разные задачи.
+
 ## Сборка
 
 Зависимости для запуска перечислены в [`requirements.txt`](./requirements.txt).
