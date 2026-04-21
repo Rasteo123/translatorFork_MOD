@@ -116,10 +116,11 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
                         f"JSON overhead={noise_report['json_overhead_chars']}."
                     )
                 })
-                success_payload = {
-                    'success_details': raw_response,
-                    'success_details_title': f"JSON-пакет для '{os.path.basename(internal_chapter_path)}'"
-                }
+                success_payload = self._build_success_payload(
+                    details_text=raw_response,
+                    details_title=f"JSON-пакет для '{os.path.basename(internal_chapter_path)}'",
+                    preview_limit=4000,
+                )
                 return (task_info, success_payload), True, 'SUCCESS', ""
             except (ValidationFailedError, PartialGenerationError, ValueError) as json_error:
                 self.worker._post_event('log_message', {
@@ -191,10 +192,11 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
             version_suffix=version_suffix
         )
 
-        success_payload = {
-            'success_details': raw_response or cleaned_response,
-            'success_details_title': f"Полученный пакет для '{os.path.basename(internal_chapter_path)}'"
-        }
+        success_payload = self._build_success_payload(
+            details_text=raw_response or cleaned_response,
+            details_title=f"Полученный пакет для '{os.path.basename(internal_chapter_path)}'",
+            preview_limit=4000,
+        )
         return (task_info, success_payload), True, 'SUCCESS', ""
 
     def _copy_original_as_result(self, out_path, content, internal_path, suffix):

@@ -30,6 +30,7 @@ class TranslationOptionsWidget(QGroupBox):
         self.html_files = []
         self.chapter_compositions = {}
         self.model_settings_widget = None
+        self._analysis_signature = None
         
         self._init_ui()
         
@@ -110,39 +111,122 @@ class TranslationOptionsWidget(QGroupBox):
    
 
    # --- МЕТОДЫ АНАЛИЗА  ---
-    def update_chapter_data(self, html_files, epub_path):
-        self.html_files = html_files
-        self._analyze_chapters(epub_path)
+    def update_chapter_data(self, html_files, epub_path, project_manager=None):
+        self.html_files = list(html_files or [])
+        self._analyze_chapters(epub_path, project_manager=project_manager)
         self._update_batching_availability()
 
-    def _analyze_chapters(self, epub_path):
+    def _build_analysis_signature(self, epub_path):
+        if not epub_path or not os.path.exists(epub_path):
+            return None
+        try:
+            stat = os.stat(epub_path)
+        except OSError:
+            return None
+        return (
+            os.path.abspath(epub_path),
+            stat.st_mtime_ns,
+            stat.st_size,
+            tuple(self.html_files),
+        )
+
+    def _build_epub_analysis_metadata(self, epub_path):
+        try:
+            epub_stat = os.stat(epub_path)
+            with open(epub_path, 'rb') as epub_file, zipfile.ZipFile(epub_file, 'r') as epub_zip:
+                chapter_info_list = [
+                    (info.filename, info.file_size)
+                    for info in epub_zip.infolist()
+                    if info.filename.lower().endswith(('.html', '.xhtml', '.htm'))
+                ]
+        except (OSError, zipfile.BadZipFile, FileNotFoundError):
+            return None
+
+        return {
+            'epub_name': os.path.basename(epub_path),
+            'epub_size': epub_stat.st_size,
+            'content_checksum': sum(size for _, size in chapter_info_list),
+        }
+
+    def _load_cached_chapter_analysis(self, project_manager, epub_path):
+        if not project_manager:
+            return {}, {}
+
+        cache_data = project_manager.load_chapter_analysis_cache()
+        if not isinstance(cache_data, dict):
+            return {}, {}
+
+        current_metadata = self._build_epub_analysis_metadata(epub_path)
+        if not current_metadata or cache_data.get('metadata') != current_metadata:
+            return {}, current_metadata or {}
+
+        cached_chapters = cache_data.get('chapters', {})
+        if not isinstance(cached_chapters, dict):
+            cached_chapters = {}
+        return cached_chapters, current_metadata
+
+    def _save_cached_chapter_analysis(self, project_manager, metadata, chapters):
+        if not project_manager or not metadata:
+            return
+        project_manager.save_chapter_analysis_cache({
+            'metadata': metadata,
+            'chapters': chapters,
+        })
+
+    def _analyze_chapters(self, epub_path, project_manager=None):
         """
-        Анализирует главы, чтобы получить все необходимые метрики (общий размер,
-        размер текста, размер кода, флаг CJK), необходимые для виджета.
+        Анализирует главы и переиспользует кэш, чтобы не перепарсивать EPUB
+        на каждом локальном обновлении UI.
         """
+        signature = self._build_analysis_signature(epub_path)
+        if signature and signature == self._analysis_signature and self.chapter_compositions:
+            return
+
         self.chapter_compositions = {}
+        self._analysis_signature = signature
         if not self.html_files or not epub_path:
             return
     
         try:
             from bs4 import BeautifulSoup
-            with zipfile.ZipFile(open(epub_path, 'rb'), 'r') as epub_zip:
-                for file in self.html_files:
-                    content_str = epub_zip.read(file).decode('utf-8', errors='ignore')
-                    
-                    # --- ЛОГИКА, КОТОРАЯ БЫЛА В FALLBACK ---
-                    soup = BeautifulSoup(content_str, 'html.parser')
-                    visible_text = soup.get_text()
-                    
-                    text_size = len(visible_text)
-                    total_size = len(content_str)
-                    
+            chapter_sizes = get_epub_chapter_sizes_with_cache(project_manager, epub_path) if project_manager else {}
+            cached_chapters, cache_metadata = self._load_cached_chapter_analysis(project_manager, epub_path)
+            merged_cached_chapters = dict(cached_chapters)
+            missing_files = []
+
+            for file in self.html_files:
+                cached_entry = cached_chapters.get(file)
+                if isinstance(cached_entry, dict):
+                    total_size = int(cached_entry.get('total_size', chapter_sizes.get(file, 0)) or 0)
                     self.chapter_compositions[file] = {
-                        'code_size': total_size - text_size,
-                        'text_size': text_size,
-                        'is_cjk': LanguageDetector.is_cjk_text(visible_text),
-                        'total_size': total_size
+                        'code_size': int(cached_entry.get('code_size', 0) or 0),
+                        'text_size': int(cached_entry.get('text_size', 0) or 0),
+                        'is_cjk': bool(cached_entry.get('is_cjk', False)),
+                        'total_size': total_size,
                     }
+                else:
+                    missing_files.append(file)
+
+            if missing_files:
+                with open(epub_path, 'rb') as epub_file, zipfile.ZipFile(epub_file, 'r') as epub_zip:
+                    for file in missing_files:
+                        content_str = epub_zip.read(file).decode('utf-8', errors='ignore')
+                        soup = BeautifulSoup(content_str, 'html.parser')
+                        visible_text = soup.get_text()
+
+                        text_size = len(visible_text)
+                        total_size = int(chapter_sizes.get(file, len(content_str)) or len(content_str))
+                        chapter_data = {
+                            'code_size': max(0, total_size - text_size),
+                            'text_size': text_size,
+                            'is_cjk': LanguageDetector.is_cjk_text(visible_text),
+                            'total_size': total_size
+                        }
+                        self.chapter_compositions[file] = chapter_data
+                        merged_cached_chapters[file] = chapter_data
+
+            if missing_files and cache_metadata:
+                self._save_cached_chapter_analysis(project_manager, cache_metadata, merged_cached_chapters)
         except Exception as e:
             print(f"[WIDGET ERROR] Ошибка при анализе глав '{epub_path}': {e}")
             self.chapter_compositions = {}

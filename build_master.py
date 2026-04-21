@@ -53,6 +53,7 @@ DATA_FILE_EXTENSIONS = {'.txt', '.json', '.ico', '.css', '.html', '.js'}
 # не видит его import playwright.sync_api во время анализа main.py.
 HIDDEN_IMPORTS_BLOCK = ['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types']
 MANUAL_COLLECT_DATA_MODULES = {'docx'}
+COLLECT_DATA_EXCLUDE_MODULES = {'setuptools'}
 MANUALLY_PACKAGED_PACKAGES = {'playwright'}
 # --- КОНФИГУРАЦИЯ ЗАВИСИМОСТЕЙ ---
 IMPORT_TO_PACKAGE_MAP = {
@@ -276,7 +277,7 @@ def analyze_dependencies_for_pyinstaller_flags(dependencies):
     print(f"\n--- Этап 5: Анализ пакетов для PyInstaller ---")
     collect_data_flags = set()
     for package_name in dependencies:
-        if package_name in MANUALLY_PACKAGED_PACKAGES:
+        if package_name in MANUALLY_PACKAGED_PACKAGES or package_name in COLLECT_DATA_EXCLUDE_MODULES:
             continue
         try:
             spec = importlib.util.find_spec(package_name)
@@ -362,11 +363,11 @@ def generate_pure_bat_script(dependencies, collect_data_flags):
     pyinstaller_command_full_portable = " ^\n".join(full_portable_args)
 
     # Команда для ГИБРИДНОЙ сборки (теперь ТОЖЕ включает --add-data)
-    hybrid_args = list(base_pyinstaller_args) + ["--onefile"] + add_data_args
+    hybrid_args = list(base_pyinstaller_args) + ["--onefile"]
     pyinstaller_command_hybrid = " ^\n".join(hybrid_args)
     
     # Команда для ПРОДВИНУТОЙ сборки (теперь ТОЖЕ включает --add-data)
-    advanced_args = list(base_pyinstaller_args) + add_data_args
+    advanced_args = list(base_pyinstaller_args)
     pyinstaller_command_advanced = " ^\n".join(advanced_args)
     
     hybrid_copy_block = "\n".join(copy_commands_hybrid)
@@ -552,6 +553,10 @@ if %ERRORLEVEL% NEQ 0 (
     pause
     goto menu
 )
+if exist "dist\\chatgpt-profile-run" rmdir /S /Q "dist\\chatgpt-profile-run"
+if exist "dist\\logs" rmdir /S /Q "dist\\logs"
+if exist "dist\\%AppName%\\chatgpt-profile-run" rmdir /S /Q "dist\\%AppName%\\chatgpt-profile-run"
+if exist "dist\\%AppName%\\logs" rmdir /S /Q "dist\\%AppName%\\logs"
 echo [+] Инструменты для сборки готовы.
 echo.
 echo [+] Этап 2 из 3: Запуск PyInstaller для сборки "%AppName%"...

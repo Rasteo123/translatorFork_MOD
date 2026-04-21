@@ -107,7 +107,6 @@ pyinstaller text_unifier.py ^
 --collect-data="PyQt6" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
---collect-data="setuptools" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --onefile

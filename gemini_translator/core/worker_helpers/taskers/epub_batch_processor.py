@@ -115,16 +115,12 @@ class EpubBatchProcessor(BaseTaskProcessor):
         return successful_paths, save_failed_paths
 
     def _replace_batch_results(self, task_id, epub_path, successful_paths, failed_paths, raw_response):
-        success_details_map = None
-        if isinstance(raw_response, str) and raw_response.strip() and successful_paths:
-            success_details_map = {chapter: raw_response for chapter in successful_paths}
-
         self.worker.task_manager.replace_batch_with_results(
             original_batch_task_id=str(task_id),
             epub_path=epub_path,
             successful_chapters=successful_paths,
             failed_chapters=failed_paths,
-            success_details_map=success_details_map,
+            success_details_map=None,
         )
 
     async def execute(self, task_info, use_stream=False):

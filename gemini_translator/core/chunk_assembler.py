@@ -28,18 +28,63 @@ class ChunkAssembler(QObject):
         
         # self.assembly_bay и self.lock больше не нужны
         self.session_id = None
+        self._pending_chapter_paths = set()
+        self._recovery_scan_done = False
+        self._assembly_timer = QtCore.QTimer(self)
+        self._assembly_timer.setSingleShot(True)
+        self._assembly_timer.setInterval(350)
+        self._assembly_timer.timeout.connect(self._run_scheduled_assembly_check)
 
 
     @pyqtSlot(dict)
     def on_event(self, event: dict):
         """Принимает события из общей шины."""
         event_name = event.get('event')
-        
-        if event_name in ['task_state_changed', 'session_started']:
-            if self.session_id is None and event.get('session_id'):
-                self.session_id = event.get('session_id')
-            # Запускаем проверку асинхронно, чтобы не блокировать поток событий
-            QtCore.QTimer.singleShot(0, self.run_final_assembly_check)
+        if self.session_id is None and event.get('session_id'):
+            self.session_id = event.get('session_id')
+
+        if event_name == 'session_started':
+            self._recovery_scan_done = False
+            self._schedule_assembly_scan(full_scan=True)
+            return
+
+        if event_name == 'chunk_task_completed':
+            chapter_path = event.get('data', {}).get('chapter_path')
+            if chapter_path:
+                self._schedule_assembly_scan(chapter_path=chapter_path)
+            return
+
+        if event_name == 'task_state_changed' and not self._recovery_scan_done:
+            full_state = event.get('data', {}).get('full_state')
+            if isinstance(full_state, list):
+                for item in full_state:
+                    if not isinstance(item, tuple) or len(item) < 2:
+                        continue
+                    task_info, status = item[0], item[1]
+                    payload = task_info[1] if isinstance(task_info, tuple) and len(task_info) > 1 else ()
+                    if status == 'success' and payload and payload[0] == 'epub_chunk':
+                        self._schedule_assembly_scan(full_scan=True)
+                        self._recovery_scan_done = True
+                        break
+
+    def _schedule_assembly_scan(self, chapter_path: str | None = None, full_scan: bool = False):
+        if full_scan:
+            self._pending_chapter_paths.clear()
+            self._pending_chapter_paths.add('*')
+        elif chapter_path:
+            if '*' not in self._pending_chapter_paths:
+                self._pending_chapter_paths.add(str(chapter_path))
+        self._assembly_timer.start()
+
+    def _run_scheduled_assembly_check(self):
+        if '*' in self._pending_chapter_paths:
+            self._pending_chapter_paths.clear()
+            self.run_final_assembly_check()
+            return
+
+        chapter_paths = list(self._pending_chapter_paths)
+        self._pending_chapter_paths.clear()
+        self.run_final_assembly_check(chapter_paths=chapter_paths)
 
     def _post_event(self, name: str, data: dict = None):
         event = {
@@ -47,6 +92,12 @@ class ChunkAssembler(QObject):
             'session_id': self.session_id, 'data': data or {}
         }
         self.bus.event_posted.emit(event)
+
+    def _build_wrapper_from_source(self, epub_path: str, original_chapter_path: str):
+        with open(epub_path, "rb") as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
+            original_html = epub_zip.read(original_chapter_path).decode("utf-8", "ignore")
+        prefix, _, suffix = process_body_tag(original_html, return_parts=True, body_content_only=False)
+        return prefix, suffix
 
     def _assemble_chapter_from_db(self, task_ids: list, original_chapter_path: str):
         """
@@ -85,7 +136,8 @@ class ChunkAssembler(QObject):
             chunk_infos = [{'task_id': row['task_id'], 'payload': json.loads(row['payload'])} for row in chunk_infos_rows]
             
             first_payload = chunk_infos[0]['payload']
-            epub_path, total_chunks, prefix, suffix = first_payload[1], first_payload[5], first_payload[6], first_payload[7]
+            epub_path, total_chunks = first_payload[1], first_payload[5]
+            prefix, suffix = self._build_wrapper_from_source(epub_path, original_chapter_path)
             
             self._post_event('log_message', {'message': f"[ASSEMBLER] Комплект из {total_chunks} чанков для '{os.path.basename(original_chapter_path)}' захвачен для сборки…"})
 
@@ -124,7 +176,7 @@ class ChunkAssembler(QObject):
         except Exception as e:
             self._post_event('log_message', {'message': f"[ASSEMBLER_ERROR] КРИТИЧЕСКАЯ ОШИБКА при сборке главы '{os.path.basename(original_chapter_path)}': {e}"})
 
-    def run_final_assembly_check(self):
+    def run_final_assembly_check(self, chapter_paths: list[str] | None = None):
         """
         Находит в БД все успешные чанки и запускает сборку для КАЖДОГО
         найденного полного комплекта.
@@ -134,7 +186,14 @@ class ChunkAssembler(QObject):
         if not hasattr(app, 'task_manager'): return
 
         with app.task_manager._get_read_only_conn() as conn: # Используем 'with conn' для автоматических транзакций при чтении
-            cursor = conn.execute("SELECT task_id, payload FROM tasks WHERE status = 'completed' AND payload LIKE '%\"epub_chunk\"%'")
+            query = "SELECT task_id, payload FROM tasks WHERE status = 'completed' AND payload LIKE '%\"epub_chunk\"%'"
+            params = []
+            filtered_chapter_paths = [str(path) for path in (chapter_paths or []) if path]
+            if filtered_chapter_paths:
+                like_clause = " OR ".join("payload LIKE ?" for _ in filtered_chapter_paths)
+                query += f" AND ({like_clause})"
+                params = [f'%"{path}"%' for path in filtered_chapter_paths]
+            cursor = conn.execute(query, params)
             completed_chunks = cursor.fetchall()
         
         if not completed_chunks: return
@@ -144,6 +203,8 @@ class ChunkAssembler(QObject):
             try:
                 payload = json.loads(row['payload'])
                 if payload[0] == 'epub_chunk' and len(payload) >= 6:
+                    if filtered_chapter_paths and payload[2] not in filtered_chapter_paths:
+                        continue
                     chunks_by_chapter_and_index[payload[2]][payload[4]].append(
                         {'task_id': row['task_id'], 'payload': payload}
                     )

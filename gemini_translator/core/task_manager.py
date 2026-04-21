@@ -37,6 +37,8 @@ SNAPSHOT_META_INT_KEYS = (
     'recoverable_tasks',
     'saved_task_count',
 )
+MAX_LOG_DETAILS_CHARS = 16000
+UI_RAW_TEXT_PREVIEW_CHARS = 500
 
 
 def build_queue_snapshot_meta(counts_by_status: dict, saved_at: float | None = None) -> dict[str, str]:
@@ -242,7 +244,39 @@ class ChapterQueueManager(QObject):
             payload = dict(message)
         else:
             payload = {'message': message}
+        details_text = payload.get('details_text')
+        if isinstance(details_text, str):
+            payload['details_text'] = self._truncate_log_details(details_text)
         self._post_event('log_message', payload)
+
+    def _truncate_log_details(self, details_text: str) -> str:
+        normalized_text = details_text.strip()
+        if len(normalized_text) <= MAX_LOG_DETAILS_CHARS:
+            return normalized_text
+        omitted = len(normalized_text) - MAX_LOG_DETAILS_CHARS
+        return normalized_text[:MAX_LOG_DETAILS_CHARS].rstrip() + f"\n\n[details truncated: {omitted} chars omitted]"
+
+    def _payload_for_ui(self, payload: tuple):
+        if not isinstance(payload, tuple) or not payload:
+            return payload
+
+        task_type = payload[0]
+        if task_type == 'epub_chunk':
+            compact_payload = list(payload[:6])
+            if len(compact_payload) > 3:
+                chunk_content = compact_payload[3]
+                compact_payload[3] = len(chunk_content) if isinstance(chunk_content, str) else 0
+            return tuple(compact_payload)
+
+        if task_type == 'raw_text_translation':
+            compact_payload = list(payload)
+            if len(compact_payload) > 2 and isinstance(compact_payload[2], str):
+                text_content = compact_payload[2]
+                if len(text_content) > UI_RAW_TEXT_PREVIEW_CHARS:
+                    compact_payload[2] = text_content[:UI_RAW_TEXT_PREVIEW_CHARS] + "..."
+            return tuple(compact_payload)
+
+        return payload
     
     @pyqtSlot(dict)
     def on_event(self, event_data: dict):
@@ -563,6 +597,14 @@ class ChapterQueueManager(QObject):
                     log_payload['details_title'] = success_payload.get('success_details_title') or f"Полученный пакет для '{display_name}'"
                     log_payload['details_text'] = success_details
             self._log(log_payload)
+            task_payload = task_info[1] if isinstance(task_info, tuple) and len(task_info) > 1 else ()
+            if task_payload and task_payload[0] == 'epub_chunk' and len(task_payload) > 5:
+                self._post_event('chunk_task_completed', {
+                    'task_id': task_id_str,
+                    'chapter_path': str(task_payload[2]),
+                    'chunk_index': int(task_payload[4]),
+                    'total_chunks': int(task_payload[5]),
+                })
             self._safe_request_ui_update()
     
     def replace_batch_with_results(self, original_batch_task_id: str, epub_path: str, successful_chapters: list, failed_chapters: list, success_details_map=None):
@@ -1084,6 +1126,7 @@ class ChapterQueueManager(QObject):
         for row in all_rows:
             task_id_str, payload_json, status = row['task_id'], row['payload'], row['status']
             payload = json.loads(payload_json, object_hook=tuple_deserializer)
+            payload = self._payload_for_ui(payload)
             ui_status = {'completed': 'success', 'failed': 'error'}.get(status, status)
             task_tuple_for_ui = (uuid.UUID(task_id_str), payload)
             details = error_histories.get(task_id_str, {})
@@ -1691,7 +1734,7 @@ class ChapterQueueManager(QObject):
 
 
 
-    def save_queue_snapshot(self, snapshot_path: str, current_epub_path: str) -> bool:
+    def save_queue_snapshot(self, snapshot_path: str, current_epub_path: str, quiet: bool = False) -> bool:
         """
         Сохраняет состояние очереди на диск.
         ИСПРАВЛЕНО: Убран Deadlock, вызванный конфликтом транзакции и backup API.
@@ -1720,6 +1763,8 @@ class ChapterQueueManager(QObject):
             )
             counts_by_status = {row['status']: row['count'] for row in counts_cursor.fetchall()}
             snapshot_meta = build_queue_snapshot_meta(counts_by_status)
+            if quiet and int(snapshot_meta.get('recoverable_tasks', '0') or 0) <= 0:
+                return False
             snapshot_conn.executemany(
                 "INSERT OR REPLACE INTO meta_info (key, value) VALUES (?, ?)",
                 list(snapshot_meta.items())
@@ -1745,11 +1790,13 @@ class ChapterQueueManager(QObject):
             finally:
                 disk_conn.close()
                 
-            self._log(f"[DB] 💾 Очередь задач сохранена в '{os.path.basename(snapshot_path)}'.")
+            if not quiet:
+                self._log(f"[DB] 💾 Очередь задач сохранена в '{os.path.basename(snapshot_path)}'.")
             return True
             
         except Exception as e:
-            self._log(f"[DB ERROR] Не удалось сохранить очередь: {e}")
+            if not quiet:
+                self._log(f"[DB ERROR] Не удалось сохранить очередь: {e}")
             return False
         finally:
             if snapshot_conn:
