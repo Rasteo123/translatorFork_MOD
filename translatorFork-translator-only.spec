@@ -1,10 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 
-PROJECT_ROOT = Path.cwd()
+PROJECT_ROOT = Path.cwd().resolve()
+ICON_PATH = PROJECT_ROOT / "gemini_translator" / "GT.ico"
 
 
 datas = [
@@ -62,5 +64,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['gemini_translator\\GT.ico'],
+    icon=[str(ICON_PATH)] if sys.platform == "win32" and ICON_PATH.exists() else None,
 )

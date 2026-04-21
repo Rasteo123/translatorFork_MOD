@@ -157,6 +157,7 @@ FLASH_TTS_MODELS = {
 VOICE_MODE_OPTIONS = {
     "Один голос": "single",
     "Два голоса (Narrator + Dialogue)": "duo",
+    "Автор + Муж./Жен. роли": "author_gender",
 }
 
 PIPELINE_MODE_OPTIONS = {
@@ -172,6 +173,63 @@ PREPROCESS_PROFILE_OPTIONS = {
 
 TTS_SPEAKER_NARRATOR = "Narrator"
 TTS_SPEAKER_DIALOGUE = "Dialogue"
+LIVE_ROLE_AUTHOR = "Author"
+LIVE_ROLE_MALE = "Male"
+LIVE_ROLE_FEMALE = "Female"
+ROLE_SPEAKER_PATTERN = re.compile(
+    rf"^\s*({TTS_SPEAKER_NARRATOR}|{TTS_SPEAKER_DIALOGUE})\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+AUTHOR_GENDER_ROLE_PATTERN = re.compile(
+    rf"^\s*({LIVE_ROLE_AUTHOR}|{LIVE_ROLE_MALE}|{LIVE_ROLE_FEMALE})\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+LIVE_META_TAG_PATTERN = re.compile(r"^\[\s*([^\]\n]{1,40})\s*\]\s*")
+ROLE_QUOTE_PATTERN = re.compile(r'«([^»]+)»|"([^"]+)"')
+SCRIPT_WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё0-9-]+")
+FEMALE_DIALOGUE_HINTS = re.compile(
+    r"\b(сказала|спросила|ответила|прошептала|крикнула|произнесла|буркнула|добавила|"
+    r"пробормотала|прошипела|вздохнула|усмехнулась|улыбнулась|девушка|женщина|сестра|"
+    r"мать|героиня|она)\b",
+    re.IGNORECASE,
+)
+MALE_DIALOGUE_HINTS = re.compile(
+    r"\b(сказал|спросил|ответил|прошептал|крикнул|произнес|буркнул|добавил|"
+    r"пробормотал|прошипел|вздохнул|усмехнулся|улыбнулся|парень|мужчина|брат|"
+    r"отец|герой|он)\b",
+    re.IGNORECASE,
+)
+
+AUTHOR_GENDER_ATTRIBUTION_WORDS = (
+    r"сказал(?:а)?|спросил(?:а)?|ответил(?:а)?|добавил(?:а)?|"
+    r"произнес(?:ла)?|прошептал(?:а)?|крикнул(?:а)?|буркнул(?:а)?|"
+    r"пробормотал(?:а)?|процедил(?:а)?|усмехнул(?:ся|ась)|улыбнул(?:ся|ась)|"
+    r"вздохнул(?:а)?|подумал(?:а)?|заметил(?:а)?|отметил(?:а)?|бросил(?:а)|"
+    r"раздал(?:ся|ась)|донес(?:ся|лась)|послышал(?:ся|ась)|прозвучал(?:а)?|"
+    r"отозвал(?:ся|ась)|разнес(?:ся|лась)|прокатил(?:ся|ась)"
+)
+AUTHOR_GENDER_AUTHORIAL_TAIL_PATTERN = re.compile(
+    rf"(?:"
+    rf"(?:[»\"”]|[.!?…])\s*,?\s*(?:[—-]\s*)?"
+    rf"|,\s*[—-]\s*"
+    rf")[^\n]{{0,140}}\b"
+    rf"(?:{AUTHOR_GENDER_ATTRIBUTION_WORDS}|голос|бас|баритон|шепот|крик|рык)\b",
+    re.IGNORECASE,
+)
+AUTHOR_GENDER_AUTHORIAL_START_PATTERN = re.compile(
+    rf"^\s*(?:[—-]\s*)?(?:{AUTHOR_GENDER_ATTRIBUTION_WORDS})\b",
+    re.IGNORECASE,
+)
+AUTHOR_GENDER_AUTHORIAL_KEYWORDS = (
+    "сказал", "сказала", "спросил", "спросила", "ответил", "ответила", "добавил", "добавила",
+    "произнес", "произнесла", "прошептал", "прошептала", "крикнул", "крикнула", "буркнул",
+    "буркнула", "пробормотал", "пробормотала", "процедил", "процедила", "усмехнулся",
+    "усмехнулась", "улыбнулся", "улыбнулась", "вздохнул", "вздохнула", "подумал", "подумала",
+    "заметил", "заметила", "отметил", "отметила", "бросил", "бросила", "раздался", "раздалась",
+    "донесся", "донеслась", "послышался", "послышалась", "прозвучал", "прозвучала", "отозвался",
+    "отозвалась", "разнесся", "разнеслась", "прокатился", "прокатилась", "голос", "бас",
+    "баритон", "шепот", "крик", "рык",
+)
 
 TTS_SPEED_PROMPTS = {
     "Very Slow": "Read very slowly, with clear breathing room between phrases.",
@@ -192,9 +250,25 @@ TTS_AUDIO_TAG_HINT = (
     "[serious] [excited] [tired] [very slow] [very fast]"
 )
 
+LIVE_TAG_STYLE_HINTS = {
+    "serious": "Интонация серьёзная, собранная и сдержанная.",
+    "excited": "Интонация взволнованная и приподнятая, но без переигрывания.",
+    "tired": "Интонация усталая, с лёгкой тяжестью и выдохом в голосе.",
+    "whispers": "Подача тихая, почти шёпотом, но с разборчивой дикцией.",
+    "shouting": "Подача напряжённая и громкая, как крик, но слова остаются чёткими.",
+    "laughs": "Передай улыбку или смешок только тембром и интонацией, не добавляя новые слова.",
+    "sighs": "Передай усталый выдох только интонацией, не добавляя новые слова.",
+    "gasp": "Передай резкий вдох или испуг только интонацией, не добавляя новые слова.",
+    "very slow": "Темп заметно медленнее обычного.",
+    "slow": "Темп слегка замедленный.",
+    "fast": "Темп слегка ускоренный, но дикция остаётся чёткой.",
+    "very fast": "Темп заметно быстрее обычного, но дикция остаётся чёткой.",
+}
+
 DEFAULT_PREPROCESS_DIRECTIVE = (
     "Prefer compact, production-safe markup. Avoid overacting, dense tag spam and cinematic additions "
-    "that are not grounded in the original text."
+    "that are not grounded in the original text. In role-labeled scripts, keep narration, attribution and "
+    "scene description out of character lines."
 )
 
 DEFAULT_TTS_DIRECTIVE = (
@@ -202,10 +276,19 @@ DEFAULT_TTS_DIRECTIVE = (
 )
 
 LIVE_API_DEFAULT_RPM = 5
-FLASH_TTS_DEFAULT_RPM = 5
+FLASH_PREPROCESS_DEFAULT_RPM = 5
+FLASH_TTS_DEFAULT_RPM = 3
+FLASH_TTS_CHAPTER_INTERVAL_SECONDS = 60
 DEFAULT_TPM_LIMIT = 0
 RATE_LIMIT_BACKOFF_SECONDS = 65
 LIVE_PARAGRAPH_MAX_CHARS = 2200
+LIVE_AUTHOR_GENDER_BLOCK_MAX_CHARS = 1100
+LIVE_AUTHOR_GENDER_BLOCK_MAX_LINES = 6
+LIVE_REQUEST_TRIM_KEEP_MS = 20
+LIVE_REQUEST_JOIN_GAP_MS = 40
+LIVE_REQUEST_ROLE_SWITCH_GAP_MS = 75
+LIVE_REQUEST_SHORT_CUE_GAP_MS = 240
+LIVE_REQUEST_COLON_GAP_MS = 260
 
 RPD_LIMIT_FALLBACKS = {
     "gemini-3.1-flash-tts-preview": 10,
@@ -445,7 +528,8 @@ def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directi
         "Rules:\n"
         "- Preserve plot facts, meaning, names and chronology.\n"
         "- Keep the script in Russian.\n"
-        "- Do not summarize, shorten or explain the text.\n"
+        "- Do not summarize, shorten, paraphrase or explain the text.\n"
+        "- Do not invent any words, reactions, acknowledgements, connective phrases or narration that are absent from the source.\n"
         f"- You may use sparse English audio tags such as {TTS_AUDIO_TAG_HINT}.\n"
         "- Tags must be short, tasteful and only where justified by the source scene.\n"
         "- Return only the final script text, with no markdown and no comments.\n"
@@ -464,6 +548,35 @@ def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directi
             f"- Direct speech and quoted dialogue go to `{TTS_SPEAKER_DIALOGUE}`.\n"
             f"- If a paragraph mixes narration and dialogue, split it into several speaker lines.\n"
             f"- Do not invent extra speakers beyond those two names.\n\n"
+            f"SOURCE TEXT:\n{raw_text}"
+        )
+
+    if voice_mode == "author_gender":
+        return (
+            f"{common_rules}\n"
+            f"Transform the source into a strict labeled script using exactly these labels: "
+            f"{LIVE_ROLE_AUTHOR}, {LIVE_ROLE_MALE}, {LIVE_ROLE_FEMALE}.\n"
+            "Rules:\n"
+            f"- Prefix every output line with `{LIVE_ROLE_AUTHOR}:`, `{LIVE_ROLE_MALE}:`, or `{LIVE_ROLE_FEMALE}:`.\n"
+            f"- Use `{LIVE_ROLE_AUTHOR}:` for narration, scene description, speech attributions, inner thoughts, and any dialogue whose speaker gender is not explicitly clear in the source.\n"
+            f"- Use `{LIVE_ROLE_MALE}:` only for direct speech when the source clearly identifies the speaker as male.\n"
+            f"- Use `{LIVE_ROLE_FEMALE}:` only for direct speech when the source clearly identifies the speaker as female.\n"
+            "- Never guess. If the source does not explicitly support male or female attribution, keep that line under Author.\n"
+            f"- `{LIVE_ROLE_MALE}:` and `{LIVE_ROLE_FEMALE}:` may contain only the words the character actually says aloud.\n"
+            "- Never leave author text inside character lines: no speech attributions, no action beats, no narration, no scene description, no voice description.\n"
+            "- If a source line mixes dialogue and author text, split it into multiple labeled lines.\n"
+            "- Tails such as `— сказал он`, `— спросила девушка`, `раздался густой бас`, `послышался голос`, `усмехнулся мужчина` must go to Author, not to Male/Female.\n"
+            "- If you are not fully certain that the speaker is male or female from the source itself, keep the whole line under Author.\n"
+            "- Preserve the wording of the source as closely as possible.\n"
+            "- Do not invent standalone cues like `[Да]`, `[Нет]`, `[Хм]`, unless that exact spoken word is present in the source at that point.\n"
+            "- Do not add extra labels, speaker names, markdown or explanations.\n"
+            "Examples:\n"
+            f"- WRONG: {LIVE_ROLE_MALE}: — Парень, посторонись немного, — раздался густой бас.\n"
+            f"  RIGHT: {LIVE_ROLE_MALE}: — Парень, посторонись немного.\n"
+            f"  RIGHT: {LIVE_ROLE_AUTHOR}: Раздался густой бас.\n"
+            f"- WRONG: {LIVE_ROLE_FEMALE}: «Ты идёшь?» — спросила девушка.\n"
+            f"  RIGHT: {LIVE_ROLE_FEMALE}: «Ты идёшь?»\n"
+            f"  RIGHT: {LIVE_ROLE_AUTHOR}: — спросила девушка.\n\n"
             f"SOURCE TEXT:\n{raw_text}"
         )
 
@@ -497,6 +610,631 @@ def _build_tts_generation_prompt(script_text, voice_mode, speed_key, extra_direc
         "Preserve the wording of the script.\n\n"
         f"{script_text}"
     )
+
+
+def _build_single_voice_speech_config(voice_name):
+    return genai_types.SpeechConfig(
+        language_code="ru-RU",
+        voice_config=genai_types.VoiceConfig(
+            prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                voice_name=voice_name,
+            )
+        ),
+    )
+
+
+def _build_duo_voice_speech_config(primary_voice, secondary_voice):
+    return genai_types.SpeechConfig(
+        language_code="ru-RU",
+        multi_speaker_voice_config=genai_types.MultiSpeakerVoiceConfig(
+            speaker_voice_configs=[
+                genai_types.SpeakerVoiceConfig(
+                    speaker=TTS_SPEAKER_NARRATOR,
+                    voice_config=genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                            voice_name=primary_voice,
+                        )
+                    ),
+                ),
+                genai_types.SpeakerVoiceConfig(
+                    speaker=TTS_SPEAKER_DIALOGUE,
+                    voice_config=genai_types.VoiceConfig(
+                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                            voice_name=secondary_voice,
+                        )
+                    ),
+                ),
+            ]
+        ),
+    )
+
+
+def _normalize_live_tag_name(tag_text):
+    return re.sub(r"\s+", " ", (tag_text or "").strip().lower())
+
+
+def _extract_leading_live_tags(text):
+    remaining = (text or "").strip()
+    tags = []
+    while remaining:
+        match = LIVE_META_TAG_PATTERN.match(remaining)
+        if not match:
+            break
+        tag_name = _normalize_live_tag_name(match.group(1))
+        if tag_name not in LIVE_TAG_STYLE_HINTS and not tag_name.startswith("pause"):
+            break
+        tags.append(tag_name)
+        remaining = remaining[match.end():].lstrip()
+    return tags, remaining
+
+
+def _unwrap_live_spoken_cue(text):
+    stripped = (text or "").strip()
+    match = re.fullmatch(r"\[\s*([^\[\]\n]{1,24})\s*\]", stripped)
+    if not match:
+        return stripped
+    inner_text = match.group(1).strip()
+    if re.search(r"[A-Za-z]{2,}", inner_text):
+        return stripped
+    if re.search(r"[А-Яа-яЁё0-9]", inner_text):
+        return inner_text
+    return stripped
+
+
+def _parse_live_pause_tag_ms(tag_name):
+    normalized = _normalize_live_tag_name(tag_name)
+    if normalized in {"pause", "beat", "short pause", "small pause"}:
+        return LIVE_REQUEST_SHORT_CUE_GAP_MS
+    if normalized in {"long pause", "dramatic pause"}:
+        return LIVE_REQUEST_COLON_GAP_MS + 80
+    match = re.fullmatch(r"pause\s*(\d{2,4})\s*ms", normalized)
+    if match:
+        return max(40, min(int(match.group(1)), 1200))
+    return 0
+
+
+def _build_live_segment_style(tags):
+    style_parts = []
+    for tag_name in tags or []:
+        if tag_name in LIVE_TAG_STYLE_HINTS:
+            style_parts.append(LIVE_TAG_STYLE_HINTS[tag_name])
+    return " ".join(style_parts).strip()
+
+
+def _is_short_live_cue(text):
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    compact = normalized.strip(" .!?…:;,-")
+    if not compact or len(compact) > 12:
+        return False
+    words = [word for word in re.findall(r"[А-Яа-яЁёA-Za-z0-9-]+", compact) if word]
+    return 0 < len(words) <= 2
+
+
+def _prepare_live_segment_text(text):
+    tags, remaining = _extract_leading_live_tags(text)
+    spoken_text = _unwrap_live_spoken_cue(remaining)
+    spoken_text = re.sub(r"[ \t]+", " ", spoken_text).strip()
+    pause_after_ms = 0
+    for tag_name in tags:
+        pause_after_ms = max(pause_after_ms, _parse_live_pause_tag_ms(tag_name))
+    if _is_short_live_cue(spoken_text):
+        if spoken_text and not re.search(r"[.!?…:]$", spoken_text):
+            spoken_text = f"{spoken_text}."
+        pause_after_ms = max(pause_after_ms, LIVE_REQUEST_SHORT_CUE_GAP_MS)
+    if spoken_text.endswith(":"):
+        pause_after_ms = max(pause_after_ms, LIVE_REQUEST_COLON_GAP_MS)
+    return {
+        "text": spoken_text,
+        "style_hint": _build_live_segment_style(tags),
+        "pause_after_ms": pause_after_ms,
+    }
+
+
+def _build_live_single_voice_request_config(
+    voice_name,
+    role_hint="default",
+    style_prompt="",
+    speed_instr=None,
+    segment_directive="",
+):
+    speed_instr = speed_instr or SPEED_PROMPTS.get("Normal", "")
+    gender = VOICES_MAP.get(voice_name, "Ж")
+    dictor_type = "диктор-мужчина" if gender == "М" else "диктор-женщина"
+
+    if role_hint == "author":
+        role_instr = (
+            "Озвучь только авторский текст, ремарки и описание сцены как рассказчик аудиокниги. "
+            "Не добавляй реплики персонажей."
+        )
+    elif role_hint == "male_dialogue":
+        role_instr = (
+            "Озвучь только прямую речь мужского персонажа. "
+            "Не добавляй авторский текст, ремарки или чужие реплики."
+        )
+    elif role_hint == "female_dialogue":
+        role_instr = (
+            "Озвучь только прямую речь женского персонажа. "
+            "Не добавляй авторский текст, ремарки или чужие реплики."
+        )
+    else:
+        role_instr = "Озвучь предоставленный текст СЛОВО В СЛОВО."
+
+    segment_instr = ""
+    if segment_directive:
+        segment_instr = (
+            f"Сценическая пометка для текущего фрагмента: {segment_directive} "
+            "Реализуй её только тембром, интонацией и темпом. "
+            "Не проговаривай названия тегов и не добавляй новые слова, междометия или звуки."
+        )
+
+    return genai_types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        speech_config=_build_single_voice_speech_config(voice_name),
+        system_instruction=(
+            f"Ты профессиональный {dictor_type}. {style_prompt} "
+            f"{speed_instr} "
+            f"{role_instr} "
+            f"{segment_instr} "
+            "Читай только входной текст СЛОВО В СЛОВО. "
+            "Не перефразируй, не продолжай сцену, не добавляй вступления, не переставляй фразы и не переключайся на другую роль. "
+            "Обязательно дочитывай текст до самой последней точки и выдай полный аудиоответ. "
+            "Язык: Русский."
+        ),
+    )
+
+
+def _split_author_gender_script_segments(script_text, segment_mode):
+    script_text = (script_text or "").strip()
+    if not script_text:
+        return []
+
+    if segment_mode == "paragraphs":
+        blocks = [block.strip() for block in re.split(r"\n\s*\n|\r\n\s*\r\n", script_text) if block.strip()]
+        if len(blocks) > 1:
+            return blocks
+
+        labeled_lines = [line.strip() for line in script_text.splitlines() if line.strip()]
+        if labeled_lines and all(AUTHOR_GENDER_ROLE_PATTERN.match(line) for line in labeled_lines):
+            packed = []
+            current_lines = []
+            current_chars = 0
+            for line in labeled_lines:
+                if current_lines and (
+                    len(current_lines) >= LIVE_AUTHOR_GENDER_BLOCK_MAX_LINES
+                    or current_chars + len(line) + 1 > LIVE_AUTHOR_GENDER_BLOCK_MAX_CHARS
+                ):
+                    packed.append("\n".join(current_lines))
+                    current_lines = []
+                    current_chars = 0
+                current_lines.append(line)
+                current_chars += len(line) + 1
+            if current_lines:
+                packed.append("\n".join(current_lines))
+            if packed:
+                return packed
+        return blocks or [script_text]
+
+    return [line.strip() for line in script_text.splitlines() if line.strip()]
+
+
+def _join_live_request_segments(segments, segment_mode, voice_mode="single"):
+    parts = [segment for segment in (segments or []) if segment]
+    if not parts:
+        return ""
+    if voice_mode == "author_gender":
+        separator = "\n\n" if segment_mode == "paragraphs" else "\n"
+        return separator.join(parts).strip()
+    if segment_mode == "paragraphs":
+        return "\n\n".join(parts).strip()
+    return " ".join(parts).strip()
+
+
+def _append_role_segment(segments, speaker, text):
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if not normalized:
+        return
+
+    is_punctuation_tail = bool(re.fullmatch(r"[.,!?…:;)\]»]+", normalized))
+    if segments and is_punctuation_tail:
+        prev_speaker, prev_text = segments[-1]
+        segments[-1] = (prev_speaker, f"{prev_text.rstrip()}{normalized}")
+        return
+
+    if segments and segments[-1][0] == speaker:
+        prev_speaker, prev_text = segments[-1]
+        segments[-1] = (prev_speaker, f"{prev_text.rstrip()} {normalized}")
+        return
+
+    segments.append((speaker, normalized))
+
+
+def _split_role_paragraph(paragraph):
+    paragraph = re.sub(r"\s+", " ", (paragraph or "").strip())
+    if not paragraph:
+        return []
+
+    existing_label_match = ROLE_SPEAKER_PATTERN.match(paragraph)
+    if existing_label_match:
+        speaker = existing_label_match.group(1).strip()
+        speaker = TTS_SPEAKER_DIALOGUE if speaker.lower() == TTS_SPEAKER_DIALOGUE.lower() else TTS_SPEAKER_NARRATOR
+        return [(speaker, existing_label_match.group(2).strip())]
+
+    if re.match(r"^\s*[—–-]\s*", paragraph):
+        core = re.sub(r"^\s*[—–-]\s*", "", paragraph).strip()
+        raw_parts = [part.strip() for part in re.split(r"\s+[—–-]\s+", core) if part.strip()]
+        if len(raw_parts) >= 2:
+            segments = []
+            for idx, part in enumerate(raw_parts):
+                speaker = TTS_SPEAKER_DIALOGUE if idx % 2 == 0 else TTS_SPEAKER_NARRATOR
+                _append_role_segment(segments, speaker, part)
+            if segments:
+                return segments
+        return [(TTS_SPEAKER_DIALOGUE, core)]
+
+    quote_matches = list(ROLE_QUOTE_PATTERN.finditer(paragraph))
+    if quote_matches:
+        segments = []
+        cursor = 0
+        for match in quote_matches:
+            before_text = paragraph[cursor:match.start()]
+            quote_text = (match.group(1) or match.group(2) or "").strip()
+            _append_role_segment(segments, TTS_SPEAKER_NARRATOR, before_text)
+            _append_role_segment(segments, TTS_SPEAKER_DIALOGUE, quote_text)
+            cursor = match.end()
+        _append_role_segment(segments, TTS_SPEAKER_NARRATOR, paragraph[cursor:])
+        if segments:
+            return segments
+
+    return [(TTS_SPEAKER_NARRATOR, paragraph)]
+
+
+def _build_live_role_script(raw_text):
+    paragraphs = [
+        part.strip()
+        for part in re.split(r"\n\s*\n|\r\n\s*\r\n", raw_text or "")
+        if part.strip()
+    ]
+    if not paragraphs and (raw_text or "").strip():
+        paragraphs = [(raw_text or "").strip()]
+
+    segments = []
+    for paragraph in paragraphs:
+        for speaker, text in _split_role_paragraph(paragraph):
+            _append_role_segment(segments, speaker, text)
+
+    if not segments:
+        return ""
+
+    return "\n".join(f"{speaker}: {text}" for speaker, text in segments if text.strip())
+
+
+def _infer_dialogue_gender(text):
+    sample = ((text or "").strip().lower()).replace("ё", "е")
+    if not sample:
+        return None
+    female_score = len(FEMALE_DIALOGUE_HINTS.findall(sample))
+    male_score = len(MALE_DIALOGUE_HINTS.findall(sample))
+    if female_score > male_score and female_score > 0:
+        return "female"
+    if male_score > female_score and male_score > 0:
+        return "male"
+    return None
+
+
+def _parse_author_gender_script(script_text):
+    entries = []
+    for raw_line in (script_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = AUTHOR_GENDER_ROLE_PATTERN.match(line)
+        if not match:
+            if not entries:
+                return []
+            entries[-1]["text"] = f"{entries[-1]['text'].rstrip()}\n{line}"
+            continue
+
+        role_label = match.group(1).strip().lower()
+        text = match.group(2).strip()
+        if not text:
+            continue
+
+        if role_label == LIVE_ROLE_MALE.lower():
+            role_hint = "male_dialogue"
+        elif role_label == LIVE_ROLE_FEMALE.lower():
+            role_hint = "female_dialogue"
+        else:
+            role_hint = "author"
+
+        entries.append({"role_hint": role_hint, "text": text})
+
+    return entries
+
+
+def _has_author_gender_authorial_tail(text):
+    normalized = re.sub(r"\s+", " ", (text or "").lower().replace("ё", "е")).strip()
+    if not normalized:
+        return False
+    if AUTHOR_GENDER_AUTHORIAL_START_PATTERN.search(normalized):
+        return True
+
+    trimmed = normalized.lstrip("—- ").strip()
+    first_token = trimmed.split(" ", 1)[0].strip(",.!?…:;\"'«»()[]") if trimmed else ""
+    if first_token in AUTHOR_GENDER_AUTHORIAL_KEYWORDS:
+        return True
+
+    dash_parts = [
+        part.strip(" ,.!?…:;\"'«»()[]")
+        for part in re.split(r"\s*[—-]\s*", normalized)
+        if part.strip(" ,.!?…:;\"'«»()[]")
+    ]
+    if len(dash_parts) >= 2:
+        for tail in dash_parts[1:]:
+            if any(keyword in tail for keyword in AUTHOR_GENDER_AUTHORIAL_KEYWORDS):
+                return True
+
+    for splitter in ("»", "\"", "”"):
+        if splitter in normalized:
+            tail = normalized.split(splitter, 1)[1].strip(" ,.!?…:;\"'«»()[]")
+            if tail and any(keyword in tail for keyword in AUTHOR_GENDER_AUTHORIAL_KEYWORDS):
+                return True
+    return False
+
+
+def _normalize_script_word(token):
+    return (token or "").strip().lower().replace("ё", "е")
+
+
+def _extract_source_word_set(source_text):
+    words = set()
+    for token in SCRIPT_WORD_PATTERN.findall(source_text or ""):
+        normalized = _normalize_script_word(token)
+        if len(normalized) < 3:
+            continue
+        words.add(normalized)
+    return words
+
+
+def _strip_author_gender_line_markup(text):
+    prepared = _prepare_live_segment_text(text)
+    stripped = prepared.get("text", "").strip()
+    return re.sub(r"\[[^\]\n]{1,40}\]", " ", stripped).strip()
+
+
+def _collect_author_gender_source_drift_issues(script_text, source_text):
+    if not (script_text or "").strip() or not (source_text or "").strip():
+        return []
+
+    issues = []
+    source_words = _extract_source_word_set(source_text)
+    if not source_words:
+        return issues
+
+    for line_no, raw_line in enumerate((script_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = AUTHOR_GENDER_ROLE_PATTERN.match(line)
+        text = match.group(2).strip() if match else line
+        plain_text = _strip_author_gender_line_markup(text)
+        if not plain_text:
+            continue
+
+        line_words = []
+        unexpected_words = []
+        for token in SCRIPT_WORD_PATTERN.findall(plain_text):
+            normalized = _normalize_script_word(token)
+            if len(normalized) < 3:
+                continue
+            if re.fullmatch(r"[a-z0-9-]+", normalized):
+                continue
+            line_words.append(normalized)
+            if normalized not in source_words:
+                unexpected_words.append(normalized)
+
+        if len(unexpected_words) >= 2 and len(unexpected_words) >= max(2, len(line_words) // 3):
+            unique_preview = ", ".join(sorted(dict.fromkeys(unexpected_words))[:6])
+            issues.append(
+                {
+                    "line_no": line_no,
+                    "kind": "source_drift",
+                    "line": line,
+                    "reason": f"line adds words not grounded in source: {unique_preview}",
+                }
+            )
+    return issues
+
+
+def _find_author_gender_script_issues(script_text, source_text=None):
+    issues = []
+    for line_no, raw_line in enumerate((script_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = AUTHOR_GENDER_ROLE_PATTERN.match(line)
+        if not match:
+            issues.append(
+                {
+                    "line_no": line_no,
+                    "kind": "unlabeled",
+                    "line": line,
+                    "reason": "line does not start with Author/Male/Female",
+                }
+            )
+            continue
+
+        role_label = match.group(1).strip()
+        text = match.group(2).strip()
+        if role_label.lower() not in {LIVE_ROLE_MALE.lower(), LIVE_ROLE_FEMALE.lower()}:
+            continue
+        if not text:
+            issues.append(
+                {
+                    "line_no": line_no,
+                    "kind": "empty",
+                    "line": line,
+                    "reason": "character line is empty",
+                }
+            )
+            continue
+        if _has_author_gender_authorial_tail(text):
+            issues.append(
+                {
+                    "line_no": line_no,
+                    "kind": "authorial_tail",
+                    "line": line,
+                    "reason": "character line contains dialogue mixed with author attribution or narration",
+                }
+            )
+    if source_text:
+        issues.extend(_collect_author_gender_source_drift_issues(script_text, source_text))
+    return issues
+
+
+def _build_author_gender_repair_prompt(raw_text, draft_script, issues, profile_prompt, extra_directive=""):
+    profile_line = profile_prompt or PREPROCESS_PROFILE_OPTIONS["Бережно"]
+    extra_line = (extra_directive or "").strip() or DEFAULT_PREPROCESS_DIRECTIVE
+    issue_lines = "\n".join(
+        f"- line {item['line_no']}: {item['reason']} :: {item['line']}"
+        for item in (issues or [])[:8]
+    ) or "- The draft does not follow the strict Author/Male/Female format."
+    return (
+        "You are repairing a Russian audiobook role script.\n"
+        "Rewrite the draft into a strict labeled script using exactly these labels: "
+        f"{LIVE_ROLE_AUTHOR}, {LIVE_ROLE_MALE}, {LIVE_ROLE_FEMALE}.\n"
+        "Hard rules:\n"
+        "- Preserve plot facts, meaning, names and chronology.\n"
+        "- Keep the script in Russian.\n"
+        "- Do not summarize, shorten, paraphrase or explain the text.\n"
+        "- Do not invent any new words, filler phrases, reactions or connective text that are absent from the source.\n"
+        "- Do not invent standalone cues like `[Да]`, `[Нет]`, `[Хм]` unless that exact spoken word is present in the source at that point.\n"
+        f"- Direction profile: {profile_line}\n"
+        f"- Additional director note: {extra_line}\n"
+        f"- `{LIVE_ROLE_MALE}:` and `{LIVE_ROLE_FEMALE}:` may contain only words actually spoken aloud by that character.\n"
+        f"- `{LIVE_ROLE_AUTHOR}:` must contain narration, attribution, inner thoughts, scene description, voice description and all ambiguous dialogue.\n"
+        "- Split mixed lines into separate labeled lines.\n"
+        "- Never leave tails like `— сказал он`, `— спросила девушка`, `раздался густой бас`, `послышался голос`, `усмехнулся мужчина` inside Male/Female lines.\n"
+        "- If gender is not explicit in the source, move the whole line to Author.\n"
+        "- Return only the corrected final script, with no markdown and no comments.\n"
+        "Examples:\n"
+        f"- WRONG: {LIVE_ROLE_MALE}: — Парень, посторонись немного, — раздался густой бас.\n"
+        f"  RIGHT: {LIVE_ROLE_MALE}: — Парень, посторонись немного.\n"
+        f"  RIGHT: {LIVE_ROLE_AUTHOR}: Раздался густой бас.\n"
+        f"- WRONG: {LIVE_ROLE_FEMALE}: «Ты идёшь?» — спросила девушка.\n"
+        f"  RIGHT: {LIVE_ROLE_FEMALE}: «Ты идёшь?»\n"
+        f"  RIGHT: {LIVE_ROLE_AUTHOR}: — спросила девушка.\n\n"
+        f"PROBLEMS TO FIX:\n{issue_lines}\n\n"
+        f"SOURCE TEXT:\n{raw_text}\n\n"
+        f"DRAFT SCRIPT:\n{draft_script}"
+    )
+
+
+def _append_gendered_segment(segments, kind, text, gender=None):
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if not normalized:
+        return
+
+    is_punctuation_tail = bool(re.fullmatch(r"[.,!?…:;)\]»]+", normalized))
+    if segments and is_punctuation_tail:
+        segments[-1]["text"] = f"{segments[-1]['text'].rstrip()}{normalized}"
+        return
+
+    if segments and segments[-1]["kind"] == kind and segments[-1].get("gender") == gender:
+        segments[-1]["text"] = f"{segments[-1]['text'].rstrip()} {normalized}"
+        return
+
+    segments.append({"kind": kind, "gender": gender, "text": normalized})
+
+
+def _split_gendered_paragraph(paragraph, previous_dialogue_gender=None):
+    paragraph = re.sub(r"\s+", " ", (paragraph or "").strip())
+    if not paragraph:
+        return [], previous_dialogue_gender
+
+    existing_label_match = ROLE_SPEAKER_PATTERN.match(paragraph)
+    if existing_label_match:
+        speaker = existing_label_match.group(1).strip()
+        text = existing_label_match.group(2).strip()
+        if speaker.lower() == TTS_SPEAKER_DIALOGUE.lower():
+            return ([{"kind": "dialogue", "gender": previous_dialogue_gender, "text": text}], previous_dialogue_gender)
+        return ([{"kind": "narrator", "gender": None, "text": text}], previous_dialogue_gender)
+
+    if re.match(r"^\s*[—–-]\s*", paragraph):
+        core = re.sub(r"^\s*[—–-]\s*", "", paragraph).strip()
+        raw_parts = [part.strip() for part in re.split(r"\s+[—–-]\s+", core) if part.strip()]
+        if len(raw_parts) >= 2:
+            segments = []
+            running_gender = previous_dialogue_gender
+            for idx, part in enumerate(raw_parts):
+                if idx % 2 == 0:
+                    local_gender = running_gender
+                    if idx > 0:
+                        local_gender = _infer_dialogue_gender(raw_parts[idx - 1]) or local_gender
+                    if idx + 1 < len(raw_parts):
+                        local_gender = _infer_dialogue_gender(raw_parts[idx + 1]) or local_gender
+                    if local_gender:
+                        running_gender = local_gender
+                    _append_gendered_segment(segments, "dialogue", part, local_gender)
+                else:
+                    narrator_gender = _infer_dialogue_gender(part)
+                    if narrator_gender:
+                        running_gender = narrator_gender
+                    _append_gendered_segment(segments, "narrator", part)
+            return segments, running_gender
+        return ([{"kind": "dialogue", "gender": previous_dialogue_gender, "text": core}], previous_dialogue_gender)
+
+    quote_matches = list(ROLE_QUOTE_PATTERN.finditer(paragraph))
+    if quote_matches:
+        segments = []
+        cursor = 0
+        running_gender = previous_dialogue_gender
+        for idx, match in enumerate(quote_matches):
+            before = paragraph[cursor:match.start()]
+            _append_gendered_segment(segments, "narrator", before)
+
+            next_start = quote_matches[idx + 1].start() if idx + 1 < len(quote_matches) else len(paragraph)
+            after_context = paragraph[match.end():next_start]
+            quote_text = (match.group(1) or match.group(2) or "").strip()
+            local_gender = _infer_dialogue_gender(before) or _infer_dialogue_gender(after_context) or running_gender
+            if local_gender:
+                running_gender = local_gender
+            _append_gendered_segment(segments, "dialogue", quote_text, local_gender)
+            cursor = match.end()
+        _append_gendered_segment(segments, "narrator", paragraph[cursor:])
+        return segments, running_gender
+
+    return ([{"kind": "narrator", "gender": None, "text": paragraph}], previous_dialogue_gender)
+
+
+def _build_author_gender_live_plan(raw_text, author_voice, male_voice, female_voice):
+    labeled_entries = _parse_author_gender_script(raw_text)
+    if labeled_entries and not _find_author_gender_script_issues(raw_text):
+        plan = []
+        for entry in labeled_entries:
+            role_hint = entry["role_hint"]
+            voice_name = author_voice
+            if role_hint == "male_dialogue":
+                voice_name = male_voice
+            elif role_hint == "female_dialogue":
+                voice_name = female_voice
+
+            prepared_entry = _prepare_live_segment_text(entry.get("text", "").strip())
+            text_value = prepared_entry.get("text", "").strip()
+            if not text_value:
+                continue
+
+            plan.append(
+                {
+                    "voice": voice_name,
+                    "role_hint": role_hint,
+                    "text": text_value,
+                    "segment_directive": prepared_entry.get("style_hint", ""),
+                    "pause_after_ms": int(prepared_entry.get("pause_after_ms", 0) or 0),
+                }
+            )
+        if plan:
+            return plan
+    return []
 
 
 def _clean_tts_markup(text):
@@ -629,9 +1367,22 @@ def _script_matches_voice_mode(script_text, voice_mode):
             flags=re.MULTILINE,
         )
     )
+    has_author_gender_labels = bool(
+        re.search(
+            rf"^\s*(?:{LIVE_ROLE_AUTHOR}|{LIVE_ROLE_MALE}|{LIVE_ROLE_FEMALE})\s*:",
+            script_text,
+            flags=re.MULTILINE,
+        )
+    )
     if voice_mode == "duo":
         return has_duo_labels
-    return not has_duo_labels
+    if voice_mode == "author_gender":
+        return bool(
+            has_author_gender_labels
+            and _parse_author_gender_script(script_text)
+            and not _find_author_gender_script_issues(script_text)
+        )
+    return not has_duo_labels and not has_author_gender_labels
 
 
 class InvalidApiKeyError(RuntimeError):
@@ -784,6 +1535,25 @@ def _export_pcm_to_mp3(raw_audio, output_path):
             except Exception:
                 pass
         raise RuntimeError(f"Не удалось сохранить MP3: {exc}") from exc
+
+
+def _trim_raw_pcm_boundaries(raw_audio, keep_ms=LIVE_REQUEST_TRIM_KEEP_MS):
+    if not raw_audio or AudioSegment is None:
+        return raw_audio
+    try:
+        snap = AudioSegment(data=raw_audio, sample_width=2, frame_rate=AUDIO_RATE, channels=AUDIO_CHANNELS)
+        snap = _trim_audio_segment_boundaries(snap, keep_ms=keep_ms)
+        return snap.raw_data
+    except Exception:
+        return raw_audio
+
+
+def _pcm_silence(duration_ms):
+    duration_ms = int(duration_ms or 0)
+    if duration_ms <= 0:
+        return b""
+    samples = max(1, int(AUDIO_RATE * duration_ms / 1000.0))
+    return b"\x00\x00" * samples * AUDIO_CHANNELS
 
 
 def _combine_mp3_sequence(input_paths, output_path):
@@ -1694,6 +2464,10 @@ class GeminiWorker(QThread):
         segment_mode,
         manager_chapter_queue,
         daily_request_limiter=None,
+        voice_mode="single",
+        secondary_voice=None,
+        tertiary_voice=None,
+        allow_edge_fallback=True,
     ):
         super().__init__()
         self.worker_id = worker_id
@@ -1708,6 +2482,10 @@ class GeminiWorker(QThread):
         self.fast = fast
         self.chunk = chunk
         self.segment_mode = segment_mode or "sentences"
+        self.voice_mode = voice_mode or "single"
+        self.secondary_voice = secondary_voice or voice
+        self.tertiary_voice = tertiary_voice or self.secondary_voice or voice
+        self.allow_edge_fallback = bool(allow_edge_fallback)
         self.manager_chapter_queue = manager_chapter_queue
         self.c_idx = -1
         self.s_idx = 0
@@ -1725,6 +2503,13 @@ class GeminiWorker(QThread):
 
     def _chapter_segments(self, chapter_index):
         chapter = self.bm.chapters[chapter_index]
+        if self.voice_mode == "author_gender":
+            saved_script = self.bm.load_tts_script(chapter_index) if self.bm is not None else ""
+            if _script_matches_voice_mode(saved_script, "author_gender"):
+                script_segments = _split_author_gender_script_segments(saved_script, self.segment_mode)
+                if script_segments:
+                    return script_segments
+            return []
         if self.segment_mode == "paragraphs":
             paragraphs = []
             for part in getattr(chapter, "paragraphs", []) or []:
@@ -1737,9 +2522,70 @@ class GeminiWorker(QThread):
         return [part.strip() for part in chapter.flat_sentences if (part or "").strip()]
 
     def _join_segments_for_request(self, segments):
-        if self.segment_mode == "paragraphs":
-            return "\n\n".join(segment for segment in segments if segment).strip()
-        return " ".join(segment for segment in segments if segment).strip()
+        return _join_live_request_segments(
+            segments,
+            self.segment_mode,
+            self.voice_mode,
+        )
+
+    def _live_voice_descriptor(self):
+        if self.voice_mode == "author_gender":
+            return f"author={self.voice}, male={self.secondary_voice}, female={self.tertiary_voice}"
+        if self.voice_mode == "duo":
+            return f"{self.voice}/{self.secondary_voice}"
+        return self.voice
+
+    def _build_live_single_config(self, voice_name, role_hint="default", segment_directive=""):
+        return _build_live_single_voice_request_config(
+            voice_name,
+            role_hint=role_hint,
+            style_prompt=self.style_prompt,
+            speed_instr=SPEED_PROMPTS.get(self.speed, SPEED_PROMPTS["Normal"]),
+            segment_directive=segment_directive,
+        )
+
+    def _build_live_request_payload(self, text):
+        prepared = (text or "").strip()
+        if not prepared:
+            return None
+
+        if self.voice_mode == "author_gender":
+            plan = _build_author_gender_live_plan(
+                prepared,
+                self.voice,
+                self.secondary_voice,
+                self.tertiary_voice,
+            )
+            if not plan:
+                return None
+            return {
+                "mode": "author_gender",
+                "plan": [
+                    {
+                        **item,
+                        "config": self._build_live_single_config(
+                            item["voice"],
+                            item["role_hint"],
+                            item.get("segment_directive", ""),
+                        ),
+                    }
+                    for item in plan
+                    if item.get("text", "").strip()
+                ],
+            }
+
+        if self.voice_mode == "duo":
+            return {
+                "mode": "duo",
+                "text": _build_live_role_script(prepared) or prepared,
+                "config": self._build_live_connect_config()[0],
+            }
+
+        return {
+            "mode": "single",
+            "text": prepared,
+            "config": self._build_live_single_config(self.voice, "default"),
+        }
 
     def _estimate_tokens(self, text):
         if self.token_counter is not None:
@@ -1876,6 +2722,9 @@ class GeminiWorker(QThread):
     async def get_edge_tts_fallback(self, text):
         """Озвучка забаненного текста через Edge TTS с умным выбором пола"""
         import random
+        if not self.allow_edge_fallback:
+            logger.warning(f"[W{self.worker_id}] Edge TTS fallback отключён в настройках reader.")
+            return None
         if edge_tts is None or AudioSegment is None:
             logger.warning(f"[W{self.worker_id}] Edge TTS fallback недоступен: нет edge-tts или pydub.")
             return None
@@ -1952,28 +2801,99 @@ class GeminiWorker(QThread):
 
     def _build_live_connect_config(self):
         speed_instr = SPEED_PROMPTS.get(self.speed, SPEED_PROMPTS["Normal"])
-        gender = VOICES_MAP.get(self.voice, "Ж")
-        dictor_type = "диктор-мужчина" if gender == "М" else "диктор-женщина"
+        if self.voice_mode == "duo":
+            sys_instr = (
+                f"Ты профессиональная студия озвучки аудиокниг. {self.style_prompt} "
+                f"{speed_instr} "
+                "Озвучивай входной текст СЛОВО В СЛОВО. "
+                f"Во входе используются только роли {TTS_SPEAKER_NARRATOR} и {TTS_SPEAKER_DIALOGUE}. "
+                f"{TTS_SPEAKER_NARRATOR} — авторский текст, ремарки и описание сцены. "
+                f"{TTS_SPEAKER_DIALOGUE} — прямая речь и цитаты. "
+                "Если встретишь сценические теги в квадратных скобках, воспринимай их как пометки к подаче и не произноси их вслух. "
+                "Не меняй слова, не добавляй новых ролей, новых фраз или междометий и обязательно дочитывай текст до самой последней точки. "
+                "Выдай полный аудиоответ. Язык: Русский."
+            )
 
-        sys_instr = (
-            f"Ты профессиональный {dictor_type}. {self.style_prompt} "
-            f"{speed_instr} "
-            f"Твоя задача — озвучить предоставленный текст СЛОВО В СЛОВО. "
-            f"ОБЯЗАТЕЛЬНО дочитывай текст до самой последней точки, не глотай окончания и последние слова. "
-            f"Выдай полный аудиоответ. Язык: Русский."
-        )
+            config = genai_types.LiveConnectConfig(
+                response_modalities=["AUDIO"],
+                speech_config=_build_duo_voice_speech_config(self.voice, self.secondary_voice),
+                system_instruction=sys_instr
+            )
+            return config, f"{self.voice}/{self.secondary_voice}"
 
-        config = genai_types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            speech_config=genai_types.SpeechConfig(
-                language_code="ru-RU",
-                voice_config=genai_types.VoiceConfig(
-                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
-                )
-            ),
-            system_instruction=sys_instr
+        return self._build_live_single_config(self.voice, "default"), self.voice
+
+    async def _send_live_text_turn(self, session, text_to_send):
+        text_value = (text_to_send or "").strip()
+        if not text_value:
+            return
+        try:
+            await session.send_client_content(turns=text_value, turn_complete=True)
+        except Exception:
+            await session.send_realtime_input(text=text_value)
+
+    async def _request_live_audio_bytes(self, client, config, text_to_send):
+        received_chunks = []
+        await self._wait_for_request_budget(
+            text_to_send,
+            request_label="Live API",
+            daily_request_limiter=self.daily_request_limiter,
+            model_id=self.model_id,
+            rpd_limit=self.request_rpd_limit,
         )
-        return config, gender
+        async with client.aio.live.connect(model=self.model_id, config=config) as session:
+            await self._send_live_text_turn(session, text_to_send)
+
+            receive_iterator = session.receive().__aiter__()
+            current_timeout = 30.0
+
+            while self._is_running:
+                try:
+                    response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                    current_timeout = 15.0
+
+                    if response.server_content:
+                        if response.server_content.model_turn:
+                            for part in response.server_content.model_turn.parts:
+                                if part.inline_data:
+                                    received_chunks.append(part.inline_data.data)
+                        if getattr(response.server_content, "turn_complete", False):
+                            break
+                except asyncio.TimeoutError:
+                    break
+                except StopAsyncIteration:
+                    break
+
+        return _trim_raw_pcm_boundaries(b"".join(received_chunks))
+
+    def _commit_live_audio_bytes(self, audio_bytes):
+        if not audio_bytes:
+            return False
+        if self.record:
+            with self.buffer_lock:
+                self.audio_chunks.append(audio_bytes)
+        if self.audio_queue and not self.fast:
+            self.audio_queue.put((audio_bytes, self.c_idx, self.s_idx, False))
+        return True
+
+    async def _collect_live_payload_audio(self, client, payload):
+        if not payload:
+            return b""
+        if payload.get("mode") == "author_gender":
+            combined = bytearray()
+            plan = [item for item in payload.get("plan", []) if item.get("text", "").strip()]
+            for idx, item in enumerate(plan):
+                chunk_bytes = await self._request_live_audio_bytes(client, item["config"], item["text"])
+                if not chunk_bytes:
+                    return b""
+                combined.extend(chunk_bytes)
+                if idx + 1 < len(plan):
+                    next_item = plan[idx + 1]
+                    gap_ms = LIVE_REQUEST_ROLE_SWITCH_GAP_MS if next_item.get("role_hint") != item.get("role_hint") else LIVE_REQUEST_JOIN_GAP_MS
+                    gap_ms = max(gap_ms, int(item.get("pause_after_ms", 0) or 0))
+                    combined.extend(_pcm_silence(gap_ms))
+            return bytes(combined)
+        return await self._request_live_audio_bytes(client, payload["config"], payload["text"])
 
     async def main_loop(self):
         
@@ -1981,10 +2901,10 @@ class GeminiWorker(QThread):
         if genai is None or genai_types is None:
             raise RuntimeError("Для озвучки Gemini Reader требуется пакет google-genai.")
         client = genai.Client(api_key=self.api_key)
-        config, gender = self._build_live_connect_config()
+        voice_descriptor = self._live_voice_descriptor()
 
         # Используем выбранную в UI модель
-        logger.info(f"Воркер {self.worker_id} запущен (Модель: {self.model_id}, Голос: {self.voice} [{gender}]).")
+        logger.info(f"Воркер {self.worker_id} запущен (Модель: {self.model_id}, Голоса: {voice_descriptor}).")
         await asyncio.sleep(self.worker_id * 1.5)
 
         total_sent = 0
@@ -2003,6 +2923,13 @@ class GeminiWorker(QThread):
                     gemini_retry_count = 0
                     batch_retry_count = 0
                     total_sent = len(self._chapter_segments(self.c_idx))
+                    if self.voice_mode == "author_gender" and total_sent == 0:
+                        self.error_signal.emit(
+                            self.worker_id,
+                            f"Глава {self.c_idx + 1}: нет корректного AI-сценария Author/Male/Female. Сначала подготовьте AI-сценарий.",
+                        )
+                        self.c_idx = -1
+                        continue
                     segment_label = "абз." if self.segment_mode == "paragraphs" else "предл."
                     logger.info(f"Воркер {self.worker_id} взял Главу {self.c_idx + 1} ({total_sent} {segment_label})")
                 except queue.Empty:
@@ -2010,6 +2937,13 @@ class GeminiWorker(QThread):
                     break
             else:
                 total_sent = len(self._chapter_segments(self.c_idx))
+                if self.voice_mode == "author_gender" and total_sent == 0:
+                    self.error_signal.emit(
+                        self.worker_id,
+                        f"Глава {self.c_idx + 1}: нет корректного AI-сценария Author/Male/Female. Сначала подготовьте AI-сценарий.",
+                    )
+                    self.c_idx = -1
+                    continue
 
             if self.bm.is_chapter_done(self.c_idx):
                 self.chapter_done_ui_signal.emit(self.c_idx)
@@ -2040,8 +2974,16 @@ class GeminiWorker(QThread):
                 text_parts.append(segments[i])
                 actual_count += 1
             
-            text_to_send = self._join_segments_for_request(text_parts)
-            if not text_to_send:
+            request_payload = self._build_live_request_payload(self._join_segments_for_request(text_parts))
+            payload_preview = ""
+            if request_payload:
+                if request_payload.get("mode") == "author_gender":
+                    payload_preview = " | ".join(
+                        item.get("text", "")[:20] for item in request_payload.get("plan", [])[:2]
+                    )
+                else:
+                    payload_preview = request_payload.get("text", "")[:30]
+            if not request_payload:
                 self.s_idx += 1
                 if single_sentence_mode_remaining > 0:
                     single_sentence_mode_remaining -= 1
@@ -2049,45 +2991,51 @@ class GeminiWorker(QThread):
 
             data_received = False
             try:
-                await self._wait_for_request_budget(
-                    text_to_send,
-                    request_label="Live API",
-                    daily_request_limiter=self.daily_request_limiter,
-                    model_id=self.model_id,
-                    rpd_limit=self.request_rpd_limit,
-                )
-                # ПОДКЛЮЧАЕМСЯ К ВЫБРАННОЙ МОДЕЛИ
-                async with client.aio.live.connect(model=self.model_id, config=config) as session:
-                    await session.send_realtime_input(text=text_to_send)
-                    
-                    receive_iterator = session.receive().__aiter__()
-                    current_timeout = 30.0 # ИЗМЕНЕНО: Даем больше времени на генерацию первого куска
-                    
-                    while self._is_running:
-                        try:
-                            response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
-                            current_timeout = 15.0 # ИЗМЕНЕНО: Увеличено с 4.0 до 15.0 сек, чтобы не обрывало на паузах в речи
-                            
-                            if response.server_content:
-                                if response.server_content.model_turn:
-                                    for part in response.server_content.model_turn.parts:
-                                        if part.inline_data:
-                                            data = part.inline_data.data
-                                            data_received = True
-                                            if self.record:
-                                                with self.buffer_lock: 
-                                                    self.audio_chunks.append(data)
-                                            if self.audio_queue and not self.fast:
-                                                self.audio_queue.put((data, self.c_idx, self.s_idx, False))
-                                                
-                                # ИЗМЕНЕНО: Проверка официального флага завершения ответа от серверов Gemini
-                                if getattr(response.server_content, "turn_complete", False):
-                                    break
-                                            
-                        except asyncio.TimeoutError:
-                            break
-                        except StopAsyncIteration:
-                            break
+                if request_payload.get("mode") == "author_gender":
+                    audio_bytes = await self._collect_live_payload_audio(client, request_payload)
+                    data_received = self._commit_live_audio_bytes(audio_bytes)
+                else:
+                    text_to_send = request_payload["text"]
+                    config = request_payload["config"]
+                    request_audio = bytearray()
+                    await self._wait_for_request_budget(
+                        text_to_send,
+                        request_label="Live API",
+                        daily_request_limiter=self.daily_request_limiter,
+                        model_id=self.model_id,
+                        rpd_limit=self.request_rpd_limit,
+                    )
+                    async with client.aio.live.connect(model=self.model_id, config=config) as session:
+                        await self._send_live_text_turn(session, text_to_send)
+
+                        receive_iterator = session.receive().__aiter__()
+                        current_timeout = 30.0
+
+                        while self._is_running:
+                            try:
+                                response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                                current_timeout = 15.0
+
+                                if response.server_content:
+                                    if response.server_content.model_turn:
+                                        for part in response.server_content.model_turn.parts:
+                                            if part.inline_data:
+                                                data = bytes(part.inline_data.data)
+                                                data_received = True
+                                                request_audio.extend(data)
+                                                if self.audio_queue and not self.fast:
+                                                    self.audio_queue.put((data, self.c_idx, self.s_idx, False))
+
+                                    if getattr(response.server_content, "turn_complete", False):
+                                        break
+                            except asyncio.TimeoutError:
+                                break
+                            except StopAsyncIteration:
+                                break
+                    if self.record and request_audio:
+                        trimmed_audio = _trim_raw_pcm_boundaries(bytes(request_audio))
+                        with self.buffer_lock:
+                            self.audio_chunks.append(trimmed_audio)
             except Exception as e:
                 if isinstance(e, ProjectRateLimitReachedError):
                     self._abort_for_project_quota(str(e), e.model_id or self.model_id)
@@ -2111,7 +3059,7 @@ class GeminiWorker(QThread):
                     # ДАЕМ БАТЧУ 3 ПОПЫТКИ ПЕРЕД ДРОБЛЕНИЕМ НА ОДИНОЧНЫЕ ПРЕДЛОЖЕНИЯ
                     if batch_retry_count < 3:
                         batch_retry_count += 1
-                        logger.warning(f"[W{self.worker_id}] Ошибка API Gemini (батч). Попытка {batch_retry_count}/3 для батча: '{text_to_send[:30]}...'")
+                        logger.warning(f"[W{self.worker_id}] Ошибка API Gemini (батч). Попытка {batch_retry_count}/3 для батча: '{payload_preview}...'")
                         await asyncio.sleep(2)
                         continue # Возвращаемся в начало и пробуем этот же батч целиком
                     else:
@@ -2125,19 +3073,19 @@ class GeminiWorker(QThread):
                     # ДАЕМ ОДИНОЧНОМУ ПРЕДЛОЖЕНИЮ 3 ПОПЫТКИ ПЕРЕД EDGE TTS
                     if gemini_retry_count < 3:
                         gemini_retry_count += 1
-                        logger.warning(f"[W{self.worker_id}] Ошибка API Gemini (одиночное). Попытка {gemini_retry_count}/3 для: '{text_to_send[:30]}...'")
+                        logger.warning(f"[W{self.worker_id}] Ошибка API Gemini (одиночное). Попытка {gemini_retry_count}/3 для: '{payload_preview}...'")
                         await asyncio.sleep(2)
                         continue
                     else:
-                        logger.warning(f"[W{self.worker_id}] Gemini сдался после 3 попыток. Озвучка Edge TTS: '{text_to_send[:30]}...'")
-                        fallback_data = await self.get_edge_tts_fallback(text_to_send)
+                        fallback_source_text = request_payload.get("text", "") if request_payload else ""
+                        if request_payload and request_payload.get("mode") == "author_gender":
+                            fallback_source_text = "\n\n".join(
+                                item.get("text", "") for item in request_payload.get("plan", [])
+                            )
+                        logger.warning(f"[W{self.worker_id}] Gemini сдался после 3 попыток. Озвучка Edge TTS: '{payload_preview}...'")
+                        fallback_data = await self.get_edge_tts_fallback(fallback_source_text)
                         if fallback_data:
-                            if self.record:
-                                with self.buffer_lock: 
-                                    self.audio_chunks.append(fallback_data)
-                            if self.audio_queue and not self.fast:
-                                self.audio_queue.put((fallback_data, self.c_idx, self.s_idx, False))
-                            data_received = True
+                            data_received = self._commit_live_audio_bytes(fallback_data)
 
             # УСПЕХ ИЛИ ПРОПУСК
             if data_received:
@@ -2160,7 +3108,7 @@ class GeminiWorker(QThread):
                 # Сюда программа дойдет только если даже Edge TTS не смог сгенерировать звук
                 fail_count += 1
                 if fail_count >= 3:
-                    logger.error(f"[W{self.worker_id}] Пропуск предложения после неудач Edge TTS: '{text_to_send[:30]}...'")
+                    logger.error(f"[W{self.worker_id}] Пропуск предложения после неудач Edge TTS: '{payload_preview}...'")
                     self.s_idx = min(self.s_idx + actual_count, total_sent)
                     fail_count = 0
                     gemini_retry_count = 0
@@ -2202,10 +3150,14 @@ class GeminiParallelChapterWorker(GeminiWorker):
         bm,
         model_id,
         voice,
+        secondary_voice,
+        tertiary_voice,
         speed,
         task_queue,
         parallel_state,
         daily_request_limiter=None,
+        voice_mode="single",
+        allow_edge_fallback=True,
     ):
         super().__init__(
             worker_id,
@@ -2222,6 +3174,10 @@ class GeminiParallelChapterWorker(GeminiWorker):
             parallel_state.get("segment_mode", "sentences"),
             task_queue,
             daily_request_limiter=daily_request_limiter,
+            voice_mode=voice_mode,
+            secondary_voice=secondary_voice,
+            tertiary_voice=tertiary_voice,
+            allow_edge_fallback=allow_edge_fallback,
         )
         self.parallel_task_queue = task_queue
         self.parallel_state = parallel_state
@@ -2286,43 +3242,10 @@ class GeminiParallelChapterWorker(GeminiWorker):
             self.parallel_state["completed_count"] = completed_count
         return completed_count
 
-    async def _request_live_task_audio(self, client, config, text_to_send):
-        received_chunks = []
-        await self._wait_for_request_budget(
-            text_to_send,
-            request_label="Live API",
-            daily_request_limiter=self.daily_request_limiter,
-            model_id=self.model_id,
-            rpd_limit=self.request_rpd_limit,
-        )
-        async with client.aio.live.connect(model=self.model_id, config=config) as session:
-            await session.send_realtime_input(text=text_to_send)
-
-            receive_iterator = session.receive().__aiter__()
-            current_timeout = 30.0
-
-            while self._is_running:
-                try:
-                    response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
-                    current_timeout = 15.0
-
-                    if response.server_content:
-                        if response.server_content.model_turn:
-                            for part in response.server_content.model_turn.parts:
-                                if part.inline_data:
-                                    received_chunks.append(part.inline_data.data)
-                        if getattr(response.server_content, "turn_complete", False):
-                            break
-                except asyncio.TimeoutError:
-                    break
-                except StopAsyncIteration:
-                    break
-
-        return b"".join(received_chunks)
-
-    async def _process_task(self, client, config, task):
-        text_to_send = task.get("text", "").strip()
-        if not text_to_send:
+    async def _process_task(self, client, task):
+        payload = self._build_live_request_payload(task.get("text", "").strip())
+        fallback_source_text = task.get("text", "").strip()
+        if not payload:
             raise RuntimeError("Пустой блок главы для озвучки.")
 
         gemini_retry_count = 0
@@ -2331,7 +3254,7 @@ class GeminiParallelChapterWorker(GeminiWorker):
         while self._is_running:
             audio_bytes = b""
             try:
-                audio_bytes = await self._request_live_task_audio(client, config, text_to_send)
+                audio_bytes = await self._collect_live_payload_audio(client, payload)
             except Exception as exc:
                 if isinstance(exc, ProjectRateLimitReachedError):
                     self._abort_for_project_quota(str(exc), exc.model_id or self.model_id)
@@ -2355,7 +3278,7 @@ class GeminiParallelChapterWorker(GeminiWorker):
                     await asyncio.sleep(2)
                     continue
 
-                fallback_data = await self.get_edge_tts_fallback(text_to_send)
+                fallback_data = await self.get_edge_tts_fallback(fallback_source_text)
                 if fallback_data:
                     audio_bytes = fallback_data
                 else:
@@ -2380,9 +3303,9 @@ class GeminiParallelChapterWorker(GeminiWorker):
             raise RuntimeError("Для озвучки Gemini Reader требуется пакет google-genai.")
 
         client = genai.Client(api_key=self.api_key)
-        config, gender = self._build_live_connect_config()
+        voice_descriptor = self._live_voice_descriptor()
         logger.info(
-            f"Параллельный Live воркер {self.worker_id} запущен (Модель: {self.model_id}, Голос: {self.voice} [{gender}])."
+            f"Параллельный Live воркер {self.worker_id} запущен (Модель: {self.model_id}, Голоса: {voice_descriptor})."
         )
         await asyncio.sleep(self.worker_id * 1.0)
 
@@ -2398,7 +3321,7 @@ class GeminiParallelChapterWorker(GeminiWorker):
             self.s_idx = task["task_index"]
 
             try:
-                completed = await self._process_task(client, config, task)
+                completed = await self._process_task(client, task)
                 if not completed and not self._is_running:
                     break
             except Exception as exc:
@@ -2445,6 +3368,7 @@ class FlashTtsWorker(GeminiWorker):
         preprocess_directive,
         tts_directive,
         daily_request_limiter,
+        allow_edge_fallback=True,
     ):
         super().__init__(
             worker_id,
@@ -2461,6 +3385,7 @@ class FlashTtsWorker(GeminiWorker):
             "sentences",
             manager_chapter_queue,
             daily_request_limiter=daily_request_limiter,
+            allow_edge_fallback=allow_edge_fallback,
         )
         self.secondary_voice = secondary_voice or primary_voice
         self.preprocess_model_id = preprocess_model_id
@@ -2469,7 +3394,8 @@ class FlashTtsWorker(GeminiWorker):
         self.run_mode = run_mode
         self.preprocess_directive = preprocess_directive or DEFAULT_PREPROCESS_DIRECTIVE
         self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
-        self.preprocess_rpm_limiter = _make_rpm_limiter(self.preprocess_model_id, FLASH_TTS_DEFAULT_RPM)
+        self._last_chapter_started_at = 0.0
+        self.preprocess_rpm_limiter = _make_rpm_limiter(self.preprocess_model_id, FLASH_PREPROCESS_DEFAULT_RPM)
         self.preprocess_tpm_limiter = TPMLimiter(_lookup_model_limit(self.preprocess_model_id, "tpm", DEFAULT_TPM_LIMIT))
         self.tts_rpm_limiter = _make_rpm_limiter(self.model_id, FLASH_TTS_DEFAULT_RPM)
         self.tts_tpm_limiter = TPMLimiter(_lookup_model_limit(self.model_id, "tpm", DEFAULT_TPM_LIMIT))
@@ -2484,37 +3410,27 @@ class FlashTtsWorker(GeminiWorker):
 
     def _build_speech_config(self):
         if self.voice_mode == "duo":
-            return genai_types.SpeechConfig(
-                language_code="ru-RU",
-                multi_speaker_voice_config=genai_types.MultiSpeakerVoiceConfig(
-                    speaker_voice_configs=[
-                        genai_types.SpeakerVoiceConfig(
-                            speaker=TTS_SPEAKER_NARRATOR,
-                            voice_config=genai_types.VoiceConfig(
-                                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
-                                    voice_name=self.voice,
-                                )
-                            ),
-                        ),
-                        genai_types.SpeakerVoiceConfig(
-                            speaker=TTS_SPEAKER_DIALOGUE,
-                            voice_config=genai_types.VoiceConfig(
-                                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
-                                    voice_name=self.secondary_voice,
-                                )
-                            ),
-                        ),
-                    ]
-                )
+            return _build_duo_voice_speech_config(self.voice, self.secondary_voice)
+        return _build_single_voice_speech_config(self.voice)
+
+    async def _wait_for_flash_chapter_slot(self, chapter_index):
+        if self.run_mode == "prepare":
+            return
+        wait_seconds = 0.0
+        if self._last_chapter_started_at > 0:
+            elapsed = time.time() - self._last_chapter_started_at
+            wait_seconds = max(0.0, FLASH_TTS_CHAPTER_INTERVAL_SECONDS - elapsed)
+        if wait_seconds > 0:
+            logger.info(
+                f"[W{self.worker_id}] Ключ {_mask_api_key(self.api_key)} ждёт {wait_seconds:.1f} сек "
+                f"перед стартом главы {chapter_index + 1} (лимит: 1 глава/мин на ключ)."
             )
-        return genai_types.SpeechConfig(
-            language_code="ru-RU",
-            voice_config=genai_types.VoiceConfig(
-                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
-                    voice_name=self.voice,
-                )
-            )
-        )
+        while self._is_running and wait_seconds > 0:
+            sleep_step = min(wait_seconds, 5.0)
+            await asyncio.sleep(sleep_step)
+            wait_seconds -= sleep_step
+        if self._is_running:
+            self._last_chapter_started_at = time.time()
 
     async def _call_text_generation(self, client, model_id, prompt_text):
         last_error = None
@@ -2533,6 +3449,7 @@ class FlashTtsWorker(GeminiWorker):
                     client.models.generate_content,
                     model=model_id,
                     contents=prompt_text,
+                    config=genai_types.GenerateContentConfig(temperature=0.1),
                 )
                 generated_text = _extract_response_text(response)
                 if generated_text:
@@ -2562,6 +3479,43 @@ class FlashTtsWorker(GeminiWorker):
             )
         raise RuntimeError(f"Не удалось получить текст от модели {model_id}: {last_error}")
 
+    async def _normalize_author_gender_script(self, text_client, raw_text, prepared_script):
+        candidate = (prepared_script or "").strip()
+        for repair_attempt in range(3):
+            issues = _find_author_gender_script_issues(candidate, raw_text)
+            if _parse_author_gender_script(candidate) and not issues:
+                return candidate
+
+            repair_prompt = _build_author_gender_repair_prompt(
+                raw_text,
+                candidate,
+                issues,
+                profile_prompt=self.preprocess_profile,
+                extra_directive=self.preprocess_directive,
+            )
+            logger.warning(
+                f"[W{self.worker_id}] AI-сценарий Author/Male/Female требует repair-pass "
+                f"(попытка {repair_attempt + 1}/3, проблем: {max(1, len(issues))})."
+            )
+            candidate = await self._call_text_generation(
+                text_client,
+                self.preprocess_model_id,
+                repair_prompt,
+            )
+            candidate = (candidate or "").strip()
+
+        issues = _find_author_gender_script_issues(candidate, raw_text)
+        if issues:
+            issue_preview = "; ".join(
+                f"line {item['line_no']}: {item['reason']}"
+                for item in issues[:3]
+            )
+            raise RuntimeError(
+                "Не удалось получить строгий AI-сценарий Author/Male/Female без смешения реплик и авторского текста"
+                + (f" ({issue_preview})." if issue_preview else ".")
+            )
+        raise RuntimeError("Не удалось получить строгий AI-сценарий Author/Male/Female.")
+
     async def _prepare_script_for_chapter(self, text_client, chapter_index, force=False):
         existing_script = self.bm.load_tts_script(chapter_index)
         if existing_script and not force and _script_matches_voice_mode(existing_script, self.voice_mode):
@@ -2582,6 +3536,12 @@ class FlashTtsWorker(GeminiWorker):
             self.preprocess_model_id,
             preprocess_prompt,
         )
+        if self.voice_mode == "author_gender":
+            prepared_script = await self._normalize_author_gender_script(
+                text_client,
+                raw_text,
+                prepared_script,
+            )
         self.bm.save_tts_script(chapter_index, prepared_script)
         self.script_ready_signal.emit(chapter_index)
         logger.info(f"[W{self.worker_id}] Сценарий для главы {chapter_index + 1} подготовлен.")
@@ -2750,6 +3710,9 @@ class FlashTtsWorker(GeminiWorker):
                     self.c_idx = -1
                     continue
 
+                await self._wait_for_flash_chapter_slot(chapter_index)
+                if not self._is_running:
+                    break
                 script_text = await self._resolve_script_for_run(text_client, chapter_index)
                 if not script_text.strip():
                     raise RuntimeError(f"Сценарий главы {chapter_index + 1} пуст.")
@@ -2970,6 +3933,7 @@ class VoiceSampleWorker(QThread):
         engine_mode="live",
         voice_mode="single",
         secondary_voice=None,
+        tertiary_voice=None,
         tts_directive="",
         daily_request_limiter=None,
     ):
@@ -2980,11 +3944,11 @@ class VoiceSampleWorker(QThread):
         self.engine_mode = engine_mode or "live"
         self.voice_mode = voice_mode or "single"
         self.secondary_voice = secondary_voice or voice
+        self.tertiary_voice = tertiary_voice or self.secondary_voice or voice
         self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
         self.daily_request_limiter = daily_request_limiter
         self.rpd_limit = _lookup_model_limit(self.model_id, "rpd", 0)
-        # Сложное предложение с шипящими для проверки интонации и дикции голоса
-        self.test_text = "Проверка голоса Озвучь сделующую скороговорку. Саша шустро сушила сушки на шоссе, а жужжащая жужелица жадно жевала жёлтый жёлудь. Раз, два, три."
+        self.test_text = "Проверка голоса. Саша сушит сушки."
 
     def run(self):
         try:
@@ -2999,8 +3963,9 @@ class VoiceSampleWorker(QThread):
             raise RuntimeError("Для теста голоса требуется пакет google-genai.")
 
         if self.daily_request_limiter is not None and self.rpd_limit and self.rpd_limit > 0:
+            request_amount = 3 if self.engine_mode == "live" and self.voice_mode == "author_gender" else 1
             acquired, _, limit_value, reset_text = self.daily_request_limiter.try_acquire(
-                self.model_id, self.rpd_limit, amount=1
+                self.model_id, self.rpd_limit, amount=request_amount
             )
             if not acquired:
                 raise RuntimeError(
@@ -3011,38 +3976,17 @@ class VoiceSampleWorker(QThread):
         client = genai.Client(api_key=self.api_key)
 
         if self.engine_mode == "flash_tts":
+            if self.voice_mode == "author_gender":
+                self.voice_mode = "duo"
             if self.voice_mode == "duo":
                 test_script = (
-                    f"{TTS_SPEAKER_NARRATOR}: [serious] Проверка двухголосого режима. Рассказчик открывает сцену.\n"
-                    f"{TTS_SPEAKER_DIALOGUE}: [excited] А я вторая роль и проверяю другой голос!"
+                    f"{TTS_SPEAKER_NARRATOR}: [serious] Рассказчик открывает сцену.\n"
+                    f"{TTS_SPEAKER_DIALOGUE}: [excited] А я отвечаю другим голосом."
                 )
-                speech_config = genai_types.SpeechConfig(
-                    language_code="ru-RU",
-                    multi_speaker_voice_config=genai_types.MultiSpeakerVoiceConfig(
-                        speaker_voice_configs=[
-                            genai_types.SpeakerVoiceConfig(
-                                speaker=TTS_SPEAKER_NARRATOR,
-                                voice_config=genai_types.VoiceConfig(
-                                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
-                                ),
-                            ),
-                            genai_types.SpeakerVoiceConfig(
-                                speaker=TTS_SPEAKER_DIALOGUE,
-                                voice_config=genai_types.VoiceConfig(
-                                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.secondary_voice)
-                                ),
-                            ),
-                        ]
-                    )
-                )
+                speech_config = _build_duo_voice_speech_config(self.voice, self.secondary_voice)
             else:
-                test_script = "[clear, upbeat] Проверка голоса. Саша шустро сушила сушки на шоссе."
-                speech_config = genai_types.SpeechConfig(
-                    language_code="ru-RU",
-                    voice_config=genai_types.VoiceConfig(
-                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
-                    )
-                )
+                test_script = "[clear, upbeat] Проверка голоса. Саша сушит сушки."
+                speech_config = _build_single_voice_speech_config(self.voice)
 
             config = genai_types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
@@ -3061,43 +4005,78 @@ class VoiceSampleWorker(QThread):
             )
             audio_data = _extract_audio_bytes(response)
         else:
-            config = genai_types.LiveConnectConfig(
-                response_modalities=["AUDIO"],
-                speech_config=genai_types.SpeechConfig(
-                    language_code="ru-RU",
-                    voice_config=genai_types.VoiceConfig(
-                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=self.voice)
+            live_test_text = self.test_text
+            request_plan = []
+            if self.voice_mode == "author_gender":
+                request_plan = [
+                    (
+                        _build_live_single_voice_request_config(self.voice, "author"),
+                        "Рассказчик открывает сцену.",
+                    ),
+                    (
+                        _build_live_single_voice_request_config(self.secondary_voice, "male_dialogue"),
+                        "Я пришёл первым.",
+                    ),
+                    (
+                        _build_live_single_voice_request_config(self.tertiary_voice, "female_dialogue"),
+                        "А я уже всё проверила.",
+                    ),
+                ]
+            elif self.voice_mode == "duo":
+                live_test_text = (
+                    f"{TTS_SPEAKER_NARRATOR}: Рассказчик открывает сцену.\n"
+                    f"{TTS_SPEAKER_DIALOGUE}: А я отвечаю другим голосом."
+                )
+                request_plan = [
+                    (
+                        genai_types.LiveConnectConfig(
+                            response_modalities=["AUDIO"],
+                            speech_config=_build_duo_voice_speech_config(self.voice, self.secondary_voice),
+                            system_instruction="Ты профессиональная студия озвучки. Строго соблюдай роли Narrator и Dialogue.",
+                        ),
+                        live_test_text,
                     )
-                ),
-                system_instruction="Ты диктор."
-            )
+                ]
+            else:
+                request_plan = [
+                    (
+                        _build_live_single_voice_request_config(self.voice, "default"),
+                        live_test_text,
+                    )
+                ]
 
             audio_data = b""
 
-            async with client.aio.live.connect(model=self.model_id, config=config) as session:
-                await session.send_realtime_input(text=self.test_text)
-                receive_iterator = session.receive().__aiter__()
-
-                current_timeout = 20.0
-
-                while True:
+            for config, text_value in request_plan:
+                request_audio = bytearray()
+                async with client.aio.live.connect(model=self.model_id, config=config) as session:
                     try:
-                        response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
-                        current_timeout = 10.0
+                        await session.send_client_content(turns=text_value, turn_complete=True)
+                    except Exception:
+                        await session.send_realtime_input(text=text_value)
+                    receive_iterator = session.receive().__aiter__()
 
-                        if response.server_content:
-                            if response.server_content.model_turn:
-                                for part in response.server_content.model_turn.parts:
-                                    if part.inline_data:
-                                        audio_data += part.inline_data.data
+                    current_timeout = 20.0
 
-                            if getattr(response.server_content, "turn_complete", False):
-                                break
+                    while True:
+                        try:
+                            response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                            current_timeout = 10.0
 
-                    except asyncio.TimeoutError:
-                        break
-                    except StopAsyncIteration:
-                        break
+                            if response.server_content:
+                                if response.server_content.model_turn:
+                                    for part in response.server_content.model_turn.parts:
+                                        if part.inline_data:
+                                            request_audio.extend(part.inline_data.data)
+
+                                if getattr(response.server_content, "turn_complete", False):
+                                    break
+
+                        except asyncio.TimeoutError:
+                            break
+                        except StopAsyncIteration:
+                            break
+                audio_data += _trim_raw_pcm_boundaries(bytes(request_audio))
 
         if audio_data:
             self.play_audio(audio_data)
@@ -3159,6 +4138,11 @@ class MainWindow(QMainWindow):
         self.disabled_api_keys = set()
         self._settings_event_bus = getattr(self.settings_manager, "bus", None) if self.settings_manager is not None else None
         self._loading_settings = False
+        self._checked_chapter_indices_state = set()
+        self._chapter_check_state_refresh = False
+        self._chapter_check_anchor_index = None
+        self._chapter_last_press_index = None
+        self._chapter_last_press_modifiers = Qt.KeyboardModifier.NoModifier
         self.init_ui()
         self.load_settings()
         if self._settings_event_bus is not None:
@@ -3206,9 +4190,11 @@ class MainWindow(QMainWindow):
         
         # Включаем множественное выделение (через Shift и Ctrl)
         self.list_chapters.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.list_chapters.itemPressed.connect(self._on_chapter_item_pressed)
         self.list_chapters.itemClicked.connect(self.on_chapter_clicked)
         self.list_chapters.itemSelectionChanged.connect(self._on_chapter_selection_changed)
-        self.list_chapters.setToolTip("Выделяйте несколько глав через Ctrl/Shift или кнопку выбора диапазона.")
+        self.list_chapters.itemChanged.connect(self._on_chapter_item_changed)
+        self.list_chapters.setToolTip("Ставьте галочки для batch-обработки. Shift+клик по чекбоксу отмечает диапазон. Ctrl/Shift-выделение строк остаётся для просмотра и контекстных действий.")
         
         # --- ВКЛЮЧАЕМ КОНТЕКСТНОЕ МЕНЮ (ПРАВАЯ КНОПКА МЫШИ) ---
         self.list_chapters.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -3232,7 +4218,46 @@ class MainWindow(QMainWindow):
         )
         self.tabs.addTab(self.script_view, "🎭 Сценарий")
 
-        # Таб 3: Дашборд
+        # Таб 3: Промпты
+        self.prompts_tab = QWidget()
+        prompts_layout = QVBoxLayout(self.prompts_tab)
+        prompts_layout.setContentsMargins(8, 8, 8, 8)
+
+        self.lbl_prompts_hint = QLabel(
+            "Промпты Flash TTS. Здесь видны и редактируются дополнительные указания "
+            "для AI-предобработки и TTS-исполнения."
+        )
+        self.lbl_prompts_hint.setWordWrap(True)
+        prompts_layout.addWidget(self.lbl_prompts_hint)
+
+        prompts_layout.addWidget(QLabel("AI-предобработка сценария:"))
+        self.preprocess_prompt_view = QPlainTextEdit()
+        self.preprocess_prompt_view.setPlaceholderText(DEFAULT_PREPROCESS_DIRECTIVE)
+        prompts_layout.addWidget(self.preprocess_prompt_view, 1)
+
+        prompts_layout.addWidget(QLabel("TTS-исполнение:"))
+        self.tts_prompt_view = QPlainTextEdit()
+        self.tts_prompt_view.setPlaceholderText(DEFAULT_TTS_DIRECTIVE)
+        prompts_layout.addWidget(self.tts_prompt_view, 1)
+
+        prompts_buttons = QHBoxLayout()
+        self.btn_save_prompts = QPushButton("💾 Сохранить промпты")
+        self.btn_save_prompts.clicked.connect(self.save_prompt_settings)
+        prompts_buttons.addWidget(self.btn_save_prompts)
+
+        self.btn_reset_prompts = QPushButton("↺ Сбросить")
+        self.btn_reset_prompts.clicked.connect(self.reset_prompt_settings)
+        prompts_buttons.addWidget(self.btn_reset_prompts)
+
+        self.btn_open_prompt_dialog = QPushButton("🧠 Открыть диалог")
+        self.btn_open_prompt_dialog.clicked.connect(self.edit_flash_tts_prompts)
+        prompts_buttons.addWidget(self.btn_open_prompt_dialog)
+        prompts_buttons.addStretch(1)
+        prompts_layout.addLayout(prompts_buttons)
+
+        self.tabs.addTab(self.prompts_tab, "🧠 Промпты")
+
+        # Таб 4: Дашборд
         self.scroll_dash = QScrollArea()
         self.scroll_dash.setWidgetResizable(True)
         self.dash_content = QWidget()
@@ -3241,7 +4266,7 @@ class MainWindow(QMainWindow):
         self.scroll_dash.setWidget(self.dash_content)
         self.tabs.addTab(self.scroll_dash, "📊 Воркеры")
 
-        # Таб 4: Лог
+        # Таб 5: Лог
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setStyleSheet("background-color: #1e1e1e; color: #ececec; font-family: Consolas; font-size: 13px;")
@@ -3251,9 +4276,14 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
 
         # Контролы
-        controls_container = QVBoxLayout()
-        primary_controls = QHBoxLayout()
-        secondary_controls = QHBoxLayout()
+        controls_split = QHBoxLayout()
+        controls_split.setSpacing(12)
+        workflow_controls = QVBoxLayout()
+        workflow_controls.setSpacing(8)
+        top_controls = QHBoxLayout()
+        middle_controls = QHBoxLayout()
+        script_controls = QHBoxLayout()
+        option_controls = QHBoxLayout()
 
         self.live_models_map = dict(LIVE_AUDIO_MODELS)
         self.flash_tts_models_map = dict(FLASH_TTS_MODELS)
@@ -3266,51 +4296,58 @@ class MainWindow(QMainWindow):
         self.combo_engine.currentIndexChanged.connect(self._update_worker_spinbox_limit)
         self.combo_engine.currentIndexChanged.connect(self._update_key_state_ui)
         self.combo_engine.currentIndexChanged.connect(self.save_settings)
-        primary_controls.addWidget(QLabel("Движок:"))
-        primary_controls.addWidget(self.combo_engine)
+        top_controls.addWidget(QLabel("Движок:"))
+        top_controls.addWidget(self.combo_engine)
 
         self.combo_model = QComboBox()
         self.combo_model.currentIndexChanged.connect(self._update_worker_spinbox_limit)
         self.combo_model.currentIndexChanged.connect(self._update_key_state_ui)
         self.combo_model.currentTextChanged.connect(self.save_settings)
-        primary_controls.addWidget(QLabel("Модель TTS:"))
-        primary_controls.addWidget(self.combo_model)
+        top_controls.addWidget(QLabel("Модель TTS:"))
+        top_controls.addWidget(self.combo_model)
 
         self.combo_voice_mode = QComboBox()
         for label, mode_id in VOICE_MODE_OPTIONS.items():
             self.combo_voice_mode.addItem(label, mode_id)
         self.combo_voice_mode.currentIndexChanged.connect(self._on_voice_mode_changed)
         self.combo_voice_mode.currentIndexChanged.connect(self.save_settings)
-        primary_controls.addWidget(QLabel("Голоса:"))
-        primary_controls.addWidget(self.combo_voice_mode)
+        top_controls.addWidget(QLabel("Голоса:"))
+        top_controls.addWidget(self.combo_voice_mode)
+        top_controls.addStretch(1)
 
         self.combo_voices = QComboBox()
         self.combo_voice_secondary = QComboBox()
+        self.combo_voice_tertiary = QComboBox()
         for voice_id, gender in VOICES_MAP.items():
             display_text = f"{voice_id} ({gender})"
             self.combo_voices.addItem(display_text, voice_id)
             self.combo_voice_secondary.addItem(display_text, voice_id)
+            self.combo_voice_tertiary.addItem(display_text, voice_id)
 
         self.combo_voices.currentIndexChanged.connect(self.save_settings)
         self.combo_voice_secondary.currentIndexChanged.connect(self.save_settings)
+        self.combo_voice_tertiary.currentIndexChanged.connect(self.save_settings)
         self.lbl_voice_primary = QLabel("Voice A:")
-        primary_controls.addWidget(self.lbl_voice_primary)
-        primary_controls.addWidget(self.combo_voices)
+        middle_controls.addWidget(self.lbl_voice_primary)
+        middle_controls.addWidget(self.combo_voices)
         self.lbl_voice_secondary = QLabel("Voice B:")
-        primary_controls.addWidget(self.lbl_voice_secondary)
-        primary_controls.addWidget(self.combo_voice_secondary)
+        middle_controls.addWidget(self.lbl_voice_secondary)
+        middle_controls.addWidget(self.combo_voice_secondary)
+        self.lbl_voice_tertiary = QLabel("Voice C:")
+        middle_controls.addWidget(self.lbl_voice_tertiary)
+        middle_controls.addWidget(self.combo_voice_tertiary)
 
         self.btn_test_voice = QPushButton("🔊 Плей")
         self.btn_test_voice.setFixedSize(90, 28)
         self.btn_test_voice.clicked.connect(self.test_voice_sample)
-        primary_controls.addWidget(self.btn_test_voice)
+        middle_controls.addWidget(self.btn_test_voice)
 
         self.combo_speed = QComboBox()
         self.combo_speed.addItems(list(SPEED_PROMPTS.keys()))
         self.combo_speed.setCurrentText("Normal")
         self.combo_speed.currentTextChanged.connect(self.save_settings)
-        primary_controls.addWidget(QLabel("Скорость:"))
-        primary_controls.addWidget(self.combo_speed)
+        middle_controls.addWidget(QLabel("Скорость:"))
+        middle_controls.addWidget(self.combo_speed)
 
         self.combo_live_segment_mode = QComboBox()
         for label, mode_id in LIVE_SEGMENT_OPTIONS.items():
@@ -3318,16 +4355,16 @@ class MainWindow(QMainWindow):
         self.combo_live_segment_mode.currentIndexChanged.connect(self._refresh_live_segment_controls)
         self.combo_live_segment_mode.currentIndexChanged.connect(self.save_settings)
         self.lbl_live_segment_mode = QLabel("Live:")
-        primary_controls.addWidget(self.lbl_live_segment_mode)
-        primary_controls.addWidget(self.combo_live_segment_mode)
+        middle_controls.addWidget(self.lbl_live_segment_mode)
+        middle_controls.addWidget(self.combo_live_segment_mode)
 
         self.spin_chunk = QSpinBox()
         self.spin_chunk.setRange(1, 50)
         self.spin_chunk.setValue(2)
         self.spin_chunk.valueChanged.connect(self.save_settings)
         self.lbl_chunk = QLabel("Блок:")
-        primary_controls.addWidget(self.lbl_chunk)
-        primary_controls.addWidget(self.spin_chunk)
+        middle_controls.addWidget(self.lbl_chunk)
+        middle_controls.addWidget(self.spin_chunk)
 
         self.spin_workers = QSpinBox()
         self.spin_workers.setRange(1, 1)
@@ -3337,20 +4374,20 @@ class MainWindow(QMainWindow):
             "Фактический запуск дополнительно ограничивается доступными ключами и числом глав."
         )
         self.spin_workers.valueChanged.connect(self.save_settings)
-        primary_controls.addWidget(QLabel("Воркеры:"))
-        primary_controls.addWidget(self.spin_workers)
+        middle_controls.addWidget(QLabel("Воркеры:"))
+        middle_controls.addWidget(self.spin_workers)
 
         self.btn_play = QPushButton("▶ СТАРТ")
-        self.btn_play.setFixedSize(100, 40)
+        self.btn_play.setFixedSize(110, 38)
         self.btn_play.clicked.connect(self.toggle_play)
-        primary_controls.addWidget(self.btn_play)
+        middle_controls.addWidget(self.btn_play)
 
         self.btn_stop = QPushButton("⏹ СТОП")
-        self.btn_stop.setFixedSize(100, 40)
+        self.btn_stop.setFixedSize(110, 38)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.force_stop)
-        primary_controls.addWidget(self.btn_stop)
-        primary_controls.addStretch(1)
+        middle_controls.addWidget(self.btn_stop)
+        middle_controls.addStretch(1)
 
         self.combo_preprocess_model = QComboBox()
         for display_name, model_id in self.preprocess_models_map.items():
@@ -3358,15 +4395,15 @@ class MainWindow(QMainWindow):
         self.combo_preprocess_model.currentIndexChanged.connect(self._update_worker_spinbox_limit)
         self.combo_preprocess_model.currentIndexChanged.connect(self._update_key_state_ui)
         self.combo_preprocess_model.currentIndexChanged.connect(self.save_settings)
-        secondary_controls.addWidget(QLabel("AI сценарий:"))
-        secondary_controls.addWidget(self.combo_preprocess_model)
+        script_controls.addWidget(QLabel("AI сценарий:"))
+        script_controls.addWidget(self.combo_preprocess_model)
 
         self.combo_preprocess_profile = QComboBox()
         for label, profile_prompt in PREPROCESS_PROFILE_OPTIONS.items():
             self.combo_preprocess_profile.addItem(label, profile_prompt)
         self.combo_preprocess_profile.currentIndexChanged.connect(self.save_settings)
-        secondary_controls.addWidget(QLabel("Профиль:"))
-        secondary_controls.addWidget(self.combo_preprocess_profile)
+        script_controls.addWidget(QLabel("Профиль:"))
+        script_controls.addWidget(self.combo_preprocess_profile)
 
         self.combo_pipeline_mode = QComboBox()
         for label, mode_id in PIPELINE_MODE_OPTIONS.items():
@@ -3374,26 +4411,30 @@ class MainWindow(QMainWindow):
         self.combo_pipeline_mode.currentIndexChanged.connect(self._update_worker_spinbox_limit)
         self.combo_pipeline_mode.currentIndexChanged.connect(self._update_key_state_ui)
         self.combo_pipeline_mode.currentIndexChanged.connect(self.save_settings)
-        secondary_controls.addWidget(QLabel("Pipeline:"))
-        secondary_controls.addWidget(self.combo_pipeline_mode)
+        script_controls.addWidget(QLabel("Pipeline:"))
+        script_controls.addWidget(self.combo_pipeline_mode)
 
         self.btn_prepare_script = QPushButton("🪄 AI сценарий")
         self.btn_prepare_script.setFixedSize(125, 30)
         self.btn_prepare_script.clicked.connect(self.prepare_selected_scripts)
-        secondary_controls.addWidget(self.btn_prepare_script)
+        script_controls.addWidget(self.btn_prepare_script)
 
         self.btn_save_script = QPushButton("💾 Сохранить сценарий")
         self.btn_save_script.setFixedSize(160, 30)
         self.btn_save_script.clicked.connect(self.save_current_script)
-        secondary_controls.addWidget(self.btn_save_script)
+        script_controls.addWidget(self.btn_save_script)
+        script_controls.addStretch(1)
 
-        opts = QVBoxLayout()
         self.chk_mp3 = QCheckBox("Запись MP3")
         self.chk_mp3.setChecked(True)
         self.chk_mp3.stateChanged.connect(self.save_settings)
         self.chk_fast = QCheckBox("Только экспорт")
         self.chk_fast.stateChanged.connect(self.save_settings)
-        self.chk_selected_only = QCheckBox("Только выбранные главы")
+        self.chk_edge_fallback = QCheckBox("Edge fallback")
+        self.chk_edge_fallback.setChecked(True)
+        self.chk_edge_fallback.setToolTip("Если отключено, reader не будет использовать Microsoft Edge TTS как аварийную озвучку.")
+        self.chk_edge_fallback.stateChanged.connect(self.save_settings)
+        self.chk_selected_only = QCheckBox("Только отмеченные главы")
         self.chk_selected_only.stateChanged.connect(self.save_settings)
         self.chk_selected_only.stateChanged.connect(self._on_chapter_selection_changed)
         self.chk_parallel_single_chapter = QCheckBox("1 глава = много воркеров")
@@ -3402,70 +4443,108 @@ class MainWindow(QMainWindow):
             "раздаст их нескольким воркерам с последующей автоматической сборкой."
         )
         self.chk_parallel_single_chapter.stateChanged.connect(self.save_settings)
-        opts.addWidget(self.chk_mp3)
-        opts.addWidget(self.chk_fast)
-        opts.addWidget(self.chk_selected_only)
-        opts.addWidget(self.chk_parallel_single_chapter)
-        secondary_controls.addLayout(opts)
+        option_controls.addWidget(self.chk_mp3)
+        option_controls.addWidget(self.chk_fast)
+        option_controls.addWidget(self.chk_edge_fallback)
+        option_controls.addWidget(self.chk_selected_only)
+        option_controls.addWidget(self.chk_parallel_single_chapter)
+        option_controls.addStretch(1)
 
-        utils_layout = QVBoxLayout()
+        workflow_controls.addLayout(top_controls)
+        workflow_controls.addLayout(middle_controls)
+        workflow_controls.addLayout(script_controls)
+        workflow_controls.addLayout(option_controls)
+
+        actions_panel_widget = QWidget()
+        actions_panel_widget.setMinimumWidth(210)
+        actions_panel_widget.setMaximumWidth(230)
+        actions_panel = QVBoxLayout(actions_panel_widget)
+        actions_panel.setContentsMargins(0, 0, 0, 0)
+        actions_panel.setSpacing(6)
+
+        lbl_project_actions = QLabel("Проект")
+        actions_panel.addWidget(lbl_project_actions)
+
         self.lbl_chapter_scope = QLabel("Главы: все")
         self.lbl_chapter_scope.setToolTip("Область обработки для кнопок Старт и AI сценарий.")
-        utils_layout.addWidget(self.lbl_chapter_scope)
+        self.lbl_chapter_scope.setWordWrap(True)
+        actions_panel.addWidget(self.lbl_chapter_scope)
 
         self.lbl_key_state = QLabel("Ключи: 0")
         self.lbl_key_state.setToolTip("Сводка по состоянию ключей для текущих моделей reader.")
-        utils_layout.addWidget(self.lbl_key_state)
+        self.lbl_key_state.setWordWrap(True)
+        actions_panel.addWidget(self.lbl_key_state)
 
         self.btn_key_status = QPushButton("Статус ключей")
-        self.btn_key_status.setFixedSize(140, 30)
+        self.btn_key_status.setFixedHeight(30)
         self.btn_key_status.clicked.connect(self.show_key_status_dialog)
-        utils_layout.addWidget(self.btn_key_status)
+        actions_panel.addWidget(self.btn_key_status)
 
         self.btn_pick_chapters = QPushButton("Выбрать главы")
-        self.btn_pick_chapters.setFixedSize(140, 30)
+        self.btn_pick_chapters.setFixedHeight(30)
         self.btn_pick_chapters.clicked.connect(self.pick_chapters_dialog)
-        utils_layout.addWidget(self.btn_pick_chapters)
+        actions_panel.addWidget(self.btn_pick_chapters)
 
-        self.btn_clear_chapter_selection = QPushButton("Сбросить выбор")
-        self.btn_clear_chapter_selection.setFixedSize(140, 30)
+        self.btn_clear_chapter_selection = QPushButton("Сбросить отметки")
+        self.btn_clear_chapter_selection.setFixedHeight(30)
         self.btn_clear_chapter_selection.clicked.connect(self.clear_chapter_selection)
-        utils_layout.addWidget(self.btn_clear_chapter_selection)
+        actions_panel.addWidget(self.btn_clear_chapter_selection)
+
         self.btn_clean_stuck = QPushButton("🧹 Очистить зависшие")
-        self.btn_clean_stuck.setFixedSize(140, 30)
+        self.btn_clean_stuck.setFixedHeight(30)
         self.btn_clean_stuck.setStyleSheet("background-color: #ffe0b2;")
         self.btn_clean_stuck.clicked.connect(self.clean_stuck_files)
-        utils_layout.addWidget(self.btn_clean_stuck)
+        actions_panel.addWidget(self.btn_clean_stuck)
+
+        actions_panel.addSpacing(4)
+        lbl_export_actions = QLabel("Экспорт")
+        actions_panel.addWidget(lbl_export_actions)
+
+        self.lbl_export_folder = QLabel("Экспорт: откройте книгу")
+        self.lbl_export_folder.setToolTip("Папка текущей книги, куда сохраняются MP3 и видео.")
+        self.lbl_export_folder.setWordWrap(True)
+        actions_panel.addWidget(self.lbl_export_folder)
+
+        self.btn_open_export_folder = QPushButton("📁 Папка экспорта")
+        self.btn_open_export_folder.setFixedHeight(30)
+        self.btn_open_export_folder.clicked.connect(self.open_export_folder)
+        actions_panel.addWidget(self.btn_open_export_folder)
 
         self.btn_combine = QPushButton("🧩 Склеить MP3")
-        self.btn_combine.setFixedSize(140, 30)
+        self.btn_combine.setFixedHeight(30)
         self.btn_combine.clicked.connect(self.run_combine)
-        utils_layout.addWidget(self.btn_combine)
+        actions_panel.addWidget(self.btn_combine)
+
+        actions_panel.addSpacing(4)
+        lbl_video_actions = QLabel("Видео")
+        actions_panel.addWidget(lbl_video_actions)
 
         self.lbl_video_cover = QLabel("Видео: картинка не выбрана")
         self.lbl_video_cover.setToolTip("Выбранная картинка будет скопирована в папку книги и использована для экспорта видео.")
-        utils_layout.addWidget(self.lbl_video_cover)
+        self.lbl_video_cover.setWordWrap(True)
+        actions_panel.addWidget(self.lbl_video_cover)
 
         self.btn_select_video_cover = QPushButton("Картинка видео")
-        self.btn_select_video_cover.setFixedSize(140, 30)
+        self.btn_select_video_cover.setFixedHeight(30)
         self.btn_select_video_cover.clicked.connect(self.select_video_cover)
-        utils_layout.addWidget(self.btn_select_video_cover)
+        actions_panel.addWidget(self.btn_select_video_cover)
 
         self.btn_export_video = QPushButton("Экспорт видео")
-        self.btn_export_video.setFixedSize(140, 30)
+        self.btn_export_video.setFixedHeight(30)
         self.btn_export_video.clicked.connect(self.run_export_video)
-        utils_layout.addWidget(self.btn_export_video)
-        secondary_controls.addLayout(utils_layout)
-        secondary_controls.addStretch(1)
+        actions_panel.addWidget(self.btn_export_video)
+        actions_panel.addStretch(1)
 
-        controls_container.addLayout(primary_controls)
-        controls_container.addLayout(secondary_controls)
-        main_layout.addLayout(controls_container)
+        controls_split.addLayout(workflow_controls, 1)
+        controls_split.addWidget(actions_panel_widget, 0)
+        main_layout.addLayout(controls_split)
 
         self._on_engine_changed()
         self._on_voice_mode_changed()
         self._on_chapter_selection_changed()
+        self._update_export_folder_status()
         self._update_video_cover_status()
+        self._sync_prompt_views()
 
     def _running_tasks_exist(self):
         active_workers = any(getattr(worker, "isRunning", lambda: False)() for worker in self.workers)
@@ -3489,22 +4568,33 @@ class MainWindow(QMainWindow):
         self.btn_clear_chapter_selection.setEnabled(chapter_scope_enabled)
         self.btn_select_video_cover.setEnabled(chapter_scope_enabled)
         has_video_tools = _resolve_tool_path("ffmpeg") is not None and _resolve_tool_path("ffprobe") is not None
+        has_audio_tools = AudioSegment is not None and has_video_tools
+        self.btn_open_export_folder.setEnabled(bool(self.bm and self.bm.book_dir))
+        self.btn_combine.setEnabled(chapter_scope_enabled and has_audio_tools)
         has_video_cover = bool(self.bm and self.bm.get_video_cover_path())
         self.btn_export_video.setEnabled(chapter_scope_enabled and has_video_tools and has_video_cover)
 
+        author_gender_script_mode = not is_flash_tts and self._selected_voice_mode() == "author_gender"
         flash_controls_enabled = not running and is_flash_tts and has_genai
-        self.btn_prepare_script.setEnabled(flash_controls_enabled)
-        self.btn_save_script.setEnabled(flash_controls_enabled)
-        self.combo_preprocess_model.setEnabled(flash_controls_enabled)
-        self.combo_preprocess_profile.setEnabled(flash_controls_enabled)
+        ai_script_controls_enabled = not running and has_genai and (is_flash_tts or author_gender_script_mode)
+        self.btn_prepare_script.setEnabled(ai_script_controls_enabled)
+        self.btn_save_script.setEnabled(ai_script_controls_enabled)
+        self.combo_preprocess_model.setEnabled(ai_script_controls_enabled)
+        self.combo_preprocess_profile.setEnabled(ai_script_controls_enabled)
         self.combo_pipeline_mode.setEnabled(flash_controls_enabled)
-        self.combo_voice_mode.setEnabled(flash_controls_enabled)
-        self.act_prompt_tuning.setEnabled(is_flash_tts and not running)
+        self.combo_voice_mode.setEnabled(not running and has_genai)
+        self.act_prompt_tuning.setEnabled((is_flash_tts or author_gender_script_mode) and not running)
+        self.preprocess_prompt_view.setReadOnly(running)
+        self.tts_prompt_view.setReadOnly(running)
+        self.btn_save_prompts.setEnabled(not running)
+        self.btn_reset_prompts.setEnabled(not running)
+        self.btn_open_prompt_dialog.setEnabled(not running)
         live_controls_enabled = not running and not is_flash_tts
         self.combo_live_segment_mode.setEnabled(live_controls_enabled)
         self.chk_parallel_single_chapter.setEnabled(live_controls_enabled)
 
         self.btn_test_voice.setEnabled(not running and has_genai and has_pyaudio)
+        self._update_prompt_hint()
 
     def _set_reading_controls_running(self, running):
         self._refresh_runtime_controls()
@@ -3541,7 +4631,10 @@ class MainWindow(QMainWindow):
 
         if not is_flash_tts:
             self.combo_pipeline_mode.setCurrentIndex(self.combo_pipeline_mode.findData("auto"))
-            self.combo_voice_mode.setCurrentIndex(self.combo_voice_mode.findData("single"))
+        elif self._selected_voice_mode() == "author_gender":
+            duo_idx = self.combo_voice_mode.findData("duo")
+            if duo_idx >= 0:
+                self.combo_voice_mode.setCurrentIndex(duo_idx)
 
         self._on_voice_mode_changed()
         self._refresh_live_segment_controls()
@@ -3595,11 +4688,32 @@ class MainWindow(QMainWindow):
         self.spin_workers.blockSignals(False)
 
     def _on_voice_mode_changed(self):
-        show_secondary_voice = self._is_flash_tts_mode() and self._selected_voice_mode() == "duo"
+        mode = self._selected_voice_mode()
+        show_secondary_voice = mode in {"duo", "author_gender"}
+        show_tertiary_voice = mode == "author_gender"
+
+        if mode == "single":
+            self.lbl_voice_primary.setText("Голос:")
+            self.lbl_voice_secondary.setText("Voice B:")
+            self.lbl_voice_tertiary.setText("Voice C:")
+        elif mode == "duo":
+            self.lbl_voice_primary.setText("Narrator:")
+            self.lbl_voice_secondary.setText("Dialogue:")
+            self.lbl_voice_tertiary.setText("Voice C:")
+        else:
+            self.lbl_voice_primary.setText("Автор:")
+            self.lbl_voice_secondary.setText("Муж.:")
+            self.lbl_voice_tertiary.setText("Жен.:")
+
         self.lbl_voice_secondary.setVisible(show_secondary_voice)
         self.combo_voice_secondary.setVisible(show_secondary_voice)
         self.lbl_voice_secondary.setEnabled(show_secondary_voice)
         self.combo_voice_secondary.setEnabled(show_secondary_voice)
+
+        self.lbl_voice_tertiary.setVisible(show_tertiary_voice)
+        self.combo_voice_tertiary.setVisible(show_tertiary_voice)
+        self.lbl_voice_tertiary.setEnabled(show_tertiary_voice)
+        self.combo_voice_tertiary.setEnabled(show_tertiary_voice)
 
     def _selected_model_id(self):
         return self.combo_model.currentData() or self.models_map.get(self.combo_model.currentText(), MODEL_ID)
@@ -3948,14 +5062,11 @@ class MainWindow(QMainWindow):
         if not self.bm:
             return []
 
-        selected_indices = []
+        checked_indices = []
         if prefer_selection:
-            for item in self.list_chapters.selectedItems():
-                idx = item.data(Qt.ItemDataRole.UserRole)
-                if isinstance(idx, int):
-                    selected_indices.append(idx)
+            checked_indices = self._checked_chapter_indices()
 
-        target_indices = selected_indices or list(range(len(self.bm.chapters)))
+        target_indices = checked_indices or list(range(len(self.bm.chapters)))
         prepared = []
         for idx in target_indices:
             if idx < 0 or idx >= len(self.bm.chapters):
@@ -3966,6 +5077,85 @@ class MainWindow(QMainWindow):
                 continue
             prepared.append(idx)
         return sorted(dict.fromkeys(prepared))
+
+    def _checked_chapter_indices(self):
+        if not hasattr(self, "list_chapters"):
+            return sorted(self._checked_chapter_indices_state)
+        checked_indices = []
+        for row in range(self.list_chapters.count()):
+            item = self.list_chapters.item(row)
+            if item is None or item.checkState() != Qt.CheckState.Checked:
+                continue
+            idx = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(idx, int):
+                checked_indices.append(idx)
+        prepared = sorted(dict.fromkeys(checked_indices))
+        if prepared or not self._checked_chapter_indices_state:
+            return prepared
+        return sorted(self._checked_chapter_indices_state)
+
+    def _on_chapter_item_pressed(self, item):
+        idx = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        self._chapter_last_press_index = idx if isinstance(idx, int) else None
+        self._chapter_last_press_modifiers = QApplication.keyboardModifiers()
+
+    def _apply_checked_range(self, anchor_idx, current_idx, desired_state):
+        if not hasattr(self, "list_chapters"):
+            return
+        start_idx = min(anchor_idx, current_idx)
+        end_idx = max(anchor_idx, current_idx)
+        self._chapter_check_state_refresh = True
+        try:
+            for row in range(start_idx, end_idx + 1):
+                item = self.list_chapters.item(row)
+                if item is None:
+                    continue
+                if item.checkState() != desired_state:
+                    item.setCheckState(desired_state)
+        finally:
+            self._chapter_check_state_refresh = False
+
+    def _set_checked_chapter_indices(self, indices):
+        normalized = {
+            idx for idx in (indices or [])
+            if isinstance(idx, int) and idx >= 0 and (not self.bm or idx < len(self.bm.chapters))
+        }
+        self._checked_chapter_indices_state = set(normalized)
+        self._chapter_check_anchor_index = max(normalized) if normalized else None
+        if not hasattr(self, "list_chapters") or self.list_chapters.count() <= 0:
+            return
+
+        self._chapter_check_state_refresh = True
+        try:
+            for row in range(self.list_chapters.count()):
+                item = self.list_chapters.item(row)
+                if item is None:
+                    continue
+                idx = item.data(Qt.ItemDataRole.UserRole)
+                desired_state = Qt.CheckState.Checked if idx in normalized else Qt.CheckState.Unchecked
+                if item.checkState() != desired_state:
+                    item.setCheckState(desired_state)
+        finally:
+            self._chapter_check_state_refresh = False
+
+    def _on_chapter_item_changed(self, item):
+        if self._chapter_check_state_refresh or self._loading_settings:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if isinstance(idx, int):
+            modifiers = QApplication.keyboardModifiers()
+            if modifiers == Qt.KeyboardModifier.NoModifier:
+                modifiers = self._chapter_last_press_modifiers
+            shift_active = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+            anchor_idx = self._chapter_check_anchor_index
+            if shift_active and anchor_idx is not None and anchor_idx != idx:
+                self._apply_checked_range(anchor_idx, idx, item.checkState())
+            self._chapter_check_anchor_index = idx
+        self._chapter_last_press_index = None
+        self._chapter_last_press_modifiers = Qt.KeyboardModifier.NoModifier
+        self._checked_chapter_indices_state = set(self._checked_chapter_indices())
+        self._on_chapter_selection_changed()
+        self.save_settings()
 
     def _selected_chapter_indices(self):
         selected_indices = []
@@ -3995,13 +5185,13 @@ class MainWindow(QMainWindow):
         return ", ".join(ranges)
 
     def _selected_scope_summary(self):
-        selected_indices = self._selected_chapter_indices()
+        checked_indices = self._checked_chapter_indices()
         if self.chk_selected_only.isChecked():
-            return self._format_chapter_ranges(selected_indices) if selected_indices else "выбор пуст"
-        if not selected_indices:
+            return self._format_chapter_ranges(checked_indices) if checked_indices else "отметки пусты"
+        if not checked_indices:
             return "все"
-        selection_text = self._format_chapter_ranges(selected_indices)
-        return f"все (выделено {len(selected_indices)}: {selection_text})"
+        selection_text = self._format_chapter_ranges(checked_indices)
+        return f"все (отмечено {len(checked_indices)}: {selection_text})"
 
     def _on_chapter_selection_changed(self, *_args):
         if not hasattr(self, "lbl_chapter_scope"):
@@ -4011,9 +5201,22 @@ class MainWindow(QMainWindow):
         self.lbl_chapter_scope.setToolTip(f"Область обработки: {summary}")
 
     def clear_chapter_selection(self):
-        self.list_chapters.clearSelection()
+        self._set_checked_chapter_indices([])
         self.chk_selected_only.setChecked(False)
         self._on_chapter_selection_changed()
+        self.save_settings()
+
+    def _update_export_folder_status(self):
+        if not hasattr(self, "lbl_export_folder"):
+            return
+        if not self.bm or not self.bm.book_dir:
+            self.lbl_export_folder.setText("Экспорт: откройте книгу")
+            self.lbl_export_folder.setToolTip("Сначала откройте книгу. Экспорт сохраняется в папку текущей книги.")
+            return
+
+        folder_name = os.path.basename(self.bm.book_dir.rstrip("\\/")) or self.bm.book_dir
+        self.lbl_export_folder.setText(f"Экспорт: {folder_name}")
+        self.lbl_export_folder.setToolTip(self.bm.book_dir)
 
     def _update_video_cover_status(self):
         if not hasattr(self, "lbl_video_cover"):
@@ -4031,6 +5234,22 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_video_cover.setText("Видео: картинка не выбрана")
             self.lbl_video_cover.setToolTip("Выбранная картинка будет скопирована в папку книги и использована для экспорта видео.")
+
+    def open_export_folder(self):
+        if not self.bm or not self.bm.book_dir:
+            QMessageBox.information(self, "Экспорт", "Сначала откройте книгу.")
+            return
+
+        export_dir = self.bm.book_dir
+        try:
+            if platform.system() == "Windows":
+                os.startfile(export_dir)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", export_dir])
+            else:
+                subprocess.Popen(["xdg-open", export_dir])
+        except Exception as exc:
+            QMessageBox.warning(self, "Экспорт", f"Не удалось открыть папку экспорта: {exc}")
 
     def select_video_cover(self):
         if not self.bm:
@@ -4061,7 +5280,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Главы", "Сначала откройте книгу.")
             return
 
-        current_text = self._format_chapter_ranges(self._selected_chapter_indices())
+        current_text = self._format_chapter_ranges(self._checked_chapter_indices())
         prompt = (
             "Введите номера глав через запятую или диапазоны через дефис.\n"
             "Пример: 1,3,5-8"
@@ -4076,21 +5295,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Выбор глав", str(exc))
             return
 
-        self.list_chapters.clearSelection()
-        for idx in selected_indices:
-            item = self.list_chapters.item(idx)
-            if item is not None:
-                item.setSelected(True)
+        self._set_checked_chapter_indices(selected_indices)
 
         if selected_indices:
             self.chk_selected_only.setChecked(True)
-            self.list_chapters.scrollToItem(self.list_chapters.item(selected_indices[0]))
-            self.statusBar().showMessage(f"Выбраны главы: {self._format_chapter_ranges(selected_indices)}")
+            first_item = self.list_chapters.item(selected_indices[0])
+            if first_item is not None:
+                self.list_chapters.scrollToItem(first_item)
+            self.statusBar().showMessage(f"Отмечены главы: {self._format_chapter_ranges(selected_indices)}")
         else:
             self.chk_selected_only.setChecked(False)
-            self.statusBar().showMessage("Выбор глав очищен.")
+            self.statusBar().showMessage("Отметки глав очищены.")
 
         self._on_chapter_selection_changed()
+        self.save_settings()
 
     def _parse_chapter_selection_text(self, raw_text):
         text = re.sub(r"\s*-\s*", "-", (raw_text or "").strip())
@@ -4132,14 +5350,50 @@ class MainWindow(QMainWindow):
 
     def _collect_run_scope_indices(self, include_done=False, action_label="обработки"):
         prefer_selection = bool(self.chk_selected_only.isChecked())
-        if prefer_selection and not self._selected_chapter_indices():
+        if prefer_selection and not self._checked_chapter_indices():
             QMessageBox.information(
                 self,
                 "Главы",
-                f"Включён режим 'Только выбранные главы', но главы не выделены для {action_label}.",
+                f"Включён режим 'Только отмеченные главы', но главы не отмечены для {action_label}.",
             )
             return None
         return self._collect_target_chapter_indices(prefer_selection=prefer_selection, include_done=include_done)
+
+    def _author_gender_script_missing_indices(self, chapter_indices):
+        if not self.bm:
+            return list(chapter_indices or [])
+        missing = []
+        for chapter_index in chapter_indices or []:
+            script_text = self.bm.load_tts_script(chapter_index)
+            raw_text = ""
+            try:
+                raw_text = self.bm.chapters[chapter_index].raw_text
+            except Exception:
+                raw_text = ""
+            if (
+                not _script_matches_voice_mode(script_text, "author_gender")
+                or _find_author_gender_script_issues(script_text, raw_text)
+            ):
+                missing.append(chapter_index)
+        return missing
+
+    def _ensure_author_gender_scripts_ready(self, chapter_indices, action_label="озвучки"):
+        missing_indices = self._author_gender_script_missing_indices(chapter_indices)
+        if not missing_indices:
+            return True
+
+        missing_text = self._format_chapter_ranges(missing_indices)
+        QMessageBox.warning(
+            self,
+            "AI-сценарий",
+            (
+                "Для режима 'Автор + Муж./Жен. роли' нужен корректный AI-сценарий без догадок и без текста, "
+                "который не подтверждается исходной главой.\n\n"
+                f"Подготовьте или пересоберите AI-сценарий для глав: {missing_text}.\n"
+                f"После этого повторите запуск {action_label}."
+            ),
+        )
+        return False
 
     def _load_script_for_chapter(self, chapter_index):
         if not self.bm or chapter_index is None or chapter_index < 0 or chapter_index >= len(self.bm.chapters):
@@ -4166,18 +5420,70 @@ class MainWindow(QMainWindow):
         self.refresh_chapters_list()
         self.statusBar().showMessage(f"Сценарий главы {self._current_chapter_index + 1} сохранён.")
 
+    def _sync_prompt_views(self):
+        if not hasattr(self, "preprocess_prompt_view"):
+            return
+
+        preprocess_text = self.preprocess_directive or DEFAULT_PREPROCESS_DIRECTIVE
+        tts_text = self.tts_directive or DEFAULT_TTS_DIRECTIVE
+
+        if self.preprocess_prompt_view.toPlainText() != preprocess_text:
+            self.preprocess_prompt_view.setPlainText(preprocess_text)
+        if self.tts_prompt_view.toPlainText() != tts_text:
+            self.tts_prompt_view.setPlainText(tts_text)
+
+        self._update_prompt_hint()
+
+    def _update_prompt_hint(self):
+        if not hasattr(self, "lbl_prompts_hint"):
+            return
+        if self._is_flash_tts_mode():
+            self.lbl_prompts_hint.setText(
+                "Промпты Flash TTS. Эти указания сейчас используются для AI-предобработки и TTS-исполнения."
+            )
+        elif self._selected_voice_mode() == "author_gender":
+            self.lbl_prompts_hint.setText(
+                "Промпты AI-сценария. В Live API для режима 'Автор + Муж./Жен. роли' отсюда берётся только AI-предобработка; именно она размечает Author/Male/Female без эвристик."
+            )
+        else:
+            self.lbl_prompts_hint.setText(
+                "Промпты AI-сценария. Они видны и редактируются здесь, но сейчас применяются только в Flash TTS и в Live API для режима 'Автор + Муж./Жен. роли'."
+            )
+
+    def save_prompt_settings(self):
+        if not hasattr(self, "preprocess_prompt_view"):
+            return
+        self.preprocess_directive = self.preprocess_prompt_view.toPlainText().strip() or DEFAULT_PREPROCESS_DIRECTIVE
+        self.tts_directive = self.tts_prompt_view.toPlainText().strip() or DEFAULT_TTS_DIRECTIVE
+        self._sync_prompt_views()
+        self.save_settings()
+        self.statusBar().showMessage("Промпты AI-сценария и TTS сохранены.")
+
+    def reset_prompt_settings(self):
+        self.preprocess_directive = DEFAULT_PREPROCESS_DIRECTIVE
+        self.tts_directive = DEFAULT_TTS_DIRECTIVE
+        self._sync_prompt_views()
+        self.save_settings()
+        self.statusBar().showMessage("Промпты AI-сценария и TTS сброшены к стандартным.")
+
     def edit_flash_tts_prompts(self):
         dialog = PromptTuningDialog(self.preprocess_directive, self.tts_directive, self)
         if dialog.exec():
             preprocess_directive, tts_directive = dialog.get_values()
             self.preprocess_directive = preprocess_directive or DEFAULT_PREPROCESS_DIRECTIVE
             self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
+            self._sync_prompt_views()
             self.save_settings()
-            self.statusBar().showMessage("Промпты Flash TTS обновлены.")
+            self.statusBar().showMessage("Промпты AI-сценария и TTS обновлены.")
 
     def prepare_selected_scripts(self):
-        if not self._is_flash_tts_mode():
-            QMessageBox.information(self, "Режим", "AI-подготовка сценария доступна только в режиме Flash TTS.")
+        allow_live_author_gender = (not self._is_flash_tts_mode()) and self._selected_voice_mode() == "author_gender"
+        if not self._is_flash_tts_mode() and not allow_live_author_gender:
+            QMessageBox.information(
+                self,
+                "Режим",
+                "AI-подготовка сценария доступна в режиме Flash TTS и в Live API для режима 'Автор + Муж./Жен. роли'."
+            )
             return
         if genai is None or genai_types is None:
             QMessageBox.warning(self, "Зависимости", "Для AI-подготовки сценария требуется пакет google-genai.")
@@ -4198,7 +5504,7 @@ class MainWindow(QMainWindow):
             return
         if not target_indices:
             if self.chk_selected_only.isChecked():
-                QMessageBox.information(self, "Сценарии", "Среди выбранных глав нет доступных для AI-подготовки.")
+                QMessageBox.information(self, "Сценарии", "Среди отмеченных глав нет доступных для AI-подготовки.")
                 return
             QMessageBox.information(self, "Сценарии", "Нет глав для AI-подготовки.")
             return
@@ -4244,6 +5550,14 @@ class MainWindow(QMainWindow):
         if pyaudio is None:
             runtime_notes.append("нет PyAudio: live-воспроизведение отключено")
 
+        edge_fallback_available = edge_tts is not None and AudioSegment is not None
+        if not edge_fallback_available:
+            self.chk_edge_fallback.setChecked(False)
+            self.chk_edge_fallback.setEnabled(False)
+            runtime_notes.append("нет edge-tts/pydub: Edge fallback отключён")
+        else:
+            self.chk_edge_fallback.setEnabled(True)
+
         if AudioSegment is None:
             self.chk_mp3.setChecked(False)
             self.chk_mp3.setEnabled(False)
@@ -4267,15 +5581,18 @@ class MainWindow(QMainWindow):
             "voice": self.combo_voices.currentData(),
             "voice_mode": self._selected_voice_mode(),
             "voice_secondary": self.combo_voice_secondary.currentData(),
+            "voice_tertiary": self.combo_voice_tertiary.currentData(),
             "speed": self.combo_speed.currentText(),
             "live_segment_mode": self._selected_live_segment_mode(),
             "chunk": self.spin_chunk.value(),
             "worker_count": self.spin_workers.value(),
             "num_instances": self.spin_workers.value(),
             "selected_only": self.chk_selected_only.isChecked(),
+            "checked_chapters": self._checked_chapter_indices(),
             "parallel_single_chapter": self.chk_parallel_single_chapter.isChecked(),
             "record": self.chk_mp3.isChecked(),
             "fast": self.chk_fast.isChecked(),
+            "edge_fallback": self.chk_edge_fallback.isChecked(),
             "preprocess_model": self.combo_preprocess_model.currentText(),
             "preprocess_profile": self.combo_preprocess_profile.currentText(),
             "pipeline_mode": self._selected_pipeline_mode(),
@@ -4336,6 +5653,7 @@ class MainWindow(QMainWindow):
         engine_mode = self._current_engine_id()
         voice_mode = self._selected_voice_mode()
         secondary_voice = self.combo_voice_secondary.currentData()
+        tertiary_voice = self.combo_voice_tertiary.currentData()
         
         # Создаем и запускаем независимый мини-воркер
         self.tester_worker = VoiceSampleWorker(
@@ -4345,6 +5663,7 @@ class MainWindow(QMainWindow):
             engine_mode=engine_mode,
             voice_mode=voice_mode,
             secondary_voice=secondary_voice,
+            tertiary_voice=tertiary_voice,
             tts_directive=self.tts_directive,
             daily_request_limiter=self.daily_request_limiter,
         )
@@ -4470,6 +5789,7 @@ class MainWindow(QMainWindow):
             self._current_chapter_index = None
             self.script_view.setPlainText("")
             self.refresh_chapters_list()
+            self._update_export_folder_status()
             self._update_video_cover_status()
             self._refresh_runtime_controls()
             self.tabs.setCurrentIndex(0)
@@ -4477,26 +5797,39 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", str(e))
 
     def refresh_chapters_list(self):
-        self.list_chapters.clear()
-        for i, chap in enumerate(self.bm.chapters):
-            item = QListWidgetItem(chap.title)
-            item.setData(Qt.ItemDataRole.UserRole, i)
-            
-            # Если глава пропущена
-            if self.bm.is_chapter_skipped(i):
-                item.setText(f"❌ {chap.title} (Пропуск)")
-                item.setForeground(QColor("#B0BEC5")) # Серый цвет
-                font = item.font()
-                font.setStrikeOut(True) # Зачеркивание
-                item.setFont(font)
-            # Если глава уже озвучена
-            elif self.bm.is_chapter_done(i):
-                item.setText(f"✅ {chap.title}")
-                item.setForeground(QColor("#4CAF50"))
-            elif self.bm.has_tts_script(i):
-                item.setText(f"📝 {chap.title}")
-                
-            self.list_chapters.addItem(item)
+        checked_indices = self._checked_chapter_indices()
+        self._chapter_check_state_refresh = True
+        try:
+            self.list_chapters.clear()
+            for i, chap in enumerate(self.bm.chapters):
+                item = QListWidgetItem(chap.title)
+                item.setData(Qt.ItemDataRole.UserRole, i)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+
+                # Если глава пропущена
+                if self.bm.is_chapter_skipped(i):
+                    item.setText(f"❌ {chap.title} (Пропуск)")
+                    item.setForeground(QColor("#B0BEC5")) # Серый цвет
+                    font = item.font()
+                    font.setStrikeOut(True) # Зачеркивание
+                    item.setFont(font)
+                # Если глава уже озвучена
+                elif self.bm.is_chapter_done(i):
+                    item.setText(f"✅ {chap.title}")
+                    item.setForeground(QColor("#4CAF50"))
+                elif self.bm.has_tts_script(i):
+                    item.setText(f"📝 {chap.title}")
+
+                item.setCheckState(Qt.CheckState.Checked if i in checked_indices else Qt.CheckState.Unchecked)
+                self.list_chapters.addItem(item)
+        finally:
+            self._chapter_check_state_refresh = False
+        self._checked_chapter_indices_state = {
+            idx for idx in checked_indices
+            if isinstance(idx, int) and 0 <= idx < len(self.bm.chapters)
+        }
+        if self._chapter_check_anchor_index not in self._checked_chapter_indices_state:
+            self._chapter_check_anchor_index = max(self._checked_chapter_indices_state) if self._checked_chapter_indices_state else None
         self._on_chapter_selection_changed()
 
     def show_chapter_context_menu(self, pos):
@@ -4528,7 +5861,7 @@ class MainWindow(QMainWindow):
 
         prepare_action = QAction("🪄 Подготовить AI-сценарий", self)
         prepare_action.triggered.connect(self.prepare_selected_scripts)
-        prepare_action.setEnabled(self._is_flash_tts_mode())
+        prepare_action.setEnabled(self._is_flash_tts_mode() or self._selected_voice_mode() == "author_gender")
         menu.addAction(prepare_action)
 
         clear_script_action = QAction("🗑️ Удалить сценарий", self)
@@ -4659,6 +5992,13 @@ class MainWindow(QMainWindow):
 
     def _chapter_live_segments_for_parallel(self, chapter_index):
         chapter = self.bm.chapters[chapter_index]
+        if self._selected_voice_mode() == "author_gender":
+            saved_script = self.bm.load_tts_script(chapter_index) if self.bm is not None else ""
+            if _script_matches_voice_mode(saved_script, "author_gender"):
+                script_segments = _split_author_gender_script_segments(saved_script, self._selected_live_segment_mode())
+                if script_segments:
+                    return script_segments
+            return []
         if self._selected_live_segment_mode() == "paragraphs":
             paragraphs = []
             for part in getattr(chapter, "paragraphs", []) or []:
@@ -4679,7 +6019,11 @@ class MainWindow(QMainWindow):
             if not task_segments:
                 continue
             task_index = len(tasks)
-            text_value = "\n\n".join(task_segments).strip() if self._selected_live_segment_mode() == "paragraphs" else " ".join(task_segments).strip()
+            text_value = _join_live_request_segments(
+                task_segments,
+                self._selected_live_segment_mode(),
+                self._selected_voice_mode(),
+            )
             tasks.append(
                 {
                     "chapter_index": chapter_index,
@@ -4815,10 +6159,14 @@ class MainWindow(QMainWindow):
                 self.bm,
                 self._selected_model_id(),
                 self.combo_voices.currentData(),
+                self.combo_voice_secondary.currentData(),
+                self.combo_voice_tertiary.currentData(),
                 self.combo_speed.currentText(),
                 task_queue,
                 self._parallel_live_state,
                 daily_request_limiter=self.daily_request_limiter,
+                voice_mode=self._selected_voice_mode(),
+                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
             )
             worker.worker_progress.connect(row.update_progress)
             worker.finished_signal.connect(self._on_worker_finished)
@@ -4911,6 +6259,10 @@ class MainWindow(QMainWindow):
                 self._selected_live_segment_mode(),
                 q,
                 daily_request_limiter=self.daily_request_limiter,
+                voice_mode=self._selected_voice_mode(),
+                secondary_voice=self.combo_voice_secondary.currentData(),
+                tertiary_voice=self.combo_voice_tertiary.currentData(),
+                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
             )
             worker.worker_progress.connect(row.update_progress)
             worker.finished_signal.connect(self._on_worker_finished)
@@ -4946,10 +6298,11 @@ class MainWindow(QMainWindow):
 
         available_api_keys = self._get_available_api_keys(required_model_ids)
         if not available_api_keys:
+            pipeline_label = "AI-подготовки сценария" if run_mode == "prepare" else "Flash TTS pipeline"
             QMessageBox.warning(
                 self,
                 "Ключи API",
-                "Нет рабочих API-ключей для выбранного Flash TTS pipeline. "
+                f"Нет рабочих API-ключей для выбранного {pipeline_label}. "
                 "Проверьте ключи или дождитесь сброса лимитов.",
             )
             return False
@@ -4958,6 +6311,10 @@ class MainWindow(QMainWindow):
         num_workers = min(requested_workers, len(available_api_keys), q.qsize())
         if num_workers == 0:
             num_workers = 1
+
+        if self._selected_voice_mode() == "author_gender" and run_mode != "prepare":
+            QMessageBox.warning(self, "Режим", "Режим 'Автор + Муж./Жен. роли' поддерживается только в Live API.")
+            return False
 
         if run_mode == "raw" and self._selected_voice_mode() == "duo":
             QMessageBox.warning(self, "Режим", "Двухголосый режим требует AI-сценарий. Выберите 'Авто' или 'По шагам'.")
@@ -5005,6 +6362,7 @@ class MainWindow(QMainWindow):
                 self.preprocess_directive,
                 self.tts_directive,
                 self.daily_request_limiter,
+                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
             )
             worker.worker_progress.connect(row.update_progress)
             worker.finished_signal.connect(self._on_worker_finished)
@@ -5039,7 +6397,7 @@ class MainWindow(QMainWindow):
             if target_indices is None:
                 return
             if not target_indices and self.chk_selected_only.isChecked():
-                QMessageBox.information(self, "Главы", "Среди выбранных глав нет доступных для озвучки.")
+                QMessageBox.information(self, "Главы", "Среди отмеченных глав нет доступных для озвучки.")
                 return
             if not target_indices:
                 QMessageBox.information(self, "Готово", "Все главы для озвучки уже завершены или пропущены!")
@@ -5049,6 +6407,9 @@ class MainWindow(QMainWindow):
                 pipeline_mode = self._selected_pipeline_mode()
                 self._launch_flash_workers(target_indices, run_mode=pipeline_mode)
             else:
+                if self._selected_voice_mode() == "author_gender":
+                    if not self._ensure_author_gender_scripts_ready(target_indices, action_label="озвучки"):
+                        return
                 self._launch_live_workers(target_indices)
         else:
             self.force_stop()
@@ -5091,7 +6452,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "Экспорт",
-                    "Среди выбранных глав нет доступных MP3 для экспорта.",
+                    "Среди отмеченных глав нет доступных MP3 для экспорта.",
                 )
                 return
 
@@ -5200,14 +6561,11 @@ class MainWindow(QMainWindow):
                 self.combo_model.setCurrentText(model_label)
 
             voice_mode = data.get("voice_mode", "single")
-            if engine_id == "flash_tts":
-                voice_mode_idx = self.combo_voice_mode.findData(voice_mode)
-                if voice_mode_idx >= 0:
-                    self.combo_voice_mode.setCurrentIndex(voice_mode_idx)
-            else:
-                single_idx = self.combo_voice_mode.findData("single")
-                if single_idx >= 0:
-                    self.combo_voice_mode.setCurrentIndex(single_idx)
+            if engine_id == "flash_tts" and voice_mode == "author_gender":
+                voice_mode = "duo"
+            voice_mode_idx = self.combo_voice_mode.findData(voice_mode)
+            if voice_mode_idx >= 0:
+                self.combo_voice_mode.setCurrentIndex(voice_mode_idx)
 
             voice_id = data.get("voice")
             if voice_id and voice_id in VOICES_MAP:
@@ -5220,6 +6578,12 @@ class MainWindow(QMainWindow):
                 secondary_idx = self.combo_voice_secondary.findData(voice_secondary)
                 if secondary_idx >= 0:
                     self.combo_voice_secondary.setCurrentIndex(secondary_idx)
+
+            voice_tertiary = data.get("voice_tertiary")
+            if voice_tertiary and voice_tertiary in VOICES_MAP:
+                tertiary_idx = self.combo_voice_tertiary.findData(voice_tertiary)
+                if tertiary_idx >= 0:
+                    self.combo_voice_tertiary.setCurrentIndex(tertiary_idx)
 
             speed_label = data.get("speed")
             if speed_label in SPEED_PROMPTS:
@@ -5259,7 +6623,12 @@ class MainWindow(QMainWindow):
 
             self.chk_mp3.setChecked(data.get("record", True))
             self.chk_fast.setChecked(data.get("fast", False))
+            self.chk_edge_fallback.setChecked(data.get("edge_fallback", True))
             self.chk_selected_only.setChecked(bool(data.get("selected_only", False)))
+            self._checked_chapter_indices_state = {
+                idx for idx in (data.get("checked_chapters") or [])
+                if isinstance(idx, int) and idx >= 0
+            }
             self.chk_parallel_single_chapter.setChecked(bool(data.get("parallel_single_chapter", False)))
 
             self._update_worker_spinbox_limit()
@@ -5271,9 +6640,11 @@ class MainWindow(QMainWindow):
             self.spin_workers.setValue(max(1, min(worker_count, self.spin_workers.maximum())))
         finally:
             self._loading_settings = False
+            self._set_checked_chapter_indices(self._checked_chapter_indices_state)
             self._on_chapter_selection_changed()
             self._refresh_live_segment_controls()
             self._refresh_runtime_controls()
+            self._sync_prompt_views()
 
     def load_settings(self):
         legacy_data = _load_legacy_settings()
@@ -5318,14 +6689,11 @@ class MainWindow(QMainWindow):
             self.combo_model.setCurrentText(m)
 
         voice_mode = data.get("voice_mode", "single")
-        if engine_id == "flash_tts":
-            voice_mode_idx = self.combo_voice_mode.findData(voice_mode)
-            if voice_mode_idx >= 0:
-                self.combo_voice_mode.setCurrentIndex(voice_mode_idx)
-        else:
-            single_idx = self.combo_voice_mode.findData("single")
-            if single_idx >= 0:
-                self.combo_voice_mode.setCurrentIndex(single_idx)
+        if engine_id == "flash_tts" and voice_mode == "author_gender":
+            voice_mode = "duo"
+        voice_mode_idx = self.combo_voice_mode.findData(voice_mode)
+        if voice_mode_idx >= 0:
+            self.combo_voice_mode.setCurrentIndex(voice_mode_idx)
 
         v = data.get("voice")
         if v and v in VOICES_MAP:
@@ -5338,6 +6706,12 @@ class MainWindow(QMainWindow):
             idx = self.combo_voice_secondary.findData(v_secondary)
             if idx >= 0:
                 self.combo_voice_secondary.setCurrentIndex(idx)
+
+        v_tertiary = data.get("voice_tertiary")
+        if v_tertiary and v_tertiary in VOICES_MAP:
+            idx = self.combo_voice_tertiary.findData(v_tertiary)
+            if idx >= 0:
+                self.combo_voice_tertiary.setCurrentIndex(idx)
 
         s = data.get("speed")
         if s in SPEED_PROMPTS:

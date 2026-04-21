@@ -13,6 +13,15 @@ chmod +x run.sh
 ./run.sh
 ```
 
+To build a standalone Linux binary for the translator-only mode, run:
+
+```bash
+chmod +x build_translator_linux.sh
+./build_translator_linux.sh
+```
+
+The resulting file will be `dist/translatorFork-translator`.
+
 If you plan to use Playwright-based tools such as ChatGPT Web automation or RanobeLib uploader, install the browser once after the virtual environment is created:
 
 ```bash

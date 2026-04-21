@@ -103,6 +103,15 @@ chmod +x run.sh
 ./run.sh
 ```
 
+Если нужен отдельный Linux-бинарь только для режима переводчика, соберите его так:
+
+```bash
+chmod +x build_translator_linux.sh
+./build_translator_linux.sh
+```
+
+Результат сборки появится как `dist/translatorFork-translator`.
+
 Оба скрипта сами создают локальную `.venv`, обновляют `pip`, ставят зависимости из [`requirements.txt`](./requirements.txt) и запускают приложение.
 
 ## Ручной запуск
@@ -213,6 +222,8 @@ python -m playwright install chromium
 Зависимости для запуска перечислены в [`requirements.txt`](./requirements.txt).
 
 Сборочные зависимости ставятся отдельно через сборочные скрипты и включают PyInstaller-стек. Если вам нужен только запуск из исходников, `requirements.txt` достаточно.
+
+Для минимальной Linux-сборки без дополнительной обвязки используйте [`build_translator_linux.sh`](./build_translator_linux.sh). Этот путь собирает только `main_translator_only.py` и кладёт готовый бинарь в `dist/translatorFork-translator`.
 
 ## Примечания
 

@@ -139,6 +139,36 @@
         "max_concurrent_requests": 15,
         "max_output_tokens": 128000,
         "min_thinking_budget": false
+      },
+      "Gemini 3.1 Flash TTS Preview": {
+        "id": "gemini-3.1-flash-tts-preview",
+        "rpm": 3,
+        "rpd": 10,
+        "context_length": 32000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false
+      },
+      "Gemini 2.5 Flash TTS Preview": {
+        "id": "gemini-2.5-flash-preview-tts",
+        "rpm": 3,
+        "rpd": 10,
+        "context_length": 32000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false
+      },
+      "Gemini 2.5 Pro TTS Preview": {
+        "id": "gemini-2.5-pro-preview-tts",
+        "rpm": 3,
+        "rpd": 10,
+        "context_length": 32000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false
       }
     }
   },
