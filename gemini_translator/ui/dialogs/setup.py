@@ -272,12 +272,13 @@ class InitialSetupDialog(QDialog):
         self.is_session_active = False
         self.current_project_folder_loaded = None # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
         self.is_settings_dirty = False
+        self.is_glossary_dirty = False
         self.local_set = False
         self.cpu_performance_index = None
         self.is_fuzzy_disabled_by_system = False
         self.global_settings = None
 
-        self.initial_glossary_state = {}
+        self.initial_glossary_state = []
         self.active_session_id = None
         self.this_dialog_started_the_session = False # <<< ДОБАВЬТЕ ЭТУ СТРОКУ
         self.is_blocked_by_child_dialog = False # <<< ДОБАВЬТЕ ЭТУ СТРОКУ
@@ -589,7 +590,7 @@ class InitialSetupDialog(QDialog):
         self.key_management_widget.provider_combo.currentIndexChanged.connect(self._mark_settings_as_dirty)
         self.instances_spin.valueChanged.connect(self._mark_settings_as_dirty)
         self.preset_widget.text_changed.connect(self._mark_promt_as_dirty)
-        self.glossary_widget.glossary_changed.connect(self._mark_settings_as_dirty)
+        self.glossary_widget.glossary_changed.connect(self._on_glossary_changed)
         self.auto_translate_widget.settings_changed.connect(self._mark_settings_as_dirty)
         self.auto_translate_widget.open_glossary_requested.connect(self.open_ai_glossary_generation)
         self.auto_translate_widget.open_validator_requested.connect(self.open_translation_validator)
@@ -725,7 +726,7 @@ class InitialSetupDialog(QDialog):
             self._save_project_glossary_only()
             if not settings_dirty_before:
                 self.is_settings_dirty = False
-                self.setWindowTitle(self.windowTitle().replace("*", ""))
+                self._refresh_dirty_window_title()
             QMessageBox.information(self, "Глоссарий добавлен", f"Добавлено записей: {added_total}.")
 
     def _create_glossary_tab_content(self) -> QWidget:
@@ -742,7 +743,7 @@ class InitialSetupDialog(QDialog):
 
         has_unsaved_glossary = (
             self.output_folder
-            and self.glossary_widget.get_glossary() != self.initial_glossary_state
+            and (self.is_glossary_dirty or self.glossary_widget.get_glossary() != self.initial_glossary_state)
         )
 
         should_show_dialog = has_unsaved_settings or has_unsaved_glossary
@@ -1008,6 +1009,7 @@ class InitialSetupDialog(QDialog):
     def create_glossary_tab(self, tabs_group):
         # 1. Создаем экземпляр нашего виджета, передавая ему settings_manager
         self.glossary_widget = GlossaryWidget(self, settings_manager=self.settings_manager)
+        self.glossary_widget.set_project_path(self.output_folder)
 
         # 3. Добавляем его как вкладку
         tabs_group.addTab(self.glossary_widget, "Глоссарий и Контекст Проекта")
@@ -1292,6 +1294,32 @@ class InitialSetupDialog(QDialog):
             self.paths_widget.set_file_path(None)
             self.check_ready()
 
+    def _refresh_dirty_window_title(self):
+        clean_title = self.windowTitle().replace("*", "")
+        if self.is_settings_dirty or self.is_glossary_dirty:
+            self.setWindowTitle(clean_title + "*")
+        else:
+            self.setWindowTitle(clean_title)
+
+    def mark_project_glossary_as_saved(self, glossary_data=None):
+        if glossary_data is None:
+            glossary_data = self.glossary_widget.get_glossary() if hasattr(self, "glossary_widget") else []
+
+        self.initial_glossary_state = [item.copy() for item in (glossary_data or []) if isinstance(item, dict)]
+        self.is_glossary_dirty = False
+
+        if hasattr(self, "glossary_widget"):
+            self.glossary_widget.mark_current_state_as_saved()
+
+        self._refresh_dirty_window_title()
+
+    def _on_glossary_changed(self):
+        if self.is_session_active or not self.output_folder:
+            return
+        current_glossary = self.glossary_widget.get_glossary()
+        self.is_glossary_dirty = current_glossary != self.initial_glossary_state
+        self._refresh_dirty_window_title()
+
     def _mark_settings_as_dirty(self):
         """Слот, который устанавливает флаг 'грязного' состояния и обновляет заголовок окна."""
         if self.is_settings_dirty or self.is_session_active:
@@ -1299,14 +1327,14 @@ class InitialSetupDialog(QDialog):
         if not self.local_set:
             return
         self.is_settings_dirty = True
-        self.setWindowTitle(self.windowTitle() + "*")
+        self._refresh_dirty_window_title()
 
     def _mark_promt_as_dirty(self):
         """Слот, который устанавливает флаг 'грязного' состояния и обновляет заголовок окна."""
         if self.is_settings_dirty or self.is_session_active:
             return
         self.is_settings_dirty = True
-        self.setWindowTitle(self.windowTitle() + "*")
+        self._refresh_dirty_window_title()
 
 
     def _get_ui_state_for_saving(self):
@@ -1371,7 +1399,7 @@ class InitialSetupDialog(QDialog):
 
         if clear_dirty:
             self.is_settings_dirty = False
-            self.setWindowTitle(self.windowTitle().replace("*", ""))
+            self._refresh_dirty_window_title()
 
         print(f"[SETTINGS] Глобальные настройки сохранены в: {self.settings_manager.config_file}")
 
@@ -2882,7 +2910,7 @@ class InitialSetupDialog(QDialog):
         manager_to_save.save_full_session_settings(self._get_full_ui_settings())
 
         self.is_settings_dirty = False
-        self.setWindowTitle(self.windowTitle().replace("*", ""))
+        self._refresh_dirty_window_title()
         print("[SETTINGS] Настройки проекта сохранены.")
 
 
@@ -2899,8 +2927,7 @@ class InitialSetupDialog(QDialog):
             with open(project_glossary_path, 'w', encoding='utf-8') as f:
                 json.dump(current_glossary, f, ensure_ascii=False, indent=2, sort_keys=True)
 
-            # --- ИСПРАВЛЕНИЕ: Создаем независимую копию списка для фиксации состояния ---
-            self.initial_glossary_state = [item.copy() for item in current_glossary]
+            self.mark_project_glossary_as_saved(current_glossary)
 
             print("[SETTINGS] Глоссарий проекта сохранен.")
         except Exception as e:
@@ -4166,21 +4193,25 @@ class InitialSetupDialog(QDialog):
 
 
     def _load_project_glossary(self, folder_path):
+        self.glossary_widget.set_project_path(folder_path)
         project_glossary_path = os.path.join(folder_path, "project_glossary.json")
         try:
+            saved_snapshot, restored_from_autosave = self.glossary_widget.load_project_glossary()
             if os.path.exists(project_glossary_path):
-                with open(project_glossary_path, 'r', encoding='utf-8') as f:
-                    saved_data = json.load(f)
-
-                self.glossary_widget.set_glossary(saved_data)
                 print(f"[ИНФО] Глоссарий проекта загружен из: {project_glossary_path}")
-            else:
-                self.glossary_widget.clear()
+            elif restored_from_autosave:
+                print(f"[ИНФО] Глоссарий проекта восстановлен из автокопии: {folder_path}")
         except Exception as e:
             QMessageBox.warning(self, "Ошибка загрузки", f"Не удалось загрузить project_glossary.json: {e}")
+            self.glossary_widget.clear()
+            saved_snapshot = []
+            restored_from_autosave = False
 
-        # --- ИСПРАВЛЕНИЕ: Создаем независимую копию списка. Это критически важно для определения изменений. ---
-        self.initial_glossary_state = [item.copy() for item in self.glossary_widget.get_glossary()]
+        self.initial_glossary_state = [item.copy() for item in saved_snapshot]
+        self.is_glossary_dirty = self.glossary_widget.get_glossary() != self.initial_glossary_state
+        if not self.is_glossary_dirty:
+            self.glossary_widget.mark_current_state_as_saved()
+        self._refresh_dirty_window_title()
 
     def open_translation_validator(self):
         """Открывает инструмент проверки качества переводов."""
@@ -4354,7 +4385,7 @@ class InitialSetupDialog(QDialog):
             except Exception as e:
                 self._auto_log(f"Не удалось сохранить карту автоглоссария: {e}", force=True)
 
-        self.initial_glossary_state = [item.copy() for item in self.glossary_widget.get_glossary()]
+        self.mark_project_glossary_as_saved(self.glossary_widget.get_glossary())
         self._prepare_and_display_tasks(clean_rebuild=True)
         self._auto_log(
             f"Автоглоссарий завершён: терминов {len(self.glossary_widget.get_glossary())}. Запускаю основной перевод…",
@@ -5581,6 +5612,8 @@ class InitialSetupDialog(QDialog):
         глоссария и обновлением всего UI.
         """
         print("[DEBUG] Сработал оркестратор _on_project_data_changed")
+        if hasattr(self, 'glossary_widget'):
+            self.glossary_widget.set_project_path(self.output_folder)
 
         # --- "УМНАЯ" ЗАГРУЗКА ГЛОССАРИЯ (ЦЕНТРАЛИЗОВАННАЯ) ---
         if self.output_folder and self.output_folder != self.current_project_folder_loaded:
