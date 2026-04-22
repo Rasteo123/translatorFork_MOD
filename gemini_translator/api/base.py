@@ -69,11 +69,36 @@ class BaseApiHandler:
         self.proxy_settings = proxy_settings
         return True
 
+    def _get_proxy_signature(self):
+        """Returns a stable signature for the active proxy configuration."""
+        if not self.proxy_settings or not self.proxy_settings.get('enabled'):
+            return None
+
+        return (
+            str(self.proxy_settings.get('type', 'SOCKS5')).upper(),
+            str(self.proxy_settings.get('host') or ''),
+            str(self.proxy_settings.get('port') or ''),
+            str(self.proxy_settings.get('user') or ''),
+            str(self.proxy_settings.get('pass') or ''),
+        )
+
     async def _get_or_create_session_internal(self, api_timeout=600):
         """[Внутренний] Лениво создает сессию."""
-        if hasattr(_thread_local, "session") and not _thread_local.session.closed:
+        desired_proxy_signature = self._get_proxy_signature()
+        existing_session = getattr(_thread_local, "session", None)
+        existing_proxy_signature = getattr(_thread_local, "session_proxy_signature", None)
+        existing_timeout = getattr(_thread_local, "session_timeout", None)
 
-            return _thread_local.session
+        if existing_session and not existing_session.closed:
+            if existing_proxy_signature == desired_proxy_signature and existing_timeout == api_timeout:
+                return existing_session
+
+            await existing_session.close()
+            delattr(_thread_local, "session")
+            if hasattr(_thread_local, "session_proxy_signature"):
+                delattr(_thread_local, "session_proxy_signature")
+            if hasattr(_thread_local, "session_timeout"):
+                delattr(_thread_local, "session_timeout")
         
         connector = None
         if self.proxy_settings and self.proxy_settings.get('enabled'):
@@ -97,6 +122,8 @@ class BaseApiHandler:
             timeout=timeout,
             connector=connector 
         )
+        _thread_local.session_proxy_signature = desired_proxy_signature
+        _thread_local.session_timeout = api_timeout
         return _thread_local.session
 
     async def _close_thread_session_internal(self):
@@ -106,6 +133,10 @@ class BaseApiHandler:
             if session and not session.closed:
                 await session.close()
             delattr(_thread_local, "session")
+        if hasattr(_thread_local, "session_proxy_signature"):
+            delattr(_thread_local, "session_proxy_signature")
+        if hasattr(_thread_local, "session_timeout"):
+            delattr(_thread_local, "session_timeout")
 
     def _create_debug_trace(self, log_prefix):
         if not getattr(self.worker, "debug_logging_enabled", False):
@@ -215,6 +246,10 @@ class BaseApiHandler:
                     pass # Игнорируем ошибки закрытия, так как мы все равно удаляем ссылку
             
             delattr(_thread_local, "session")
+        if hasattr(_thread_local, "session_proxy_signature"):
+            delattr(_thread_local, "session_proxy_signature")
+        if hasattr(_thread_local, "session_timeout"):
+            delattr(_thread_local, "session_timeout")
     
     
     
