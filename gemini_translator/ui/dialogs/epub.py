@@ -511,6 +511,53 @@ def collect_boundary_duplicate_findings(chapter_infos):
                 'preview': preview,
             })
 
+    existing_paths = {
+        (finding.get('chapter_path'), tuple(path))
+        for finding in findings
+        for path in (finding.get('tag_paths') or [])
+        if finding.get('chapter_path') and path
+    }
+
+    ending_groups = {}
+    for info in chapter_infos:
+        for block in info['blocks'][-3:]:
+            ending_groups.setdefault(block['norm_text'], []).append((info, block))
+
+    for occurrences in ending_groups.values():
+        chapter_paths = {info['path'] for info, _ in occurrences}
+        if len(chapter_paths) < 2:
+            continue
+
+        chapter_names = ", ".join(sorted(os.path.basename(path) for path in chapter_paths))
+        for info, block in occurrences:
+            if block['tag_name'] == 'h1':
+                continue
+
+            block_key = (info['path'], tuple(block['tag_path']))
+            if block_key in existing_paths:
+                continue
+
+            preview = (
+                f"Р“Р»Р°РІР°: {info['name']}\n"
+                f"РџРѕРІС‚РѕСЂСЏСЋС‰РёР№СЃСЏ С…РІРѕСЃС‚: {block['text']}\n\n"
+                f"РџРѕСЃР»РµРґРЅРёРµ СЃС‚СЂРѕРєРё РіР»Р°РІС‹:\n{format_duplicate_preview_blocks(info['blocks'][-4:], [block['tag_path']])}\n\n"
+                f"РўР°РєР¶Рµ РІСЃС‚СЂРµС‡Р°РµС‚СЃСЏ РІ РіР»Р°РІР°С…:\n{chapter_names}"
+            )
+            findings.append({
+                'category': 'boundary',
+                'chapter_path': info['path'],
+                'chapter_name': info['name'],
+                'chapter_index': info['index'] + 1,
+                'tag_name': block['tag_name'],
+                'tag_paths': [list(block['tag_path'])],
+                'text': block['text'],
+                'block_count': 1,
+                'location': "РљРѕРЅРµС† РіР»Р°РІС‹",
+                'reason': f"РћРґРёРЅР°РєРѕРІР°СЏ РєРѕРЅС†РѕРІРєР° РІСЃС‚СЂРµС‡Р°РµС‚СЃСЏ РІ {len(chapter_paths)} РіР»Р°РІР°С….",
+                'preview': preview,
+            })
+            existing_paths.add(block_key)
+
     return sorted(
         findings,
         key=lambda item: (item['chapter_index'], item['location'], item['text'].casefold())
