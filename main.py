@@ -30,7 +30,11 @@ from gemini_translator.utils.proxy_tool import GlobalProxyController
 from gemini_translator.utils.server_manager import ServerManager
 from window_branding import install_window_title_branding
 from gemini_translator.ui.dialogs.proxy import ProxySettingsDialog
-from gemini_translator.ui.themes import DARK_STYLESHEET  # <-- ИМПОРТИРУЙТЕ ТЕМУ
+from gemini_translator.ui.themes import (
+    DARK_STYLESHEET,
+    build_dark_stylesheet,
+    extract_theme_colors,
+)
 
 # ---------------------------------------------------------------------------
 # Gemini EPUB Translator - Точка входа в приложение
@@ -435,6 +439,27 @@ def prepare_console_streams():
             stream.reconfigure(errors="backslashreplace")
         except Exception:
             pass
+
+
+def apply_saved_app_theme(app, settings_manager=None):
+    manager = settings_manager or getattr(app, "settings_manager", None)
+    if manager is None:
+        app.setStyleSheet(DARK_STYLESHEET)
+        return
+
+    theme_colors = {}
+    for loader_name in ("load_full_session_settings", "load_settings"):
+        loader = getattr(manager, loader_name, None)
+        if not callable(loader):
+            continue
+        try:
+            theme_colors = extract_theme_colors(loader())
+        except Exception:
+            theme_colors = {}
+        if theme_colors:
+            break
+
+    app.setStyleSheet(build_dark_stylesheet(theme_colors))
 
 
 def run_emergency_viewer():
@@ -930,6 +955,7 @@ if __name__ == "__main__":
     app.event_bus = EventBus()
     app.initialize_managers()
     app.settings_manager = app.get_settings_manager()
+    apply_saved_app_theme(app, app.settings_manager)
     app.task_manager = ChapterQueueManager(event_bus=app.event_bus)
     app.global_version = APP_VERSION
     app.proxy_controller = GlobalProxyController(app.event_bus)

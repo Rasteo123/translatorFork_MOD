@@ -23,7 +23,7 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QListWidget, QPushButton, QDialogButtonBox, QLabel,
     QTextEdit, QFileDialog, QDoubleSpinBox, QListWidgetItem, QCheckBox,
-    QMessageBox, QStyle,
+    QMessageBox, QStyle, QColorDialog,
     QTableWidget, QTableWidgetItem, QGroupBox, QFormLayout, QHBoxLayout, QHeaderView,
     QScrollArea, QWidget, QTabWidget, QGridLayout,
     QPlainTextEdit, QComboBox, QSpinBox, QSplitter, QAbstractItemView, QFrame
@@ -44,6 +44,12 @@ from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
 from ...utils.project_migrator import ProjectMigrator
 from ...utils.project_manager import TranslationProjectManager
 
+from ..themes import (
+    THEME_SETTINGS_KEY,
+    build_dark_stylesheet,
+    editable_theme_colors,
+    extract_theme_colors,
+)
 from ..widgets import (
     KeyManagementWidget, TranslationOptionsWidget, ModelSettingsWidget,
     ProjectPathsWidget, GlossaryWidget, PresetWidget, ProjectActionsWidget,
@@ -250,6 +256,11 @@ class InitialSetupDialog(QDialog):
         self.engine = app.engine
         self.engine_thread = app.engine_thread
         self.task_manager = app.task_manager if hasattr(app, 'task_manager') else None
+        self.theme_color_buttons = {}
+        self._ui_theme_colors = editable_theme_colors(
+            extract_theme_colors(self.settings_manager.load_full_session_settings())
+            or extract_theme_colors(self.settings_manager.load_settings())
+        )
 
         self.selected_file = None
         self.html_files = []
@@ -424,6 +435,8 @@ class InitialSetupDialog(QDialog):
         # model_settings_widget уже является QGroupBox, просто добавляем его
         # stretch=0, чтобы она занимала только необходимый минимум высоты
         settings_layout.addWidget(self.model_settings_widget, 0)
+        self.appearance_group = self._create_appearance_group()
+        settings_layout.addWidget(self.appearance_group, 0)
         self.model_settings_widget.prettify_checkbox.setVisible(True)
         # --- ШАГ 3: СОБИРАЕМ QTabWidget ---
         self.tabs_group = QTabWidget()
@@ -811,6 +824,110 @@ class InitialSetupDialog(QDialog):
     # МЕТОДЫ СОЗДАНИЯ ЭЛЕМЕНТОВ UI
     # --------------------------------------------------------------------
 
+    def _create_appearance_group(self) -> QGroupBox:
+        group = QGroupBox("Внешний вид интерфейса")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
+        hint_label = QLabel(
+            "Можно менять основные цвета интерфейса. Изменения применяются сразу ко всему приложению. "
+            "Для фона и панелей лучше подходят тёмные оттенки."
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setObjectName("helperLabel")
+        layout.addWidget(hint_label)
+
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(8)
+
+        color_fields = {
+            "window_bg": "Фон окна",
+            "panel_bg": "Фон панелей",
+            "accent": "Акцент",
+        }
+
+        for color_key, label_text in color_fields.items():
+            button = QPushButton()
+            button.setMinimumHeight(30)
+            button.clicked.connect(lambda _checked=False, key=color_key: self._choose_ui_theme_color(key))
+            self.theme_color_buttons[color_key] = button
+            form_layout.addRow(label_text, button)
+
+        layout.addLayout(form_layout)
+
+        actions_layout = QHBoxLayout()
+        actions_layout.addStretch(1)
+        reset_button = QPushButton("Сбросить цвета")
+        reset_button.clicked.connect(self._reset_ui_theme_colors)
+        actions_layout.addWidget(reset_button)
+        layout.addLayout(actions_layout)
+
+        self._refresh_ui_theme_controls()
+        return group
+
+    def _refresh_ui_theme_controls(self):
+        if not getattr(self, "theme_color_buttons", None):
+            return
+
+        colors = editable_theme_colors(getattr(self, "_ui_theme_colors", None))
+        captions = {
+            "window_bg": "Фон окна",
+            "panel_bg": "Фон панелей",
+            "accent": "Акцент",
+        }
+
+        for color_key, button in self.theme_color_buttons.items():
+            color_value = colors[color_key]
+            qcolor = QtGui.QColor(color_value)
+            text_color = "#10161d" if qcolor.lightnessF() > 0.62 else "#ffffff"
+            border_color = qcolor.darker(145).name() if qcolor.lightnessF() > 0.62 else qcolor.lighter(145).name()
+            button.setText(color_value.upper())
+            button.setToolTip(f"{captions.get(color_key, color_key)}: {color_value.upper()}")
+            button.setStyleSheet(
+                "QPushButton {"
+                f"background-color: {color_value};"
+                f"color: {text_color};"
+                f"border: 1px solid {border_color};"
+                "font-weight: 600;"
+                "padding: 6px 10px;"
+                "text-align: left;"
+                "}"
+            )
+
+    def _apply_ui_theme_colors(self, theme_colors=None, mark_dirty=False):
+        next_colors = editable_theme_colors(theme_colors)
+        current_colors = editable_theme_colors(getattr(self, "_ui_theme_colors", None))
+        has_changed = next_colors != current_colors
+
+        self._ui_theme_colors = dict(next_colors)
+
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_dark_stylesheet(self._ui_theme_colors))
+
+        self._refresh_ui_theme_controls()
+
+        if mark_dirty and has_changed:
+            self._mark_settings_as_dirty()
+
+    def _choose_ui_theme_color(self, color_key: str):
+        colors = editable_theme_colors(getattr(self, "_ui_theme_colors", None))
+        current_color = QtGui.QColor(colors.get(color_key, "#000000"))
+        selected_color = QColorDialog.getColor(
+            current_color,
+            self,
+            "Выберите цвет интерфейса",
+        )
+        if not selected_color.isValid():
+            return
+
+        colors[color_key] = selected_color.name()
+        self._apply_ui_theme_colors(colors, mark_dirty=True)
+
+    def _reset_ui_theme_colors(self):
+        self._apply_ui_theme_colors({}, mark_dirty=True)
+
     def _get_available_session_capacity(self) -> int:
         provider_id = self.key_management_widget.get_selected_provider()
         active_sessions = len(self.key_management_widget.get_active_keys())
@@ -1140,6 +1257,7 @@ class InitialSetupDialog(QDialog):
             'custom_prompt': self.preset_widget.get_prompt(),
             'last_prompt_preset': self.preset_widget.get_current_preset_name(),
             'auto_translation': self.auto_translate_widget.get_settings(),
+            THEME_SETTINGS_KEY: editable_theme_colors(getattr(self, '_ui_theme_colors', None)),
         })
         # Добавьте сюда другие настройки, если они должны сохраняться
         return state
@@ -1171,6 +1289,9 @@ class InitialSetupDialog(QDialog):
         full_session_settings = self.settings_manager.load_full_session_settings()
         if isinstance(full_session_settings, dict):
             merged.update(full_session_settings)
+
+        if THEME_SETTINGS_KEY not in merged:
+            merged[THEME_SETTINGS_KEY] = editable_theme_colors()
 
         return merged
 
@@ -2551,6 +2672,7 @@ class InitialSetupDialog(QDialog):
 
         settings.update(self.translation_options_widget.get_settings())
         settings['auto_translation'] = self.auto_translate_widget.get_settings()
+        settings[THEME_SETTINGS_KEY] = editable_theme_colors(getattr(self, '_ui_theme_colors', None))
         settings['active_keys_by_provider'] = {
             provider_id: sorted(list(keys))
             for provider_id, keys in self.key_management_widget.current_active_keys_by_provider.items()
@@ -2585,6 +2707,9 @@ class InitialSetupDialog(QDialog):
         self.auto_translate_widget.blockSignals(True)
 
         try:
+            if THEME_SETTINGS_KEY in settings:
+                self._apply_ui_theme_colors(extract_theme_colors(settings), mark_dirty=False)
+
             self.model_settings_widget.set_settings(settings)
             if any(key in settings for key in ('use_batching', 'chunking', 'chunk_on_error', 'task_size_limit')):
                 self.translation_options_widget.set_settings(settings)

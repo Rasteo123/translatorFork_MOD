@@ -125,6 +125,11 @@ class _SetupSettingsHarness:
         self._returning_to_main_menu = False
         self.close_called = False
         self.is_settings_dirty = True
+        self._ui_theme_colors = {
+            "window_bg": "#12202d",
+            "panel_bg": "#1b2c3b",
+            "accent": "#ff8800",
+        }
         self._window_title = "Настройка сессии*"
         self.applied_settings = None
 
@@ -144,6 +149,7 @@ class _SetupSettingsHarness:
                 "filter_redirect_provider": "deepseek",
                 "filter_redirect_model": "deepseek-chat NonThink",
             },
+            "ui_theme_colors": dict(self._ui_theme_colors),
         }
 
     def _apply_full_ui_settings(self, settings):
@@ -170,6 +176,7 @@ class SetupSettingsPersistenceTests(unittest.TestCase):
         self.assertTrue(state["use_warmup"])
         self.assertEqual(state["provider"], "workascii_chatgpt")
         self.assertEqual(state["num_instances"], 3)
+        self.assertEqual(state["ui_theme_colors"]["accent"], "#ff8800")
 
     def test_collect_global_ui_settings_merges_legacy_and_full_session(self):
         settings_manager = _SettingsManagerStub(
@@ -220,8 +227,10 @@ class SetupSettingsPersistenceTests(unittest.TestCase):
         harness._save_global_ui_settings()
 
         self.assertEqual(settings_manager.saved_ui_state["task_size_limit"], 15000)
+        self.assertEqual(settings_manager.saved_ui_state["ui_theme_colors"]["panel_bg"], "#1b2c3b")
         self.assertEqual(settings_manager.saved_full_session["task_size_limit"], 15000)
         self.assertEqual(settings_manager.saved_full_session["provider"], "workascii_chatgpt")
+        self.assertEqual(settings_manager.saved_full_session["ui_theme_colors"]["accent"], "#ff8800")
         self.assertTrue(settings_manager.saved_full_session["auto_translation"]["filter_redirect_enabled"])
         self.assertEqual(
             settings_manager.saved_full_session["auto_translation"]["filter_redirect_provider"],

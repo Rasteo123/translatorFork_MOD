@@ -53,6 +53,7 @@ def _bootstrap_application():
     app.event_bus = app_main.EventBus()
     app.initialize_managers()
     app.settings_manager = app.get_settings_manager()
+    app_main.apply_saved_app_theme(app, app.settings_manager)
     app.task_manager = app_main.ChapterQueueManager(event_bus=app.event_bus)
     app.global_version = app_main.APP_VERSION
     app.proxy_controller = app_main.GlobalProxyController(app.event_bus)
