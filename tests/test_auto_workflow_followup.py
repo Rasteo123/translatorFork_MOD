@@ -52,6 +52,27 @@ class _ValidatorDialogStub:
         self.deleted = True
 
 
+class _CheckStateStub:
+    def __init__(self):
+        self.checked = False
+        self.values = []
+
+    def setChecked(self, value):
+        self.checked = bool(value)
+        self.values.append(self.checked)
+
+    def isChecked(self):
+        return self.checked
+
+
+class _ConnectOnlySignal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+
 class _AutoWorkflowHarness:
     _on_auto_validator_finished = InitialSetupDialog._on_auto_validator_finished
     _on_auto_consistency_finished = InitialSetupDialog._on_auto_consistency_finished
@@ -106,6 +127,96 @@ class _AutoWorkflowHarness:
 
     def check_ready(self):
         self.ready_calls += 1
+
+
+class _AutoValidatorDialogLaunchStub:
+    instances = []
+
+    def __init__(
+        self,
+        translated_folder,
+        original_epub_path,
+        parent=None,
+        retry_enabled=True,
+        project_manager=None,
+    ):
+        self.translated_folder = translated_folder
+        self.original_epub_path = original_epub_path
+        self.parent = parent
+        self.retry_enabled = retry_enabled
+        self.project_manager = project_manager
+        self.check_show_all = _CheckStateStub()
+        self.check_revalidate_ok = _CheckStateStub()
+        self.path_row_map = {"Text/ch1.xhtml": 0}
+        self.analysis_thread = type(
+            "_AnalysisThreadStub",
+            (),
+            {"analysis_finished": _ConnectOnlySignal()},
+        )()
+        self.hide_called = False
+        self.start_analysis_calls = 0
+        self.deleted = False
+        self.__class__.instances.append(self)
+
+    def hide(self):
+        self.hide_called = True
+
+    def start_analysis(self, specific_targets=None):
+        self.start_analysis_calls += 1
+
+    def deleteLater(self):
+        self.deleted = True
+
+
+class _EventLoopStub:
+    def quit(self):
+        return None
+
+    def exec(self):
+        return None
+
+
+class _RunAutoValidatorHarness:
+    _run_auto_validator_followup = InitialSetupDialog._run_auto_validator_followup
+
+    def __init__(self):
+        self.output_folder = "C:/project"
+        self.selected_file = "C:/project/book.epub"
+        self.project_manager = object()
+        self.start_btn = _ButtonStub()
+        self.logs = []
+        self._auto_followup_running = False
+        self._auto_validator_dialog = None
+        self.reset_calls = 0
+        self.ready_calls = 0
+        self.finished_calls = []
+
+    def _auto_log(self, message, force=False, **kwargs):
+        entry = {"message": message, "force": force}
+        entry.update(kwargs)
+        self.logs.append(entry)
+
+    def _reset_auto_workflow_state(self):
+        self.reset_calls += 1
+
+    def check_ready(self):
+        self.ready_calls += 1
+
+    def _finish_auto_validator_followup(self, auto_settings, log_message=None):
+        self.finished_calls.append(
+            {
+                "auto_settings": dict(auto_settings),
+                "log_message": log_message,
+            }
+        )
+
+    def _on_auto_validator_finished(self, total_scanned, suspicious_found):
+        self.finished_calls.append(
+            {
+                "total_scanned": total_scanned,
+                "suspicious_found": suspicious_found,
+            }
+        )
 
 
 class AutoWorkflowFollowupTests(unittest.TestCase):
@@ -250,6 +361,35 @@ class AutoWorkflowFollowupTests(unittest.TestCase):
                 for entry in harness.logs
             )
         )
+
+    def test_run_auto_validator_followup_revalidates_validated_files(self):
+        harness = _RunAutoValidatorHarness()
+        auto_settings = {"retry_short_enabled": True}
+        _AutoValidatorDialogLaunchStub.instances.clear()
+
+        with patch(
+            "gemini_translator.ui.dialogs.validation.TranslationValidatorDialog",
+            _AutoValidatorDialogLaunchStub,
+        ), patch(
+            "gemini_translator.ui.dialogs.setup.QtCore.QEventLoop",
+            _EventLoopStub,
+        ), patch(
+            "gemini_translator.ui.dialogs.setup.QtCore.QTimer.singleShot",
+            lambda interval_ms, callback: None,
+        ):
+            harness._run_auto_validator_followup(auto_settings)
+
+        self.assertEqual(len(_AutoValidatorDialogLaunchStub.instances), 1)
+        dialog = _AutoValidatorDialogLaunchStub.instances[0]
+        self.assertTrue(dialog.hide_called)
+        self.assertTrue(dialog.check_show_all.isChecked())
+        self.assertTrue(dialog.check_revalidate_ok.isChecked())
+        self.assertEqual(dialog.start_analysis_calls, 1)
+        self.assertIs(harness._auto_validator_dialog, dialog)
+        self.assertEqual(harness.start_btn.enabled_values, [False])
+        self.assertEqual(harness.reset_calls, 0)
+        self.assertEqual(harness.ready_calls, 0)
+        self.assertEqual(harness.finished_calls, [])
 
 
 class _AutoLogDispatchHarness:
