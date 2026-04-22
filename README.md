@@ -223,7 +223,7 @@ python -m playwright install chromium
 
 Сборочные зависимости ставятся отдельно через сборочные скрипты и включают PyInstaller-стек. Если вам нужен только запуск из исходников, `requirements.txt` достаточно.
 
-Для минимальной Linux-сборки без дополнительной обвязки используйте [`build_translator_linux.sh`](./build_translator_linux.sh). Этот путь собирает только `main_translator_only.py` и кладёт готовый бинарь в `dist/translatorFork-translator`.
+Для минимальной Linux-сборки без дополнительной обвязки используйте [`build_translator_linux.sh`](./build_translator_linux.sh). Этот путь собирает только `main_translator_only.py`, использует отдельный минимальный набор зависимостей из [`requirements-translator-only.txt`](./requirements-translator-only.txt) и кладёт готовый бинарь в `dist/translatorFork-translator`.
 
 ## Примечания
 

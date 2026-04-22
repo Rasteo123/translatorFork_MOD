@@ -1,0 +1,23 @@
+# Minimal dependencies for the standalone translator-only build.
+# Excludes browser, TTS, audio, uploader, and document-export extras.
+aiohttp
+aiohttp_socks
+beautifulsoup4
+curl_cffi
+emoji
+flask
+fuzzywuzzy
+google-genai
+jieba
+lxml
+num2words
+pymorphy3
+PyQt6
+PySocks
+python-Levenshtein
+pytz
+recognizers-text
+recognizers-text-number
+requests
+setuptools<81
+werkzeug

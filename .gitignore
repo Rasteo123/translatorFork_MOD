@@ -10,6 +10,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv-linux/
 venv/
 env/
 ENV/
@@ -46,6 +47,8 @@ settings.json
 *_openrouter_failed.html
 *.epub
 translatorFork_MOD.zip
+translatorFork_MOD-v*.zip
+translatorFork_MOD-source-*.zip
 
 # Temporary local files
 _tmp_*
