@@ -740,7 +740,7 @@ class ConsistencyValidatorDialog(QDialog):
         self.engine.progress_updated.connect(self.update_progress)
         self.engine.chunk_analyzed.connect(self.on_chunk_done)
         self.engine.finished.connect(self.on_analysis_finished)
-        self.engine.error_occurred.connect(self.on_error)
+        self.engine.error_occurred.connect(self.on_engine_error)
         self.engine.log_message.connect(self._log)
         self.engine.fix_progress.connect(self.on_fix_progress)
         self.engine.fix_completed.connect(self.on_single_fix_completed)
@@ -1242,6 +1242,21 @@ class ConsistencyValidatorDialog(QDialog):
         # Статистика токенов глоссария
         token_count = self.engine.get_glossary_token_count()
         self._log(f"   Токенов в глоссарии: ~{token_count}")
+
+    @pyqtSlot(str)
+    def on_engine_error(self, error_msg):
+        self._log(f"❌ Ошибка: {error_msg}")
+        if not (
+            self._is_thread_running('analysis_thread') or
+            self._is_thread_running('fix_thread') or
+            self._is_thread_running('single_fix_thread') or
+            self._single_fix_in_progress
+        ):
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.select_chapters_btn.setEnabled(True)
+            self.progress_bar.setVisible(False)
+        self._update_batch_fix_button_state()
 
     @pyqtSlot(str)
     def on_error(self, error_msg):
