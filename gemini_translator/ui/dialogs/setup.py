@@ -281,6 +281,9 @@ class InitialSetupDialog(QDialog):
         self._auto_last_retry_signatures = set()
         self._auto_last_untranslated_fix_signatures = set()
         self._auto_pending_network_retry_chapters = set()
+        self._auto_filter_repack_signatures = set()
+        self._auto_filter_redirect_signatures = set()
+        self._auto_restart_session_override = None
         self._auto_validator_dialog = None
         self._auto_consistency_worker = None
         self._auto_glossary_dialog = None
@@ -2875,6 +2878,11 @@ class InitialSetupDialog(QDialog):
             return
 
         auto_settings = self.auto_translate_widget.get_settings() if hasattr(self, 'auto_translate_widget') else {}
+        pending_session_override = (
+            dict(self._auto_restart_session_override)
+            if is_auto_restart and isinstance(self._auto_restart_session_override, dict)
+            else None
+        )
         (
             auto_translation_options_override,
             auto_translation_mode,
@@ -2913,9 +2921,14 @@ class InitialSetupDialog(QDialog):
 
         # 1. Проверяем, существуют ли задачи, заглядывая напрямую в TaskManager
         tasks_exist = self.engine and self.engine.task_manager and self.engine.task_manager.has_pending_tasks()
+        active_keys_for_start = (
+            pending_session_override.get('api_keys')
+            if isinstance(pending_session_override, dict) and pending_session_override.get('api_keys')
+            else self.key_management_widget.get_active_keys()
+        )
 
         # 2. Проверяем все условия для старта
-        if not all([self.selected_file, tasks_exist, self.output_folder, self.key_management_widget.get_active_keys()]):
+        if not all([self.selected_file, tasks_exist, self.output_folder, active_keys_for_start]):
             QMessageBox.warning(self, "Ошибка", "Необходимо выбрать файл, задачи, папку и активную сессию сервиса.")
             return
 
@@ -2933,6 +2946,10 @@ class InitialSetupDialog(QDialog):
         else:
             settings['model_config'] = api_config.all_models().get(settings.get('model'))
         self._apply_auto_thinking_override(settings, auto_settings, model_config=settings.get('model_config'))
+        if pending_session_override:
+            settings.update(pending_session_override)
+            if not settings.get('model_config'):
+                settings['model_config'] = api_config.all_models().get(settings.get('model'))
 
         session_model_id = (settings.get('model_config') or {}).get('id')
         if session_model_id:
@@ -2983,6 +3000,7 @@ class InitialSetupDialog(QDialog):
 
         # 6. Отправляем событие на запуск сессии
         self.this_dialog_started_the_session = True
+        self._auto_restart_session_override = None
         self._post_event(name='start_session_requested', data={'settings': settings})
 
         # 7. Обновляем UI
@@ -3672,6 +3690,79 @@ class InitialSetupDialog(QDialog):
 
         return model_name, model_config, None
 
+    def _get_active_keys_for_provider(self, provider_id: str | None):
+        normalized_provider = str(provider_id or "").strip()
+        if not normalized_provider:
+            return []
+
+        if not api_config.provider_requires_api_key(normalized_provider):
+            placeholder = api_config.provider_placeholder_api_key(normalized_provider)
+            return [placeholder] if placeholder else []
+
+        key_widget = getattr(self, 'key_management_widget', None)
+        if not key_widget:
+            return []
+
+        active_by_provider = getattr(key_widget, 'current_active_keys_by_provider', {})
+        if isinstance(active_by_provider, dict):
+            stored_keys = active_by_provider.get(normalized_provider)
+            if isinstance(stored_keys, (list, tuple, set)):
+                normalized_keys = [str(key).strip() for key in stored_keys if str(key).strip()]
+                if normalized_keys:
+                    return list(normalized_keys)
+
+        try:
+            if key_widget.get_selected_provider() == normalized_provider:
+                return [
+                    str(key).strip()
+                    for key in key_widget.get_active_keys()
+                    if str(key).strip()
+                ]
+        except Exception:
+            return []
+
+        return []
+
+    def _resolve_auto_filter_redirect_override(self, auto_settings: dict | None = None):
+        if not isinstance(auto_settings, dict):
+            auto_settings = {}
+        if not auto_settings.get('filter_redirect_enabled'):
+            return None, None
+
+        model_name = str(auto_settings.get('filter_redirect_model') or "").strip()
+        if not model_name:
+            return None, "Для redirect отфильтрованных глав не выбрана модель."
+
+        model_config = api_config.all_models().get(model_name)
+        if not isinstance(model_config, dict):
+            return None, f"Модель redirect '{model_name}' не найдена в конфигурации."
+
+        selected_provider = str(auto_settings.get('filter_redirect_provider') or "").strip()
+        provider_id = selected_provider or str(model_config.get('provider') or "").strip()
+        model_provider = str(model_config.get('provider') or "").strip()
+        if not provider_id:
+            return None, f"Не удалось определить сервис для модели redirect '{model_name}'."
+        if model_provider and provider_id != model_provider:
+            return None, (
+                f"Модель redirect '{model_name}' относится к сервису '{model_provider}', "
+                f"но в настройке выбран '{provider_id}'."
+            )
+
+        active_keys = self._get_active_keys_for_provider(provider_id)
+        if not active_keys:
+            provider_label = api_config.provider_display_map().get(provider_id, provider_id)
+            return None, (
+                f"Для redirect отфильтрованных глав нет активной сессии/ключей у сервиса "
+                f"'{provider_label}'."
+            )
+
+        return {
+            'provider': provider_id,
+            'api_keys': active_keys,
+            'model': model_name,
+            'model_config': model_config,
+        }, None
+
     def _get_effective_auto_model_settings(self, auto_settings: dict | None = None):
         settings = self.model_settings_widget.get_settings().copy()
         model_name, model_config, _ = self._resolve_auto_model_override(auto_settings)
@@ -4183,6 +4274,9 @@ class InitialSetupDialog(QDialog):
             return normalized
         return sorted(normalized, key=extract_number_from_path)
 
+    def _make_auto_chapter_signature(self, chapters) -> tuple[str, ...]:
+        return tuple(self._normalize_auto_chapters(chapters, preserve_order=False))
+
     def _short_auto_name(self, chapter: str, max_length: int = 84) -> str:
         text = os.path.basename(chapter) if isinstance(chapter, str) else str(chapter)
         if len(text) <= max_length:
@@ -4353,6 +4447,9 @@ class InitialSetupDialog(QDialog):
         self._auto_last_retry_signatures = set()
         self._auto_last_untranslated_fix_signatures = set()
         self._auto_pending_network_retry_chapters = set()
+        self._auto_filter_repack_signatures = set()
+        self._auto_filter_redirect_signatures = set()
+        self._auto_restart_session_override = None
         self._auto_validator_dialog = None
         self._auto_consistency_worker = None
 
@@ -4392,6 +4489,12 @@ class InitialSetupDialog(QDialog):
             self._auto_pending_network_retry_chapters = set()
 
         if auto_settings.get('filter_repack_enabled') and self._try_auto_filter_recovery(
+            auto_settings,
+            deferred_retry_chapters=network_retry_chapters,
+        ):
+            return
+
+        if auto_settings.get('filter_redirect_enabled') and self._try_auto_filter_redirect_followup(
             auto_settings,
             deferred_retry_chapters=network_retry_chapters,
         ):
@@ -4445,6 +4548,10 @@ class InitialSetupDialog(QDialog):
         if not filtered_chapters:
             return False
 
+        filter_signature = self._make_auto_chapter_signature(filtered_chapters)
+        if auto_settings.get('filter_redirect_enabled') and self._auto_filter_repack_signatures:
+            return False
+
         self._auto_log(
             f"Content filter найден в {len(filtered_chapters)} главах: "
             f"{self._format_auto_chapter_list(filtered_chapters, limit=10)}",
@@ -4477,6 +4584,7 @@ class InitialSetupDialog(QDialog):
         if not result:
             return False
 
+        self._auto_filter_repack_signatures.add(filter_signature)
         deferred_retry_chapters.difference_update(filtered_chapters)
         if deferred_retry_chapters:
             self._auto_pending_network_retry_chapters.update(deferred_retry_chapters)
@@ -4504,13 +4612,98 @@ class InitialSetupDialog(QDialog):
                 ]),
             )
 
+        self._auto_restart_session_override = None
         if auto_settings.get('auto_restart_after_retry', True):
             self._auto_workflow_round += 1
             self._auto_followup_running = True
             self.start_btn.setEnabled(False)
             QtCore.QTimer.singleShot(250, lambda: self._start_translation(is_auto_restart=True))
         else:
+            self._auto_restart_session_override = None
             self._auto_log("Пакеты собраны, но автоперезапуск отключён. Можно запускать вручную.", force=True)
+            self._reset_auto_workflow_state()
+            self.check_ready()
+        return True
+
+    def _try_auto_filter_redirect_followup(self, auto_settings: dict, deferred_retry_chapters=None) -> bool:
+        if not (self.engine and self.engine.task_manager):
+            return False
+
+        all_tasks_state = self.engine.task_manager.get_ui_state_list()
+        filtered_chapters = set()
+        deferred_retry_chapters = set(deferred_retry_chapters or [])
+
+        for task_info, status, details in all_tasks_state:
+            payload = task_info[1]
+            chapters_in_task = self._extract_chapters_from_payload(payload)
+            is_filtered = (status == 'error' and 'CONTENT_FILTER' in details.get('errors', {}))
+            if not is_filtered:
+                continue
+            for chapter in chapters_in_task:
+                filtered_chapters.add(chapter)
+
+        if not filtered_chapters:
+            return False
+
+        filter_signature = self._make_auto_chapter_signature(filtered_chapters)
+        if auto_settings.get('filter_repack_enabled') and not self._auto_filter_repack_signatures:
+            return False
+        if self._auto_filter_redirect_signatures:
+            return False
+
+        redirect_override, redirect_warning = self._resolve_auto_filter_redirect_override(auto_settings)
+        if not redirect_override:
+            if redirect_warning:
+                self._auto_log(
+                    f"{redirect_warning} Redirect пропущен.",
+                    force=True,
+                )
+            return False
+
+        normalized_chapters = self._normalize_auto_chapters(filtered_chapters, preserve_order=False)
+        self._auto_filter_redirect_signatures.add(filter_signature)
+        self._auto_restart_session_override = redirect_override
+
+        deferred_retry_chapters.difference_update(filtered_chapters)
+        if deferred_retry_chapters:
+            self._auto_pending_network_retry_chapters.update(deferred_retry_chapters)
+            self._auto_log(
+                f"Сетевые повторы ({len(deferred_retry_chapters)} глав) отложены до завершения redirect после фильтра.",
+                force=True,
+                details_title="[AUTO] Отложенные сетевые главы",
+                details_text=self._compose_auto_details([
+                    ("Главы", self._normalize_auto_chapters(deferred_retry_chapters)),
+                ]),
+            )
+
+        self.html_files = normalized_chapters
+        self.paths_widget.update_chapters_info(len(self.html_files))
+        self._prepare_and_display_tasks(clean_rebuild=True)
+        self.task_management_widget.set_retry_filtered_button_visible(False)
+
+        redirect_provider = redirect_override.get('provider')
+        redirect_provider_label = api_config.provider_display_map().get(
+            redirect_provider,
+            redirect_provider,
+        )
+        self._auto_log(
+            "Главы с пометкой 'Фильтр' перенаправлены "
+            f"в {redirect_provider_label}: {redirect_override.get('model')}.",
+            force=True,
+            details_title="[AUTO] Redirect после filter repack",
+            details_text=self._compose_auto_details([
+                ("Главы", normalized_chapters),
+            ]),
+        )
+
+        if auto_settings.get('auto_restart_after_retry', True):
+            self._auto_workflow_round += 1
+            self._auto_followup_running = True
+            self.start_btn.setEnabled(False)
+            QtCore.QTimer.singleShot(250, lambda: self._start_translation(is_auto_restart=True))
+        else:
+            self._auto_restart_session_override = None
+            self._auto_log("Redirect подготовлен, но автоперезапуск отключён. Можно запускать вручную.", force=True)
             self._reset_auto_workflow_state()
             self.check_ready()
         return True
@@ -4583,6 +4776,7 @@ class InitialSetupDialog(QDialog):
         wait_loop.exec()
 
         dialog.check_show_all.setChecked(True)
+        dialog.check_revalidate_ok.setChecked(True)
         if not dialog.path_row_map:
             self._auto_followup_running = False
             self._auto_validator_dialog = None

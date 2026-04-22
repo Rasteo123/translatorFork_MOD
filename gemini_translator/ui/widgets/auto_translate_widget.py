@@ -43,6 +43,9 @@ AUTO_TRANSLATION_DEFAULTS = {
     "filter_repack_enabled": True,
     "filter_repack_batch_size": 3,
     "filter_repack_dilute": True,
+    "filter_redirect_enabled": False,
+    "filter_redirect_provider": None,
+    "filter_redirect_model": None,
     "retry_network_failed_enabled": True,
     "retry_network_failed_delay_sec": 60,
     "ai_consistency_enabled": False,
@@ -326,17 +329,26 @@ class AutoTranslateWidget(QWidget):
         self.filter_batch_size_spin.setValue(3)
         self.filter_dilute_checkbox = QCheckBox("Разбавлять проблемные главы успешными")
         self.filter_dilute_checkbox.setChecked(True)
+        self.filter_redirect_checkbox = QCheckBox('Перенаправлять главы с пометкой "Фильтр" в другую нейросеть')
+        self.filter_redirect_provider_combo = NoScrollComboBox()
+        self.filter_redirect_model_combo = NoScrollComboBox()
 
         filter_layout.addWidget(self.filter_repack_checkbox, 0, 0, 1, 2)
         filter_layout.addWidget(QLabel("Глав в пакете:"), 1, 0)
         filter_layout.addWidget(self.filter_batch_size_spin, 1, 1)
         filter_layout.addWidget(self.filter_dilute_checkbox, 2, 0, 1, 2)
+        filter_layout.addWidget(self.filter_redirect_checkbox, 3, 0, 1, 2)
+        filter_layout.addWidget(QLabel("Сервис для redirect:"), 4, 0)
+        filter_layout.addWidget(self.filter_redirect_provider_combo, 4, 1)
+        filter_layout.addWidget(QLabel("Модель для redirect:"), 5, 0)
+        filter_layout.addWidget(self.filter_redirect_model_combo, 5, 1)
         filter_hint = QLabel(
-            "Сетевые и временные ошибки движок уже ретраит сам. Здесь настраивается верхнеуровневый сценарий для content filter."
+            "Сетевые и временные ошибки движок уже ретраит сам. Здесь настраивается верхнеуровневый сценарий для content filter. "
+            "Redirect применяется к следующему автоперезапуску после перепаковки."
         )
         filter_hint.setWordWrap(True)
         filter_hint.setStyleSheet("color: #9aa4b2;")
-        filter_layout.addWidget(filter_hint, 3, 0, 1, 2)
+        filter_layout.addWidget(filter_hint, 6, 0, 1, 2)
         content_layout.addWidget(filter_group)
 
         consistency_group = QGroupBox("5. Согласованность AI")
@@ -418,6 +430,8 @@ class AutoTranslateWidget(QWidget):
         self._refresh_glossary_presets()
         self._rebuild_model_override_combo()
         self._rebuild_thinking_override_combo()
+        self._rebuild_filter_redirect_provider_combo()
+        self._rebuild_filter_redirect_model_combo()
         self._connect_setting_signals()
         self._update_control_states()
         self._update_translation_profile_summary()
@@ -441,6 +455,9 @@ class AutoTranslateWidget(QWidget):
             self.filter_repack_checkbox,
             self.filter_batch_size_spin,
             self.filter_dilute_checkbox,
+            self.filter_redirect_checkbox,
+            self.filter_redirect_provider_combo,
+            self.filter_redirect_model_combo,
             self.retry_network_checkbox,
             self.retry_network_delay_spin,
             self.ai_consistency_checkbox,
@@ -460,6 +477,7 @@ class AutoTranslateWidget(QWidget):
                 widget.valueChanged.connect(self._on_any_setting_changed)
 
         self.model_override_combo.currentIndexChanged.connect(self._on_profile_model_changed)
+        self.filter_redirect_provider_combo.currentIndexChanged.connect(self._on_filter_redirect_provider_changed)
 
     def _refresh_glossary_presets(self):
         current_name = self._current_glossary_preset_name()
@@ -502,6 +520,8 @@ class AutoTranslateWidget(QWidget):
     ):
         selected_model = self.model_override_combo.currentData()
         selected_thinking = self.thinking_override_combo.currentData()
+        selected_filter_provider = self.filter_redirect_provider_combo.currentData()
+        selected_filter_model = self.filter_redirect_model_combo.currentData()
         if provider_id is not None:
             self._current_provider_id = provider_id
         if current_model_name:
@@ -518,6 +538,8 @@ class AutoTranslateWidget(QWidget):
 
         self._rebuild_model_override_combo(selected_model=selected_model)
         self._rebuild_thinking_override_combo(selected_override=selected_thinking)
+        self._rebuild_filter_redirect_provider_combo(selected_provider=selected_filter_provider)
+        self._rebuild_filter_redirect_model_combo(selected_model=selected_filter_model)
         self._update_translation_profile_summary()
 
     def _rebuild_model_override_combo(self, selected_model=None):
@@ -552,6 +574,74 @@ class AutoTranslateWidget(QWidget):
         target_index = self.model_override_combo.findData(selected_model)
         self.model_override_combo.setCurrentIndex(target_index if target_index != -1 else 0)
         self.model_override_combo.blockSignals(False)
+
+    def _rebuild_filter_redirect_provider_combo(self, selected_provider=None):
+        if selected_provider is None:
+            selected_provider = self.filter_redirect_provider_combo.currentData()
+
+        self.filter_redirect_provider_combo.blockSignals(True)
+        self.filter_redirect_provider_combo.clear()
+
+        current_provider_display = api_config.provider_display_map().get(
+            self._current_provider_id,
+            self._current_provider_id or "текущий сервис",
+        )
+        if current_provider_display:
+            inherit_label = f"Как текущий сервис ({current_provider_display})"
+        else:
+            inherit_label = "Как текущий сервис"
+        self.filter_redirect_provider_combo.addItem(inherit_label, userData=None)
+
+        added_providers = []
+        for provider_id, provider_config in api_config.api_providers().items():
+            if not provider_config.get("visible", True):
+                continue
+            self.filter_redirect_provider_combo.addItem(
+                provider_config.get("display_name") or provider_id,
+                userData=provider_id,
+            )
+            added_providers.append(provider_id)
+
+        if selected_provider and selected_provider not in added_providers:
+            self.filter_redirect_provider_combo.addItem(
+                f"{selected_provider} (недоступно)",
+                userData=selected_provider,
+            )
+
+        target_index = self.filter_redirect_provider_combo.findData(selected_provider)
+        self.filter_redirect_provider_combo.setCurrentIndex(target_index if target_index != -1 else 0)
+        self.filter_redirect_provider_combo.blockSignals(False)
+
+    def _effective_filter_redirect_provider_id(self):
+        return self.filter_redirect_provider_combo.currentData() or self._current_provider_id
+
+    def _rebuild_filter_redirect_model_combo(self, selected_model=None):
+        if selected_model is None:
+            selected_model = self.filter_redirect_model_combo.currentData()
+
+        provider_id = self._effective_filter_redirect_provider_id()
+        if provider_id:
+            provider_config = api_config.api_providers().get(provider_id, {})
+            model_names = list(provider_config.get("models", {}).keys())
+        else:
+            model_names = list(api_config.all_models().keys())
+
+        self.filter_redirect_model_combo.blockSignals(True)
+        self.filter_redirect_model_combo.clear()
+        self.filter_redirect_model_combo.addItem("Выберите модель…", userData=None)
+
+        for model_name in model_names:
+            self.filter_redirect_model_combo.addItem(model_name, userData=model_name)
+
+        if selected_model and self.filter_redirect_model_combo.findData(selected_model) == -1:
+            self.filter_redirect_model_combo.addItem(
+                f"{selected_model} (недоступно для выбранного сервиса)",
+                userData=selected_model,
+            )
+
+        target_index = self.filter_redirect_model_combo.findData(selected_model)
+        self.filter_redirect_model_combo.setCurrentIndex(target_index if target_index != -1 else 0)
+        self.filter_redirect_model_combo.blockSignals(False)
 
     def _get_effective_profile_model_name(self):
         return self.model_override_combo.currentData() or self._current_model_name
@@ -644,6 +734,12 @@ class AutoTranslateWidget(QWidget):
         self._rebuild_thinking_override_combo(selected_override=selected_override)
         if not self._is_loading:
             self._update_translation_profile_summary()
+
+    def _on_filter_redirect_provider_changed(self, *args):
+        selected_model = self.filter_redirect_model_combo.currentData()
+        self._rebuild_filter_redirect_model_combo(selected_model=selected_model)
+        if not self._is_loading:
+            self._on_any_setting_changed()
 
     def _format_number(self, value: int | float | None) -> str:
         if value is None:
@@ -741,6 +837,10 @@ class AutoTranslateWidget(QWidget):
         self.retry_short_ratio_spin.setEnabled(self.retry_short_checkbox.isChecked())
         self.filter_batch_size_spin.setEnabled(self.filter_repack_checkbox.isChecked())
         self.filter_dilute_checkbox.setEnabled(self.filter_repack_checkbox.isChecked())
+        self.filter_redirect_checkbox.setEnabled(self.filter_repack_checkbox.isChecked())
+        redirect_enabled = self.filter_repack_checkbox.isChecked() and self.filter_redirect_checkbox.isChecked()
+        self.filter_redirect_provider_combo.setEnabled(redirect_enabled)
+        self.filter_redirect_model_combo.setEnabled(redirect_enabled)
         self.retry_network_delay_spin.setEnabled(self.retry_network_checkbox.isChecked())
         consistency_enabled = self.ai_consistency_checkbox.isChecked()
         auto_fix_enabled = consistency_enabled and self.ai_consistency_auto_fix_checkbox.isChecked()
@@ -781,6 +881,9 @@ class AutoTranslateWidget(QWidget):
             "filter_repack_enabled": self.filter_repack_checkbox.isChecked(),
             "filter_repack_batch_size": int(self.filter_batch_size_spin.value()),
             "filter_repack_dilute": self.filter_dilute_checkbox.isChecked(),
+            "filter_redirect_enabled": self.filter_redirect_checkbox.isChecked(),
+            "filter_redirect_provider": self.filter_redirect_provider_combo.currentData(),
+            "filter_redirect_model": self.filter_redirect_model_combo.currentData(),
             "retry_network_failed_enabled": self.retry_network_checkbox.isChecked(),
             "retry_network_failed_delay_sec": int(self.retry_network_delay_spin.value()),
             "ai_consistency_enabled": self.ai_consistency_checkbox.isChecked(),
@@ -832,6 +935,9 @@ class AutoTranslateWidget(QWidget):
             self.filter_repack_checkbox.setChecked(bool(merged.get("filter_repack_enabled", True)))
             self.filter_batch_size_spin.setValue(int(merged.get("filter_repack_batch_size", 3)))
             self.filter_dilute_checkbox.setChecked(bool(merged.get("filter_repack_dilute", True)))
+            self._rebuild_filter_redirect_provider_combo(selected_provider=merged.get("filter_redirect_provider"))
+            self._rebuild_filter_redirect_model_combo(selected_model=merged.get("filter_redirect_model"))
+            self.filter_redirect_checkbox.setChecked(bool(merged.get("filter_redirect_enabled", False)))
             self.retry_network_checkbox.setChecked(bool(merged.get("retry_network_failed_enabled", True)))
             self.retry_network_delay_spin.setValue(int(merged.get("retry_network_failed_delay_sec", 60)))
             self.ai_consistency_checkbox.setChecked(bool(merged.get("ai_consistency_enabled", False)))

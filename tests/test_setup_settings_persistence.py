@@ -108,7 +108,14 @@ class _SetupSettingsHarness:
             }
         )
         self.preset_widget = _PromptWidgetStub()
-        self.auto_translate_widget = _DictWidgetStub({"enabled": True})
+        self.auto_translate_widget = _DictWidgetStub(
+            {
+                "enabled": True,
+                "filter_redirect_enabled": True,
+                "filter_redirect_provider": "deepseek",
+                "filter_redirect_model": "deepseek-chat NonThink",
+            }
+        )
         self.key_management_widget = _KeyManagementWidgetStub("workascii_chatgpt")
         self.instances_spin = _SpinBoxStub(3)
         self.glossary_widget = _DictWidgetStub([])
@@ -131,7 +138,12 @@ class _SetupSettingsHarness:
             "chunking": False,
             "chunk_on_error": True,
             "task_size_limit": 15000,
-            "auto_translation": {"enabled": True},
+            "auto_translation": {
+                "enabled": True,
+                "filter_redirect_enabled": True,
+                "filter_redirect_provider": "deepseek",
+                "filter_redirect_model": "deepseek-chat NonThink",
+            },
         }
 
     def _apply_full_ui_settings(self, settings):
@@ -210,6 +222,11 @@ class SetupSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(settings_manager.saved_ui_state["task_size_limit"], 15000)
         self.assertEqual(settings_manager.saved_full_session["task_size_limit"], 15000)
         self.assertEqual(settings_manager.saved_full_session["provider"], "workascii_chatgpt")
+        self.assertTrue(settings_manager.saved_full_session["auto_translation"]["filter_redirect_enabled"])
+        self.assertEqual(
+            settings_manager.saved_full_session["auto_translation"]["filter_redirect_provider"],
+            "deepseek",
+        )
         self.assertFalse(harness.is_settings_dirty)
         self.assertNotIn("*", harness.windowTitle())
 
