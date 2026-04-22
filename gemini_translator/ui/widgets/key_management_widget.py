@@ -24,6 +24,7 @@ class AdaptiveControlsWidget(QWidget):
         self.arrow_buttons = arrow_buttons
         self.action_buttons = action_buttons
         self.all_buttons = arrow_buttons + action_buttons
+        self._applied_style_key = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
@@ -55,6 +56,14 @@ class AdaptiveControlsWidget(QWidget):
         font_size = max(8, min(12, int(height / 35)))
         vertical_padding = max(1, int(font_size / 4))
         horizontal_padding = vertical_padding + 3
+        style_key = (font_size, vertical_padding, horizontal_padding)
+
+        # Reapplying styles on every resize event causes needless relayout
+        # churn while the user drags the window. Only update when the
+        # effective style bucket actually changes.
+        if style_key == self._applied_style_key:
+            return
+        self._applied_style_key = style_key
 
         base_style = f"""
             QPushButton {{
