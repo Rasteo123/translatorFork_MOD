@@ -255,6 +255,7 @@ class ConsistencyValidatorDialog(QDialog):
         self._init_ui()
         self._set_selected_chapters(self._all_chapter_ids(), fallback_to_all=True)
         self._setup_connections()
+        self._apply_shared_project_glossary()
         
         # Проверяем наличие предыдущей сессии
         self._check_for_previous_session()
@@ -771,6 +772,109 @@ class ConsistencyValidatorDialog(QDialog):
         except Exception as e:
             self._log(f"Ошибка обновления моделей: {e}")
 
+    def _update_glossary_button_state(self):
+        has_glossary = bool(
+            self.engine.glossary_session.characters or self.engine.glossary_session.terms
+        )
+        self.glossary_btn.setEnabled(has_glossary)
+        if has_glossary:
+            self.glossary_btn.setText(
+                f"📖 Глоссарий ({len(self.engine.glossary_session.characters)} перс., "
+                f"{len(self.engine.glossary_session.terms)} терм.)"
+            )
+        else:
+            self.glossary_btn.setText("📖 Глоссарий")
+
+    def _find_shared_glossary_widget(self):
+        parent = self.parent()
+        while parent:
+            glossary_widget = getattr(parent, 'glossary_widget', None)
+            if glossary_widget and hasattr(glossary_widget, 'get_glossary'):
+                return glossary_widget
+            parent = parent.parent()
+        return None
+
+    @staticmethod
+    def _normalize_shared_project_glossary_entries(glossary_data):
+        raw_entries = []
+        if isinstance(glossary_data, dict):
+            raw_entries = [
+                {'original': key, **value}
+                for key, value in glossary_data.items()
+                if isinstance(value, dict)
+            ]
+        elif isinstance(glossary_data, list):
+            raw_entries = glossary_data
+
+        normalized = []
+        seen = set()
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+
+            original = str(entry.get('original', '') or '').strip()
+            rus = str(
+                entry.get('rus') or entry.get('translation') or entry.get('target') or ''
+            ).strip()
+            note = str(
+                entry.get('note') or entry.get('notes') or entry.get('definition') or ''
+            ).strip()
+            if not any([original, rus, note]):
+                continue
+
+            signature = (original.casefold(), rus, note)
+            if signature in seen:
+                continue
+            seen.add(signature)
+
+            normalized.append({
+                'original': original,
+                'rus': rus,
+                'note': note,
+                'timestamp': entry.get('timestamp'),
+            })
+
+        return normalized
+
+    def _load_shared_project_glossary(self):
+        glossary_widget = self._find_shared_glossary_widget()
+        if glossary_widget and hasattr(glossary_widget, 'commit_active_editor'):
+            glossary_widget.commit_active_editor()
+        if glossary_widget and hasattr(glossary_widget, 'get_glossary'):
+            return self._normalize_shared_project_glossary_entries(
+                glossary_widget.get_glossary()
+            )
+
+        project_folder = None
+        if self.project_manager and getattr(self.project_manager, 'project_folder', None):
+            project_folder = self.project_manager.project_folder
+        else:
+            parent = self.parent()
+            while parent and not project_folder:
+                project_folder = getattr(parent, 'output_folder', None)
+                parent = parent.parent()
+
+        if not project_folder:
+            return []
+
+        project_glossary_path = Path(project_folder) / "project_glossary.json"
+        if not project_glossary_path.exists():
+            return []
+
+        try:
+            with open(project_glossary_path, 'r', encoding='utf-8') as f:
+                return self._normalize_shared_project_glossary_entries(json.load(f))
+        except Exception as e:
+            logger.error("Failed to load shared project glossary: %s", e, exc_info=True)
+            self._log(f"⚠️ Не удалось загрузить project_glossary.json: {e}")
+            return []
+
+    def _apply_shared_project_glossary(self):
+        glossary_entries = self._load_shared_project_glossary()
+        if glossary_entries:
+            self.engine.import_shared_glossary_entries(glossary_entries)
+            self._update_glossary_button_state()
+
     def _chapter_id(self, chapter: dict) -> str:
         """Возвращает стабильный идентификатор главы для выбора и восстановления."""
         if not isinstance(chapter, dict):
@@ -1021,11 +1125,7 @@ class ConsistencyValidatorDialog(QDialog):
 
         # Обновляем статистику
         self.stats_label.setText(f"Проблем: {self.problems_table.rowCount()}")
-        
-        # Разблокируем кнопку глоссария, если есть данные
-        if self.engine.glossary_session.characters or self.engine.glossary_session.terms:
-            self.glossary_btn.setEnabled(True)
-            self.glossary_btn.setText(f"📖 Глоссарий ({len(self.engine.glossary_session.characters)} перс., {len(self.engine.glossary_session.terms)} терм.)")
+        self._update_glossary_button_state()
             
         # Автосохранение сессии "на лету"
         self._save_session()
@@ -1232,7 +1332,7 @@ class ConsistencyValidatorDialog(QDialog):
         self.stop_btn.setEnabled(False)
         self.select_chapters_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.glossary_btn.setEnabled(True)
+        self._update_glossary_button_state()
         self._update_batch_fix_button_state()
         
         self._log(f"✅ Анализ завершён. Найдено проблем: {len(all_problems)}")
@@ -1952,9 +2052,20 @@ class ConsistencyValidatorDialog(QDialog):
 
             # 1. Восстанавливаем глоссарий
             glossary_data = data.get('glossary', {})
-            self.engine.glossary_session.characters = glossary_data.get('characters', [])
-            self.engine.glossary_session.terms = glossary_data.get('terms', [])
-            self.engine.glossary_session.processed_chapters = data.get('processed_chapters', [])
+            self.engine.glossary_session.clear()
+            self._apply_shared_project_glossary()
+            self.engine.glossary_session.update_from_response(
+                {
+                    'characters': glossary_data.get('characters', []),
+                    'terms': glossary_data.get('terms', []),
+                    'plots': glossary_data.get('plots', []),
+                },
+                {
+                    'processed_chapters': data.get('processed_chapters', []),
+                    'important_events': glossary_data.get('important_events', []),
+                    'next_chunk_focus': glossary_data.get('next_chunk_focus', []),
+                },
+            )
             
             # 2. Восстанавливаем проблемы
             problems = data.get('problems', [])
@@ -1973,9 +2084,7 @@ class ConsistencyValidatorDialog(QDialog):
                 self.on_chunk_done({'problems': problems})
             
             # 3. Обновляем UI
-            if self.engine.glossary_session.characters or self.engine.glossary_session.terms:
-                self.glossary_btn.setEnabled(True)
-                self.glossary_btn.setText(f"📖 Глоссарий ({len(self.engine.glossary_session.characters)} перс., {len(self.engine.glossary_session.terms)} терм.)")
+            self._update_glossary_button_state()
             
             self._log("♻️ Сессия успешно восстановлена.")
             

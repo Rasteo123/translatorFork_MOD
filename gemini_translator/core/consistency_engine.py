@@ -428,6 +428,43 @@ class ConsistencyEngine(QObject):
         logger.info("[Consistency] %s", text)
         self.log_message.emit(text)
 
+    def import_shared_glossary_entries(self, glossary_entries: Any) -> None:
+        raw_entries: list[Any] = []
+        if isinstance(glossary_entries, dict):
+            raw_entries = list(glossary_entries.values())
+        elif isinstance(glossary_entries, (list, tuple, set)):
+            raw_entries = list(glossary_entries)
+
+        shared_terms: list[Dict[str, Any]] = []
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+
+            original = str(
+                entry.get("original") or entry.get("term") or entry.get("name") or ""
+            ).strip()
+            if not original:
+                continue
+
+            rus = str(
+                entry.get("rus") or entry.get("translation") or entry.get("target") or ""
+            ).strip()
+            note = str(
+                entry.get("note") or entry.get("notes") or entry.get("definition") or ""
+            ).strip()
+
+            term_payload: Dict[str, Any] = {"term": original}
+            definition_parts = [part for part in (rus, note) if part]
+            if definition_parts:
+                term_payload["definition"] = " | ".join(definition_parts)
+            shared_terms.append(term_payload)
+
+        if shared_terms:
+            self.glossary_session.update_from_response(
+                {"characters": [], "terms": shared_terms, "plots": []},
+                {},
+            )
+
     @staticmethod
     def _format_chunk_label(chunk: List[Dict[str, Any]], limit: int = 3) -> str:
         chapter_names = [
