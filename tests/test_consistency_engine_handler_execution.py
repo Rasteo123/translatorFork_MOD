@@ -73,7 +73,7 @@ class ConsistencyEngineHandlerExecutionTests(unittest.TestCase):
             }
         }
 
-        with patch("gemini_translator.core.consistency_engine._load_providers_config", return_value=providers_config), \
+        with patch("gemini_translator.core.consistency_engine.api_config.api_providers", return_value=providers_config), \
              patch("gemini_translator.core.consistency_engine.get_api_handler_class", return_value=_SyncLocalLikeHandler):
             try:
                 result = engine._call_api("prompt", config, "local-key")
@@ -85,6 +85,44 @@ class ConsistencyEngineHandlerExecutionTests(unittest.TestCase):
         self.assertEqual(result, '{"ok": true}')
         self.assertEqual(handler.execute_calls, 1)
         self.assertEqual(settings.increment_calls, [("local-key", "fake-local-model")])
+
+    def test_consistency_engine_uses_runtime_local_model_inventory(self):
+        settings = _SettingsStub()
+        engine = ConsistencyEngine(settings)
+        config = {
+            "provider": "local",
+            "model": "DeepSeek R1 32B (LM Studio)",
+            "temperature": 0.3,
+        }
+        runtime_provider_info = {
+            "handler_class": "SyncLocalLikeHandler",
+            "is_async": False,
+            "base_timeout": 5,
+            "models": {
+                "DeepSeek R1 32B (LM Studio)": {
+                    "id": "deepseek-r1:32b",
+                    "base_url": "http://localhost:1234/v1/chat/completions",
+                }
+            },
+        }
+
+        with patch(
+            "gemini_translator.core.consistency_engine.api_config.ensure_dynamic_provider_models",
+            return_value=runtime_provider_info,
+        ), patch(
+            "gemini_translator.core.consistency_engine.get_api_handler_class",
+            return_value=_SyncLocalLikeHandler,
+        ):
+            try:
+                result = engine._call_api("prompt", config, "local-key")
+                cache = engine._get_current_thread_handler_cache()
+                handler = next(iter(cache.values()))["handler"]
+            finally:
+                engine.close_session_resources()
+
+        self.assertEqual(result, '{"ok": true}')
+        self.assertEqual(handler.execute_calls, 1)
+        self.assertEqual(settings.increment_calls, [("local-key", "deepseek-r1:32b")])
 
 
 if __name__ == "__main__":

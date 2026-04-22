@@ -22,7 +22,6 @@ from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption
 
 from ...core.consistency_engine import ConsistencyEngine
-from ...api.config import _load_providers_config
 from ...api import config as api_config
 from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
@@ -858,6 +857,11 @@ class ConsistencyValidatorDialog(QDialog):
         
         # Получаем все настройки из ModelSettingsWidget (Thinking, Temperature, Model, etc.)
         config = self.model_settings_widget.get_settings()
+        model_name = config.get('model')
+        if model_name:
+            model_config = api_config.all_models().get(model_name)
+            if isinstance(model_config, dict):
+                config['model_config'] = model_config.copy()
         
         # Добавляем специфичные для валидатора поля
         config.update({

@@ -10,12 +10,13 @@ import json
 import logging
 import re
 import threading
+from copy import deepcopy
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..api.factory import get_api_handler_class
-from ..api.config import _load_providers_config
+from ..api import config as api_config
 from ..utils.text import repair_json_string
 
 logger = logging.getLogger(__name__)
@@ -1078,24 +1079,58 @@ class ConsistencyEngine(QObject):
             cache.pop(cache_key, None)
         self._cleanup_handler(handler)
 
+    def _resolve_provider_and_model_config(
+        self,
+        config: Dict[str, Any],
+    ) -> tuple[str, str, Dict[str, Any], Dict[str, Any]]:
+        provider_name = str(config.get("provider") or "google").strip()
+        model_name = str(config.get("model") or "gemini-2.0-flash-exp").strip()
+
+        if provider_name == "local":
+            provider_info = api_config.ensure_dynamic_provider_models(provider_name)
+        else:
+            provider_info = api_config.api_providers().get(provider_name, {})
+
+        if not isinstance(provider_info, dict) or not provider_info:
+            raise ValueError(f"Provider {provider_name} not found in config")
+
+        explicit_model_config = config.get("model_config")
+        explicit_provider = ""
+        if isinstance(explicit_model_config, dict):
+            explicit_provider = str(explicit_model_config.get("provider") or "").strip()
+
+        if isinstance(explicit_model_config, dict) and (not explicit_provider or explicit_provider == provider_name):
+            model_config = deepcopy(explicit_model_config)
+        else:
+            model_config = deepcopy(provider_info.get("models", {}).get(model_name, {}))
+
+        if not model_config:
+            runtime_model_config = api_config.all_models().get(model_name)
+            runtime_provider = str((runtime_model_config or {}).get("provider") or "").strip()
+            if isinstance(runtime_model_config, dict) and (not runtime_provider or runtime_provider == provider_name):
+                model_config = deepcopy(runtime_model_config)
+
+        if not model_config:
+            for provider_model_name, provider_model_config in provider_info.get("models", {}).items():
+                if str(provider_model_config.get("id") or "").strip() == model_name:
+                    model_name = str(provider_model_name or model_name)
+                    model_config = deepcopy(provider_model_config)
+                    break
+
+        if not str(model_config.get("id") or "").strip():
+            model_config["id"] = model_name
+
+        return provider_name, model_name, deepcopy(provider_info), model_config
+
     def _call_api_with_cached_handler(self, prompt: str, config: Dict[str, Any], api_key: str) -> str:
         provider_name = config.get('provider', 'google')
         if provider_name == 'dry_run':
             raise ValueError("Consistency check requires a real LLM provider. Dry Run mode is not supported.")
 
-        model_name = config.get('model', 'gemini-2.0-flash-exp')
-
-        providers_config = _load_providers_config()
-        provider_info = providers_config.get(provider_name)
-        if not provider_info:
-            raise ValueError(f"Provider {provider_name} not found in config")
+        provider_name, model_name, provider_info, model_config = self._resolve_provider_and_model_config(config)
 
         handler_class_name = provider_info.get('handler_class')
         handler_class = get_api_handler_class(handler_class_name)
-
-        model_config = provider_info.get('models', {}).get(model_name, {}).copy()
-        if 'id' not in model_config:
-            model_config['id'] = model_name
 
         model_id = model_config.get('id', model_name)
         key_info = {'key': api_key, 'provider': provider_name}
