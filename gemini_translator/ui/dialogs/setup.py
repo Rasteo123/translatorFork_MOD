@@ -256,6 +256,9 @@ class InitialSetupDialog(QDialog):
         self.engine = app.engine
         self.engine_thread = app.engine_thread
         self.task_manager = app.task_manager if hasattr(app, 'task_manager') else None
+        self._translator_only_mode = os.environ.get("GT_TRANSLATOR_ONLY_MODE", "").strip() == "1"
+        self.proxy_status_label = None
+        self.proxy_button = None
         self.theme_color_buttons = {}
         self._ui_theme_colors = editable_theme_colors(
             extract_theme_colors(self.settings_manager.load_full_session_settings())
@@ -500,6 +503,18 @@ class InitialSetupDialog(QDialog):
         self._set_stop_button_mode(False)
 
         bottom_panel_layout.addWidget(self.project_actions_widget, 1)
+
+        if self._translator_only_mode:
+            self.proxy_status_label = QLabel("Прокси: выключен")
+            self.proxy_status_label.setObjectName("helperLabel")
+            self.proxy_status_label.setToolTip("Сетевые запросы идут без прокси.")
+            bottom_panel_layout.addWidget(self.proxy_status_label, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+
+            self.proxy_button = QPushButton("Прокси")
+            self.proxy_button.setObjectName("compactActionButton")
+            self.proxy_button.setMinimumHeight(36)
+            bottom_panel_layout.addWidget(self.proxy_button)
+
         bottom_panel_layout.addWidget(self.use_project_settings_btn)
 
         right_buttons_layout = QHBoxLayout()
@@ -516,6 +531,8 @@ class InitialSetupDialog(QDialog):
         content_layout.addWidget(self.status_bar)
 
         self._connect_signals()
+        if self._translator_only_mode:
+            self._activate_proxy_from_settings()
         self.check_ready()
 
     def _connect_signals(self):
@@ -562,6 +579,8 @@ class InitialSetupDialog(QDialog):
         self.stop_btn.clicked.connect(self._stop_translation)
         self.dry_run_btn.clicked.connect(self.perform_dry_run)
         self.close_btn.clicked.connect(self._return_to_main_menu_from_button)
+        if self.proxy_button is not None:
+            self.proxy_button.clicked.connect(self._open_proxy_settings)
         self.project_actions_widget.build_epub_requested.connect(self._open_epub_builder_standalone)
 
         self.model_settings_widget.settings_changed.connect(self._mark_settings_as_dirty)
@@ -1133,6 +1152,10 @@ class InitialSetupDialog(QDialog):
         if self.is_blocked_by_child_dialog and event_name != 'tasks_for_retry_ready':
             return
 
+        if event_name == 'current_proxy_status':
+            self._update_proxy_display(data)
+            return
+
         # Этот виджет теперь реагирует только на старт и финиш сессии
         if event_name == 'session_started':
             self.is_session_active = True
@@ -1166,6 +1189,46 @@ class InitialSetupDialog(QDialog):
         # Логика для geoblock остается здесь, так как она показывает модальное окно
         if self.is_session_active and event_name == 'geoblock_detected':
             self._handle_geoblock_detected()
+
+    def _open_proxy_settings(self):
+        from .proxy import ProxySettingsDialog
+
+        dialog = ProxySettingsDialog(self, self.settings_manager)
+        dialog.exec()
+
+    def _update_proxy_display(self, settings):
+        label = getattr(self, 'proxy_status_label', None)
+        if label is None:
+            return
+
+        enabled = settings.get('enabled', False)
+        proxy_type = str(settings.get('type', 'SOCKS5'))
+        host = str(settings.get('host') or 'не настроен')
+        port = str(settings.get('port') or '')
+        user = str(settings.get('user') or '')
+
+        if enabled and host != 'не настроен' and port:
+            label.setText(f"Прокси: {proxy_type}://{host}:{port}")
+            tooltip_lines = [f"Тип: {proxy_type}", f"Хост: {host}", f"Порт: {port}"]
+            if user:
+                tooltip_lines.append(f"Пользователь: {user}")
+            label.setToolTip("\n".join(tooltip_lines))
+            label.setStyleSheet("color: #4CAF50;")
+        else:
+            label.setText("Прокси: выключен")
+            label.setToolTip("Сетевые запросы идут без прокси.")
+            label.setStyleSheet("color: #9aa4b2;")
+
+    def _activate_proxy_from_settings(self):
+        if self.proxy_status_label is None:
+            return
+
+        settings = self.settings_manager.load_proxy_settings()
+        self.bus.event_posted.emit({
+            'event': 'proxy_started',
+            'source': 'InitialSetupDialog',
+            'data': settings,
+        })
 
     def reselect_chapters(self):
         """
