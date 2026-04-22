@@ -28,6 +28,10 @@ from gemini_translator.ui.widgets.preset_widget import PresetWidget
 
 # API и утилиты
 from gemini_translator.api import config as api_config
+from gemini_translator.utils.glossary_review import (
+    classify_translation_review_change,
+    normalize_translation_review_key,
+)
 from gemini_translator.utils.helpers import TokenCounter
 from gemini_translator.utils.language_tools import LanguageDetector
 from gemini_translator.utils.project_manager import TranslationProjectManager
@@ -2505,21 +2509,7 @@ class CorrectionPreviewDialog(QDialog):
         return unicodedata.normalize("NFC", str(text or ""))
 
     def _classify_translation_change(self, old_values, new_value: str):
-        new_value = str(new_value or "").strip()
-        normalized_new = self._normalized_case_key(new_value).casefold()
-        exact_difference = False
-        case_insensitive_difference = False
-
-        for old_value in old_values:
-            old_value = str(old_value or "").strip()
-            if old_value != new_value:
-                exact_difference = True
-            if self._normalized_case_key(old_value).casefold() != normalized_new:
-                case_insensitive_difference = True
-
-        case_only_change = exact_difference and not case_insensitive_difference
-        meaningful_change = case_insensitive_difference
-        return meaningful_change, case_only_change
+        return classify_translation_review_change(old_values, new_value)
 
     def _determine_final_note(self, ai_note_str, old_note_str, old_trans_str, new_trans_str):
         """
@@ -2564,12 +2554,13 @@ class CorrectionPreviewDialog(QDialog):
             old_trans_values = [data.get("old_trans", "").strip()]
             old_note_values = [data.get("old_note", "").strip()]
 
-        meaningful_change, case_only_change = self._classify_translation_change(old_trans_values, data["new_trans"])
+        meaningful_change, cosmetic_only_change = self._classify_translation_change(old_trans_values, data["new_trans"])
         note_changed = any(old_note != data["new_note"] for old_note in old_note_values)
         is_note_wiped = bool(data.get("_note_reference_old_note", "").strip() and not data["new_note"])
 
         data["has_meaningful_translation_change"] = meaningful_change
-        data["has_case_only_translation_change"] = case_only_change
+        data["has_cosmetic_only_translation_change"] = cosmetic_only_change
+        data["has_case_only_translation_change"] = cosmetic_only_change
         data["has_note_change"] = note_changed
         data["is_note_wiped"] = is_note_wiped
         data["is_hidden"] = not (meaningful_change or note_changed or is_note_wiped)
@@ -2777,8 +2768,12 @@ class CorrectionPreviewDialog(QDialog):
         select_all_btn = QPushButton("Выделить всё"); select_all_btn.clicked.connect(lambda: self._toggle_all_checkboxes(True))
         deselect_all_btn = QPushButton("Снять выделение"); deselect_all_btn.clicked.connect(lambda: self._toggle_all_checkboxes(False))
         
-        self.toggle_hidden_btn = QPushButton(f"Показать скрытые ({len(self.hidden_data)})")
+        self.toggle_hidden_btn = QPushButton(f"Показать одинаковые ({len(self.hidden_data)})")
         self.toggle_hidden_btn.clicked.connect(self._toggle_hidden_visibility)
+        self.toggle_hidden_btn.setToolTip(
+            "Показывает строки, где перевод не изменился по смыслу, "
+            "а примечание осталось прежним."
+        )
         self.toggle_hidden_btn.setVisible(bool(self.hidden_data))
 
         self.toggle_new_terms_btn = QPushButton(f"Показать новые ({len(self.new_terms_data)})")
@@ -2943,7 +2938,7 @@ class CorrectionPreviewDialog(QDialog):
         if hasattr(self, "toggle_hidden_btn"):
             self.toggle_hidden_btn.setVisible(bool(self.hidden_data))
             self.toggle_hidden_btn.setText(
-                f"{'Скрыть' if self.showing_hidden else 'Показать'} скрытые ({len(self.hidden_data)})"
+                f"{'Скрыть' if self.showing_hidden else 'Показать'} одинаковые ({len(self.hidden_data)})"
             )
         if hasattr(self, "toggle_new_terms_btn"):
             self.toggle_new_terms_btn.setVisible(bool(self.new_terms_data))
@@ -3144,6 +3139,7 @@ class CorrectionPreviewDialog(QDialog):
                     current_data[i]['user_checked'] = checkbox.isChecked()
 
     def _populate_table(self):
+        self._suppress_table_item_changes = True
         self.table.setRowCount(0)
         current_data = self._get_current_view_data()
         self.table.setRowCount(len(current_data))
@@ -3169,13 +3165,18 @@ class CorrectionPreviewDialog(QDialog):
             original_item = QTableWidgetItem(data["original"])
             new_trans_item = QTableWidgetItem(data["new_trans"])
             new_note_item = QTableWidgetItem(data["new_note"])
+            original_item.setFlags(original_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            new_note_item.setFlags(new_note_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             
             self.table.setItem(i, 1, original_item)
             self.table.setItem(i, 3, new_trans_item)
             self.table.setItem(i, 5, new_note_item)
 
-            if data.get("is_hidden") and data.get("has_case_only_translation_change"):
-                tooltip = "Строка скрыта автоматически: изменился только регистр."
+            if data.get("is_hidden") and data.get("has_cosmetic_only_translation_change"):
+                tooltip = (
+                    "Строка скрыта автоматически: изменились только регистр, "
+                    "е/ё или внешние скобки/кавычки."
+                )
                 original_item.setToolTip(tooltip)
                 new_trans_item.setToolTip(tooltip)
 
@@ -3197,24 +3198,36 @@ class CorrectionPreviewDialog(QDialog):
             if data["type"] == "resolution":
                 old_trans = "\n".join([f"• {e.get('rus', '')}" for e in data["old_entries"]])
                 old_note = "\n".join([f"• {e.get('note', '')}" for e in data["old_entries"] if e.get('note')])
-                self.table.setItem(i, 2, QTableWidgetItem(old_trans))
-                self.table.setItem(i, 4, QTableWidgetItem(old_note))
+                old_trans_item = QTableWidgetItem(old_trans)
+                old_note_item = QTableWidgetItem(old_note)
+                old_trans_item.setFlags(old_trans_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                old_note_item.setFlags(old_note_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(i, 2, old_trans_item)
+                self.table.setItem(i, 4, old_note_item)
                 if not data.get("is_hidden"):
                     if data.get("has_meaningful_translation_change"):
                         new_trans_item.setFont(bold_font)
                     if not is_note_wiped and data.get("has_note_change") and data["new_note"]:
                         new_note_item.setFont(bold_font)
             elif data["type"] == "update":
-                self.table.setItem(i, 2, QTableWidgetItem(data["old_trans"]))
-                self.table.setItem(i, 4, QTableWidgetItem(data["old_note"]))
+                old_trans_item = QTableWidgetItem(data["old_trans"])
+                old_note_item = QTableWidgetItem(data["old_note"])
+                old_trans_item.setFlags(old_trans_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                old_note_item.setFlags(old_note_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(i, 2, old_trans_item)
+                self.table.setItem(i, 4, old_note_item)
                 if not data.get("is_hidden"):
                     if data.get("has_meaningful_translation_change"):
                         new_trans_item.setFont(bold_font)
                     if data.get("has_note_change") and not is_note_wiped:
                         new_note_item.setFont(bold_font)
             elif data["type"] == "addition":
-                self.table.setItem(i, 2, QTableWidgetItem("---"))
-                self.table.setItem(i, 4, QTableWidgetItem("---"))
+                old_trans_item = QTableWidgetItem("---")
+                old_note_item = QTableWidgetItem("---")
+                old_trans_item.setFlags(old_trans_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                old_note_item.setFlags(old_note_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(i, 2, old_trans_item)
+                self.table.setItem(i, 4, old_note_item)
                 if not data.get("is_hidden"):
                     new_trans_item.setFont(bold_font)
                     new_note_item.setFont(bold_font)
@@ -3222,9 +3235,12 @@ class CorrectionPreviewDialog(QDialog):
             for col in range(1, 6):
                 item = self.table.item(i, col)
                 if not item: item = QTableWidgetItem(""); self.table.setItem(i, col, item)
+                if col != 3:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if base_color.alpha() > 0: item.setBackground(base_color)
 
         self._apply_table_font_size()
+        self._suppress_table_item_changes = False
         self._restore_selected_row()
 
 
