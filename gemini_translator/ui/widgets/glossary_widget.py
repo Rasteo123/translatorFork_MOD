@@ -192,6 +192,7 @@ class GlossaryWidget(QWidget):
             entries_to_load.append(clean_entry)
 
         self._full_glossary_data = sorted_glossary_entries(entries_to_load)
+        self.current_page = 0
         self._load_current_page()
         
         self.table.blockSignals(False)
