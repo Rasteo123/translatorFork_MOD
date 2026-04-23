@@ -212,6 +212,17 @@ class BaseApiHandler:
             return "network_error"
         return type(error).__name__.lower()
 
+    def _temperature_payload_value(self):
+        if not getattr(self.worker, "temperature_override_enabled", True):
+            return None
+        value = getattr(self.worker, "temperature", None)
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def _finalize_debug_trace(self, trace, *, started_at, status, error=None):
         if not trace:
             return

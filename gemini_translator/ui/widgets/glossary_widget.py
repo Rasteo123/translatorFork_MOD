@@ -9,7 +9,7 @@ import time
 
 from PyQt6 import QtWidgets
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QTableWidget, QTableWidgetItem,
+    QApplication, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox, QDialog, QDialogButtonBox, QGroupBox,
     QRadioButton, QFrame, QSizePolicy, QAbstractItemView, QLabel, QCheckBox
 )
@@ -23,6 +23,11 @@ from ...api import config as api_config
 from collections import defaultdict
 
 
+PROJECT_GLOSSARY_FILENAME = "project_glossary.json"
+PROJECT_GLOSSARY_AUTOSAVE_FILENAME = "project_glossary.autosave.json"
+PROJECT_GLOSSARY_STATE_FILENAME = "project_glossary_state.json"
+
+
 def sorted_glossary_entries(entries: list[dict]) -> list[dict]:
     """Стабильно сортирует записи по original, оставляя пустые строки в конце."""
     return sorted(
@@ -32,6 +37,28 @@ def sorted_glossary_entries(entries: list[dict]) -> list[dict]:
             str(entry.get("original", "") or "").strip().casefold(),
         ),
     )
+
+
+def glossary_snapshot(entries) -> list[dict]:
+    raw_list = []
+    if isinstance(entries, dict):
+        raw_list = [{"original": key, **value} for key, value in entries.items()]
+    elif isinstance(entries, list):
+        raw_list = entries
+
+    snapshot = []
+    for entry in raw_list:
+        if not isinstance(entry, dict):
+            continue
+        snapshot.append(
+            {
+                "original": str(entry.get("original", "") or ""),
+                "rus": str(entry.get("rus") or entry.get("translation") or ""),
+                "note": str(entry.get("note", "") or ""),
+                "timestamp": entry.get("timestamp"),
+            }
+        )
+    return snapshot
 
 class GlossaryWidget(QWidget):
     """
@@ -43,7 +70,9 @@ class GlossaryWidget(QWidget):
     def __init__(self, parent=None, settings_manager: SettingsManager = None):
         super().__init__(parent)
         self.settings_manager = settings_manager
-        self.current_epub_path = None 
+        self.current_epub_path = None
+        self.project_path = None
+        self._saved_glossary_snapshot = []
         # --- АТРИБУТЫ ДЛЯ ПАГИНАЦИИ ---
         self._full_glossary_data = []
         self.items_per_page = 100
@@ -54,6 +83,7 @@ class GlossaryWidget(QWidget):
 
         self._init_ui()
         self.table.itemChanged.connect(self._on_item_changed)
+        self.glossary_changed.connect(self._handle_glossary_changed)
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -127,6 +157,10 @@ class GlossaryWidget(QWidget):
         table_actions_layout.addWidget(self.cleanup_btn) # Добавляем в лейаут
         
         global_actions_layout = QHBoxLayout()
+        self.project_save_btn = QPushButton("💾 Сохранить в проект")
+        self.project_save_btn.setToolTip("Сохраняет глоссарий в project_glossary.json текущего проекта.")
+        self.project_save_btn.clicked.connect(self.save_project_glossary)
+        self.project_save_btn.setVisible(False)
         self.load_btn = QPushButton("Импорт…")
         self.load_btn.setToolTip("Загрузить глоссарий из файла (.json, .txt)")
         self.load_btn.clicked.connect(self._load_from_file)
@@ -136,6 +170,7 @@ class GlossaryWidget(QWidget):
         self.generate_btn = QPushButton("✨ Генерация AI…")
         self.generate_btn.setToolTip("Создать/дополнить глоссарий с помощью AI на основе выбранных глав")
         self.generate_btn.clicked.connect(self._open_ai_generation_dialog)
+        global_actions_layout.addWidget(self.project_save_btn)
         global_actions_layout.addWidget(self.load_btn)
         global_actions_layout.addWidget(self.manage_btn)
         global_actions_layout.addWidget(self.generate_btn)
@@ -150,6 +185,192 @@ class GlossaryWidget(QWidget):
     def get_glossary(self) -> list:
         # Теперь этот метод всегда возвращает полный список
         return self._full_glossary_data
+
+    def set_project_path(self, project_path: str | None):
+        self.project_path = os.path.normpath(project_path) if project_path else None
+        if not self.project_path:
+            self._saved_glossary_snapshot = []
+        self._update_project_save_controls()
+
+    def _project_glossary_path(self) -> str | None:
+        if not self.project_path:
+            return None
+        return os.path.join(self.project_path, PROJECT_GLOSSARY_FILENAME)
+
+    def _project_glossary_autosave_path(self) -> str | None:
+        if not self.project_path:
+            return None
+        return os.path.join(self.project_path, PROJECT_GLOSSARY_AUTOSAVE_FILENAME)
+
+    def _project_glossary_state_path(self) -> str | None:
+        if not self.project_path:
+            return None
+        return os.path.join(self.project_path, PROJECT_GLOSSARY_STATE_FILENAME)
+
+    def _snapshot_glossary_state(self, glossary_data=None) -> list[dict]:
+        if glossary_data is None:
+            glossary_data = self.get_glossary()
+        return glossary_snapshot(glossary_data)
+
+    def _has_unsaved_project_changes(self) -> bool:
+        return self._snapshot_glossary_state() != self._saved_glossary_snapshot
+
+    def mark_current_state_as_saved(self):
+        self._saved_glossary_snapshot = self._snapshot_glossary_state()
+        self._update_project_save_controls()
+
+    def _update_project_save_controls(self):
+        if not hasattr(self, "project_save_btn"):
+            return
+
+        has_project = bool(self.project_path)
+        is_dirty = has_project and self._has_unsaved_project_changes()
+        self.project_save_btn.setVisible(has_project)
+        self.project_save_btn.setEnabled(has_project and bool(self.get_glossary() or is_dirty))
+        self.project_save_btn.setText("💾 Сохранить в проект*" if is_dirty else "💾 Сохранить в проект")
+
+    def _write_glossary_json(self, file_path: str, glossary_data) -> None:
+        with open(file_path, "w", encoding="utf-8") as handle:
+            json.dump(glossary_data, handle, ensure_ascii=False, indent=2, sort_keys=True)
+
+    def _load_glossary_json(self, file_path: str, missing_value=None):
+        if not file_path or not os.path.exists(file_path):
+            return missing_value
+        with open(file_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def _find_setup_dialog(self):
+        parent_dialog = self.parent()
+        while parent_dialog and parent_dialog.__class__.__name__ != "InitialSetupDialog":
+            parent_dialog = parent_dialog.parent()
+        return parent_dialog
+
+    def _sync_saved_state_to_parent(self, glossary_data):
+        parent_dialog = self._find_setup_dialog()
+        if parent_dialog and hasattr(parent_dialog, "mark_project_glossary_as_saved"):
+            parent_dialog.mark_project_glossary_as_saved(glossary_data)
+
+    def _save_project_autosave(self):
+        autosave_path = self._project_glossary_autosave_path()
+        if not autosave_path:
+            return
+        try:
+            self._write_glossary_json(
+                autosave_path,
+                [entry.copy() for entry in self.get_glossary()],
+            )
+        except Exception:
+            # Автокопия не должна ломать редактирование.
+            pass
+
+    def load_project_glossary(self) -> tuple[list[dict], bool]:
+        project_data = []
+        restored_from_autosave = False
+
+        project_path = self._project_glossary_path()
+        autosave_path = self._project_glossary_autosave_path()
+
+        if project_path and os.path.exists(project_path):
+            project_data = self._load_glossary_json(project_path, missing_value=[]) or []
+
+        autosave_data = self._load_glossary_json(autosave_path, missing_value=None)
+        glossary_to_display = project_data
+
+        if autosave_data is not None and glossary_snapshot(autosave_data) != glossary_snapshot(project_data):
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Восстановление глоссария")
+            msg_box.setIcon(QMessageBox.Icon.Question)
+            msg_box.setText("Найдена автокопия глоссария с несохранёнными изменениями.")
+            msg_box.setInformativeText("Восстановить её и продолжить работу с последними правками?")
+            restore_btn = msg_box.addButton("Восстановить", QMessageBox.ButtonRole.AcceptRole)
+            msg_box.addButton("Пропустить", QMessageBox.ButtonRole.RejectRole)
+            msg_box.setDefaultButton(restore_btn)
+            msg_box.exec()
+            if msg_box.clickedButton() == restore_btn:
+                glossary_to_display = autosave_data
+                restored_from_autosave = True
+
+        self.set_glossary(glossary_to_display, emit_signal=False)
+        if not restored_from_autosave:
+            self.mark_current_state_as_saved()
+        self.restore_project_view_state()
+        return sorted_glossary_entries(glossary_snapshot(project_data)), restored_from_autosave
+
+    def save_project_glossary(self, checked=False, notify: bool = True) -> bool:
+        del checked
+        project_glossary_path = self._project_glossary_path()
+        if not project_glossary_path:
+            return False
+
+        self.commit_active_editor()
+        QApplication.processEvents()
+        glossary_to_save = [entry.copy() for entry in self.get_glossary()]
+
+        try:
+            self._write_glossary_json(project_glossary_path, glossary_to_save)
+            self._save_project_autosave()
+            self.mark_current_state_as_saved()
+            self._sync_saved_state_to_parent(glossary_to_save)
+            if notify:
+                QMessageBox.information(
+                    self,
+                    "Успех",
+                    "Глоссарий сохранён в project_glossary.json.",
+                )
+            return True
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Ошибка",
+                f"Не удалось сохранить project_glossary.json:\n{exc}",
+            )
+            return False
+
+    def _save_project_view_state(self):
+        state_path = self._project_glossary_state_path()
+        if not state_path:
+            return
+
+        state = {}
+        try:
+            if os.path.exists(state_path):
+                with open(state_path, "r", encoding="utf-8") as handle:
+                    loaded_state = json.load(handle)
+                    if isinstance(loaded_state, dict):
+                        state = loaded_state
+        except Exception:
+            state = {}
+
+        state["current_page"] = int(self.current_page)
+        try:
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        except Exception:
+            pass
+
+    def restore_project_view_state(self):
+        state_path = self._project_glossary_state_path()
+        if not state_path or not os.path.exists(state_path):
+            return
+
+        try:
+            with open(state_path, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except Exception:
+            return
+
+        try:
+            target_page = int((state or {}).get("current_page", 0))
+        except (TypeError, ValueError):
+            target_page = 0
+
+        self.current_page = max(0, target_page)
+        self._load_current_page()
+
+    def _handle_glossary_changed(self):
+        self._update_project_save_controls()
+        self._save_project_view_state()
+        self._save_project_autosave()
 
     def _sort_full_glossary_data(self):
         self._full_glossary_data = sorted_glossary_entries(self._full_glossary_data)
@@ -194,6 +415,7 @@ class GlossaryWidget(QWidget):
         self._full_glossary_data = sorted_glossary_entries(entries_to_load)
         self.current_page = 0
         self._load_current_page()
+        self._update_project_save_controls()
         
         self.table.blockSignals(False)
         if emit_signal:
@@ -384,23 +606,31 @@ class GlossaryWidget(QWidget):
         self.last_page_button.setEnabled(is_not_last)
 
     def _go_to_first_page(self):
+        self.commit_active_editor()
         self.current_page = 0
+        self._save_project_view_state()
         # Разрываем стек вызовов. _load_current_page будет вызван из "чистого" состояния.
         QTimer.singleShot(0, self._load_current_page)
 
     def _go_to_prev_page(self):
+        self.commit_active_editor()
         self.current_page = max(0, self.current_page - 1)
+        self._save_project_view_state()
         # Разрываем стек вызовов.
         QTimer.singleShot(0, self._load_current_page)
 
     def _go_to_next_page(self):
+        self.commit_active_editor()
         self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        self._save_project_view_state()
         # Разрываем стек вызовов.
         QTimer.singleShot(0, self._load_current_page)
 
     def _go_to_last_page(self):
+        self.commit_active_editor()
         if self.total_pages > 0:
             self.current_page = self.total_pages - 1
+            self._save_project_view_state()
             # Разрываем стек вызовов.
             QTimer.singleShot(0, self._load_current_page)
         
@@ -456,8 +686,9 @@ class GlossaryWidget(QWidget):
             updated_glossary = manager_window.get_glossary()
             is_project_synced = manager_window.is_current_state_saved_to_project()
             self.set_glossary(updated_glossary, emit_signal=not is_project_synced)
-            if is_project_synced and parent_dialog and hasattr(parent_dialog, 'initial_glossary_state'):
-                parent_dialog.initial_glossary_state = [item.copy() for item in updated_glossary]
+            if is_project_synced:
+                self.mark_current_state_as_saved()
+                self._sync_saved_state_to_parent(updated_glossary)
         
         if parent_dialog:
             parent_dialog.setEnabled(True)

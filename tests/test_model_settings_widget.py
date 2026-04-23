@@ -115,6 +115,58 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         widget.set_available_models("gemini")
         self.assertTrue(widget.refresh_models_btn.isHidden())
 
+    def test_temperature_uses_model_default_until_override_enabled(self):
+        widget = self._create_widget()
+        provider_config = {
+            "local": {
+                "needs_warmup": False,
+                "models": {
+                    "Local Model": {
+                        "id": "local-model",
+                        "provider": "local",
+                        "rpm": 1000,
+                        "max_concurrent_requests": 1,
+                        "default_temperature": 0.4,
+                    }
+                },
+            }
+        }
+        all_models = {
+            "Local Model": {
+                "id": "local-model",
+                "provider": "local",
+                "rpm": 1000,
+                "max_concurrent_requests": 1,
+                "default_temperature": 0.4,
+            }
+        }
+
+        with patch.object(api_config, "ensure_dynamic_provider_models"), \
+             patch.object(api_config, "api_providers", return_value=provider_config), \
+             patch.object(api_config, "all_models", return_value=all_models):
+            widget.set_available_models("local")
+
+            self.assertFalse(widget.temperature_override_checkbox.isChecked())
+            self.assertFalse(widget.temperature_spin.isEnabled())
+            self.assertAlmostEqual(widget.temperature_spin.value(), 0.4)
+
+            settings = widget.get_settings()
+            self.assertFalse(settings["temperature_override_enabled"])
+            self.assertAlmostEqual(settings["temperature"], 0.4)
+
+            widget.temperature_override_checkbox.setChecked(True)
+            self.assertTrue(widget.temperature_spin.isEnabled())
+
+    def test_temperature_override_round_trip(self):
+        widget = self._create_widget()
+
+        widget.set_settings({"temperature": 0.8, "temperature_override_enabled": True})
+
+        self.assertTrue(widget.temperature_override_checkbox.isChecked())
+        self.assertTrue(widget.temperature_spin.isEnabled())
+        self.assertAlmostEqual(widget.get_settings()["temperature"], 0.8)
+        self.assertTrue(widget.get_settings()["temperature_override_enabled"])
+
     def test_chatgpt_auth_buttons_launch_saved_profile_browser(self):
         widget = self._create_widget()
 

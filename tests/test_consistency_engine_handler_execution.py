@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6 import QtCore
+from PyQt6 import QtWidgets
 
 from gemini_translator.api.base import BaseApiHandler
 from gemini_translator.core.consistency_engine import ConsistencyEngine
@@ -50,7 +50,7 @@ class _SyncLocalLikeHandler(BaseApiHandler):
 class ConsistencyEngineHandlerExecutionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QtCore.QCoreApplication.instance() or QtCore.QCoreApplication([])
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def test_consistency_engine_routes_sync_handlers_through_execute_api_call(self):
         settings = _SettingsStub()

@@ -478,7 +478,8 @@ class MainWindow(QDialog):
             
         if not restored_from_backup and self.associated_project_path and self.launch_mode == 'standalone':
             self._try_load_project_glossary(self.associated_project_path)
-            
+
+        self._restore_project_view_state()
         self._load_current_page()
         self._update_project_save_controls()
     
@@ -786,8 +787,8 @@ class MainWindow(QDialog):
             while parent_dialog and parent_dialog.__class__.__name__ != 'InitialSetupDialog':
                 parent_dialog = parent_dialog.parent()
 
-            if parent_dialog and hasattr(parent_dialog, 'initial_glossary_state'):
-                parent_dialog.initial_glossary_state = [item.copy() for item in copied_glossary]
+            if parent_dialog and hasattr(parent_dialog, 'mark_project_glossary_as_saved'):
+                parent_dialog.mark_project_glossary_as_saved(copied_glossary)
 
     def _save_project_glossary(self, checked=False, notify: bool = True) -> bool:
         del checked
@@ -1375,6 +1376,7 @@ class MainWindow(QDialog):
         
         self.table.blockSignals(False)
         self._update_pagination_controls()
+        self._save_project_view_state()
         self._apply_all_highlights()
         self.table.resizeColumnToContents(3)
         self.table.resizeColumnToContents(4)
@@ -1406,18 +1408,22 @@ class MainWindow(QDialog):
         self.last_page_button.setEnabled(is_not_last)
 
     def _go_to_first_page(self):
+        self.table.setCurrentItem(None)
         self.current_page = 0
         self._load_current_page()
 
     def _go_to_prev_page(self):
+        self.table.setCurrentItem(None)
         self.current_page = max(0, self.current_page - 1)
         self._load_current_page()
 
     def _go_to_next_page(self):
+        self.table.setCurrentItem(None)
         self.current_page = min(self.total_pages - 1, self.current_page + 1)
         self._load_current_page()
 
     def _go_to_last_page(self):
+        self.table.setCurrentItem(None)
         if self.total_pages > 0:
             self.current_page = self.total_pages - 1
             self._load_current_page()
@@ -3433,6 +3439,47 @@ class MainWindow(QDialog):
     # --- СИСТЕМА АВТОБЕКАПА (AUTO-BACKUP) ---
     # ---------------------------------------------------------------------------
     
+    def _glossary_state_path(self):
+        if self.launch_mode == 'child' or not self.associated_project_path:
+            return None
+        return os.path.join(self.associated_project_path, "project_glossary_state.json")
+
+    def _save_project_view_state(self):
+        state_path = self._glossary_state_path()
+        if not state_path:
+            return
+
+        state = {}
+        try:
+            if os.path.exists(state_path):
+                with open(state_path, 'r', encoding='utf-8') as f:
+                    loaded_state = json.load(f)
+                    if isinstance(loaded_state, dict):
+                        state = loaded_state
+        except Exception:
+            state = {}
+
+        state['current_page'] = int(self.current_page)
+        try:
+            with open(state_path, 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+        except Exception as e:
+            print(f"Failed to persist glossary page state: {e}")
+
+    def _restore_project_view_state(self):
+        state_path = self._glossary_state_path()
+        if not state_path or not os.path.exists(state_path):
+            return
+
+        try:
+            with open(state_path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            target_page = int((state or {}).get('current_page', 0))
+        except Exception:
+            return
+
+        self.current_page = max(0, target_page)
+
     def _save_auto_backup(self):
         """Создает SQLite-дамп текущего состояния глоссария в папке проекта."""
         if self.launch_mode == 'child' or not self.associated_project_path:

@@ -515,6 +515,7 @@ class SettingsManager(QObject):
                 'output_folder': self._cache.get('last_output_folder', ''),
                 'model': self._cache.get('last_model', api_config.default_model_name()),
                 'temperature': self._cache.get('last_temperature', 1.0),
+                'temperature_override_enabled': self._cache.get('last_temperature_override_enabled', False),
                 'rpm_limit': self._cache.get('last_concurrent_requests', 10),
                 'chunking': self._cache.get('last_chunking', True),
                 'dynamic_glossary': self._cache.get('last_dynamic_glossary', True),

@@ -62,6 +62,8 @@ class ModelSettingsWidget(QGroupBox):
         self.model_combo.currentIndexChanged.connect(self._emit_settings_changed)
         self.rpm_spin.valueChanged.connect(self._emit_settings_changed)
         self.max_concurrent_spin.valueChanged.connect(self._emit_settings_changed)
+        self.temperature_override_checkbox.stateChanged.connect(self._emit_settings_changed)
+        self.temperature_override_checkbox.stateChanged.connect(self._on_temperature_override_toggled)
         self.temperature_spin.valueChanged.connect(self._emit_settings_changed)
         self.thinking_checkbox.stateChanged.connect(self._emit_settings_changed)
         self.thinking_budget_spin.valueChanged.connect(self._emit_settings_changed)
@@ -175,13 +177,19 @@ class ModelSettingsWidget(QGroupBox):
         # --- Temperature (Row 4) ---
         left_layout.addWidget(QLabel("Температура:"), 4, 0)
         temp_layout = QHBoxLayout()
+        self.temperature_override_checkbox = QCheckBox("Override")
+        self.temperature_override_checkbox.setToolTip(
+            "Отправлять температуру в API-запросах. Если выключено, используется дефолт модели/сервера."
+        )
         self.temperature_spin = NoScrollDoubleSpinBox()
         self.temperature_spin.setMinimumWidth(70); self.temperature_spin.setDecimals(1)
         self.temperature_spin.setRange(0.0, 2.0); self.temperature_spin.setSingleStep(0.1)
         self.temperature_spin.setValue(1.0)
+        self.temperature_spin.setEnabled(False)
         self.temperature_spin.valueChanged.connect(self.update_temperature_indicator)
         self.temp_indicator = QLabel("Сбалансированный")
         self.temp_indicator.setStyleSheet("color: green; font-size: 10px;")
+        temp_layout.addWidget(self.temperature_override_checkbox)
         temp_layout.addWidget(self.temperature_spin)
         temp_layout.addWidget(self.temp_indicator)
         left_layout.addLayout(temp_layout, 4, 1, 1, 2)
@@ -679,6 +687,7 @@ class ModelSettingsWidget(QGroupBox):
             'rpm_limit': self.rpm_spin.value(),
             'rpd_limit': self.rpd_spin.value(), # <-- Добавлено поле RPD
             'temperature': self.temperature_spin.value(),
+            'temperature_override_enabled': self.temperature_override_checkbox.isChecked(),
             'use_system_instruction': self.system_instruction_checkbox.isChecked(),
             'system_instruction': system_instruction_text,
             'thinking_enabled': self.thinking_checkbox.isChecked(),
@@ -730,7 +739,13 @@ class ModelSettingsWidget(QGroupBox):
             
             
             
-            self.temperature_spin.setValue(settings.get('temperature', 1.0))
+            temperature_override_enabled = bool(settings.get('temperature_override_enabled', False))
+            self.temperature_override_checkbox.setChecked(temperature_override_enabled)
+            self.temperature_spin.setEnabled(temperature_override_enabled)
+            if temperature_override_enabled:
+                self.temperature_spin.setValue(settings.get('temperature', self._model_default_temperature()))
+            else:
+                self._apply_model_default_temperature()
             self.thinking_checkbox.setChecked(settings.get('thinking_enabled', False))
             
             # Восстанавливаем бюджет
@@ -965,6 +980,9 @@ class ModelSettingsWidget(QGroupBox):
         self.warmup_checkbox.setVisible(needs_warmup)
         if not needs_warmup:
             self.warmup_checkbox.setChecked(False)
+
+        if not self.temperature_override_checkbox.isChecked():
+            self._apply_model_default_temperature()
             
         self.rpm_recommendation_label.setProperty("recommendation", recommended_rpm)
         self.max_concurrent_recommendation_label.setProperty("recommendation", recommended_max_concurrent)
@@ -1021,6 +1039,31 @@ class ModelSettingsWidget(QGroupBox):
         else:
             spin_box.setStyleSheet(f"color: {COLOR_HIGHER};")
             label.setStyleSheet(f"color: {COLOR_HIGHER};")
+
+    def _model_default_temperature(self):
+        model_name = self.model_combo.currentText()
+        model_cfg = api_config.all_models().get(model_name, {})
+        raw_value = model_cfg.get("default_temperature") if isinstance(model_cfg, dict) else None
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(self.temperature_spin.minimum(), min(self.temperature_spin.maximum(), value))
+
+    def _apply_model_default_temperature(self):
+        default_temperature = self._model_default_temperature()
+        self.temperature_spin.blockSignals(True)
+        try:
+            self.temperature_spin.setValue(default_temperature)
+        finally:
+            self.temperature_spin.blockSignals(False)
+        self.update_temperature_indicator(default_temperature)
+
+    def _on_temperature_override_toggled(self, state):
+        enabled = (state == QtCore.Qt.CheckState.Checked.value) if isinstance(state, int) else bool(state)
+        self.temperature_spin.setEnabled(enabled)
+        if not enabled:
+            self._apply_model_default_temperature()
 
     def update_temperature_indicator(self, value):
         if value <= 0.7: text, color = "Точный (для серьезных текстов)", "blue"

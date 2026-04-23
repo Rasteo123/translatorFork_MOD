@@ -64,6 +64,22 @@ class LocalApiHandler(BaseApiHandler):
         
         return True
 
+    @staticmethod
+    def _coerce_positive_int(value):
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            if isinstance(value, str):
+                normalized = value.strip().replace(" ", "").replace("_", "").replace(",", "")
+                if not normalized.isdigit():
+                    return None
+                number = int(normalized)
+            else:
+                number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
     def call_api(self, prompt, log_prefix, allow_incomplete=False, use_stream=True, debug=False, max_output_tokens=None):
         """
         СИНХРОННАЯ реализация вызова.
@@ -80,13 +96,21 @@ class LocalApiHandler(BaseApiHandler):
         payload = {
             "model": self.worker.model_id,
             "messages": messages,
-            "temperature": self.worker.temperature,
             "stream": False # Синхронные хендлеры обычно проще писать без стриминга
         }
+        temperature = self._temperature_payload_value()
+        if temperature is not None:
+            payload["temperature"] = temperature
         
-        if allow_incomplete:
-            max_tokens = self.worker.model_config.get("max_output_tokens", 8192)
-            payload["max_tokens"] = int(max_tokens * 0.98)
+        requested_max_tokens = self._coerce_positive_int(max_output_tokens)
+        if requested_max_tokens is not None:
+            payload["max_tokens"] = requested_max_tokens
+        elif allow_incomplete:
+            configured_max_tokens = self._coerce_positive_int(
+                self.worker.model_config.get("max_output_tokens")
+            )
+            if configured_max_tokens is not None:
+                payload["max_tokens"] = max(1, int(configured_max_tokens * 0.98))
         
         # ставим таймаут из конфига
         timeout_seconds = self.timeout_seconds
@@ -128,14 +152,24 @@ class LocalApiHandler(BaseApiHandler):
 
                     is_successful_stop = (finish_reason == "stop")
                     is_acceptable_incomplete = (finish_reason == "length" and allow_incomplete)
+                    content = choice['message']['content']
 
                     if is_successful_stop or is_acceptable_incomplete:
                         if is_acceptable_incomplete:
                             # Логируем предупреждение через воркер (это потокобезопасно)
-                            log_payload = {'message': f"[WARN] Ответ локальной модели обрезан лимитом."}
+                            if "max_tokens" in payload:
+                                limit_source = f"client max_tokens={payload['max_tokens']}"
+                            else:
+                                limit_source = "server/context limit; client max_tokens was not set"
+                            log_payload = {'message': f"[WARN] Ответ локальной модели обрезан лимитом ({limit_source})."}
                             self.worker._post_event('log_message', log_payload)
+                            raise PartialGenerationError(
+                                "Ответ локальной модели обрезан лимитом",
+                                partial_text=content,
+                                reason="LENGTH",
+                            )
                         
-                        return choice['message']['content']
+                        return content
                     else:
                         raise ValidationFailedError(f"Генерация остановлена: '{finish_reason}'.")
 
@@ -160,6 +194,12 @@ class LocalApiHandler(BaseApiHandler):
             raise Exception(f"Ошибка API ({response.status_code}): {response_text[:200]}")
 
         # --- Перехват исключений requests ---
+        except (
+            ContentFilterError, NetworkError, LocationBlockedError,
+            RateLimitExceededError, ModelNotFoundError, ValidationFailedError,
+            TemporaryRateLimitError, PartialGenerationError,
+        ):
+            raise
         except requests.exceptions.Timeout:
             raise NetworkError(f"Таймаут запроса ({timeout_seconds}с). Модель думает слишком долго.", delay_seconds=30)
         except requests.exceptions.ConnectionError as e:

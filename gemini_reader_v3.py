@@ -13,6 +13,7 @@ import platform
 import subprocess
 import io
 import logging
+import hashlib
 from datetime import datetime, timedelta
 
 try:
@@ -116,6 +117,9 @@ if platform.system() == "Windows":
 MODEL_ID = "gemini-3.1-flash-live-preview" # Legacy default for Live API
 AUDIO_RATE = 24000
 AUDIO_CHANNELS = 1
+READER_LIVE_WORKER_START_STAGGER_SECONDS = 1.5
+READER_PARALLEL_WORKER_START_STAGGER_SECONDS = 1.0
+READER_FLASH_WORKER_START_STAGGER_SECONDS = 1.0
 WINDOWS_CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
 READER_SETTINGS_KEY = "gemini_reader_settings"
 READER_RPD_STATE_KEY = "gemini_reader_rpd_state"
@@ -1537,6 +1541,14 @@ def _export_pcm_to_mp3(raw_audio, output_path):
         raise RuntimeError(f"Не удалось сохранить MP3: {exc}") from exc
 
 
+def _load_mp3_as_raw_pcm(path):
+    if AudioSegment is None:
+        raise RuntimeError("Невозможно загрузить частичный MP3: не найден pydub.")
+    segment = AudioSegment.from_file(path, format="mp3")
+    segment = segment.set_frame_rate(AUDIO_RATE).set_channels(AUDIO_CHANNELS).set_sample_width(2)
+    return segment.raw_data
+
+
 def _trim_raw_pcm_boundaries(raw_audio, keep_ms=LIVE_REQUEST_TRIM_KEEP_MS):
     if not raw_audio or AudioSegment is None:
         return raw_audio
@@ -1777,7 +1789,7 @@ class ProjectDailyRequestLimiter:
 
     def _load_state(self):
         bucket = _current_policy_bucket(self.policy)
-        default_state = {"bucket": bucket, "counts": {}}
+        default_state = {"bucket": bucket, "counts": {}, "counts_by_key": {}}
         if self.settings_manager is not None:
             try:
                 stored = self.settings_manager.load_settings().get(READER_RPD_STATE_KEY, {})
@@ -1792,12 +1804,19 @@ class ProjectDailyRequestLimiter:
                 default_state.update(stored)
         if not isinstance(default_state.get("counts"), dict):
             default_state["counts"] = {}
+        if not isinstance(default_state.get("counts_by_key"), dict):
+            default_state["counts_by_key"] = {}
         return default_state
 
     def _save_state_locked(self):
         payload = {
             "bucket": self.state.get("bucket"),
             "counts": dict(self.state.get("counts", {})),
+            "counts_by_key": {
+                model_id: dict(key_counts)
+                for model_id, key_counts in self.state.get("counts_by_key", {}).items()
+                if isinstance(key_counts, dict)
+            },
         }
         if self.settings_manager is not None:
             try:
@@ -1814,27 +1833,87 @@ class ProjectDailyRequestLimiter:
     def _rollover_locked(self):
         current_bucket = _current_policy_bucket(self.policy)
         if self.state.get("bucket") != current_bucket:
-            self.state = {"bucket": current_bucket, "counts": {}}
+            self.state = {"bucket": current_bucket, "counts": {}, "counts_by_key": {}}
             self._save_state_locked()
 
-    def try_acquire(self, model_id, daily_limit, amount=1):
+    def _local_count_key(self, api_key):
+        return (api_key or "").strip() or "__project__"
+
+    def _get_local_count_locked(self, model_id, api_key=None):
+        counts_by_key = self.state.setdefault("counts_by_key", {})
+        key_counts = counts_by_key.get(model_id)
+        if isinstance(key_counts, dict):
+            if api_key:
+                return int(key_counts.get(self._local_count_key(api_key), 0) or 0)
+            return sum(int(value or 0) for value in key_counts.values())
+        return int(self.state.get("counts", {}).get(model_id, 0) or 0)
+
+    def _set_local_count_locked(self, model_id, api_key, value):
+        counts_by_key = self.state.setdefault("counts_by_key", {})
+        key_counts = counts_by_key.setdefault(model_id, {})
+        key_counts[self._local_count_key(api_key)] = max(0, int(value or 0))
+
+    def _settings_count(self, api_key, model_id):
+        if self.settings_manager is None or not api_key:
+            return None
+        key_info = self.settings_manager.get_key_info(api_key)
+        if not key_info:
+            return None
+        return int(self.settings_manager.get_request_count(key_info, model_id) or 0)
+
+    def try_acquire(self, model_id, daily_limit, amount=1, api_key=None):
         if not model_id or not daily_limit or daily_limit <= 0:
             return True, 0, daily_limit, _next_policy_reset_text(self.policy)
 
+        amount = max(1, int(amount or 1))
         with self.lock:
             self._rollover_locked()
-            counts = self.state.setdefault("counts", {})
-            current_count = int(counts.get(model_id, 0) or 0)
+            settings_count = self._settings_count(api_key, model_id)
+            current_count = (
+                settings_count
+                if settings_count is not None
+                else self._get_local_count_locked(model_id, api_key)
+            )
             if current_count + amount > daily_limit:
                 return False, current_count, daily_limit, _next_policy_reset_text(self.policy)
-            counts[model_id] = current_count + amount
-            self._save_state_locked()
-            return True, counts[model_id], daily_limit, _next_policy_reset_text(self.policy)
 
-    def get_count(self, model_id):
+            if self.settings_manager is not None and api_key:
+                updated = False
+                for _ in range(amount):
+                    updated = self.settings_manager.increment_request_count(api_key, model_id) or updated
+                if updated:
+                    return True, current_count + amount, daily_limit, _next_policy_reset_text(self.policy)
+
+            self._set_local_count_locked(model_id, api_key, current_count + amount)
+            self._save_state_locked()
+            return True, current_count + amount, daily_limit, _next_policy_reset_text(self.policy)
+
+    def release(self, model_id, amount=1, api_key=None):
+        if not model_id:
+            return False
+
+        amount = max(1, int(amount or 1))
         with self.lock:
             self._rollover_locked()
-            return int(self.state.get("counts", {}).get(model_id, 0) or 0)
+            if self.settings_manager is not None and api_key:
+                changed = False
+                for _ in range(amount):
+                    changed = self.settings_manager.decrement_request_count(api_key, model_id) or changed
+                if changed:
+                    return True
+
+            current_count = self._get_local_count_locked(model_id, api_key)
+            self._set_local_count_locked(model_id, api_key, current_count - amount)
+            self._save_state_locked()
+            return True
+
+    def get_count(self, model_id, api_key=None):
+        with self.lock:
+            self._rollover_locked()
+            settings_count = self._settings_count(api_key, model_id)
+            if settings_count is not None:
+                return settings_count
+            return self._get_local_count_locked(model_id, api_key)
 
 
 def _sentence_tokenize(text):
@@ -2070,6 +2149,7 @@ class BookManager:
         path = os.path.join(self.book_dir, f"Ch{c_idx + 1}.done")
         with open(path, 'w') as f:
             f.write("done")
+        self.clear_tts_progress(c_idx)
             
         # Удаляем маркер переозвучки, если он был, чтобы статус вернулся на "Готово"
         revoice_path = os.path.join(self.book_dir, f"Ch{c_idx + 1}.revoice")
@@ -2094,6 +2174,34 @@ class BookManager:
     def get_mp3_path(self, c):
         return os.path.join(self.book_dir, f"Ch{c + 1}.mp3")
 
+    def get_tts_progress_path(self, c_idx):
+        return os.path.join(self.book_dir, f"Ch{c_idx + 1}.tts_progress.json")
+
+    def load_tts_progress(self, c_idx):
+        path = self.get_tts_progress_path(c_idx)
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as file_obj:
+                data = json.load(file_obj)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def save_tts_progress(self, c_idx, progress):
+        path = self.get_tts_progress_path(c_idx)
+        with open(path, "w", encoding="utf-8") as file_obj:
+            json.dump(progress or {}, file_obj, ensure_ascii=False, indent=2)
+        return path
+
+    def clear_tts_progress(self, c_idx):
+        path = self.get_tts_progress_path(c_idx)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
     def get_tts_script_path(self, c_idx):
         return os.path.join(self.book_dir, f"Ch{c_idx + 1}{SCRIPT_SUFFIX}")
 
@@ -2111,6 +2219,7 @@ class BookManager:
         path = self.get_tts_script_path(c_idx)
         with open(path, "w", encoding="utf-8") as file_obj:
             file_obj.write(script_text or "")
+        self.clear_tts_progress(c_idx)
         return path
 
     def has_tts_script(self, c_idx):
@@ -2471,6 +2580,7 @@ class GeminiWorker(QThread):
     ):
         super().__init__()
         self.worker_id = worker_id
+        self.start_stagger_index = worker_id
         self.api_key = api_key
         self.bm = bm
         self.audio_queue = audio_queue
@@ -2624,6 +2734,7 @@ class GeminiWorker(QThread):
         daily_request_limiter = daily_request_limiter or self.daily_request_limiter
         model_id = model_id or self.model_id
         token_cost = self._estimate_tokens(payload_text)
+        budget_acquired = False
 
         while self._is_running:
             rpm_delay = self._rpm_required_delay(rpm_limiter)
@@ -2631,23 +2742,35 @@ class GeminiWorker(QThread):
             if rpm_delay <= 0 and tpm_delay <= 0:
                 if daily_request_limiter is not None and model_id and rpd_limit and rpd_limit > 0:
                     acquired, current_count, limit_value, reset_text = daily_request_limiter.try_acquire(
-                        model_id, rpd_limit, amount=1
+                        model_id, rpd_limit, amount=1, api_key=self.api_key
                     )
                     if not acquired:
-                        raise ProjectRateLimitReachedError(
-                            f"Дневной лимит {limit_value} запросов для модели {model_id} исчерпан. "
+                        raise RateLimitBudgetError(
+                            f"Дневной лимит {limit_value} запросов для ключа {_mask_api_key(self.api_key)} "
+                            f"и модели {model_id} исчерпан ({current_count}/{limit_value}). "
                             f"Следующий сброс около {reset_text}.",
                             model_id=model_id,
                         )
+                    budget_acquired = True
                 if rpm_limiter is not None:
                     rpm_limiter.can_proceed()
                 if tpm_limiter is not None:
                     tpm_limiter.register(token_cost)
-                return
+                return budget_acquired
 
             sleep_candidates = [delay for delay in (rpm_delay, tpm_delay) if delay and delay > 0]
             sleep_for = min(sleep_candidates) if sleep_candidates else 0.5
             await asyncio.sleep(max(0.25, min(sleep_for, 5.0)))
+
+        return False
+
+    def _release_request_budget(self, model_id=None, budget_acquired=False, amount=1):
+        if not budget_acquired or self.daily_request_limiter is None:
+            return
+        try:
+            self.daily_request_limiter.release(model_id or self.model_id, amount=amount, api_key=self.api_key)
+        except Exception:
+            pass
 
     async def _handle_rate_limit(self, exc, attempt, model_id=None, rpm_limiter=None):
         delay_seconds = RATE_LIMIT_BACKOFF_SECONDS + max(0, attempt - 1) * 20
@@ -2718,6 +2841,17 @@ class GeminiWorker(QThread):
             asyncio.run(self.main_loop())
         except Exception as e:
             self.error_signal.emit(self.worker_id, f"CRASH: {str(e)}")
+
+    async def _wait_before_worker_start(self, stagger_seconds):
+        try:
+            worker_index = max(0, int(getattr(self, "start_stagger_index", self.worker_id)))
+        except (TypeError, ValueError):
+            worker_index = 0
+        delay_seconds = max(0.0, worker_index * float(stagger_seconds or 0.0))
+        while self._is_running and delay_seconds > 0:
+            sleep_step = min(delay_seconds, 1.0)
+            await asyncio.sleep(sleep_step)
+            delay_seconds -= sleep_step
 
     async def get_edge_tts_fallback(self, text):
         """Озвучка забаненного текста через Edge TTS с умным выбором пола"""
@@ -2834,35 +2968,40 @@ class GeminiWorker(QThread):
 
     async def _request_live_audio_bytes(self, client, config, text_to_send):
         received_chunks = []
-        await self._wait_for_request_budget(
-            text_to_send,
-            request_label="Live API",
-            daily_request_limiter=self.daily_request_limiter,
-            model_id=self.model_id,
-            rpd_limit=self.request_rpd_limit,
-        )
-        async with client.aio.live.connect(model=self.model_id, config=config) as session:
-            await self._send_live_text_turn(session, text_to_send)
+        budget_acquired = False
+        try:
+            budget_acquired = await self._wait_for_request_budget(
+                text_to_send,
+                request_label="Live API",
+                daily_request_limiter=self.daily_request_limiter,
+                model_id=self.model_id,
+                rpd_limit=self.request_rpd_limit,
+            )
+            async with client.aio.live.connect(model=self.model_id, config=config) as session:
+                await self._send_live_text_turn(session, text_to_send)
 
-            receive_iterator = session.receive().__aiter__()
-            current_timeout = 30.0
+                receive_iterator = session.receive().__aiter__()
+                current_timeout = 30.0
 
-            while self._is_running:
-                try:
-                    response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
-                    current_timeout = 15.0
+                while self._is_running:
+                    try:
+                        response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                        current_timeout = 15.0
 
-                    if response.server_content:
-                        if response.server_content.model_turn:
-                            for part in response.server_content.model_turn.parts:
-                                if part.inline_data:
-                                    received_chunks.append(part.inline_data.data)
-                        if getattr(response.server_content, "turn_complete", False):
-                            break
-                except asyncio.TimeoutError:
-                    break
-                except StopAsyncIteration:
-                    break
+                        if response.server_content:
+                            if response.server_content.model_turn:
+                                for part in response.server_content.model_turn.parts:
+                                    if part.inline_data:
+                                        received_chunks.append(part.inline_data.data)
+                            if getattr(response.server_content, "turn_complete", False):
+                                break
+                    except asyncio.TimeoutError:
+                        break
+                    except StopAsyncIteration:
+                        break
+        except Exception:
+            self._release_request_budget(self.model_id, budget_acquired)
+            raise
 
         return _trim_raw_pcm_boundaries(b"".join(received_chunks))
 
@@ -2900,12 +3039,14 @@ class GeminiWorker(QThread):
         # Обновленный клиент (новый SDK обрабатывает Live API без костылей v1alpha)
         if genai is None or genai_types is None:
             raise RuntimeError("Для озвучки Gemini Reader требуется пакет google-genai.")
+        await self._wait_before_worker_start(READER_LIVE_WORKER_START_STAGGER_SECONDS)
+        if not self._is_running:
+            return
         client = genai.Client(api_key=self.api_key)
         voice_descriptor = self._live_voice_descriptor()
 
         # Используем выбранную в UI модель
         logger.info(f"Воркер {self.worker_id} запущен (Модель: {self.model_id}, Голоса: {voice_descriptor}).")
-        await asyncio.sleep(self.worker_id * 1.5)
 
         total_sent = 0
         single_sentence_mode_remaining = 0
@@ -2990,6 +3131,7 @@ class GeminiWorker(QThread):
                 continue
 
             data_received = False
+            request_budget_acquired = False
             try:
                 if request_payload.get("mode") == "author_gender":
                     audio_bytes = await self._collect_live_payload_audio(client, request_payload)
@@ -2998,7 +3140,7 @@ class GeminiWorker(QThread):
                     text_to_send = request_payload["text"]
                     config = request_payload["config"]
                     request_audio = bytearray()
-                    await self._wait_for_request_budget(
+                    request_budget_acquired = await self._wait_for_request_budget(
                         text_to_send,
                         request_label="Live API",
                         daily_request_limiter=self.daily_request_limiter,
@@ -3037,6 +3179,10 @@ class GeminiWorker(QThread):
                         with self.buffer_lock:
                             self.audio_chunks.append(trimmed_audio)
             except Exception as e:
+                self._release_request_budget(self.model_id, request_budget_acquired)
+                if isinstance(e, RateLimitBudgetError):
+                    self._abort_for_quota_key(str(e), e.model_id or self.model_id)
+                    break
                 if isinstance(e, ProjectRateLimitReachedError):
                     self._abort_for_project_quota(str(e), e.model_id or self.model_id)
                     break
@@ -3044,13 +3190,8 @@ class GeminiWorker(QThread):
                     self._abort_for_invalid_key(str(e))
                     break
                 if _is_rate_limited_error(e):
-                    await self._handle_rate_limit(
-                        e,
-                        gemini_retry_count + batch_retry_count + 1,
-                        model_id=self.model_id,
-                        rpm_limiter=self.request_rpm_limiter,
-                    )
-                    continue
+                    self._abort_for_quota_key(str(e), self.model_id)
+                    break
                 # Ошибки сети или внезапные разрывы логируем, чтобы не было "тихих" провалов
                 logger.debug(f"[W{self.worker_id}] Внутренняя ошибка сессии Gemini: {e}")
 
@@ -3256,6 +3397,9 @@ class GeminiParallelChapterWorker(GeminiWorker):
             try:
                 audio_bytes = await self._collect_live_payload_audio(client, payload)
             except Exception as exc:
+                if isinstance(exc, RateLimitBudgetError):
+                    self._abort_for_quota_key(str(exc), exc.model_id or self.model_id)
+                    return False
                 if isinstance(exc, ProjectRateLimitReachedError):
                     self._abort_for_project_quota(str(exc), exc.model_id or self.model_id)
                     return False
@@ -3263,9 +3407,8 @@ class GeminiParallelChapterWorker(GeminiWorker):
                     self._abort_for_invalid_key(str(exc))
                     return False
                 if _is_rate_limited_error(exc):
-                    await self._handle_rate_limit(exc, gemini_retry_count + 1, model_id=self.model_id, rpm_limiter=self.request_rpm_limiter)
-                    gemini_retry_count += 1
-                    continue
+                    self._abort_for_quota_key(str(exc), self.model_id)
+                    return False
                 logger.debug(f"[W{self.worker_id}] Ошибка Live API для блока главы: {exc}")
 
             if not audio_bytes and self._is_running:
@@ -3302,12 +3445,14 @@ class GeminiParallelChapterWorker(GeminiWorker):
         if genai is None or genai_types is None:
             raise RuntimeError("Для озвучки Gemini Reader требуется пакет google-genai.")
 
+        await self._wait_before_worker_start(READER_PARALLEL_WORKER_START_STAGGER_SECONDS)
+        if not self._is_running:
+            return
         client = genai.Client(api_key=self.api_key)
         voice_descriptor = self._live_voice_descriptor()
         logger.info(
             f"Параллельный Live воркер {self.worker_id} запущен (Модель: {self.model_id}, Голоса: {voice_descriptor})."
         )
-        await asyncio.sleep(self.worker_id * 1.0)
 
         while self._is_running:
             try:
@@ -3435,8 +3580,9 @@ class FlashTtsWorker(GeminiWorker):
     async def _call_text_generation(self, client, model_id, prompt_text):
         last_error = None
         for attempt in range(1, 4):
+            budget_acquired = False
             try:
-                await self._wait_for_request_budget(
+                budget_acquired = await self._wait_for_request_budget(
                     prompt_text,
                     rpm_limiter=self.preprocess_rpm_limiter,
                     tpm_limiter=self.preprocess_tpm_limiter,
@@ -3456,17 +3602,16 @@ class FlashTtsWorker(GeminiWorker):
                     return generated_text
                 raise RuntimeError("Пустой текстовый ответ модели.")
             except Exception as exc:
+                self._release_request_budget(model_id, budget_acquired)
+                if isinstance(exc, (RateLimitBudgetError, ProjectRateLimitReachedError)):
+                    raise
                 if _is_invalid_api_key_error(exc):
                     raise InvalidApiKeyError(str(exc)) from exc
                 if _is_rate_limited_error(exc):
-                    await self._handle_rate_limit(
-                        exc,
-                        attempt,
+                    raise RateLimitBudgetError(
+                        f"Ключ {_mask_api_key(self.api_key)} получил RESOURCE_EXHAUSTED/429 для модели {model_id}: {exc}",
                         model_id=model_id,
-                        rpm_limiter=self.preprocess_rpm_limiter,
-                    )
-                    last_error = exc
-                    continue
+                    ) from exc
                 last_error = exc
                 logger.warning(
                     f"[W{self.worker_id}] Ошибка text-model {model_id} (попытка {attempt}/3): {exc}"
@@ -3589,8 +3734,9 @@ class FlashTtsWorker(GeminiWorker):
 
         last_error = None
         for attempt in range(1, 4):
+            budget_acquired = False
             try:
-                await self._wait_for_request_budget(
+                budget_acquired = await self._wait_for_request_budget(
                     prompt_text,
                     rpm_limiter=self.tts_rpm_limiter,
                     tpm_limiter=self.tts_tpm_limiter,
@@ -3610,17 +3756,16 @@ class FlashTtsWorker(GeminiWorker):
                     return audio_bytes
                 raise RuntimeError("TTS модель вернула пустой audio payload.")
             except Exception as exc:
+                self._release_request_budget(self.model_id, budget_acquired)
+                if isinstance(exc, (RateLimitBudgetError, ProjectRateLimitReachedError)):
+                    raise
                 if _is_invalid_api_key_error(exc):
                     raise InvalidApiKeyError(str(exc)) from exc
                 if _is_rate_limited_error(exc):
-                    await self._handle_rate_limit(
-                        exc,
-                        attempt,
+                    raise RateLimitBudgetError(
+                        f"Ключ {_mask_api_key(self.api_key)} получил RESOURCE_EXHAUSTED/429 для модели {self.model_id}: {exc}",
                         model_id=self.model_id,
-                        rpm_limiter=self.tts_rpm_limiter,
-                    )
-                    last_error = exc
-                    continue
+                    ) from exc
                 last_error = exc
                 logger.warning(
                     f"[W{self.worker_id}] Ошибка Flash TTS (попытка {attempt}/3): {exc}"
@@ -3643,6 +3788,74 @@ class FlashTtsWorker(GeminiWorker):
             )
         raise RuntimeError(f"Не удалось синтезировать блок через Flash TTS: {last_error}")
 
+    def _flash_tts_progress_signature(self, script_text, script_chunks):
+        payload = {
+            "script": script_text or "",
+            "total_chunks": len(script_chunks or []),
+            "voice_mode": self.voice_mode,
+            "tts_model_id": self.model_id,
+            "primary_voice": self.voice,
+            "secondary_voice": self.secondary_voice,
+            "speed": self.speed,
+            "chunk_limit": self._tts_chunk_limit(),
+            "tts_directive": self.tts_directive,
+        }
+        raw_value = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
+
+    async def _load_flash_tts_resume(self, chapter_index, script_text, script_chunks):
+        if not self.record:
+            return 0
+        progress = self.bm.load_tts_progress(chapter_index)
+        if not progress:
+            return 0
+
+        signature = self._flash_tts_progress_signature(script_text, script_chunks)
+        total_chunks = len(script_chunks)
+        completed_chunks = int(progress.get("completed_chunks", 0) or 0)
+        mp3_path = self.bm.get_mp3_path(chapter_index)
+
+        if (
+            progress.get("signature") != signature
+            or int(progress.get("total_chunks", 0) or 0) != total_chunks
+            or completed_chunks <= 0
+            or not os.path.exists(mp3_path)
+        ):
+            self.bm.clear_tts_progress(chapter_index)
+            return 0
+
+        completed_chunks = min(completed_chunks, total_chunks)
+        try:
+            raw_audio = await asyncio.to_thread(_load_mp3_as_raw_pcm, mp3_path)
+        except Exception as exc:
+            logger.warning(f"[W{self.worker_id}] Не удалось загрузить частичный MP3 главы {chapter_index + 1}: {exc}")
+            self.bm.clear_tts_progress(chapter_index)
+            return 0
+        if not raw_audio:
+            self.bm.clear_tts_progress(chapter_index)
+            return 0
+
+        self.audio_chunks = [raw_audio]
+        logger.info(
+            f"[W{self.worker_id}] Возобновление главы {chapter_index + 1}: "
+            f"готово {completed_chunks}/{total_chunks} TTS-блок(ов)."
+        )
+        self.worker_progress.emit(self.worker_id, chapter_index, completed_chunks, total_chunks)
+        return completed_chunks
+
+    def _save_flash_tts_progress(self, chapter_index, script_text, script_chunks, completed_chunks):
+        if not self.record:
+            return
+        self.bm.save_tts_progress(
+            chapter_index,
+            {
+                "signature": self._flash_tts_progress_signature(script_text, script_chunks),
+                "completed_chunks": int(completed_chunks),
+                "total_chunks": len(script_chunks),
+                "updated_at": time.time(),
+            },
+        )
+
     async def _synthesize_chapter(self, tts_client, chapter_index, script_text):
         self.audio_chunks = []
         script_chunks = _split_tts_script(script_text, self.voice_mode, self._tts_chunk_limit())
@@ -3655,7 +3868,13 @@ class FlashTtsWorker(GeminiWorker):
             f"режим={self.voice_mode}, модель={self.model_id}."
         )
 
-        for chunk_index, script_chunk in enumerate(script_chunks, start=1):
+        completed_chunks = await self._load_flash_tts_resume(chapter_index, script_text, script_chunks)
+        if completed_chunks >= total_chunks:
+            self.bm.mark_chapter_done(chapter_index)
+            self.chapter_done_ui_signal.emit(chapter_index)
+            return True
+
+        for chunk_index, script_chunk in enumerate(script_chunks[completed_chunks:], start=completed_chunks + 1):
             if not self._is_running:
                 return False
             audio_bytes = await self._synthesize_chunk(tts_client, script_chunk)
@@ -3664,8 +3883,9 @@ class FlashTtsWorker(GeminiWorker):
                     self.audio_chunks.append(audio_bytes)
             if self.audio_queue and not self.fast:
                 self.audio_queue.put((audio_bytes, chapter_index, chunk_index - 1, False))
-            if self.record and chunk_index % 2 == 0:
+            if self.record:
                 await self.save_file()
+                self._save_flash_tts_progress(chapter_index, script_text, script_chunks, chunk_index)
             self.worker_progress.emit(self.worker_id, chapter_index, chunk_index, total_chunks)
 
         await self.save_file(final=True)
@@ -3680,13 +3900,15 @@ class FlashTtsWorker(GeminiWorker):
         if self.run_mode in {"auto", "prepare"} and not self.preprocess_model_id:
             raise RuntimeError("Не выбрана модель для AI-предобработки сценария.")
 
+        await self._wait_before_worker_start(READER_FLASH_WORKER_START_STAGGER_SECONDS)
+        if not self._is_running:
+            return
         text_client = genai.Client(api_key=self.api_key)
         tts_client = genai.Client(api_key=self.api_key)
         logger.info(
             f"FlashTTS воркер {self.worker_id} запущен (TTS={self.model_id}, preprocess={self.preprocess_model_id}, "
             f"voice_mode={self.voice_mode}, primary={self.voice}, secondary={self.secondary_voice})."
         )
-        await asyncio.sleep(self.worker_id * 1.0)
 
         while self._is_running:
             if self.c_idx == -1:
@@ -3965,7 +4187,7 @@ class VoiceSampleWorker(QThread):
         if self.daily_request_limiter is not None and self.rpd_limit and self.rpd_limit > 0:
             request_amount = 3 if self.engine_mode == "live" and self.voice_mode == "author_gender" else 1
             acquired, _, limit_value, reset_text = self.daily_request_limiter.try_acquire(
-                self.model_id, self.rpd_limit, amount=request_amount
+                self.model_id, self.rpd_limit, amount=request_amount, api_key=self.api_key
             )
             if not acquired:
                 raise RuntimeError(
@@ -4727,13 +4949,40 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "combo_engine"):
             return []
         if self._is_flash_tts_mode():
-            model_ids = []
             pipeline_mode = self._selected_pipeline_mode()
-            if pipeline_mode != "raw":
-                model_ids.append(self._selected_preprocess_model_id())
-            model_ids.append(self._selected_model_id())
-            return [model_id for model_id in dict.fromkeys(model_ids) if model_id]
+            if pipeline_mode == "prepare":
+                return [model_id for model_id in [self._selected_preprocess_model_id()] if model_id]
+            return [model_id for model_id in [self._selected_model_id()] if model_id]
         return [model_id for model_id in [self._selected_model_id()] if model_id]
+
+    def _reader_request_count_for_key(self, api_key, model_id):
+        if not api_key or not model_id:
+            return 0
+        if self.settings_manager is not None:
+            try:
+                key_info = self.settings_manager.get_key_info(api_key)
+                if key_info:
+                    return int(self.settings_manager.get_request_count(key_info, model_id) or 0)
+            except Exception:
+                pass
+        if self.daily_request_limiter is not None:
+            try:
+                return int(self.daily_request_limiter.get_count(model_id, api_key=api_key) or 0)
+            except Exception:
+                pass
+        return 0
+
+    def _reader_request_limit_for_model(self, model_id):
+        try:
+            return int(_lookup_model_limit(model_id, "rpd", 0) or 0)
+        except Exception:
+            return 0
+
+    def _reader_key_model_quota_exhausted(self, api_key, model_id):
+        limit_value = self._reader_request_limit_for_model(model_id)
+        if limit_value <= 0:
+            return False
+        return self._reader_request_count_for_key(api_key, model_id) >= limit_value
 
     def _load_invalid_key_states(self):
         raw_state = {}
@@ -4849,28 +5098,48 @@ class MainWindow(QMainWindow):
         invalid_states = self._prune_invalid_key_states()
         rows = []
         counts = {"ready": 0, "limited": 0, "invalid": 0, "session": 0}
+        usage_by_model = {
+            model_id: {"used": 0, "limit": 0}
+            for model_id in model_ids
+        }
 
         for api_key in [key for key in self.api_keys if (key or "").strip()]:
             key_info = self.settings_manager.get_key_info(api_key) if self.settings_manager is not None else None
             request_parts = []
             limited_parts = []
             request_total = 0
+            request_limit_total = 0
             for model_id in model_ids:
-                if not key_info:
-                    continue
-                try:
-                    request_count = self.settings_manager.get_request_count(key_info, model_id)
-                except Exception:
-                    request_count = 0
+                request_count = self._reader_request_count_for_key(api_key, model_id)
+                request_limit = self._reader_request_limit_for_model(model_id)
+                if model_id in usage_by_model:
+                    usage_by_model[model_id]["used"] += int(request_count)
+                    if request_limit > 0:
+                        usage_by_model[model_id]["limit"] += int(request_limit)
+                if request_limit > 0:
+                    request_limit_total += request_limit
                 if request_count:
                     request_total += int(request_count)
-                    request_parts.append(f"{model_id}: {request_count}")
+                if request_count or request_limit:
+                    if request_limit > 0:
+                        request_parts.append(f"{model_id}: {request_count}/{request_limit}")
+                    else:
+                        request_parts.append(f"{model_id}: {request_count}")
                 try:
-                    is_limited = self.settings_manager.is_key_limit_active(key_info, model_id)
+                    is_limited = bool(
+                        key_info
+                        and self.settings_manager is not None
+                        and self.settings_manager.is_key_limit_active(key_info, model_id)
+                    )
                 except Exception:
                     is_limited = False
+                if not is_limited and self._reader_key_model_quota_exhausted(api_key, model_id):
+                    is_limited = True
                 if is_limited:
-                    reset_text = self.settings_manager.get_key_reset_time_str(key_info, model_id)
+                    if key_info and self.settings_manager is not None:
+                        reset_text = self.settings_manager.get_key_reset_time_str(key_info, model_id)
+                    else:
+                        reset_text = _next_policy_reset_text(_gemini_reset_policy())
                     limited_parts.append(f"{model_id} ({reset_text})")
 
             invalid_state = invalid_states.get(api_key)
@@ -4908,7 +5177,10 @@ class MainWindow(QMainWindow):
             elif not limited_parts:
                 tooltip_lines.append("Статус: активен.")
 
-            short_requests = f" | req {request_total}" if request_total else ""
+            if request_limit_total > 0:
+                short_requests = f" | req {request_total}/{request_limit_total}"
+            else:
+                short_requests = f" | req {request_total}" if request_total else ""
             display_text = f"{_mask_api_key(api_key)} — {status_text}{short_requests}"
             rows.append(
                 {
@@ -4930,7 +5202,17 @@ class MainWindow(QMainWindow):
         if counts["session"]:
             summary_parts.append(f"сессия {counts['session']}")
         summary_text = f"Ключи: {total}" if not total else f"Ключи: {total} ({' / '.join(summary_parts)})"
+        usage_parts = []
+        for model_id, usage in usage_by_model.items():
+            if usage["limit"] > 0:
+                usage_parts.append(f"{model_id}: {usage['used']}/{usage['limit']}")
+            elif usage["used"]:
+                usage_parts.append(f"{model_id}: {usage['used']}")
+        if usage_parts:
+            summary_text += " | Запросы: " + "; ".join(usage_parts)
         summary_tooltip = "Актуальные модели: " + (", ".join(model_ids) if model_ids else "не выбраны")
+        if usage_parts:
+            summary_tooltip += "\nПотраченные запросы: " + "; ".join(usage_parts)
         return {
             "rows": rows,
             "counts": counts,
@@ -5026,6 +5308,8 @@ class MainWindow(QMainWindow):
                 continue
             if api_key in invalid_states:
                 continue
+            if any(self._reader_key_model_quota_exhausted(api_key, model_id) for model_id in model_ids):
+                continue
             if self.settings_manager is None or not model_ids:
                 available_keys.append(api_key)
                 continue
@@ -5037,6 +5321,7 @@ class MainWindow(QMainWindow):
 
             is_blocked = any(
                 self.settings_manager.is_key_limit_active(key_info, model_id)
+                or self._reader_key_model_quota_exhausted(api_key, model_id)
                 for model_id in model_ids
             )
             if not is_blocked:
@@ -5046,15 +5331,25 @@ class MainWindow(QMainWindow):
     def _project_rpd_exhausted_message(self, model_id):
         if not model_id:
             return ""
-        rpd_limit = _lookup_model_limit(model_id, "rpd", 0)
+        rpd_limit = self._reader_request_limit_for_model(model_id)
         if not rpd_limit or rpd_limit <= 0:
             return ""
-        current_count = self.daily_request_limiter.get_count(model_id)
-        if current_count < rpd_limit:
+        invalid_states = self._load_invalid_key_states()
+        valid_keys = [
+            api_key
+            for api_key in self.api_keys
+            if (api_key or "").strip()
+            and api_key not in self.disabled_api_keys
+            and api_key not in invalid_states
+        ]
+        for api_key in valid_keys:
+            if self._reader_request_count_for_key(api_key, model_id) < rpd_limit:
+                return ""
+        if not valid_keys:
             return ""
         reset_text = _next_policy_reset_text(_gemini_reset_policy())
         return (
-            f"Дневной лимит {rpd_limit} запросов для модели {model_id} уже исчерпан. "
+            f"Дневной лимит {rpd_limit} запросов для модели {model_id} исчерпан на всех доступных ключах. "
             f"Следующий сброс около {reset_text}."
         )
 
@@ -5526,6 +5821,7 @@ class MainWindow(QMainWindow):
                     removed_count += 1
                 except Exception as exc:
                     logger.warning(f"Не удалось удалить TTS-сценарий главы {idx + 1}: {exc}")
+            self.bm.clear_tts_progress(idx)
 
         self.refresh_chapters_list()
         if self._current_chapter_index is not None:
@@ -5704,6 +6000,7 @@ class MainWindow(QMainWindow):
             revoice_path = os.path.join(self.bm.book_dir, f"Ch{idx + 1}.revoice")
             with open(revoice_path, 'w') as f:
                 f.write("revoice")
+            self.bm.clear_tts_progress(idx)
                 
         self.refresh_chapters_list()
 
@@ -5964,6 +6261,158 @@ class MainWindow(QMainWindow):
             f"Отключён невалидный API-ключ {masked_key}; {chapter_label} возвращена в очередь."
         )
 
+    def _next_worker_id(self):
+        used_ids = {
+            int(worker_id)
+            for worker_id in self.worker_widgets.keys()
+            if isinstance(worker_id, int)
+        }
+        for worker in self.workers:
+            try:
+                used_ids.add(int(getattr(worker, "worker_id", -1)))
+            except (TypeError, ValueError):
+                pass
+        worker_id = 0
+        while worker_id in used_ids:
+            worker_id += 1
+        return worker_id
+
+    def _available_replacement_key(self, required_model_ids):
+        active_keys = {
+            getattr(worker, "api_key", "")
+            for worker in self.workers
+            if getattr(worker, "api_key", "")
+        }
+        for api_key in self._get_available_api_keys(required_model_ids):
+            if api_key not in active_keys:
+                return api_key
+        return ""
+
+    def _queue_has_pending_work(self):
+        if self._active_manager_queue is None:
+            return False
+        try:
+            return self._active_manager_queue.qsize() > 0
+        except Exception:
+            return True
+
+    def _attach_common_worker_signals(self, worker, row):
+        worker.worker_progress.connect(row.update_progress)
+        worker.finished_signal.connect(self._on_worker_finished)
+        worker.invalid_key_signal.connect(self._on_invalid_worker_key)
+        worker.quota_key_signal.connect(self._on_quota_worker_key)
+        worker.project_quota_signal.connect(self._on_project_quota_worker)
+        worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
+
+    def _start_replacement_worker(self):
+        if not self._queue_has_pending_work():
+            return ""
+
+        worker_id = self._next_worker_id()
+        worker = None
+
+        if self._active_job_kind == "tts_parallel_live":
+            if self._parallel_live_state is None:
+                return ""
+            replacement_key = self._available_replacement_key([self._selected_model_id()])
+            if not replacement_key:
+                return ""
+            row = DashboardRow(worker_id)
+            self.dash_layout.addWidget(row)
+            self.worker_widgets[worker_id] = row
+            worker = GeminiParallelChapterWorker(
+                worker_id,
+                replacement_key,
+                self.bm,
+                self._selected_model_id(),
+                self.combo_voices.currentData(),
+                self.combo_voice_secondary.currentData(),
+                self.combo_voice_tertiary.currentData(),
+                self.combo_speed.currentText(),
+                self._active_manager_queue,
+                self._parallel_live_state,
+                daily_request_limiter=self.daily_request_limiter,
+                voice_mode=self._selected_voice_mode(),
+                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
+            )
+            self._attach_common_worker_signals(worker, row)
+
+        elif self._is_flash_tts_mode() or self._active_job_kind == "prepare":
+            required_model_ids = (
+                [self._selected_preprocess_model_id()]
+                if self._active_job_kind == "prepare"
+                else self._worker_models_for_limit()
+            )
+            replacement_key = self._available_replacement_key(required_model_ids)
+            if not replacement_key:
+                return ""
+            row = DashboardRow(worker_id)
+            self.dash_layout.addWidget(row)
+            self.worker_widgets[worker_id] = row
+            run_mode = "prepare" if self._active_job_kind == "prepare" else self._selected_pipeline_mode()
+            live_playback = self.player is not None and run_mode != "prepare"
+            worker = FlashTtsWorker(
+                worker_id,
+                replacement_key,
+                self.bm,
+                self.audio_queue if live_playback else None,
+                self._selected_model_id(),
+                self.combo_voices.currentData(),
+                self.combo_voice_secondary.currentData(),
+                self.combo_speed.currentText(),
+                self.chk_mp3.isChecked() if run_mode != "prepare" else False,
+                self.chk_fast.isChecked() if run_mode != "prepare" else True,
+                self.spin_chunk.value(),
+                self._active_manager_queue,
+                self._selected_preprocess_model_id(),
+                self.combo_preprocess_profile.currentData(),
+                self._selected_voice_mode(),
+                run_mode,
+                self.preprocess_directive,
+                self.tts_directive,
+                self.daily_request_limiter,
+                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
+            )
+            self._attach_common_worker_signals(worker, row)
+            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
+            worker.script_ready_signal.connect(self.on_script_ready_ui)
+
+        else:
+            replacement_key = self._available_replacement_key([self._selected_model_id()])
+            if not replacement_key:
+                return ""
+            row = DashboardRow(worker_id)
+            self.dash_layout.addWidget(row)
+            self.worker_widgets[worker_id] = row
+            live_playback = self.player is not None
+            worker = GeminiWorker(
+                worker_id,
+                replacement_key,
+                self.bm,
+                self.audio_queue if live_playback else None,
+                self._selected_model_id(),
+                self.combo_voices.currentData(),
+                "Ты диктор.",
+                self.combo_speed.currentText(),
+                self.chk_mp3.isChecked(),
+                self.chk_fast.isChecked(),
+                self.spin_chunk.value(),
+                self._selected_live_segment_mode(),
+                self._active_manager_queue,
+                daily_request_limiter=self.daily_request_limiter,
+                voice_mode=self._selected_voice_mode(),
+                secondary_voice=self.combo_voice_secondary.currentData(),
+                tertiary_voice=self.combo_voice_tertiary.currentData(),
+                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
+            )
+            self._attach_common_worker_signals(worker, row)
+            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
+
+        worker.start_stagger_index = 0
+        self.workers.append(worker)
+        worker.start()
+        return getattr(worker, "api_key", "")
+
     def _on_quota_worker_key(self, worker_id, api_key, model_id, error_text, chapter_index):
         self.disabled_api_keys.add(api_key)
         self._run_had_invalid_keys = True
@@ -5976,9 +6425,17 @@ class MainWindow(QMainWindow):
         self._update_key_state_ui()
         chapter_label = f"глава {chapter_index + 1}" if chapter_index >= 0 else "текущая глава"
         masked_key = _mask_api_key(api_key)
-        self.statusBar().showMessage(
-            f"Ключ {masked_key} упёрся в лимит {model_id}; {chapter_label} возвращена в очередь."
-        )
+        replacement_key = self._start_replacement_worker()
+        if replacement_key:
+            self.statusBar().showMessage(
+                f"Ключ {masked_key} списан по лимиту {model_id}; "
+                f"{chapter_label} возвращена в очередь, замена: {_mask_api_key(replacement_key)}."
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Ключ {masked_key} списан по лимиту {model_id}; "
+                f"{chapter_label} возвращена в очередь, свободной замены нет."
+            )
 
     def _on_project_quota_worker(self, worker_id, model_id, error_text, chapter_index):
         chapter_label = f"глава {chapter_index + 1}" if chapter_index >= 0 else "текущая глава"

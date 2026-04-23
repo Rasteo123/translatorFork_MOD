@@ -85,6 +85,119 @@ def filter_consistency_problems_by_confidence(
     ]
 
 
+def _normalize_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        normalized: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                normalized.append(text)
+        return normalized
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _normalize_character_entry(value: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(value, str):
+        name = value.strip()
+        if not name:
+            return None
+        return {"name": name, "aliases": []}
+
+    if not isinstance(value, dict):
+        return None
+
+    name = str(value.get("name") or value.get("character") or "").strip()
+    if not name:
+        return None
+
+    normalized = {"name": name, "aliases": _normalize_text_list(value.get("aliases"))}
+    role = str(value.get("role") or "").strip()
+    gender = str(value.get("gender") or "").strip()
+    notes = str(value.get("notes") or value.get("note") or "").strip()
+    if role:
+        normalized["role"] = role
+    if gender:
+        normalized["gender"] = gender
+    if notes:
+        normalized["notes"] = notes
+    return normalized
+
+
+def _normalize_term_entry(value: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(value, str):
+        term = value.strip()
+        if not term:
+            return None
+        return {"term": term, "definition": ""}
+
+    if not isinstance(value, dict):
+        return None
+
+    term = str(value.get("term") or value.get("name") or "").strip()
+    if not term:
+        return None
+
+    normalized = {"term": term}
+    definition = str(value.get("definition") or value.get("description") or "").strip()
+    if definition:
+        normalized["definition"] = definition
+    return normalized
+
+
+def _normalize_glossary_update(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"characters": [], "terms": [], "plots": []}
+
+    characters: list[Dict[str, Any]] = []
+    raw_characters = value.get("characters", [])
+    if isinstance(raw_characters, dict):
+        raw_characters = [raw_characters]
+    elif not isinstance(raw_characters, (list, tuple, set)):
+        raw_characters = [raw_characters] if raw_characters else []
+    for entry in raw_characters:
+        normalized = _normalize_character_entry(entry)
+        if normalized:
+            characters.append(normalized)
+
+    terms: list[Dict[str, Any]] = []
+    raw_terms = value.get("terms", [])
+    if isinstance(raw_terms, dict):
+        raw_terms = [raw_terms]
+    elif not isinstance(raw_terms, (list, tuple, set)):
+        raw_terms = [raw_terms] if raw_terms else []
+    for entry in raw_terms:
+        normalized = _normalize_term_entry(entry)
+        if normalized:
+            terms.append(normalized)
+
+    return {
+        "characters": characters,
+        "terms": terms,
+        "plots": _normalize_text_list(value.get("plots")),
+    }
+
+
+def _normalize_context_summary(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "processed_chapters": [],
+            "important_events": [],
+            "next_chunk_focus": [],
+        }
+
+    return {
+        "processed_chapters": _normalize_text_list(value.get("processed_chapters")),
+        "important_events": _normalize_text_list(value.get("important_events")),
+        "next_chunk_focus": _normalize_text_list(value.get("next_chunk_focus")),
+    }
+
+
 @dataclass
 class GlossarySession:
     """
@@ -99,6 +212,9 @@ class GlossarySession:
 
     def update_from_response(self, glossary_update: Dict[str, Any], context_summary: Dict[str, Any]):
         """Обновляет глоссарий на основе ответа модели."""
+        glossary_update = _normalize_glossary_update(glossary_update)
+        context_summary = _normalize_context_summary(context_summary)
+
         if glossary_update:
             # Добавляем персонажей (с дедупликацией по имени)
             for char in glossary_update.get('characters', []):
@@ -156,6 +272,7 @@ class _ConsistencyMockWorker:
         self.provider_config = {}
         self.model_config = {}
         self.temperature = 0.3
+        self.temperature_override_enabled = True
         self.thinking_enabled = False
         self.thinking_budget = 0
         self.thinking_level = "minimal"
@@ -185,6 +302,7 @@ class _ConsistencyMockWorker:
         self.provider_config = provider_config or {}
         self.model_config = model_config or {}
         self.temperature = config.get("temperature", 0.3)
+        self.temperature_override_enabled = bool(config.get("temperature_override_enabled", True))
         self.thinking_enabled = config.get("thinking_enabled", False)
         self.thinking_budget = config.get("thinking_budget", 0)
         self.thinking_level = config.get("thinking_level", "minimal")
@@ -312,6 +430,43 @@ class ConsistencyEngine(QObject):
         logger.info("[Consistency] %s", text)
         self.log_message.emit(text)
 
+    def import_shared_glossary_entries(self, glossary_entries: Any) -> None:
+        raw_entries: list[Any] = []
+        if isinstance(glossary_entries, dict):
+            raw_entries = list(glossary_entries.values())
+        elif isinstance(glossary_entries, (list, tuple, set)):
+            raw_entries = list(glossary_entries)
+
+        shared_terms: list[Dict[str, Any]] = []
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+
+            original = str(
+                entry.get("original") or entry.get("term") or entry.get("name") or ""
+            ).strip()
+            if not original:
+                continue
+
+            rus = str(
+                entry.get("rus") or entry.get("translation") or entry.get("target") or ""
+            ).strip()
+            note = str(
+                entry.get("note") or entry.get("notes") or entry.get("definition") or ""
+            ).strip()
+
+            term_payload: Dict[str, Any] = {"term": original}
+            definition_parts = [part for part in (rus, note) if part]
+            if definition_parts:
+                term_payload["definition"] = " | ".join(definition_parts)
+            shared_terms.append(term_payload)
+
+        if shared_terms:
+            self.glossary_session.update_from_response(
+                {"characters": [], "terms": shared_terms, "plots": []},
+                {},
+            )
+
     @staticmethod
     def _format_chunk_label(chunk: List[Dict[str, Any]], limit: int = 3) -> str:
         chapter_names = [
@@ -436,8 +591,8 @@ class ConsistencyEngine(QObject):
                         })
                         
                 except Exception as e:
-                    logger.error(f"Error collecting glossary for chunk {i}: {e}")
-                    self.error_occurred.emit(f"Ошибка сбора глоссария (чанк {i}): {e}")
+                    logger.error(f"Error collecting glossary for chunk {i + 1}: {e}")
+                    self.error_occurred.emit(f"Ошибка сбора глоссария (чанк {i + 1}): {e}")
             
             logger.info("Двухпроходный режим: проход 2 - поиск проблем с глоссарием")
 
@@ -498,8 +653,8 @@ class ConsistencyEngine(QObject):
                     self.chunk_analyzed.emit(analysis_result)
 
             except Exception as e:
-                logger.error(f"Error analyzing chunk {i}: {e}")
-                self.error_occurred.emit(str(e))
+                logger.error(f"Error analyzing chunk {i + 1}: {e}")
+                self.error_occurred.emit(f"Ошибка анализа чанка {i + 1}: {e}")
 
         self.finished.emit(self.all_problems)
 
@@ -1220,6 +1375,7 @@ class ConsistencyEngine(QObject):
                 self.model_config = model_config
                 self.session_id = "consistency_check"
                 self.temperature = config.get('temperature', 0.3)
+                self.temperature_override_enabled = bool(config.get('temperature_override_enabled', True))
                 self.thinking_enabled = config.get('thinking_enabled', False)
                 self.thinking_budget = config.get('thinking_budget', 0)
                 self.thinking_level = config.get('thinking_level', 'minimal')
@@ -1349,27 +1505,31 @@ class ConsistencyEngine(QObject):
         """Валидирует структуру ответа."""
         if not isinstance(data, dict):
             return None
-        
-        # Проверяем обязательное поле problems
-        if 'problems' not in data:
-            data['problems'] = []
-        
+
+        problems_payload = data.get('problems', [])
+        if isinstance(problems_payload, dict):
+            problems_payload = [problems_payload]
+        elif not isinstance(problems_payload, list):
+            problems_payload = []
+
         # Валидируем каждую проблему
         valid_problems = []
-        for prob in data.get('problems', []):
+        for prob in problems_payload:
             if isinstance(prob, dict) and prob.get('type'):
-                # Добавляем дефолтные значения
-                prob.setdefault('id', len(valid_problems) + 1)
-                prob.setdefault('confidence', 'medium')
-                prob.setdefault('chapter', 'Unknown')
-                valid_problems.append(prob)
-        
+                normalized_prob = dict(prob)
+                normalized_prob['id'] = normalized_prob.get('id', len(valid_problems) + 1)
+                normalized_prob['confidence'] = normalize_consistency_confidence(
+                    normalized_prob.get('confidence')
+                )
+                normalized_prob['chapter'] = str(
+                    normalized_prob.get('chapter') or 'Unknown'
+                ).strip() or 'Unknown'
+                valid_problems.append(normalized_prob)
+
         data['problems'] = valid_problems
-        
-        # Добавляем пустые структуры если их нет
-        data.setdefault('glossary_update', {'characters': [], 'terms': [], 'plots': []})
-        data.setdefault('context_summary', {'processed_chapters': [], 'important_events': [], 'next_chunk_focus': []})
-        
+        data['glossary_update'] = _normalize_glossary_update(data.get('glossary_update'))
+        data['context_summary'] = _normalize_context_summary(data.get('context_summary'))
+
         return data
 
     def get_problems_for_chapter(self, chapter_name: str) -> List[Dict[str, Any]]:

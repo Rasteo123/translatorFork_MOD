@@ -87,6 +87,7 @@ class _SetupSettingsHarness:
     _collect_global_ui_settings_for_restore = InitialSetupDialog._collect_global_ui_settings_for_restore
     _restore_global_ui_settings = InitialSetupDialog._restore_global_ui_settings
     _save_global_ui_settings = InitialSetupDialog._save_global_ui_settings
+    _refresh_dirty_window_title = InitialSetupDialog._refresh_dirty_window_title
     _prepare_for_close = InitialSetupDialog._prepare_for_close
     _return_to_main_menu_from_button = InitialSetupDialog._return_to_main_menu_from_button
 
@@ -125,6 +126,7 @@ class _SetupSettingsHarness:
         self._returning_to_main_menu = False
         self.close_called = False
         self.is_settings_dirty = True
+        self.is_glossary_dirty = False
         self._ui_theme_colors = {
             "window_bg": "#12202d",
             "panel_bg": "#1b2c3b",
