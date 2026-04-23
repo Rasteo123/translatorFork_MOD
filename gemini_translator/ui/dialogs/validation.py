@@ -1532,6 +1532,9 @@ class TranslationValidatorDialog(QDialog):
         row_pos = 0
         
         from ...api import config as api_config
+        was_sorting_enabled = self.table_results.isSortingEnabled()
+        self.table_results.setSortingEnabled(False)
+        self.table_results.setUpdatesEnabled(False)
         
         for internal_path in ordered_originals:
             # Даем интерфейсу "дышать" каждые 50 файлов
@@ -1595,6 +1598,9 @@ class TranslationValidatorDialog(QDialog):
                 self.table_results.setRowHidden(row_pos, True)
             
             row_pos += 1
+
+        self.table_results.setUpdatesEnabled(True)
+        self.table_results.setSortingEnabled(was_sorting_enabled)
             
         
         # --- 2. РАЗБЛОКИРОВКА ИНТЕРФЕЙСА ---
@@ -2350,6 +2356,7 @@ class TranslationValidatorDialog(QDialog):
         """
         self.table_results.blockSignals(True)
         self.table_results.setSortingEnabled(False)
+        self.table_results.setUpdatesEnabled(False)
 
         status_map = {'problem': "Проблема", 'neutral': "Проблем нет", 'ok': "Готов", 'delete': "На удаление", 'retry': "К переотправке", 'edited': "Редакт."}
         show_all = self.check_show_all.isChecked()
@@ -2394,10 +2401,14 @@ class TranslationValidatorDialog(QDialog):
                  should_hide = (visual_status == 'neutral') and (not show_all)
                  self.table_results.setRowHidden(row, should_hide)
         
+        self.table_results.setUpdatesEnabled(True)
         self.table_results.setSortingEnabled(True)
         self.table_results.blockSignals(False)
         
-        visible_rows = len([r for r in range(self.table_results.rowCount()) if not self.table_results.isRowHidden(r)])
+        visible_rows = sum(
+            1 for row in range(self.table_results.rowCount())
+            if not self.table_results.isRowHidden(row)
+        )
         self._update_analyze_button_state()
         self.lbl_status.setText(f"Отображено записей: {visible_rows}")
       
@@ -2500,6 +2511,7 @@ class TranslationValidatorDialog(QDialog):
         self._clear_custom_filter(clear_text=False)
         
         self.table_results.setSortingEnabled(False)
+        self.table_results.setUpdatesEnabled(False)
         for row in range(self.table_results.rowCount()):
             if row not in self.results_data:
                 continue
@@ -2536,6 +2548,7 @@ class TranslationValidatorDialog(QDialog):
                     tooltip_text = "Найденные совпадения:\n" + "\n".join([f"- …{ex[:100]}…" for ex in examples])
                     item.setToolTip(tooltip_text)
 
+        self.table_results.setUpdatesEnabled(True)
         self.table_results.setSortingEnabled(True)
         self.lbl_status.setText(f"Фильтр применен. Найдено совпадений: {found_count}.")
         

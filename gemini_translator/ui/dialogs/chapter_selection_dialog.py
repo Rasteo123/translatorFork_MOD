@@ -58,11 +58,15 @@ class ChapterSelectionDialog(QDialog):
         layout.addWidget(self.chapter_list)
         
         # Заполняем список
+        search_role = Qt.ItemDataRole.UserRole + 1
+        self.chapter_list.setUpdatesEnabled(False)
         for chapter in self.all_chapters:
             item = QListWidgetItem(chapter['name'])
             item.setCheckState(Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, chapter)
+            item.setData(search_role, item.text().casefold())
             self.chapter_list.addItem(item)
+        self.chapter_list.setUpdatesEnabled(True)
         
         # Кнопки управления
         btn_layout = QHBoxLayout()
@@ -111,10 +115,14 @@ class ChapterSelectionDialog(QDialog):
     
     def _filter_chapters(self, text: str):
         """Фильтрует список по поиску."""
+        query = text.casefold()
+        search_role = Qt.ItemDataRole.UserRole + 1
+        self.chapter_list.setUpdatesEnabled(False)
         for i in range(self.chapter_list.count()):
             item = self.chapter_list.item(i)
-            visible = text.lower() in item.text().lower()
+            visible = query in (item.data(search_role) or "")
             item.setHidden(not visible)
+        self.chapter_list.setUpdatesEnabled(True)
     
     def _select_all(self):
         """Выбирает все видимые главы."""

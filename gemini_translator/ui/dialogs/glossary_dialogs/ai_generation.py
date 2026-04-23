@@ -1040,7 +1040,10 @@ class GenerationSessionDialog(QDialog):
         value = max(spin.minimum(), min(value, spin.maximum()))
         self._glossary_task_size_locked = True
         self._glossary_task_size_lock_reason = reason or "Внешнее ограничение"
-        spin.setValue(value)
+        if hasattr(self.translation_options_widget, 'set_task_size_limit'):
+            self.translation_options_widget.set_task_size_limit(value, user_defined=False)
+        else:
+            spin.setValue(value)
         self._update_new_terms_limit_from_current_size()
         self.translation_options_widget.info_label.setText(
             f"Фиксированный размер пакета: {value:,} симв.\n"
@@ -2338,6 +2341,11 @@ class GenerationSessionDialog(QDialog):
             )
             return
 
+        if getattr(self.translation_options_widget, 'is_task_size_user_defined', lambda: False)():
+            self._update_new_terms_limit_from_current_size()
+            self.translation_options_widget._update_info_text()
+            return
+
         settings = self.model_settings_widget.get_settings()
         model_name = settings.get('model')
         model_config = api_config.all_models().get(model_name, {})
@@ -2354,7 +2362,10 @@ class GenerationSessionDialog(QDialog):
         final_val = max(5000, min(recommended_chars, spin.maximum()))
         
         # Установка вызовет сигнал valueChanged, который запустит _update_new_terms_limit_from_current_size
-        spin.setValue(final_val)
+        if hasattr(self.translation_options_widget, 'set_task_size_limit'):
+            self.translation_options_widget.set_task_size_limit(final_val, user_defined=False)
+        else:
+            spin.setValue(final_val)
         self._update_new_terms_limit_from_current_size()
         budget_share_label = "~7.5%"
         info_text = "Авто-размер: {:,} симв.\n({} контекста {}, единая токен-оценка)".format(

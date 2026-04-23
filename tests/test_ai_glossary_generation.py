@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import patch
 
+from gemini_translator.api import config as api_config
 from gemini_translator.ui.dialogs.glossary_dialogs.ai_generation import GenerationSessionDialog
 
 
@@ -108,6 +110,69 @@ class _GenerationSettingsHarness:
         self.start_button_updates += 1
 
 
+class _InfoLabelStub:
+    def __init__(self):
+        self.text = None
+
+    def setText(self, value):
+        self.text = value
+
+
+class _TaskSizeSpinStub:
+    def __init__(self, value=12000, maximum=350000):
+        self._value = int(value)
+        self._maximum = int(maximum)
+
+    def value(self):
+        return self._value
+
+    def maximum(self):
+        return self._maximum
+
+    def setValue(self, value):
+        self._value = int(value)
+
+
+class _TranslationOptionsForBatchSizeStub:
+    def __init__(self, value=12000, user_defined=False):
+        self.task_size_spin = _TaskSizeSpinStub(value=value)
+        self.info_label = _InfoLabelStub()
+        self.user_defined = bool(user_defined)
+        self.info_updates = 0
+
+    def is_task_size_user_defined(self):
+        return self.user_defined
+
+    def set_task_size_limit(self, value, *, user_defined=False):
+        self.task_size_spin.setValue(value)
+        self.user_defined = bool(user_defined)
+
+    def _update_info_text(self):
+        self.info_updates += 1
+
+
+class _ModelSettingsForBatchSizeStub:
+    def get_settings(self):
+        return {"model": "test-model"}
+
+
+class _GlossaryBatchSizeHarness:
+    _calculate_optimal_batch_size = GenerationSessionDialog._calculate_optimal_batch_size
+
+    def __init__(self, user_defined=False):
+        self.model_settings_widget = _ModelSettingsForBatchSizeStub()
+        self.translation_options_widget = _TranslationOptionsForBatchSizeStub(
+            value=15404,
+            user_defined=user_defined,
+        )
+        self._glossary_task_size_locked = False
+        self._glossary_task_size_lock_reason = None
+        self.new_terms_limit_updates = 0
+
+    def _update_new_terms_limit_from_current_size(self):
+        self.new_terms_limit_updates += 1
+
+
 class AiGlossaryGenerationTests(unittest.TestCase):
     def test_initial_settings_restore_saved_instances_after_loading_active_keys(self):
         harness = _GenerationSettingsHarness()
@@ -123,6 +188,24 @@ class AiGlossaryGenerationTests(unittest.TestCase):
         self.assertEqual(harness.instances_spin.maximum(), 3)
         self.assertEqual(harness.instances_spin.value(), 3)
         self.assertEqual(harness.key_widget.get_active_keys(), ["key-1", "key-2", "key-3"])
+
+    def test_optimal_batch_size_does_not_replace_user_task_size(self):
+        harness = _GlossaryBatchSizeHarness(user_defined=True)
+
+        with patch.object(api_config, "all_models", return_value={"test-model": {"context_length": 200000}}):
+            harness._calculate_optimal_batch_size()
+
+        self.assertEqual(harness.translation_options_widget.task_size_spin.value(), 15404)
+        self.assertEqual(harness.translation_options_widget.info_updates, 1)
+
+    def test_optimal_batch_size_updates_auto_task_size(self):
+        harness = _GlossaryBatchSizeHarness(user_defined=False)
+
+        with patch.object(api_config, "all_models", return_value={"test-model": {"context_length": 200000}}):
+            harness._calculate_optimal_batch_size()
+
+        self.assertNotEqual(harness.translation_options_widget.task_size_spin.value(), 15404)
+        self.assertEqual(harness.translation_options_widget.info_updates, 0)
 
 
 if __name__ == "__main__":

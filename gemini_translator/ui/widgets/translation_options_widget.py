@@ -31,8 +31,8 @@ class TranslationOptionsWidget(QGroupBox):
         self.model_settings_widget = None
         self._analysis_signature = None
         self._recommended_task_size = 10000
-        self._task_size_user_modified = False
-        self._applying_task_size_programmatically = False
+        self._task_size_user_defined = False
+        self._changing_task_size_programmatically = False
 
         self._init_ui()
 
@@ -111,7 +111,26 @@ class TranslationOptionsWidget(QGroupBox):
             "chunking": self.chunking_checkbox.isChecked(),
             "chunk_on_error": self.chunk_on_error_checkbox.isChecked(),
             "task_size_limit": self.task_size_spin.value(),
+            "task_size_limit_user_defined": self._task_size_user_defined,
         }
+
+    def is_task_size_user_defined(self):
+        return self._task_size_user_defined
+
+    def _set_task_size_value(self, value, *, user_defined=None):
+        self._changing_task_size_programmatically = True
+        try:
+            self.task_size_spin.setValue(int(value))
+        except (TypeError, ValueError):
+            return
+        finally:
+            self._changing_task_size_programmatically = False
+
+        if user_defined is not None:
+            self._task_size_user_defined = bool(user_defined)
+
+    def set_task_size_limit(self, value, *, user_defined=False):
+        self._set_task_size_value(value, user_defined=user_defined)
 
     def set_settings(self, settings: dict):
         settings = settings or {}
@@ -128,7 +147,6 @@ class TranslationOptionsWidget(QGroupBox):
         except (TypeError, ValueError):
             target_task_size = current_task_size
 
-        self._applying_task_size_programmatically = True
         self.blockSignals(True)
         try:
             self.batch_checkbox.setChecked(settings.get("use_batching", current_batching))
@@ -136,15 +154,11 @@ class TranslationOptionsWidget(QGroupBox):
             self.chunk_on_error_checkbox.setChecked(
                 settings.get("chunk_on_error", current_chunk_on_error)
             )
-            self.task_size_spin.setValue(target_task_size)
+            if has_explicit_task_size:
+                user_defined = bool(settings.get("task_size_limit_user_defined", True))
+                self._set_task_size_value(target_task_size, user_defined=user_defined)
         finally:
             self.blockSignals(False)
-            self._applying_task_size_programmatically = False
-
-        if has_explicit_task_size:
-            # Treat restored task size as an intentional user choice.
-            self._recommended_task_size = self.task_size_spin.value()
-            self._task_size_user_modified = True
 
         self._on_mode_changed(emit_signal=False)
         self._update_info_text()
@@ -284,12 +298,8 @@ class TranslationOptionsWidget(QGroupBox):
     def update_recommendations_from_model(self, model_name: str):
         if not self.chapter_compositions:
             self._recommended_task_size = 30000
-            if not self._task_size_user_modified:
-                self._applying_task_size_programmatically = True
-                try:
-                    self.task_size_spin.setValue(30000)
-                finally:
-                    self._applying_task_size_programmatically = False
+            if not self._task_size_user_defined:
+                self._set_task_size_value(30000, user_defined=False)
             self._update_info_text()
             return
 
@@ -304,12 +314,8 @@ class TranslationOptionsWidget(QGroupBox):
 
         if (total_code + total_text) == 0:
             self._recommended_task_size = 30000
-            if not self._task_size_user_modified:
-                self._applying_task_size_programmatically = True
-                try:
-                    self.task_size_spin.setValue(30000)
-                finally:
-                    self._applying_task_size_programmatically = False
+            if not self._task_size_user_defined:
+                self._set_task_size_value(30000, user_defined=False)
             self._update_info_text()
             return
 
@@ -334,12 +340,8 @@ class TranslationOptionsWidget(QGroupBox):
         recommended_input_size = max(5000, min(recommended_input_size, 300000))
         self._recommended_task_size = recommended_input_size
 
-        if not self._task_size_user_modified:
-            self._applying_task_size_programmatically = True
-            try:
-                self.task_size_spin.setValue(recommended_input_size)
-            finally:
-                self._applying_task_size_programmatically = False
+        if not self._task_size_user_defined:
+            self._set_task_size_value(recommended_input_size, user_defined=False)
 
         self._update_info_text()
 
@@ -386,9 +388,9 @@ class TranslationOptionsWidget(QGroupBox):
                 "\u0437\u0430\u0434\u0430\u0447."
             )
 
-    def _on_task_size_changed(self, value: int):
-        if not self._applying_task_size_programmatically:
-            self._task_size_user_modified = int(value) != int(self._recommended_task_size)
+    def _on_task_size_changed(self, _value: int):
+        if not self._changing_task_size_programmatically:
+            self._task_size_user_defined = True
 
         self._update_info_text()
         self.settings_changed.emit()

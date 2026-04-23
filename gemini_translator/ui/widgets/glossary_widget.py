@@ -30,12 +30,13 @@ PROJECT_GLOSSARY_STATE_FILENAME = "project_glossary_state.json"
 
 def sorted_glossary_entries(entries: list[dict]) -> list[dict]:
     """Стабильно сортирует записи по original, оставляя пустые строки в конце."""
+    def sort_key(entry):
+        original = str(entry.get("original", "") or "").strip()
+        return not original, original.casefold()
+
     return sorted(
         entries,
-        key=lambda entry: (
-            not str(entry.get("original", "") or "").strip(),
-            str(entry.get("original", "") or "").strip().casefold(),
-        ),
+        key=sort_key,
     )
 
 
@@ -532,6 +533,7 @@ class GlossaryWidget(QWidget):
     def _load_current_page(self):
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False) 
+        self.table.setUpdatesEnabled(False)
         self.table.setRowCount(0)
         self.total_items = len(self._full_glossary_data)
         
@@ -562,6 +564,7 @@ class GlossaryWidget(QWidget):
             self.table.setItem(i, 1, item_translation)
             self.table.setItem(i, 2, item_note)
         
+        self.table.setUpdatesEnabled(True)
         self.table.blockSignals(False)
         self._update_pagination_controls()
         

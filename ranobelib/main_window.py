@@ -574,15 +574,22 @@ class RanobeUploaderApp(QMainWindow):
     def _filter_chapters(self, text: str):
         """Скрыть/показать элементы списка глав по поисковому запросу."""
         query = text.strip().lower()
-        for i in range(self.chapters_list_widget.count()):
-            item = self.chapters_list_widget.item(i)
-            if not query:
-                item.setHidden(False)
-                continue
-            chapter: ChapterData = item.data(Qt.ItemDataRole.UserRole)
-            # Сопоставление по: заголовку, номеру главы, номеру тома
-            searchable = f"{chapter.title} {format_num(chapter.number)} {chapter.volume}".lower()
-            item.setHidden(query not in searchable)
+        search_role = Qt.ItemDataRole.UserRole + 1
+        self.chapters_list_widget.setUpdatesEnabled(False)
+        try:
+            for i in range(self.chapters_list_widget.count()):
+                item = self.chapters_list_widget.item(i)
+                if not query:
+                    item.setHidden(False)
+                    continue
+                searchable = item.data(search_role)
+                if searchable is None:
+                    chapter: ChapterData = item.data(Qt.ItemDataRole.UserRole)
+                    searchable = f"{chapter.title} {format_num(chapter.number)} {chapter.volume}".lower()
+                    item.setData(search_role, searchable)
+                item.setHidden(query not in searchable)
+        finally:
+            self.chapters_list_widget.setUpdatesEnabled(True)
 
     # ── Тема ──
 
@@ -1119,6 +1126,8 @@ class RanobeUploaderApp(QMainWindow):
         self._save_resume_state(index)
 
     def _populate_chapter_list(self):
+        search_role = Qt.ItemDataRole.UserRole + 1
+        self.chapters_list_widget.setUpdatesEnabled(False)
         self.chapters_list_widget.clear()
         self.last_clicked_row = -1
         self.search_input.clear()  # Feature 3: сбросить фильтр при загрузке нового файла
@@ -1128,9 +1137,11 @@ class RanobeUploaderApp(QMainWindow):
             item = QListWidgetItem(label)
             item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, ch)
+            item.setData(search_role, f"{ch.title} {format_num(ch.number)} {ch.volume}".lower())
             self.chapters_list_widget.addItem(item)
             if ch.number != int(ch.number):
                 has_fractional = True
+        self.chapters_list_widget.setUpdatesEnabled(True)
         self.chapters_group.setEnabled(True)
 
         # Предупреждение: дробные номера глав (напр. 5.1, 16.2)
@@ -1158,22 +1169,34 @@ class RanobeUploaderApp(QMainWindow):
     # ── Управление списком глав ──
 
     def _select_all(self):
-        for i in range(self.chapters_list_widget.count()):
-            self.chapters_list_widget.item(i).setCheckState(Qt.CheckState.Checked)
+        self.chapters_list_widget.setUpdatesEnabled(False)
+        try:
+            for i in range(self.chapters_list_widget.count()):
+                self.chapters_list_widget.item(i).setCheckState(Qt.CheckState.Checked)
+        finally:
+            self.chapters_list_widget.setUpdatesEnabled(True)
 
     def _deselect_all(self):
-        for i in range(self.chapters_list_widget.count()):
-            self.chapters_list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
+        self.chapters_list_widget.setUpdatesEnabled(False)
+        try:
+            for i in range(self.chapters_list_widget.count()):
+                self.chapters_list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
+        finally:
+            self.chapters_list_widget.setUpdatesEnabled(True)
 
     def _invert_selection(self):
-        for i in range(self.chapters_list_widget.count()):
-            item = self.chapters_list_widget.item(i)
-            new_state = (
-                Qt.CheckState.Unchecked
-                if item.checkState() == Qt.CheckState.Checked
-                else Qt.CheckState.Checked
-            )
-            item.setCheckState(new_state)
+        self.chapters_list_widget.setUpdatesEnabled(False)
+        try:
+            for i in range(self.chapters_list_widget.count()):
+                item = self.chapters_list_widget.item(i)
+                new_state = (
+                    Qt.CheckState.Unchecked
+                    if item.checkState() == Qt.CheckState.Checked
+                    else Qt.CheckState.Checked
+                )
+                item.setCheckState(new_state)
+        finally:
+            self.chapters_list_widget.setUpdatesEnabled(True)
 
     def _on_item_clicked(self, item):
         row = self.chapters_list_widget.row(item)
@@ -1199,6 +1222,10 @@ class RanobeUploaderApp(QMainWindow):
             chapter.title = new_title
             label = f"{chapter}  [{chapter.content_length:,} зн.]"
             item.setText(label)
+            item.setData(
+                Qt.ItemDataRole.UserRole + 1,
+                f"{chapter.title} {format_num(chapter.number)} {chapter.volume}".lower(),
+            )
 
     def _on_context_menu(self, pos):
         item = self.chapters_list_widget.itemAt(pos)

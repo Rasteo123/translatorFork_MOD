@@ -1085,9 +1085,13 @@ class ConsistencyValidatorDialog(QDialog):
         if new_chars > 0 or new_terms > 0:
             self._log(f"    + {new_chars} персонажей, {new_terms} терминов в глоссарий")
         
-        for prob in problems:
-            row = self.problems_table.rowCount()
-            self.problems_table.insertRow(row)
+        start_row = self.problems_table.rowCount()
+        if problems:
+            self.problems_table.setUpdatesEnabled(False)
+            self.problems_table.setRowCount(start_row + len(problems))
+
+        for offset, prob in enumerate(problems):
+            row = start_row + offset
 
             # Колонка 0: Чекбокс
             check_item = QTableWidgetItem()
@@ -1123,6 +1127,9 @@ class ConsistencyValidatorDialog(QDialog):
             # Сохраняем полные данные проблемы в колонке ID
             self.problems_table.item(row, 1).setData(Qt.ItemDataRole.UserRole, prob)
 
+        if problems:
+            self.problems_table.setUpdatesEnabled(True)
+
         # Обновляем статистику
         self.stats_label.setText(f"Проблем: {self.problems_table.rowCount()}")
         self._update_glossary_button_state()
@@ -1137,8 +1144,11 @@ class ConsistencyValidatorDialog(QDialog):
         """Применяет фильтры к таблице проблем."""
         type_filter = self.type_filter_combo.currentText()
         conf_filter = self.confidence_filter_combo.currentText()
+        type_filter_active = self.type_filter_combo.currentIndex() > 0
+        conf_filter_active = self.confidence_filter_combo.currentIndex() > 0
         
         visible_count = 0
+        self.problems_table.setUpdatesEnabled(False)
         for row in range(self.problems_table.rowCount()):
             show = True
             
@@ -1150,7 +1160,7 @@ class ConsistencyValidatorDialog(QDialog):
             
             # Фильтр по уверенности
             # Проверяем индекс - 0 это "Любая уверенность"
-            if self.confidence_filter_combo.currentIndex() > 0:
+            if conf_filter_active:
                 conf_item = self.problems_table.item(row, 7)
                 # Для сравнения используем text(), который должен совпадать с одним из значений в combo (кроме первого)
                 # Значения в combo: 'Любая...', 'high', 'medium', 'low'
@@ -1161,10 +1171,11 @@ class ConsistencyValidatorDialog(QDialog):
             self.problems_table.setRowHidden(row, not show)
             if show:
                 visible_count += 1
+        self.problems_table.setUpdatesEnabled(True)
         
         # Обновляем статистику
         total_count = self.problems_table.rowCount()
-        if self.type_filter_combo.currentIndex() > 0 or self.confidence_filter_combo.currentIndex() > 0:
+        if type_filter_active or conf_filter_active:
             self.stats_label.setText(f"Проблем: {visible_count}/{total_count}")
         else:
             self.stats_label.setText(f"Проблем: {total_count}")
