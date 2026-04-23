@@ -494,7 +494,6 @@
         "needs_chunking": true,
         "max_concurrent_requests": 1,
         "context_length": 12000,
-        "max_output_tokens": 4096,
         "base_url": "http://127.0.0.1:11434/v1/chat/completions"
       },
       "Qwen 3 8B (Ollama)": {
@@ -503,7 +502,6 @@
         "needs_chunking": true,
         "max_concurrent_requests": 1,
         "context_length": 12000,
-        "max_output_tokens": 4096,
         "base_url": "http://127.0.0.1:11434/v1/chat/completions"
       },
       "Gemma 3 12B IT (Ollama)": {
@@ -512,7 +510,6 @@
         "needs_chunking": true,
         "max_concurrent_requests": 1,
         "context_length": 12000,
-        "max_output_tokens": 8192,
         "base_url": "http://127.0.0.1:11434/v1/chat/completions"
       },
       "Mistral Nemo Instruct 12B (LM Studio)": {
@@ -521,7 +518,6 @@
         "needs_chunking": true,
         "max_concurrent_requests": 1,
         "context_length": 12000,
-        "max_output_tokens": 8192,
         "base_url": "http://localhost:1234/v1/chat/completions"
       },
       "Gemma 3 12B IT (LM Studio)": {
@@ -530,7 +526,6 @@
         "needs_chunking": true,
         "max_concurrent_requests": 1,
         "context_length": 12000,
-        "max_output_tokens": 8192,
         "base_url": "http://localhost:1234/v1/chat/completions"
       }
     }

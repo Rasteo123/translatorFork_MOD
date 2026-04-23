@@ -43,7 +43,7 @@ class LocalModelDiscoveryTests(unittest.TestCase):
                     200,
                     {
                         "data": [
-                            {"id": "google/gemma-3-12b"},
+                            {"id": "google/gemma-3-12b", "max_context_length": 262144},
                         ]
                     },
                 )
@@ -62,6 +62,13 @@ class LocalModelDiscoveryTests(unittest.TestCase):
             local_models["llama3.1:8b (Ollama)"]["base_url"],
             "http://127.0.0.1:11434/v1/chat/completions",
         )
+        self.assertNotIn("max_output_tokens", local_models["llama3.1:8b (Ollama)"])
+        self.assertNotIn("max_output_tokens", local_models["DeepSeek R1 8B (Ollama)"])
+        self.assertEqual(
+            local_models["Gemma 3 12B IT (LM Studio)"]["context_length"],
+            262144,
+        )
+        self.assertNotIn("max_output_tokens", local_models["Gemma 3 12B IT (LM Studio)"])
 
     def test_refresh_dynamic_models_falls_back_to_static_config_when_servers_unreachable(self):
         def fake_get(url, timeout=None):
@@ -74,6 +81,8 @@ class LocalModelDiscoveryTests(unittest.TestCase):
 
         self.assertIn("Qwen 3 8B (Ollama)", local_models)
         self.assertIn("Gemma 3 12B IT (LM Studio)", local_models)
+        self.assertNotIn("max_output_tokens", local_models["Qwen 3 8B (Ollama)"])
+        self.assertNotIn("max_output_tokens", local_models["Gemma 3 12B IT (LM Studio)"])
 
 
 if __name__ == "__main__":

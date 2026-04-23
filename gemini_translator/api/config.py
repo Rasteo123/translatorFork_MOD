@@ -484,7 +484,87 @@ def _fetch_local_models_json(url: str) -> tuple[bool, object | None]:
         return False, None
 
 
-def _extract_model_ids_from_ollama_payload(payload) -> list[str]:
+_LOCAL_CONTEXT_LENGTH_KEYS = {
+    "context_length",
+    "context_window",
+    "ctx_length",
+    "max_context_length",
+    "max_context_window",
+    "max_position_embeddings",
+    "n_ctx",
+    "num_ctx",
+}
+_LOCAL_OUTPUT_TOKEN_LIMIT_KEYS = {
+    "max_completion_tokens",
+    "max_output_tokens",
+    "max_response_tokens",
+    "output_token_limit",
+}
+
+
+def _coerce_positive_int(value):
+    if isinstance(value, bool) or value is None:
+        return None
+
+    try:
+        if isinstance(value, str):
+            normalized = value.strip().replace(" ", "").replace("_", "").replace(",", "")
+            if not normalized.isdigit():
+                return None
+            number = int(normalized)
+        else:
+            number = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    return number if number > 0 else None
+
+
+def _extract_positive_int_by_keys(payload, accepted_keys: set[str]):
+    if isinstance(payload, dict):
+        for raw_key, value in payload.items():
+            key = str(raw_key).strip().lower().replace("-", "_")
+            tail_key = key.rsplit(".", 1)[-1]
+            if key in accepted_keys or tail_key in accepted_keys:
+                number = _coerce_positive_int(value)
+                if number is not None:
+                    return number
+
+        for value in payload.values():
+            number = _extract_positive_int_by_keys(value, accepted_keys)
+            if number is not None:
+                return number
+
+    elif isinstance(payload, list):
+        for value in payload:
+            number = _extract_positive_int_by_keys(value, accepted_keys)
+            if number is not None:
+                return number
+
+    return None
+
+
+def _extract_local_model_metadata(model_payload) -> dict:
+    metadata = {}
+    context_length = _extract_positive_int_by_keys(model_payload, _LOCAL_CONTEXT_LENGTH_KEYS)
+    if context_length is not None:
+        metadata["context_length"] = context_length
+
+    max_output_tokens = _extract_positive_int_by_keys(model_payload, _LOCAL_OUTPUT_TOKEN_LIMIT_KEYS)
+    if max_output_tokens is not None:
+        metadata["max_output_tokens"] = max_output_tokens
+
+    return metadata
+
+
+def _make_discovered_local_model_entry(model_id: str, model_payload=None) -> dict:
+    entry = {"id": model_id}
+    if isinstance(model_payload, dict):
+        entry.update(_extract_local_model_metadata(model_payload))
+    return entry
+
+
+def _extract_model_entries_from_ollama_payload(payload) -> list[dict]:
     models = payload.get("models", []) if isinstance(payload, dict) else []
     discovered = []
     for item in models:
@@ -492,11 +572,11 @@ def _extract_model_ids_from_ollama_payload(payload) -> list[str]:
             continue
         model_id = item.get("model") or item.get("name") or item.get("id")
         if isinstance(model_id, str) and model_id.strip():
-            discovered.append(model_id.strip())
+            discovered.append(_make_discovered_local_model_entry(model_id.strip(), item))
     return discovered
 
 
-def _extract_model_ids_from_openai_payload(payload) -> list[str]:
+def _extract_model_entries_from_openai_payload(payload) -> list[dict]:
     models = payload.get("data", []) if isinstance(payload, dict) else []
     discovered = []
     for item in models:
@@ -504,12 +584,22 @@ def _extract_model_ids_from_openai_payload(payload) -> list[str]:
             continue
         model_id = item.get("id") or item.get("model")
         if isinstance(model_id, str) and model_id.strip():
-            discovered.append(model_id.strip())
+            discovered.append(_make_discovered_local_model_entry(model_id.strip(), item))
     return discovered
 
 
-def _discover_model_ids_for_local_source(source: dict) -> tuple[bool, list[str]]:
-    discovered_ids = set()
+def _merge_discovered_local_model_entry(existing: dict | None, new_entry: dict) -> dict:
+    merged = dict(existing or {})
+    for key, value in new_entry.items():
+        if key == "id":
+            merged[key] = value
+        elif value not in (None, "") and not merged.get(key):
+            merged[key] = value
+    return merged
+
+
+def _discover_models_for_local_source(source: dict) -> tuple[bool, list[dict]]:
+    discovered_by_id = {}
     is_successful = False
     root_url = source.get("root_url")
 
@@ -519,31 +609,61 @@ def _discover_model_ids_for_local_source(source: dict) -> tuple[bool, list[str]]
     ok, payload = _fetch_local_models_json(_join_http_path(root_url, "/api/tags"))
     if ok:
         is_successful = True
-        discovered_ids.update(_extract_model_ids_from_ollama_payload(payload))
+        for model_entry in _extract_model_entries_from_ollama_payload(payload):
+            model_id = model_entry.get("id")
+            if model_id:
+                discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                    discovered_by_id.get(model_id),
+                    model_entry,
+                )
 
     ok, payload = _fetch_local_models_json(_join_http_path(root_url, "/v1/models"))
     if ok:
         is_successful = True
-        discovered_ids.update(_extract_model_ids_from_openai_payload(payload))
+        for model_entry in _extract_model_entries_from_openai_payload(payload):
+            model_id = model_entry.get("id")
+            if model_id:
+                discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                    discovered_by_id.get(model_id),
+                    model_entry,
+                )
 
-    return is_successful, sorted(discovered_ids, key=str.casefold)
+    return is_successful, sorted(
+        discovered_by_id.values(),
+        key=lambda item: str(item.get("id") or "").casefold(),
+    )
 
 
-def _default_local_model_config(model_id: str, source: dict) -> dict:
-    source_label = str(source.get("label") or "")
-    max_output_tokens = 8192 if source_label == "LM Studio" else 4096
-    return {
+def _apply_discovered_local_model_metadata(model_config: dict, model_entry: dict) -> dict:
+    model_config["server_discovered"] = True
+
+    context_length = _coerce_positive_int(model_entry.get("context_length"))
+    if context_length is not None:
+        model_config["context_length"] = context_length
+
+    max_output_tokens = _coerce_positive_int(model_entry.get("max_output_tokens"))
+    if max_output_tokens is not None:
+        model_config["max_output_tokens"] = max_output_tokens
+    else:
+        model_config.pop("max_output_tokens", None)
+
+    return model_config
+
+
+def _default_local_model_config(model_entry: dict, source: dict) -> dict:
+    model_id = str(model_entry.get("id") or "").strip()
+    config = {
         "id": model_id,
         "rpm": 1000,
         "needs_chunking": True,
         "max_concurrent_requests": 1,
-        "context_length": 12000,
-        "max_output_tokens": max_output_tokens,
         "base_url": source.get("chat_url"),
     }
+    return _apply_discovered_local_model_metadata(config, model_entry)
 
 
-def _build_local_model_entry(model_id: str, source: dict, static_by_model_and_url: dict, static_by_model_id: dict) -> tuple[str, dict]:
+def _build_local_model_entry(model_entry: dict, source: dict, static_by_model_and_url: dict, static_by_model_id: dict) -> tuple[str, dict]:
+    model_id = str(model_entry.get("id") or "").strip()
     chat_url = str(source.get("chat_url") or "")
     match = static_by_model_and_url.get((model_id, chat_url.lower()))
 
@@ -556,11 +676,14 @@ def _build_local_model_entry(model_id: str, source: dict, static_by_model_and_ur
         resolved_config = deepcopy(match["config"])
         resolved_config["id"] = model_id
         resolved_config["base_url"] = chat_url
-        return match["display_name"], resolved_config
+        return match["display_name"], _apply_discovered_local_model_metadata(
+            resolved_config,
+            model_entry,
+        )
 
     label = str(source.get("label") or "").strip()
     display_name = f"{model_id} ({label})" if label else model_id
-    return display_name, _default_local_model_config(model_id, source)
+    return display_name, _default_local_model_config(model_entry, source)
 
 
 def _discover_local_provider_models(provider_config: dict) -> dict:
@@ -580,14 +703,14 @@ def _discover_local_provider_models(provider_config: dict) -> dict:
     successful_sources = 0
 
     for source in discovery_sources:
-        is_successful, model_ids = _discover_model_ids_for_local_source(source)
+        is_successful, model_entries = _discover_models_for_local_source(source)
         if not is_successful:
             continue
 
         successful_sources += 1
-        for model_id in model_ids:
+        for model_entry in model_entries:
             display_name, model_config = _build_local_model_entry(
-                model_id,
+                model_entry,
                 source,
                 static_by_model_and_url,
                 static_by_model_id,
