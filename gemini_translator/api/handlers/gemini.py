@@ -35,7 +35,10 @@ class GeminiApiHandler(BaseApiHandler):
         contents = [{"parts": [{"text": prompt}]}]
         safety_settings = [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT", "HARM_CATEGORY_HARASSMENT"]]
   
-        generation_config_params = {"temperature": self.worker.temperature}
+        generation_config_params = {}
+        temperature = self._temperature_payload_value()
+        if temperature is not None:
+            generation_config_params["temperature"] = temperature
         
         if max_output_tokens is not None:
             generation_config_params["maxOutputTokens"] = max_output_tokens

@@ -272,6 +272,7 @@ class _ConsistencyMockWorker:
         self.provider_config = {}
         self.model_config = {}
         self.temperature = 0.3
+        self.temperature_override_enabled = True
         self.thinking_enabled = False
         self.thinking_budget = 0
         self.thinking_level = "minimal"
@@ -301,6 +302,7 @@ class _ConsistencyMockWorker:
         self.provider_config = provider_config or {}
         self.model_config = model_config or {}
         self.temperature = config.get("temperature", 0.3)
+        self.temperature_override_enabled = bool(config.get("temperature_override_enabled", True))
         self.thinking_enabled = config.get("thinking_enabled", False)
         self.thinking_budget = config.get("thinking_budget", 0)
         self.thinking_level = config.get("thinking_level", "minimal")
@@ -1373,6 +1375,7 @@ class ConsistencyEngine(QObject):
                 self.model_config = model_config
                 self.session_id = "consistency_check"
                 self.temperature = config.get('temperature', 0.3)
+                self.temperature_override_enabled = bool(config.get('temperature_override_enabled', True))
                 self.thinking_enabled = config.get('thinking_enabled', False)
                 self.thinking_budget = config.get('thinking_budget', 0)
                 self.thinking_level = config.get('thinking_level', 'minimal')

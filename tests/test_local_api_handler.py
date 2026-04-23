@@ -38,6 +38,7 @@ class _WorkerStub:
             self.model_config.update(model_config)
         self.prompt_builder = SimpleNamespace(system_instruction=None)
         self.temperature = 0.2
+        self.temperature_override_enabled = True
         self.api_key = ""
         self.model_id = ""
         self.events = []
@@ -80,6 +81,21 @@ class LocalApiHandlerTests(unittest.TestCase):
 
         self.assertEqual(result, "ok")
         self.assertEqual(captured_payloads[0]["max_tokens"], 9800)
+
+    def test_temperature_is_omitted_when_override_is_disabled(self):
+        handler, worker = self._make_handler()
+        worker.temperature_override_enabled = False
+        captured_payloads = []
+
+        def fake_post(url, headers=None, json=None, proxies=None, timeout=None):
+            captured_payloads.append(json)
+            return _DummyResponse()
+
+        with patch("gemini_translator.api.handlers.local.requests.post", side_effect=fake_post):
+            result = handler.call_api("prompt", "log", allow_incomplete=True)
+
+        self.assertEqual(result, "ok")
+        self.assertNotIn("temperature", captured_payloads[0])
 
     def test_length_finish_reason_raises_partial_with_limit_source(self):
         handler, worker = self._make_handler()

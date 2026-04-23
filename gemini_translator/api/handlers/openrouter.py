@@ -84,9 +84,11 @@ class OpenRouterApiHandler(BaseApiHandler):
         payload = {
             "model": self.worker.model_id,
             "messages": messages,
-            "temperature": self.worker.temperature,
             "stream": use_stream
         }
+        temperature = self._temperature_payload_value()
+        if temperature is not None:
+            payload["temperature"] = temperature
         if max_output_tokens is not None: payload["max_tokens"] = max_output_tokens
         elif allow_incomplete:
              payload["max_tokens"] = int(self.worker.model_config.get("max_output_tokens", 8192) * 0.98)

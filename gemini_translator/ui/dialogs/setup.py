@@ -1028,6 +1028,7 @@ class InitialSetupDialog(QDialog):
             # (используем префикс 'last_', как в save_last_settings)
             settings['last_model'] = ui_state_dict.get('model')
             settings['last_temperature'] = ui_state_dict.get('temperature')
+            settings['last_temperature_override_enabled'] = ui_state_dict.get('temperature_override_enabled', False)
             settings['last_concurrent_requests'] = ui_state_dict.get('rpm_limit')
             settings['last_chunking'] = ui_state_dict.get('chunking')
             settings['last_dynamic_glossary'] = ui_state_dict.get('dynamic_glossary')
@@ -1366,6 +1367,7 @@ class InitialSetupDialog(QDialog):
             for key in (
                 'model',
                 'temperature',
+                'temperature_override_enabled',
                 'rpm_limit',
                 'chunking',
                 'dynamic_glossary',

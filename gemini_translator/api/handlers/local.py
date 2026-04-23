@@ -96,9 +96,11 @@ class LocalApiHandler(BaseApiHandler):
         payload = {
             "model": self.worker.model_id,
             "messages": messages,
-            "temperature": self.worker.temperature,
             "stream": False # Синхронные хендлеры обычно проще писать без стриминга
         }
+        temperature = self._temperature_payload_value()
+        if temperature is not None:
+            payload["temperature"] = temperature
         
         requested_max_tokens = self._coerce_positive_int(max_output_tokens)
         if requested_max_tokens is not None:

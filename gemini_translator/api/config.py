@@ -9,7 +9,7 @@ import shutil
 import os # <-- Добавляем импорт os
 import threading
 import time
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 try:
     import requests
@@ -484,6 +484,24 @@ def _fetch_local_models_json(url: str) -> tuple[bool, object | None]:
         return False, None
 
 
+def _post_local_models_json(url: str, payload: dict) -> tuple[bool, object | None]:
+    if requests is None:
+        return False, None
+
+    try:
+        response = requests.post(url, json=payload, timeout=_LOCAL_MODEL_DISCOVERY_TIMEOUT_SECONDS)
+    except Exception:
+        return False, None
+
+    if response.status_code != 200:
+        return False, None
+
+    try:
+        return True, response.json()
+    except Exception:
+        return False, None
+
+
 _LOCAL_CONTEXT_LENGTH_KEYS = {
     "context_length",
     "context_window",
@@ -499,6 +517,16 @@ _LOCAL_OUTPUT_TOKEN_LIMIT_KEYS = {
     "max_output_tokens",
     "max_response_tokens",
     "output_token_limit",
+}
+_LOCAL_DEFAULT_TEMPERATURE_KEYS = {
+    "base_temperature",
+    "default_temperature",
+    "temperature",
+}
+_LOCAL_PARAMETERS_TEXT_KEYS = {
+    "modelfile",
+    "parameters",
+    "template",
 }
 
 
@@ -518,6 +546,24 @@ def _coerce_positive_int(value):
         return None
 
     return number if number > 0 else None
+
+
+def _coerce_float(value):
+    if isinstance(value, bool) or value is None:
+        return None
+
+    try:
+        if isinstance(value, str):
+            normalized = value.strip().replace(",", ".")
+            if not normalized:
+                return None
+            number = float(normalized)
+        else:
+            number = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    return number
 
 
 def _extract_positive_int_by_keys(payload, accepted_keys: set[str]):
@@ -544,15 +590,105 @@ def _extract_positive_int_by_keys(payload, accepted_keys: set[str]):
     return None
 
 
+def _extract_float_by_keys(payload, accepted_keys: set[str]):
+    if isinstance(payload, dict):
+        for raw_key, value in payload.items():
+            key = str(raw_key).strip().lower().replace("-", "_")
+            tail_key = key.rsplit(".", 1)[-1]
+            if key in accepted_keys or tail_key in accepted_keys:
+                number = _coerce_float(value)
+                if number is not None:
+                    return number
+
+        for value in payload.values():
+            number = _extract_float_by_keys(value, accepted_keys)
+            if number is not None:
+                return number
+
+    elif isinstance(payload, list):
+        for value in payload:
+            number = _extract_float_by_keys(value, accepted_keys)
+            if number is not None:
+                return number
+
+    return None
+
+
+def _extract_parameters_text_blocks(payload) -> list[str]:
+    blocks = []
+    if isinstance(payload, dict):
+        for raw_key, value in payload.items():
+            key = str(raw_key).strip().lower().replace("-", "_")
+            tail_key = key.rsplit(".", 1)[-1]
+            if (key in _LOCAL_PARAMETERS_TEXT_KEYS or tail_key in _LOCAL_PARAMETERS_TEXT_KEYS) and isinstance(value, str):
+                blocks.append(value)
+            blocks.extend(_extract_parameters_text_blocks(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            blocks.extend(_extract_parameters_text_blocks(value))
+    return blocks
+
+
+def _extract_local_parameter_from_text(text: str, parameter_names: set[str]):
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[0].strip().lower().replace("-", "_")
+        if name in parameter_names:
+            return parts[1].strip().strip('"')
+        if name == "parameter" and len(parts) >= 3:
+            nested_name = parts[1].strip().lower().replace("-", "_")
+            if nested_name in parameter_names:
+                return parts[2].strip().strip('"')
+    return None
+
+
+def _extract_local_parameter_from_text_blocks(payload, parameter_names: set[str], coercer):
+    for block in _extract_parameters_text_blocks(payload):
+        value = _extract_local_parameter_from_text(block, parameter_names)
+        if value is None:
+            continue
+        number = coercer(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _extract_local_model_metadata(model_payload) -> dict:
     metadata = {}
     context_length = _extract_positive_int_by_keys(model_payload, _LOCAL_CONTEXT_LENGTH_KEYS)
+    if context_length is None:
+        context_length = _extract_local_parameter_from_text_blocks(
+            model_payload,
+            {"context_length", "context_window", "ctx_length", "n_ctx", "num_ctx"},
+            _coerce_positive_int,
+        )
     if context_length is not None:
         metadata["context_length"] = context_length
 
     max_output_tokens = _extract_positive_int_by_keys(model_payload, _LOCAL_OUTPUT_TOKEN_LIMIT_KEYS)
+    if max_output_tokens is None:
+        max_output_tokens = _extract_local_parameter_from_text_blocks(
+            model_payload,
+            {"max_completion_tokens", "max_output_tokens", "max_response_tokens"},
+            _coerce_positive_int,
+        )
     if max_output_tokens is not None:
         metadata["max_output_tokens"] = max_output_tokens
+
+    default_temperature = _extract_float_by_keys(model_payload, _LOCAL_DEFAULT_TEMPERATURE_KEYS)
+    if default_temperature is None:
+        default_temperature = _extract_local_parameter_from_text_blocks(
+            model_payload,
+            {"temperature"},
+            _coerce_float,
+        )
+    if default_temperature is not None:
+        metadata["default_temperature"] = default_temperature
 
     return metadata
 
@@ -577,7 +713,12 @@ def _extract_model_entries_from_ollama_payload(payload) -> list[dict]:
 
 
 def _extract_model_entries_from_openai_payload(payload) -> list[dict]:
-    models = payload.get("data", []) if isinstance(payload, dict) else []
+    if isinstance(payload, dict):
+        models = payload.get("data", [])
+    elif isinstance(payload, list):
+        models = payload
+    else:
+        models = []
     discovered = []
     for item in models:
         if not isinstance(item, dict):
@@ -628,6 +769,49 @@ def _discover_models_for_local_source(source: dict) -> tuple[bool, list[dict]]:
                     model_entry,
                 )
 
+    ok, payload = _fetch_local_models_json(_join_http_path(root_url, "/api/v0/models"))
+    if ok:
+        is_successful = True
+        for model_entry in _extract_model_entries_from_openai_payload(payload):
+            model_id = model_entry.get("id")
+            if model_id:
+                discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                    discovered_by_id.get(model_id),
+                    model_entry,
+                )
+
+    for model_id in list(discovered_by_id.keys()):
+        ok, payload = _post_local_models_json(
+            _join_http_path(root_url, "/api/show"),
+            {"model": model_id},
+        )
+        if ok:
+            discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                discovered_by_id.get(model_id),
+                _make_discovered_local_model_entry(model_id, payload),
+            )
+            continue
+
+        quoted_model_id = quote(model_id, safe="")
+        ok, payload = _fetch_local_models_json(
+            _join_http_path(root_url, f"/v1/models/{quoted_model_id}")
+        )
+        if ok:
+            discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                discovered_by_id.get(model_id),
+                _make_discovered_local_model_entry(model_id, payload),
+            )
+            continue
+
+        ok, payload = _fetch_local_models_json(
+            _join_http_path(root_url, f"/api/v0/models/{quoted_model_id}")
+        )
+        if ok:
+            discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                discovered_by_id.get(model_id),
+                _make_discovered_local_model_entry(model_id, payload),
+            )
+
     return is_successful, sorted(
         discovered_by_id.values(),
         key=lambda item: str(item.get("id") or "").casefold(),
@@ -646,6 +830,10 @@ def _apply_discovered_local_model_metadata(model_config: dict, model_entry: dict
         model_config["max_output_tokens"] = max_output_tokens
     else:
         model_config.pop("max_output_tokens", None)
+
+    default_temperature = _coerce_float(model_entry.get("default_temperature"))
+    if default_temperature is not None:
+        model_config["default_temperature"] = default_temperature
 
     return model_config
 

@@ -53,9 +53,12 @@ class HuggingFaceApiHandler(BaseApiHandler):
         payload = {
             "model": self.worker.model_id,
             "messages": messages,
-            "temperature": self.worker.temperature,
             "stream": use_stream # Теперь мы реально запрашиваем то, что хотим
         }
+
+        temperature = self._temperature_payload_value()
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         if max_output_tokens:
             payload["max_tokens"] = max_output_tokens

@@ -36,6 +36,8 @@ class LocalModelDiscoveryTests(unittest.TestCase):
                 )
             if url == "http://127.0.0.1:11434/v1/models":
                 return _DummyResponse(404, {})
+            if url == "http://127.0.0.1:11434/api/v0/models":
+                return _DummyResponse(404, {})
             if url == "http://localhost:1234/api/tags":
                 return _DummyResponse(404, {})
             if url == "http://localhost:1234/v1/models":
@@ -47,10 +49,43 @@ class LocalModelDiscoveryTests(unittest.TestCase):
                         ]
                     },
                 )
+            if url == "http://localhost:1234/api/v0/models":
+                return _DummyResponse(
+                    200,
+                    {
+                        "data": [
+                            {
+                                "id": "google/gemma-3-12b",
+                                "max_context_length": 262144,
+                                "default_temperature": 0.6,
+                            },
+                        ]
+                    },
+                )
+            if "/v1/models/" in url or "/api/v0/models/" in url:
+                return _DummyResponse(404, {})
             raise AssertionError(f"Unexpected discovery URL: {url}")
 
+        def fake_post(url, json=None, timeout=None):
+            if url == "http://127.0.0.1:11434/api/show" and json == {"model": "deepseek-r1:8b"}:
+                return _DummyResponse(
+                    200,
+                    {
+                        "model_info": {"llama.context_length": 131072},
+                        "parameters": "temperature 0.7\nnum_ctx 131072",
+                    },
+                )
+            if url == "http://127.0.0.1:11434/api/show" and json == {"model": "llama3.1:8b"}:
+                return _DummyResponse(
+                    200,
+                    {
+                        "modelfile": "PARAMETER temperature 0.5\nPARAMETER num_ctx 65536",
+                    },
+                )
+            return _DummyResponse(404, {})
+
         with patch.dict(os.environ, {"GT_DISABLE_LOCAL_MODEL_DISCOVERY": "0"}), \
-             patch.object(api_config, "requests", SimpleNamespace(get=fake_get)):
+             patch.object(api_config, "requests", SimpleNamespace(get=fake_get, post=fake_post)):
             api_config.refresh_dynamic_models("local")
             local_models = api_config.api_providers()["local"]["models"]
 
@@ -64,10 +99,15 @@ class LocalModelDiscoveryTests(unittest.TestCase):
         )
         self.assertNotIn("max_output_tokens", local_models["llama3.1:8b (Ollama)"])
         self.assertNotIn("max_output_tokens", local_models["DeepSeek R1 8B (Ollama)"])
+        self.assertEqual(local_models["DeepSeek R1 8B (Ollama)"]["context_length"], 131072)
+        self.assertEqual(local_models["DeepSeek R1 8B (Ollama)"]["default_temperature"], 0.7)
+        self.assertEqual(local_models["llama3.1:8b (Ollama)"]["context_length"], 65536)
+        self.assertEqual(local_models["llama3.1:8b (Ollama)"]["default_temperature"], 0.5)
         self.assertEqual(
             local_models["Gemma 3 12B IT (LM Studio)"]["context_length"],
             262144,
         )
+        self.assertEqual(local_models["Gemma 3 12B IT (LM Studio)"]["default_temperature"], 0.6)
         self.assertNotIn("max_output_tokens", local_models["Gemma 3 12B IT (LM Studio)"])
 
     def test_refresh_dynamic_models_falls_back_to_static_config_when_servers_unreachable(self):
