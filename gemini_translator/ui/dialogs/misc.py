@@ -437,6 +437,23 @@ class ProjectHistoryDialog(QDialog):
              
 class EnhancedProjectHistoryDialog(QDialog):
     """Расширенный диалог выбора проектов: недавние и найденные в выбранной папке."""
+    PROJECT_SCAN_MAX_DIRS = 3000
+    PROJECT_SCAN_MAX_DEPTH = 3
+    PROJECT_SCAN_SKIP_DIRS = {
+        ".git",
+        ".hg",
+        ".svn",
+        ".pytest_cache",
+        "__pycache__",
+        ".venv",
+        ".venv-linux",
+        "venv",
+        "env",
+        "node_modules",
+        "build",
+        "dist",
+    }
+
     def __init__(self, history, settings_manager=None, parent=None):
         super().__init__(parent)
         self.history = list(history or [])
@@ -444,6 +461,9 @@ class EnhancedProjectHistoryDialog(QDialog):
         self.selected_project = None
         self.projects_root_folder = ""
         self.all_projects = []
+        self._scan_cache_root = None
+        self._scan_cache_project_folders = []
+        self._scan_status_message = ""
         self.setWindowTitle("История проектов")
         self.setMinimumSize(760, 500)
 
@@ -547,7 +567,93 @@ class EnhancedProjectHistoryDialog(QDialog):
             return f"{folder_name} | folder"
         return folder_name or project.get("name", "Без имени")
 
-    def _rebuild_projects(self):
+    def _scan_root_is_too_broad(self, folder_path):
+        try:
+            normalized = os.path.abspath(os.path.normpath(folder_path))
+        except (TypeError, ValueError, OSError):
+            return True
+
+        drive, _ = os.path.splitdrive(normalized)
+        drive_root = os.path.abspath((drive + os.sep) if drive else os.sep)
+        if os.path.normcase(normalized) == os.path.normcase(drive_root):
+            return True
+
+        try:
+            home_dir = os.path.abspath(os.path.expanduser("~"))
+        except (TypeError, ValueError, OSError):
+            home_dir = ""
+        if home_dir and os.path.normcase(normalized) == os.path.normcase(home_dir):
+            return True
+
+        return False
+
+    def _scan_projects_root_folder(self):
+        root_folder = os.path.normpath(self.projects_root_folder or "")
+        if not root_folder or not os.path.isdir(root_folder):
+            return [], ""
+
+        if self._scan_root_is_too_broad(root_folder):
+            return [], (
+                "Папка для поиска проектов слишком общая. "
+                "Выберите папку, где лежат только проекты."
+            )
+
+        root_abs = os.path.abspath(root_folder)
+        project_folders = []
+        visited_dirs = 0
+        stopped_by_limit = False
+
+        try:
+            for current_root, dirs, files in os.walk(root_abs):
+                visited_dirs += 1
+                if visited_dirs > self.PROJECT_SCAN_MAX_DIRS:
+                    stopped_by_limit = True
+                    dirs[:] = []
+                    break
+
+                dirs[:] = [
+                    dirname for dirname in dirs
+                    if dirname not in self.PROJECT_SCAN_SKIP_DIRS
+                ]
+
+                relative_root = os.path.relpath(current_root, root_abs)
+                depth = 0 if relative_root == "." else len(relative_root.split(os.sep))
+                if depth >= self.PROJECT_SCAN_MAX_DEPTH:
+                    dirs[:] = []
+
+                if "translation_map.json" not in files:
+                    continue
+
+                project_folders.append(os.path.normpath(current_root))
+                dirs[:] = []
+        except OSError as exc:
+            return [], f"Не удалось просканировать папку проектов: {exc}"
+
+        if stopped_by_limit:
+            return project_folders, (
+                f"Поиск остановлен после {self.PROJECT_SCAN_MAX_DIRS} папок. "
+                "Выберите более узкую папку с проектами."
+            )
+
+        return project_folders, ""
+
+    def _get_scanned_project_folders(self, force_scan=False):
+        root_folder = os.path.normpath(self.projects_root_folder or "")
+        if not force_scan and root_folder == self._scan_cache_root:
+            return list(self._scan_cache_project_folders)
+
+        project_folders, status_message = self._scan_projects_root_folder()
+        self._scan_cache_root = root_folder
+        self._scan_cache_project_folders = list(project_folders)
+        self._scan_status_message = status_message
+        return list(project_folders)
+
+    def _clear_scan_cache(self):
+        self._scan_cache_root = None
+        self._scan_cache_project_folders = []
+        self._scan_status_message = ""
+
+    def _rebuild_projects(self, force_scan=False):
         history_lookup = self._build_history_lookup()
         projects_by_folder = {}
 
@@ -569,11 +675,7 @@ class EnhancedProjectHistoryDialog(QDialog):
             projects_by_folder[normalized_output] = project_copy
 
         if self.projects_root_folder and os.path.isdir(self.projects_root_folder):
-            for root, _, files in os.walk(self.projects_root_folder):
-                if "translation_map.json" not in files:
-                    continue
-
-                project_folder = os.path.normpath(root)
+            for project_folder in self._get_scanned_project_folders(force_scan=force_scan):
                 normalized_folder = self._normalize_output_folder(project_folder)
                 if normalized_folder in self.hidden_removed_folder_keys:
                     continue
@@ -612,8 +714,8 @@ class EnhancedProjectHistoryDialog(QDialog):
             )
         )
 
-    def _refresh_project_list(self):
-        self._rebuild_projects()
+    def _refresh_project_list(self, *args, force_scan=False):
+        self._rebuild_projects(force_scan=force_scan)
         search_text = self.search_edit.text().strip().lower()
 
         self.list_widget.clear()
@@ -631,9 +733,14 @@ class EnhancedProjectHistoryDialog(QDialog):
 
         if self.projects_root_folder and os.path.isdir(self.projects_root_folder):
             total_scanned = sum(1 for project in self.all_projects if project.get("_from_scan"))
-            self.status_label.setText(
-                f"Найдено проектов в папке: {total_scanned}. Показано: {len(visible_projects)}."
-            )
+            if self._scan_status_message:
+                self.status_label.setText(
+                    f"{self._scan_status_message} Показано: {len(visible_projects)}."
+                )
+            else:
+                self.status_label.setText(
+                    f"Найдено проектов в папке: {total_scanned}. Показано: {len(visible_projects)}."
+                )
         else:
             self.status_label.setText(f"Показаны недавние проекты: {len(visible_projects)}.")
 
@@ -654,13 +761,15 @@ class EnhancedProjectHistoryDialog(QDialog):
         self.projects_root_folder = os.path.normpath(folder)
         self.root_folder_edit.setText(self.projects_root_folder)
         self.settings_manager.save_last_projects_root_folder(self.projects_root_folder)
-        self._refresh_project_list()
+        self._clear_scan_cache()
+        self._refresh_project_list(force_scan=True)
 
     def clear_projects_root_folder(self):
         self.hidden_removed_folder_keys.clear()
         self.projects_root_folder = ""
         self.root_folder_edit.clear()
         self.settings_manager.save_last_projects_root_folder("")
+        self._clear_scan_cache()
         self._refresh_project_list()
 
     def _remove_history_projects(self, projects):
