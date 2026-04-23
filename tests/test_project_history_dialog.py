@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -95,6 +96,42 @@ class ProjectHistoryTests(unittest.TestCase):
             self.assertEqual(len(dialog.all_projects), 1)
             self.assertFalse(dialog.all_projects[0]["_from_history"])
             self.assertTrue(dialog.all_projects[0]["_from_scan"])
+            dialog.close()
+
+    def test_search_filter_reuses_scanned_project_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_folder = os.path.join(temp_dir, "Alpha Project")
+            history = []
+            settings_stub = _HistorySettingsStub(projects_root_folder=temp_dir)
+            walk_calls = []
+
+            def fake_walk(root_folder):
+                walk_calls.append(root_folder)
+                yield temp_dir, ["Alpha Project"], []
+                yield project_folder, [], ["translation_map.json"]
+
+            with patch("gemini_translator.ui.dialogs.misc.os.walk", side_effect=fake_walk):
+                dialog = EnhancedProjectHistoryDialog(history, settings_manager=settings_stub)
+                dialog._refresh_project_list()
+                self.assertEqual(len(walk_calls), 1)
+
+                dialog.search_edit.setText("alpha")
+                self.assertEqual(len(walk_calls), 1)
+                self.assertEqual(dialog.list_widget.count(), 1)
+                dialog.close()
+
+    def test_broad_scan_root_is_skipped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_stub = _HistorySettingsStub(projects_root_folder=temp_dir)
+            dialog = EnhancedProjectHistoryDialog([], settings_manager=settings_stub)
+
+            with patch.object(dialog, "_scan_root_is_too_broad", return_value=True), \
+                 patch("gemini_translator.ui.dialogs.misc.os.walk") as mocked_walk:
+                dialog._refresh_project_list()
+
+            mocked_walk.assert_not_called()
+            self.assertEqual(dialog.all_projects, [])
+            self.assertIn("слишком общая", dialog.status_label.text())
             dialog.close()
 
 
