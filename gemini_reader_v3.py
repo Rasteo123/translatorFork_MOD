@@ -162,7 +162,9 @@ READER_EDGE_TTS_CHUNK_TIMEOUT_SEC = 20
 READER_AUDIO_EXPORT_TIMEOUT_SEC = 1800
 READER_FFPROBE_TIMEOUT_SEC = 60
 READER_FFMPEG_CONCAT_TIMEOUT_SEC = 3600
+READER_FFMPEG_NORMALIZE_TIMEOUT_SEC = 7200
 READER_FFMPEG_VIDEO_TIMEOUT_SEC = 7200
+READER_AUDIO_NORMALIZE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
 
 ENGINE_MODES = {
     "Live API": "live",
@@ -1750,6 +1752,7 @@ def _combine_mp3_sequence(input_paths, output_path):
             )
             if result.returncode == 0 and os.path.exists(tmp_output):
                 os.replace(tmp_output, output_path)
+                _normalize_mp3_file(output_path, ffmpeg_path=ffmpeg_path)
                 return
             raise RuntimeError(result.stderr.strip() or "ffmpeg не смог собрать итоговый MP3.")
         except Exception:
@@ -1777,6 +1780,7 @@ def _combine_mp3_sequence(input_paths, output_path):
             raise RuntimeError("Нет валидных MP3-файлов для сборки.")
         combined.export(tmp_output, format="mp3")
         os.replace(tmp_output, output_path)
+        _normalize_mp3_file(output_path, ffmpeg_path=ffmpeg_path)
     except Exception as exc:
         if os.path.exists(tmp_output):
             try:
@@ -2833,6 +2837,9 @@ class AudioCombinerWorker(QThread):
                             f"Не удалось собрать часть {idx + 1}: "
                             f"{combine_process.stderr.strip() or 'ошибка ffmpeg'}"
                         )
+
+                self.progress_signal.emit(f"Нормализация части {idx + 1} из {len(parts)}...")
+                _normalize_mp3_file(part_output_path, ffmpeg_path=self.ffmpeg_path)
 
                 if self.video_image_path:
                     video_name = os.path.splitext(part_name)[0] + ".mp4"
