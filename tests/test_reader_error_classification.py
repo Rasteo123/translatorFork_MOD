@@ -18,6 +18,11 @@ class ReaderErrorClassificationTests(unittest.TestCase):
 
         self.assertFalse(reader._is_invalid_api_key_error(error_text))
 
+    def test_russian_daily_limit_message_is_rate_limited_error(self):
+        error_text = "Дневной лимит 10 запросов для модели gemini-3.1-flash-tts-preview исчерпан."
+
+        self.assertTrue(reader._is_rate_limited_error(error_text))
+
 
 if __name__ == "__main__":
     unittest.main()

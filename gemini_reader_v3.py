@@ -1609,6 +1609,68 @@ def _export_trimmed_mp3_file(source_path, output_path):
         raise RuntimeError(f"Не удалось сохранить MP3 после обрезки пауз: {exc}") from exc
 
 
+def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
+    mp3_path = os.path.abspath(mp3_path)
+    if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) <= 0:
+        raise RuntimeError("MP3 file for normalization is missing or empty.")
+
+    tmp_output = f"{mp3_path}.normalized.tmp.mp3"
+    ffmpeg_path = ffmpeg_path or _resolve_tool_path("ffmpeg")
+    ffmpeg_error = None
+    if ffmpeg_path:
+        try:
+            normalize_cmd = [
+                ffmpeg_path,
+                "-y",
+                "-i", mp3_path,
+                "-map", "0:a:0",
+                "-map_metadata", "0",
+                "-map_chapters", "0",
+                "-af", READER_AUDIO_NORMALIZE_FILTER,
+                "-c:a", "libmp3lame",
+                "-b:a", "192k",
+                tmp_output,
+            ]
+            result = _run_subprocess(
+                normalize_cmd,
+                capture_output=True,
+                text=True,
+                timeout=READER_FFMPEG_NORMALIZE_TIMEOUT_SEC,
+            )
+            if result.returncode == 0 and os.path.exists(tmp_output) and os.path.getsize(tmp_output) > 0:
+                os.replace(tmp_output, mp3_path)
+                return
+            raise RuntimeError(result.stderr.strip() or "ffmpeg audio normalization failed.")
+        except Exception as exc:
+            ffmpeg_error = exc
+            if os.path.exists(tmp_output):
+                try:
+                    os.remove(tmp_output)
+                except Exception:
+                    pass
+
+    if AudioSegment is None:
+        if ffmpeg_error is not None:
+            raise RuntimeError(f"Audio normalization failed: {ffmpeg_error}") from ffmpeg_error
+        raise RuntimeError("Audio normalization requires ffmpeg or pydub.")
+
+    try:
+        from pydub.effects import normalize as pydub_normalize
+
+        segment = AudioSegment.from_file(mp3_path, format="mp3")
+        normalized = pydub_normalize(segment, headroom=1.0)
+        normalized.export(tmp_output, format="mp3")
+        os.replace(tmp_output, mp3_path)
+    except Exception as exc:
+        if os.path.exists(tmp_output):
+            try:
+                os.remove(tmp_output)
+            except Exception:
+                pass
+        if ffmpeg_error is not None:
+            raise RuntimeError(f"Audio normalization failed: ffmpeg={ffmpeg_error}; pydub={exc}") from exc
+        raise RuntimeError(f"Audio normalization failed: {exc}") from exc
+
 def _export_pcm_to_mp3(raw_audio, output_path):
     if AudioSegment is None:
         raise RuntimeError("Невозможно сохранить MP3: не найден pydub.")
@@ -1732,6 +1794,8 @@ def _is_rate_limited_error(exc):
         or "quota" in text_low
         or "429" in text_low
         or "rate limit" in text_low
+        or "дневной лимит" in text_low
+        or ("лимит" in text_low and "исчерпан" in text_low)
     )
 
 
@@ -4614,136 +4678,154 @@ class VoiceSampleWorker(QThread):
         if genai is None or genai_types is None:
             raise RuntimeError("Для теста голоса требуется пакет google-genai.")
 
+        request_amount = 3 if self.engine_mode == "live" and self.voice_mode == "author_gender" else 1
+        budget_acquired = False
         if self.daily_request_limiter is not None and self.rpd_limit and self.rpd_limit > 0:
-            request_amount = 3 if self.engine_mode == "live" and self.voice_mode == "author_gender" else 1
             acquired, _, limit_value, reset_text = self.daily_request_limiter.try_acquire(
                 self.model_id, self.rpd_limit, amount=request_amount, api_key=self.api_key
             )
             if not acquired:
                 raise RuntimeError(
-                    f"Дневной лимит {limit_value} запросов для модели {self.model_id} исчерпан. "
+                    f"Дневной лимит {limit_value} запросов для модели {self.model_id} "
+                    f"для ключа {_mask_api_key(self.api_key)} исчерпан. "
                     f"Следующий сброс около {reset_text}."
                 )
+            budget_acquired = True
 
-        client = _make_genai_client(self.api_key)
+        try:
+            client = _make_genai_client(self.api_key)
 
-        if self.engine_mode == "flash_tts":
-            if self.voice_mode == "author_gender":
-                self.voice_mode = "duo"
-            if self.voice_mode == "duo":
-                test_script = (
-                    f"{TTS_SPEAKER_NARRATOR}: [serious] Рассказчик открывает сцену.\n"
-                    f"{TTS_SPEAKER_DIALOGUE}: [excited] А я отвечаю другим голосом."
+            if self.engine_mode == "flash_tts":
+                if self.voice_mode == "author_gender":
+                    self.voice_mode = "duo"
+                if self.voice_mode == "duo":
+                    test_script = (
+                        f"{TTS_SPEAKER_NARRATOR}: [serious] Рассказчик открывает сцену.\n"
+                        f"{TTS_SPEAKER_DIALOGUE}: [excited] А я отвечаю другим голосом."
+                    )
+                    speech_config = _build_duo_voice_speech_config(self.voice, self.secondary_voice)
+                else:
+                    test_script = "[clear, upbeat] Проверка голоса. Саша сушит сушки."
+                    speech_config = _build_single_voice_speech_config(self.voice)
+
+                config = genai_types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=speech_config,
                 )
-                speech_config = _build_duo_voice_speech_config(self.voice, self.secondary_voice)
+                response = await _to_thread_with_timeout(
+                    f"voice sample {self.model_id}",
+                    READER_GENERATE_CONTENT_TIMEOUT_SEC,
+                    client.models.generate_content,
+                    model=self.model_id,
+                    contents=_build_tts_generation_prompt(
+                        test_script,
+                        self.voice_mode,
+                        "Normal",
+                        extra_directive=self.tts_directive,
+                    ),
+                    config=config,
+                )
+                audio_data = _extract_audio_bytes(response)
             else:
-                test_script = "[clear, upbeat] Проверка голоса. Саша сушит сушки."
-                speech_config = _build_single_voice_speech_config(self.voice)
-
-            config = genai_types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=speech_config,
-            )
-            response = await _to_thread_with_timeout(
-                f"voice sample {self.model_id}",
-                READER_GENERATE_CONTENT_TIMEOUT_SEC,
-                client.models.generate_content,
-                model=self.model_id,
-                contents=_build_tts_generation_prompt(
-                    test_script,
-                    self.voice_mode,
-                    "Normal",
-                    extra_directive=self.tts_directive,
-                ),
-                config=config,
-            )
-            audio_data = _extract_audio_bytes(response)
-        else:
-            live_test_text = self.test_text
-            request_plan = []
-            if self.voice_mode == "author_gender":
-                request_plan = [
-                    (
-                        _build_live_single_voice_request_config(self.voice, "author"),
-                        "Рассказчик открывает сцену.",
-                    ),
-                    (
-                        _build_live_single_voice_request_config(self.secondary_voice, "male_dialogue"),
-                        "Я пришёл первым.",
-                    ),
-                    (
-                        _build_live_single_voice_request_config(self.tertiary_voice, "female_dialogue"),
-                        "А я уже всё проверила.",
-                    ),
-                ]
-            elif self.voice_mode == "duo":
-                live_test_text = (
-                    f"{TTS_SPEAKER_NARRATOR}: Рассказчик открывает сцену.\n"
-                    f"{TTS_SPEAKER_DIALOGUE}: А я отвечаю другим голосом."
-                )
-                request_plan = [
-                    (
-                        genai_types.LiveConnectConfig(
-                            response_modalities=["AUDIO"],
-                            speech_config=_build_duo_voice_speech_config(self.voice, self.secondary_voice),
-                            system_instruction="Ты профессиональная студия озвучки. Строго соблюдай роли Narrator и Dialogue.",
+                live_test_text = self.test_text
+                request_plan = []
+                if self.voice_mode == "author_gender":
+                    request_plan = [
+                        (
+                            _build_live_single_voice_request_config(self.voice, "author"),
+                            "Рассказчик открывает сцену.",
                         ),
-                        live_test_text,
+                        (
+                            _build_live_single_voice_request_config(self.secondary_voice, "male_dialogue"),
+                            "Я пришёл первым.",
+                        ),
+                        (
+                            _build_live_single_voice_request_config(self.tertiary_voice, "female_dialogue"),
+                            "А я уже всё проверила.",
+                        ),
+                    ]
+                elif self.voice_mode == "duo":
+                    live_test_text = (
+                        f"{TTS_SPEAKER_NARRATOR}: Рассказчик открывает сцену.\n"
+                        f"{TTS_SPEAKER_DIALOGUE}: А я отвечаю другим голосом."
                     )
-                ]
-            else:
-                request_plan = [
-                    (
-                        _build_live_single_voice_request_config(self.voice, "default"),
-                        live_test_text,
-                    )
-                ]
+                    request_plan = [
+                        (
+                            genai_types.LiveConnectConfig(
+                                response_modalities=["AUDIO"],
+                                speech_config=_build_duo_voice_speech_config(self.voice, self.secondary_voice),
+                                system_instruction="Ты профессиональная студия озвучки. Строго соблюдай роли Narrator и Dialogue.",
+                            ),
+                            live_test_text,
+                        )
+                    ]
+                else:
+                    request_plan = [
+                        (
+                            _build_live_single_voice_request_config(self.voice, "default"),
+                            live_test_text,
+                        )
+                    ]
 
-            audio_data = b""
+                audio_data = b""
 
-            for config, text_value in request_plan:
-                request_audio = bytearray()
-                session_cm = None
-                try:
-                    session_cm, session = await _open_live_session_with_timeout(client, self.model_id, config)
+                for config, text_value in request_plan:
+                    request_audio = bytearray()
+                    session_cm = None
                     try:
-                        await asyncio.wait_for(
-                            session.send_client_content(turns=text_value, turn_complete=True),
-                            timeout=READER_LIVE_SEND_TIMEOUT_SEC,
-                        )
-                    except Exception:
-                        await asyncio.wait_for(
-                            session.send_realtime_input(text=text_value),
-                            timeout=READER_LIVE_SEND_TIMEOUT_SEC,
-                        )
-                    receive_iterator = session.receive().__aiter__()
-
-                    current_timeout = READER_LIVE_FIRST_CHUNK_TIMEOUT_SEC
-
-                    while True:
+                        session_cm, session = await _open_live_session_with_timeout(client, self.model_id, config)
                         try:
-                            response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
-                            current_timeout = READER_LIVE_NEXT_CHUNK_TIMEOUT_SEC
+                            await asyncio.wait_for(
+                                session.send_client_content(turns=text_value, turn_complete=True),
+                                timeout=READER_LIVE_SEND_TIMEOUT_SEC,
+                            )
+                        except Exception:
+                            await asyncio.wait_for(
+                                session.send_realtime_input(text=text_value),
+                                timeout=READER_LIVE_SEND_TIMEOUT_SEC,
+                            )
+                        receive_iterator = session.receive().__aiter__()
 
-                            if response.server_content:
-                                if response.server_content.model_turn:
-                                    for part in response.server_content.model_turn.parts:
-                                        if part.inline_data:
-                                            request_audio.extend(part.inline_data.data)
+                        current_timeout = READER_LIVE_FIRST_CHUNK_TIMEOUT_SEC
 
-                                if getattr(response.server_content, "turn_complete", False):
-                                    break
+                        while True:
+                            try:
+                                response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                                current_timeout = READER_LIVE_NEXT_CHUNK_TIMEOUT_SEC
 
-                        except asyncio.TimeoutError:
-                            break
-                        except StopAsyncIteration:
-                            break
-                finally:
-                    await _close_live_session_quietly(session_cm)
-                audio_data += _trim_raw_pcm_boundaries(bytes(request_audio))
+                                if response.server_content:
+                                    if response.server_content.model_turn:
+                                        for part in response.server_content.model_turn.parts:
+                                            if part.inline_data:
+                                                request_audio.extend(part.inline_data.data)
 
-        if audio_data:
+                                    if getattr(response.server_content, "turn_complete", False):
+                                        break
+
+                            except asyncio.TimeoutError:
+                                break
+                            except StopAsyncIteration:
+                                break
+                    finally:
+                        await _close_live_session_quietly(session_cm)
+                    audio_data += _trim_raw_pcm_boundaries(bytes(request_audio))
+
+            if not audio_data:
+                raise RuntimeError("TTS модель не вернула аудио для теста голоса.")
+
+            budget_acquired = False
             self.play_audio(audio_data)
+        except Exception:
+            if budget_acquired and self.daily_request_limiter is not None:
+                try:
+                    self.daily_request_limiter.release(
+                        self.model_id,
+                        amount=request_amount,
+                        api_key=self.api_key,
+                    )
+                except Exception:
+                    pass
+            raise
 
     def play_audio(self, data):
         if pyaudio is None:
@@ -5567,10 +5649,27 @@ class MainWindow(QMainWindow):
         return int(_lookup_model_limit(model_id, "rpd", 0) or 0)
 
     def _reader_key_model_quota_exhausted(self, api_key, model_id):
+        return not self._reader_key_has_request_budget(api_key, model_id, amount=1)
+
+    def _reader_key_has_request_budget(self, api_key, model_id, amount=1):
         limit = self._reader_request_limit_for_model(model_id)
         if not limit or limit <= 0:
-            return False
-        return self._reader_request_count_for_key(api_key, model_id) >= limit
+            return True
+        try:
+            amount = max(1, int(amount or 1))
+        except Exception:
+            amount = 1
+        return self._reader_request_count_for_key(api_key, model_id) + amount <= limit
+
+    def _voice_test_request_amount(self, engine_mode, voice_mode):
+        return 3 if engine_mode == "live" and voice_mode == "author_gender" else 1
+
+    def _select_voice_test_api_key(self, model_id, engine_mode, voice_mode):
+        request_amount = self._voice_test_request_amount(engine_mode, voice_mode)
+        for api_key in self._get_available_api_keys([model_id] if model_id else []):
+            if self._reader_key_has_request_budget(api_key, model_id, request_amount):
+                return api_key
+        return ""
 
     def _build_key_state_snapshot(self, required_model_ids=None):
         model_ids = [model_id for model_id in (required_model_ids or self._reader_status_model_ids()) if model_id]
@@ -6435,16 +6534,26 @@ class MainWindow(QMainWindow):
             self.set_api_keys()
             if not self.api_keys: return
             
-        self.btn_test_voice.setEnabled(False)
-        self.btn_test_voice.setText("⏳ Загрузка...")
-        
-        api_key = self.api_keys[0]
         actual_model_id = self._selected_model_id()
         voice = self.combo_voices.currentData()
         engine_mode = self._current_engine_id()
         voice_mode = self._selected_voice_mode()
         secondary_voice = self.combo_voice_secondary.currentData()
         tertiary_voice = self.combo_voice_tertiary.currentData()
+        api_key = self._select_voice_test_api_key(actual_model_id, engine_mode, voice_mode)
+        if not api_key:
+            exhausted_message = self._project_rpd_exhausted_message(actual_model_id)
+            QMessageBox.warning(
+                self,
+                "Ключи API",
+                exhausted_message
+                or "Нет доступных API-ключей для теста выбранного голоса. Проверьте ключи или дождитесь сброса лимитов.",
+            )
+            self._update_key_state_ui()
+            return
+
+        self.btn_test_voice.setEnabled(False)
+        self.btn_test_voice.setText("⏳ Загрузка...")
         
         # Создаем и запускаем независимый мини-воркер
         self.tester_worker = VoiceSampleWorker(
@@ -6464,6 +6573,20 @@ class MainWindow(QMainWindow):
             self.btn_test_voice.setText("🔊 Плей")
             
         def on_test_error(err):
+            if _is_invalid_api_key_error(err):
+                self.disabled_api_keys.add(api_key)
+                self._mark_key_invalid(api_key, err, actual_model_id)
+                self._update_worker_spinbox_limit()
+                self._update_key_state_ui()
+            elif _is_rate_limited_error(err):
+                self.disabled_api_keys.add(api_key)
+                if self.settings_manager is not None:
+                    try:
+                        self.settings_manager.mark_key_as_exhausted(api_key, actual_model_id)
+                    except Exception:
+                        pass
+                self._update_worker_spinbox_limit()
+                self._update_key_state_ui()
             QMessageBox.warning(self, "Ошибка теста", f"Не удалось получить голос от серверов Google:\n{err}")
             self.btn_test_voice.setEnabled(True)
             self.btn_test_voice.setText("🔊 Плей")
