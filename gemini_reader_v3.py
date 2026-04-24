@@ -164,6 +164,9 @@ READER_FFMPEG_CONCAT_TIMEOUT_SEC = 3600
 READER_FFMPEG_NORMALIZE_TIMEOUT_SEC = 7200
 READER_FFMPEG_VIDEO_TIMEOUT_SEC = 7200
 READER_AUDIO_NORMALIZE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+READER_MP3_EXPORT_BITRATE = "320k"
+READER_VIDEO_AUDIO_BITRATE = "192k"
+READER_VIDEO_AUDIO_SAMPLE_RATE = 48000
 
 ENGINE_MODES = {
     "Live API": "live",
@@ -1684,7 +1687,7 @@ def _export_trimmed_mp3_file(source_path, output_path):
     segment = _load_trimmed_mp3_segment(source_path)
     tmp_path = f"{output_path}.tmp"
     try:
-        segment.export(tmp_path, format="mp3")
+        segment.export(tmp_path, format="mp3", bitrate=READER_MP3_EXPORT_BITRATE)
         os.replace(tmp_path, output_path)
     except Exception as exc:
         if os.path.exists(tmp_path):
@@ -1714,7 +1717,7 @@ def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
                 "-map_chapters", "0",
                 "-af", READER_AUDIO_NORMALIZE_FILTER,
                 "-c:a", "libmp3lame",
-                "-b:a", "192k",
+                "-b:a", READER_MP3_EXPORT_BITRATE,
                 tmp_output,
             ]
             result = _run_subprocess(
@@ -1745,7 +1748,7 @@ def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
 
         segment = AudioSegment.from_file(mp3_path, format="mp3")
         normalized = pydub_normalize(segment, headroom=1.0)
-        normalized.export(tmp_output, format="mp3")
+        normalized.export(tmp_output, format="mp3", bitrate=READER_MP3_EXPORT_BITRATE)
         os.replace(tmp_output, mp3_path)
     except Exception as exc:
         if os.path.exists(tmp_output):
@@ -1768,7 +1771,7 @@ def _export_pcm_to_mp3(raw_audio, output_path):
     try:
         snap = AudioSegment(data=raw_audio, sample_width=2, frame_rate=AUDIO_RATE, channels=AUDIO_CHANNELS)
         snap = _trim_audio_segment_boundaries(snap)
-        snap.export(tmp_path, format="mp3")
+        snap.export(tmp_path, format="mp3", bitrate=READER_MP3_EXPORT_BITRATE)
         os.replace(tmp_path, output_path)
     except Exception as exc:
         if os.path.exists(tmp_path):
@@ -1863,7 +1866,7 @@ def _combine_mp3_sequence(input_paths, output_path):
             combined = segment if combined is None else (combined + segment)
         if combined is None:
             raise RuntimeError("Нет валидных MP3-файлов для сборки.")
-        combined.export(tmp_output, format="mp3")
+        combined.export(tmp_output, format="mp3", bitrate=READER_MP3_EXPORT_BITRATE)
         os.replace(tmp_output, output_path)
         _normalize_mp3_file(output_path, ffmpeg_path=ffmpeg_path)
     except Exception as exc:
@@ -2948,7 +2951,9 @@ class AudioCombinerWorker(QThread):
                             f"pad={VIDEO_FRAME_SIZE}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
                         ),
                         "-c:a", "aac",
-                        "-b:a", "192k",
+                        "-ar", str(READER_VIDEO_AUDIO_SAMPLE_RATE),
+                        "-ac", str(AUDIO_CHANNELS),
+                        "-b:a", READER_VIDEO_AUDIO_BITRATE,
                         "-movflags", "+faststart",
                         "-shortest",
                         video_output_path,

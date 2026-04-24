@@ -34,7 +34,13 @@ class ReaderAudioNormalizationTests(unittest.TestCase):
             self.assertIn(reader.READER_AUDIO_NORMALIZE_FILTER, cmd)
             self.assertIn("-map_metadata", cmd)
             self.assertIn("-map_chapters", cmd)
+            self.assertIn(reader.READER_MP3_EXPORT_BITRATE, cmd)
             self.assertEqual(kwargs["timeout"], reader.READER_FFMPEG_NORMALIZE_TIMEOUT_SEC)
+
+    def test_youtube_video_audio_export_settings_are_explicit(self):
+        self.assertEqual(reader.READER_VIDEO_AUDIO_SAMPLE_RATE, 48000)
+        self.assertEqual(reader.READER_VIDEO_AUDIO_BITRATE, "192k")
+        self.assertEqual(reader.AUDIO_CHANNELS, 1)
 
 
 if __name__ == "__main__":
