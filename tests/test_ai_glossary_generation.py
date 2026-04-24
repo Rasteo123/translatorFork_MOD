@@ -189,7 +189,19 @@ class AiGlossaryGenerationTests(unittest.TestCase):
         self.assertEqual(harness.instances_spin.value(), 3)
         self.assertEqual(harness.key_widget.get_active_keys(), ["key-1", "key-2", "key-3"])
 
-    def test_optimal_batch_size_does_not_replace_user_task_size(self):
+    def test_initial_settings_do_not_treat_inherited_task_size_as_glossary_user_size(self):
+        harness = _GenerationSettingsHarness()
+
+        harness._apply_initial_settings(
+            {
+                "task_size_limit": 15404,
+                "task_size_limit_user_defined": True,
+            }
+        )
+
+        self.assertFalse(harness.translation_options_widget.received_settings["task_size_limit_user_defined"])
+
+    def test_optimal_batch_size_does_not_replace_glossary_user_task_size(self):
         harness = _GlossaryBatchSizeHarness(user_defined=True)
 
         with patch.object(api_config, "all_models", return_value={"test-model": {"context_length": 200000}}):
@@ -201,10 +213,10 @@ class AiGlossaryGenerationTests(unittest.TestCase):
     def test_optimal_batch_size_updates_auto_task_size(self):
         harness = _GlossaryBatchSizeHarness(user_defined=False)
 
-        with patch.object(api_config, "all_models", return_value={"test-model": {"context_length": 200000}}):
+        with patch.object(api_config, "all_models", return_value={"test-model": {"context_length": 230000}}):
             harness._calculate_optimal_batch_size()
 
-        self.assertNotEqual(harness.translation_options_widget.task_size_spin.value(), 15404)
+        self.assertEqual(harness.translation_options_widget.task_size_spin.value(), 69000)
         self.assertEqual(harness.translation_options_widget.info_updates, 0)
 
 

@@ -69,6 +69,16 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
         self.assertEqual(widget.task_size_spin.value(), 15404)
         self.assertTrue(widget.is_task_size_user_defined())
 
+    def test_text_edit_marks_task_size_as_user_defined_before_value_commit(self):
+        widget = self._create_widget()
+        widget.task_size_spin.lineEdit().textEdited.emit("15404")
+
+        with patch.object(api_config, "all_models", return_value={"test-model": {"max_output_tokens": 200000}}):
+            widget.update_recommendations_from_model("test-model")
+
+        self.assertEqual(widget.task_size_spin.value(), 10000)
+        self.assertTrue(widget.is_task_size_user_defined())
+
 
 if __name__ == "__main__":
     unittest.main()

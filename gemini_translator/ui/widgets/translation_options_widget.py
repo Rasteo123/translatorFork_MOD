@@ -102,6 +102,9 @@ class TranslationOptionsWidget(QGroupBox):
         self.chunking_checkbox.toggled.connect(self._on_mode_changed)
         self.chunk_on_error_checkbox.toggled.connect(self._on_mode_changed)
         self.task_size_spin.valueChanged.connect(self._on_task_size_changed)
+        line_edit = self.task_size_spin.lineEdit()
+        if line_edit is not None:
+            line_edit.textEdited.connect(self._mark_task_size_user_defined)
 
         self._on_mode_changed(emit_signal=False)
 
@@ -131,6 +134,10 @@ class TranslationOptionsWidget(QGroupBox):
 
     def set_task_size_limit(self, value, *, user_defined=False):
         self._set_task_size_value(value, user_defined=user_defined)
+
+    def _mark_task_size_user_defined(self, *_args):
+        if not self._changing_task_size_programmatically:
+            self._task_size_user_defined = True
 
     def set_settings(self, settings: dict):
         settings = settings or {}
@@ -389,8 +396,7 @@ class TranslationOptionsWidget(QGroupBox):
             )
 
     def _on_task_size_changed(self, _value: int):
-        if not self._changing_task_size_programmatically:
-            self._task_size_user_defined = True
+        self._mark_task_size_user_defined()
 
         self._update_info_text()
         self.settings_changed.emit()

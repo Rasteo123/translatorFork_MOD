@@ -1092,6 +1092,11 @@ class GenerationSessionDialog(QDialog):
         # Не наследуем системные инструкции из основного окна.
         initial_settings['system_instruction'] = None
         initial_settings['use_system_instruction'] = False
+        if not initial_settings.get('glossary_task_size_limit_override'):
+            # The glossary dialog has its own model-based batch-size heuristic.
+            # A task_size_limit inherited from the main translation window is only
+            # a seed value and must not block the glossary auto-size (e.g. 69k for Gemini).
+            initial_settings['task_size_limit_user_defined'] = False
 
         provider_id = initial_settings.get('provider')
         active_keys = initial_settings.get('api_keys', [])
