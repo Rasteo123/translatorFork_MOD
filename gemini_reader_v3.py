@@ -1488,7 +1488,15 @@ class ProjectRateLimitReachedError(RuntimeError):
 
 def _is_invalid_api_key_error(exc):
     text = str(exc or "")
-    return "API_KEY_INVALID" in text or "API key not valid" in text
+    text_low = text.lower()
+    return (
+        "api_key_invalid" in text_low
+        or "api key not valid" in text_low
+        or "consumer_suspended" in text_low
+        or ("consumer" in text_low and "suspended" in text_low)
+        or ("api_key" in text_low and "suspended" in text_low)
+        or ("api key" in text_low and "suspended" in text_low)
+    )
 
 
 def _mask_api_key(api_key):
