@@ -110,6 +110,36 @@ class LocalModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(local_models["Gemma 3 12B IT (LM Studio)"]["default_temperature"], 0.6)
         self.assertNotIn("max_output_tokens", local_models["Gemma 3 12B IT (LM Studio)"])
 
+    def test_ensure_dynamic_models_skips_ollama_show_until_forced(self):
+        post_calls = []
+
+        def fake_get(url, timeout=None):
+            if url == "http://127.0.0.1:11434/api/tags":
+                return _DummyResponse(200, {"models": [{"name": "deepseek-r1:8b"}]})
+            if url in {
+                "http://127.0.0.1:11434/v1/models",
+                "http://127.0.0.1:11434/api/v0/models",
+                "http://localhost:1234/api/tags",
+                "http://localhost:1234/v1/models",
+                "http://localhost:1234/api/v0/models",
+            }:
+                return _DummyResponse(404, {})
+            raise AssertionError(f"Unexpected discovery URL: {url}")
+
+        def fake_post(url, json=None, timeout=None):
+            post_calls.append((url, json))
+            return _DummyResponse(200, {})
+
+        with patch.dict(os.environ, {"GT_DISABLE_LOCAL_MODEL_DISCOVERY": "0"}), \
+             patch.object(api_config, "requests", SimpleNamespace(get=fake_get, post=fake_post)):
+            api_config.ensure_dynamic_provider_models("local")
+            local_models = api_config.api_providers()["local"]["models"]
+
+        self.assertEqual(post_calls, [])
+        self.assertIn("DeepSeek R1 8B (Ollama)", local_models)
+        self.assertEqual(local_models["DeepSeek R1 8B (Ollama)"]["context_length"], 12000)
+        self.assertNotIn("default_temperature", local_models["DeepSeek R1 8B (Ollama)"])
+
     def test_refresh_dynamic_models_falls_back_to_static_config_when_servers_unreachable(self):
         def fake_get(url, timeout=None):
             raise OSError(f"Connection failed for {url}")

@@ -739,7 +739,10 @@ def _merge_discovered_local_model_entry(existing: dict | None, new_entry: dict) 
     return merged
 
 
-def _discover_models_for_local_source(source: dict) -> tuple[bool, list[dict]]:
+def _discover_models_for_local_source(
+    source: dict,
+    include_details: bool = True,
+) -> tuple[bool, list[dict]]:
     discovered_by_id = {}
     is_successful = False
     root_url = source.get("root_url")
@@ -780,37 +783,38 @@ def _discover_models_for_local_source(source: dict) -> tuple[bool, list[dict]]:
                     model_entry,
                 )
 
-    for model_id in list(discovered_by_id.keys()):
-        ok, payload = _post_local_models_json(
-            _join_http_path(root_url, "/api/show"),
-            {"model": model_id},
-        )
-        if ok:
-            discovered_by_id[model_id] = _merge_discovered_local_model_entry(
-                discovered_by_id.get(model_id),
-                _make_discovered_local_model_entry(model_id, payload),
+    if include_details:
+        for model_id in list(discovered_by_id.keys()):
+            ok, payload = _post_local_models_json(
+                _join_http_path(root_url, "/api/show"),
+                {"model": model_id},
             )
-            continue
+            if ok:
+                discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                    discovered_by_id.get(model_id),
+                    _make_discovered_local_model_entry(model_id, payload),
+                )
+                continue
 
-        quoted_model_id = quote(model_id, safe="")
-        ok, payload = _fetch_local_models_json(
-            _join_http_path(root_url, f"/v1/models/{quoted_model_id}")
-        )
-        if ok:
-            discovered_by_id[model_id] = _merge_discovered_local_model_entry(
-                discovered_by_id.get(model_id),
-                _make_discovered_local_model_entry(model_id, payload),
+            quoted_model_id = quote(model_id, safe="")
+            ok, payload = _fetch_local_models_json(
+                _join_http_path(root_url, f"/v1/models/{quoted_model_id}")
             )
-            continue
+            if ok:
+                discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                    discovered_by_id.get(model_id),
+                    _make_discovered_local_model_entry(model_id, payload),
+                )
+                continue
 
-        ok, payload = _fetch_local_models_json(
-            _join_http_path(root_url, f"/api/v0/models/{quoted_model_id}")
-        )
-        if ok:
-            discovered_by_id[model_id] = _merge_discovered_local_model_entry(
-                discovered_by_id.get(model_id),
-                _make_discovered_local_model_entry(model_id, payload),
+            ok, payload = _fetch_local_models_json(
+                _join_http_path(root_url, f"/api/v0/models/{quoted_model_id}")
             )
+            if ok:
+                discovered_by_id[model_id] = _merge_discovered_local_model_entry(
+                    discovered_by_id.get(model_id),
+                    _make_discovered_local_model_entry(model_id, payload),
+                )
 
     return is_successful, sorted(
         discovered_by_id.values(),
@@ -874,7 +878,10 @@ def _build_local_model_entry(model_entry: dict, source: dict, static_by_model_an
     return display_name, _default_local_model_config(model_entry, source)
 
 
-def _discover_local_provider_models(provider_config: dict) -> dict:
+def _discover_local_provider_models(
+    provider_config: dict,
+    include_details: bool = True,
+) -> dict:
     static_models = deepcopy(provider_config.get("models", {}))
     if not _local_model_discovery_enabled() or requests is None:
         return static_models
@@ -891,7 +898,10 @@ def _discover_local_provider_models(provider_config: dict) -> dict:
     successful_sources = 0
 
     for source in discovery_sources:
-        is_successful, model_entries = _discover_models_for_local_source(source)
+        is_successful, model_entries = _discover_models_for_local_source(
+            source,
+            include_details=include_details,
+        )
         if not is_successful:
             continue
 
@@ -926,7 +936,10 @@ def _refresh_dynamic_provider_models(provider_id: str, force: bool = False) -> d
             return cached_models
 
         provider_config = _API_PROVIDERS.get(normalized_provider, {})
-        resolved_models = _discover_local_provider_models(provider_config)
+        resolved_models = _discover_local_provider_models(
+            provider_config,
+            include_details=force,
+        )
         _DYNAMIC_PROVIDER_MODELS[normalized_provider] = resolved_models
         _DYNAMIC_PROVIDER_MODELS_TS[normalized_provider] = now
         _ALL_MODELS = _build_all_models(_compose_runtime_providers())
