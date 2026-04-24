@@ -480,6 +480,8 @@
     "visible": true,
     "needs_warmup": false,
     "base_timeout": 1800,
+    "requires_api_key": false,
+    "placeholder_api_key": "__local_model_session__",
     "base_url": "http://127.0.0.1:11434/v1/chat/completions",
     "file_suffix": "_translated_local.html",
     "shared_request_counter": false,

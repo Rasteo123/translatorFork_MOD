@@ -130,7 +130,11 @@ class KeyManagementWidget(QWidget):
             self.bus = app.event_bus
             self.bus.event_posted.connect(self.on_event)
         else:
+            class DummySignal:
+                def emit(self, *args, **kwargs): pass
+
             class DummyBus:
+                event_posted = DummySignal()
                 def emit(self, *args, **kwargs): pass
             self.bus = DummyBus()
 
@@ -450,15 +454,23 @@ class KeyManagementWidget(QWidget):
         return api_config.provider_placeholder_api_key(provider_id)
 
     def _create_virtual_session_item(self, provider_id: str):
-        item = QtWidgets.QListWidgetItem("Встроенная браузерная сессия")
+        if provider_id == "local":
+            item_text = "Локальная сессия без API-ключа"
+            tooltip_text = "Локальные модели используют локальный сервер и не требуют API-ключа."
+        else:
+            item_text = "Встроенная браузерная сессия"
+            tooltip_text = (
+                "Этот сервис использует сохраненный браузерный профиль "
+                "и не требует API-ключа."
+            )
+
+        item = QtWidgets.QListWidgetItem(item_text)
         item.setData(
             QtCore.Qt.ItemDataRole.UserRole,
             self._provider_placeholder_key(provider_id),
         )
         item.setForeground(QtGui.QColor("#90EE90"))
-        item.setToolTip(
-            "Этот сервис использует сохраненный браузерный профиль и не требует API-ключа."
-        )
+        item.setToolTip(tooltip_text)
         item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
         return item
 
