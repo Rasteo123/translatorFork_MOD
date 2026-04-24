@@ -13,6 +13,42 @@ class DeepseekApiHandler(BaseApiHandler):
     """
     Хендлер для официального API DeepSeek.
     """
+
+    def _apply_deepseek_thinking_options(self, payload):
+        model_config = self.worker.model_config if isinstance(self.worker.model_config, dict) else {}
+        configured_mode = str(model_config.get("deepseek_thinking") or "").strip().lower()
+        has_thinking_config = "thinkingLevel" in model_config or "min_thinking_budget" in model_config
+        supports_thinking = (
+            configured_mode in {"enabled", "disabled"}
+            or model_config.get("thinkingLevel") is not None
+            or (has_thinking_config and model_config.get("min_thinking_budget") is not False)
+        )
+        if not supports_thinking:
+            return
+
+        if configured_mode in {"enabled", "disabled"}:
+            thinking_enabled = configured_mode == "enabled"
+        else:
+            thinking_enabled = bool(getattr(self.worker, "thinking_enabled", False))
+
+        payload["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
+        if not thinking_enabled:
+            return
+
+        effort = (
+            getattr(self.worker, "thinking_level", None)
+            or model_config.get("default_reasoning_effort")
+            or model_config.get("min_thinking_budget")
+            or "high"
+        )
+        effort = str(effort).strip().lower()
+        if effort in {"max", "xhigh"}:
+            payload["reasoning_effort"] = "max"
+        else:
+            payload["reasoning_effort"] = "high"
+
+        # DeepSeek ignores sampling params in thinking mode; removing them keeps debug payloads honest.
+        payload.pop("temperature", None)
     
     def setup_client(self, client_override=None, proxy_settings=None):
         super().setup_client(client_override, proxy_settings)
@@ -51,6 +87,7 @@ class DeepseekApiHandler(BaseApiHandler):
         temperature = self._temperature_payload_value()
         if temperature is not None:
             payload["temperature"] = temperature
+        self._apply_deepseek_thinking_options(payload)
 
         if max_output_tokens:
             payload["max_tokens"] = max_output_tokens

@@ -188,6 +188,60 @@
       "duration_hours": 24
     },
     "models": {
+      "DeepSeek V4 Flash NonThink": {
+        "id": "deepseek-v4-flash",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 384000,
+        "context_length": 1000000,
+        "deepseek_thinking": "disabled",
+        "min_thinking_budget": false
+      },
+      "DeepSeek V4 Flash Think": {
+        "id": "deepseek-v4-flash",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 384000,
+        "context_length": 1000000,
+        "deepseek_thinking": "enabled",
+        "thinkingLevel": [
+          "high",
+          "max"
+        ],
+        "min_thinking_budget": "high",
+        "default_reasoning_effort": "high"
+      },
+      "DeepSeek V4 Pro NonThink": {
+        "id": "deepseek-v4-pro",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 384000,
+        "context_length": 1000000,
+        "deepseek_thinking": "disabled",
+        "min_thinking_budget": false
+      },
+      "DeepSeek V4 Pro Think": {
+        "id": "deepseek-v4-pro",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 384000,
+        "context_length": 1000000,
+        "deepseek_thinking": "enabled",
+        "thinkingLevel": [
+          "high",
+          "max"
+        ],
+        "min_thinking_budget": "high",
+        "default_reasoning_effort": "high"
+      },
       "deepseek-chat NonThink": {
         "id": "deepseek-chat",
         "rpm": 5,
@@ -196,6 +250,7 @@
         "max_concurrent_requests": 1,
         "max_output_tokens": 8192,
         "context_window": 128000,
+        "deepseek_thinking": "disabled",
         "min_thinking_budget": false
       },
       "deepseek-reasoner Think": {
@@ -206,7 +261,13 @@
         "max_concurrent_requests": 1,
         "max_output_tokens": 64000,
         "context_window": 128000,
-        "min_thinking_budget": false
+        "deepseek_thinking": "enabled",
+        "thinkingLevel": [
+          "high",
+          "max"
+        ],
+        "min_thinking_budget": "high",
+        "default_reasoning_effort": "high"
       }
     }
    },
