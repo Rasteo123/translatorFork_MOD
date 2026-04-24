@@ -16,7 +16,6 @@ import html
 import logging
 import hashlib
 import zipfile
-import concurrent.futures
 from datetime import datetime, timedelta
 
 try:
@@ -395,33 +394,118 @@ class _GuiLoggingHandler(logging.Handler):
             pass
 
 
+class ReaderOperationTimeout(RuntimeError):
+    pass
+
+
 def _run_subprocess(args, **kwargs):
     if WINDOWS_CREATE_NO_WINDOW:
         kwargs.setdefault("creationflags", WINDOWS_CREATE_NO_WINDOW)
     return subprocess.run(args, **kwargs)
 
 
-async def _to_thread_with_timeout(label, timeout_seconds, func, *args, **kwargs):
-    loop = asyncio.get_running_loop()
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="reader-blocking")
-    future = loop.run_in_executor(executor, lambda: func(*args, **kwargs))
-    try:
-        return await asyncio.wait_for(future, timeout=timeout_seconds)
-    except asyncio.TimeoutError as exc:
-        future.cancel()
-        raise RuntimeError(f"{label} timed out after {int(timeout_seconds)} seconds.") from exc
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+async def _to_thread_with_timeout(
+    label,
+    timeout_seconds,
+    func,
+    *args,
+    should_continue=None,
+    poll_interval=0.25,
+    **kwargs,
+):
+    timeout_seconds = max(0.1, float(timeout_seconds or 0.0))
+    result_queue = queue.Queue(maxsize=1)
+
+    def _runner():
+        try:
+            result = func(*args, **kwargs)
+            payload = (True, result)
+        except BaseException as exc:
+            payload = (False, exc)
+        try:
+            result_queue.put_nowait(payload)
+        except Exception:
+            pass
+
+    thread_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(label or "call"))[:48]
+    worker_thread = threading.Thread(
+        target=_runner,
+        name=f"reader-blocking-{thread_name}",
+        daemon=True,
+    )
+    worker_thread.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    poll_interval = max(0.05, float(poll_interval or 0.25))
+
+    while True:
+        try:
+            ok, payload = result_queue.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            if ok:
+                return payload
+            raise payload
+
+        if should_continue is not None:
+            try:
+                still_running = bool(should_continue())
+            except Exception:
+                still_running = True
+            if not still_running:
+                raise ReaderWorkerStopped()
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ReaderOperationTimeout(f"{label} timed out after {int(timeout_seconds)} seconds.")
+
+        await asyncio.sleep(min(poll_interval, remaining))
 
 
-async def _open_live_session_with_timeout(client, model_id, config):
+async def _await_with_timeout(
+    label,
+    timeout_seconds,
+    awaitable,
+    should_continue=None,
+    poll_interval=0.25,
+):
+    timeout_seconds = max(0.1, float(timeout_seconds or 0.0))
+    poll_interval = max(0.05, float(poll_interval or 0.25))
+    task = asyncio.ensure_future(awaitable)
+    deadline = time.monotonic() + timeout_seconds
+
+    while True:
+        if task.done():
+            return await task
+
+        if should_continue is not None:
+            try:
+                still_running = bool(should_continue())
+            except Exception:
+                still_running = True
+            if not still_running:
+                task.cancel()
+                raise ReaderWorkerStopped()
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            task.cancel()
+            raise ReaderOperationTimeout(f"{label} timed out after {int(timeout_seconds)} seconds.")
+
+        await asyncio.sleep(min(poll_interval, remaining))
+
+
+async def _open_live_session_with_timeout(client, model_id, config, should_continue=None):
     session_cm = client.aio.live.connect(model=model_id, config=config)
     try:
-        session = await asyncio.wait_for(
+        session = await _await_with_timeout(
+            "Live API connect",
+            READER_LIVE_CONNECT_TIMEOUT_SEC,
             session_cm.__aenter__(),
-            timeout=READER_LIVE_CONNECT_TIMEOUT_SEC,
+            should_continue=should_continue,
         )
-    except asyncio.TimeoutError as exc:
+    except ReaderOperationTimeout as exc:
         raise RuntimeError(
             f"Live API connect timed out after {READER_LIVE_CONNECT_TIMEOUT_SEC} seconds."
         ) from exc
@@ -1672,6 +1756,7 @@ def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
         if ffmpeg_error is not None:
             raise RuntimeError(f"Audio normalization failed: ffmpeg={ffmpeg_error}; pydub={exc}") from exc
         raise RuntimeError(f"Audio normalization failed: {exc}") from exc
+
 
 def _export_pcm_to_mp3(raw_audio, output_path):
     if AudioSegment is None:
@@ -3017,6 +3102,9 @@ class GeminiWorker(QThread):
         if not self._is_running:
             raise ReaderWorkerStopped()
 
+    def _should_continue_blocking_call(self):
+        return bool(self._is_running)
+
     async def _sleep_interruptibly(self, seconds):
         deadline = time.monotonic() + max(0.0, float(seconds or 0.0))
         while self._is_running:
@@ -3393,6 +3481,7 @@ class GeminiWorker(QThread):
                 "Edge TTS decode",
                 READER_AUDIO_EXPORT_TIMEOUT_SEC,
                 _decode_silently,
+                should_continue=self._should_continue_blocking_call,
             )
 
         except Exception as e:
@@ -3429,14 +3518,20 @@ class GeminiWorker(QThread):
             return
         self._ensure_running()
         try:
-            await asyncio.wait_for(
+            await _await_with_timeout(
+                "Live API send_client_content",
+                READER_LIVE_SEND_TIMEOUT_SEC,
                 session.send_client_content(turns=text_value, turn_complete=True),
-                timeout=READER_LIVE_SEND_TIMEOUT_SEC,
+                should_continue=self._should_continue_blocking_call,
             )
+        except ReaderWorkerStopped:
+            raise
         except Exception:
-            await asyncio.wait_for(
+            await _await_with_timeout(
+                "Live API send_realtime_input",
+                READER_LIVE_SEND_TIMEOUT_SEC,
                 session.send_realtime_input(text=text_value),
-                timeout=READER_LIVE_SEND_TIMEOUT_SEC,
+                should_continue=self._should_continue_blocking_call,
             )
 
     async def _collect_live_request_raw_audio(self, client, config, text_to_send, on_chunk=None):
@@ -3452,7 +3547,12 @@ class GeminiWorker(QThread):
                 rpd_limit=self.request_rpd_limit,
             )
             self._ensure_running()
-            session_cm, session = await _open_live_session_with_timeout(client, self.model_id, config)
+            session_cm, session = await _open_live_session_with_timeout(
+                client,
+                self.model_id,
+                config,
+                should_continue=self._should_continue_blocking_call,
+            )
             await self._send_live_text_turn(session, text_to_send)
 
             receive_iterator = session.receive().__aiter__()
@@ -3460,7 +3560,12 @@ class GeminiWorker(QThread):
 
             while self._is_running:
                 try:
-                    response = await asyncio.wait_for(receive_iterator.__anext__(), timeout=current_timeout)
+                    response = await _await_with_timeout(
+                        "Live API receive",
+                        current_timeout,
+                        receive_iterator.__anext__(),
+                        should_continue=self._should_continue_blocking_call,
+                    )
                     current_timeout = READER_LIVE_NEXT_CHUNK_TIMEOUT_SEC
 
                     if response.server_content:
@@ -3473,7 +3578,7 @@ class GeminiWorker(QThread):
                                         on_chunk(data)
                         if getattr(response.server_content, "turn_complete", False):
                             break
-                except asyncio.TimeoutError:
+                except ReaderOperationTimeout:
                     break
                 except StopAsyncIteration:
                     break
@@ -3745,6 +3850,7 @@ class GeminiWorker(QThread):
             "MP3 export",
             READER_AUDIO_EXPORT_TIMEOUT_SEC,
             _exp,
+            should_continue=self._should_continue_blocking_call,
         )
         if final:
             with self.buffer_lock:
@@ -3916,6 +4022,7 @@ class GeminiParallelChapterWorker(GeminiWorker):
                     _export_pcm_to_mp3,
                     audio_bytes,
                     task["output_path"],
+                    should_continue=self._should_continue_blocking_call,
                 )
                 completed_count = self._register_completed_task(task["task_index"])
                 self._emit_worker_progress(task["chapter_index"], completed_count, task["total_tasks"])
@@ -4081,6 +4188,7 @@ class FlashTtsWorker(GeminiWorker):
                     model=model_id,
                     contents=prompt_text,
                     config=genai_types.GenerateContentConfig(temperature=0.1),
+                    should_continue=self._should_continue_blocking_call,
                 )
                 generated_text = _extract_response_text(response)
                 if generated_text:
@@ -4240,6 +4348,7 @@ class FlashTtsWorker(GeminiWorker):
                     model=self.model_id,
                     contents=prompt_text,
                     config=config,
+                    should_continue=self._should_continue_blocking_call,
                 )
                 audio_bytes = _extract_audio_bytes(response)
                 if audio_bytes:
@@ -7130,7 +7239,7 @@ class MainWindow(QMainWindow):
             return True
 
     def _attach_common_worker_signals(self, worker, row):
-        worker.worker_progress.connect(row.update_progress)
+        worker.worker_progress.connect(self._enqueue_worker_progress)
         worker.finished_signal.connect(self._on_worker_finished)
         worker.invalid_key_signal.connect(self._on_invalid_worker_key)
         worker.quota_key_signal.connect(self._on_quota_worker_key)

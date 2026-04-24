@@ -389,7 +389,21 @@ function isSubstantiveCandidateText(text, structured = false) {
   return true;
 }
 
-function normalizeCandidateObject(candidate, fallbackPriority = 0) {
+function isAcceptableShortAssistantText(text) {
+  const normalized = normalizeCandidateText(text);
+  if (!normalized) {
+    return false;
+  }
+  if (looksLikeThinkingPreludeText(normalized)) {
+    return false;
+  }
+  if (/^(?:ChatGPT can make mistakes|You said|Ask ChatGPT|What are you working on)$/i.test(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+function normalizeCandidateObject(candidate, fallbackPriority = 0, options = {}) {
   if (!candidate) {
     return null;
   }
@@ -400,7 +414,7 @@ function normalizeCandidateObject(candidate, fallbackPriority = 0) {
       return null;
     }
     const structured = looksLikeStructuredGlossary(text);
-    if (!isSubstantiveCandidateText(text, structured)) {
+    if (!isSubstantiveCandidateText(text, structured) && !(options.allowShort && isAcceptableShortAssistantText(text))) {
       return null;
     }
     return {
@@ -409,7 +423,8 @@ function normalizeCandidateObject(candidate, fallbackPriority = 0) {
       cyrillic: countCyrillicText(text),
       latin: (text.match(/[A-Za-z]/g) || []).length,
       priority: fallbackPriority,
-      structured
+      structured,
+      allowShort: Boolean(options.allowShort)
     };
   }
 
@@ -422,7 +437,8 @@ function normalizeCandidateObject(candidate, fallbackPriority = 0) {
     return null;
   }
   const structured = typeof candidate.structured === "boolean" ? candidate.structured : looksLikeStructuredGlossary(text);
-  if (!isSubstantiveCandidateText(text, structured)) {
+  const allowShort = Boolean(options.allowShort || candidate.allowShort);
+  if (!isSubstantiveCandidateText(text, structured) && !(allowShort && isAcceptableShortAssistantText(text))) {
     return null;
   }
 
@@ -432,7 +448,8 @@ function normalizeCandidateObject(candidate, fallbackPriority = 0) {
     cyrillic: Number.isFinite(candidate.cyrillic) ? Number(candidate.cyrillic) : countCyrillicText(text),
     latin: Number.isFinite(candidate.latin) ? Number(candidate.latin) : (text.match(/[A-Za-z]/g) || []).length,
     priority: Number.isFinite(candidate.priority) ? Number(candidate.priority) : fallbackPriority,
-    structured
+    structured,
+    allowShort
   };
 }
 
@@ -1400,13 +1417,13 @@ async function waitForResponse(page, timeoutMs, responseGuard = null, submittedP
       : null;
     const domCandidate = chooseResponseCandidate(primaryCandidate, fallbackCandidate, promptEchoGuard);
     const snapshotCandidate = responseStarted
-      ? normalizeCandidateObject(await assistantFallback(page, responseGuard, currentState).catch(() => ""), 1)
+      ? normalizeCandidateObject(await assistantFallback(page, responseGuard, currentState).catch(() => ""), 1, { allowShort: true })
       : null;
     const shouldTryClipboard =
       responseStarted &&
       (!domCandidate || (!domCandidate.structured && domCandidate.text.length < 160) || pollCount % 4 === 0);
     const clipboardCandidate = shouldTryClipboard
-      ? normalizeCandidateObject(await copyLatestAssistant(page, currentState).catch(() => null), 0)
+      ? normalizeCandidateObject(await copyLatestAssistant(page, currentState).catch(() => null), 0, { allowShort: true })
       : null;
     const candidateObject = chooseResponseCandidate(
       chooseResponseCandidate(domCandidate, snapshotCandidate, promptEchoGuard),

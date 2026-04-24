@@ -1,9 +1,11 @@
 import os
+import asyncio
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from gemini_reader_v3 import GeminiWorker
+from gemini_reader_v3 import GeminiWorker, ReaderWorkerStopped, _to_thread_with_timeout
 
 
 class _SignalSpy:
@@ -66,6 +68,40 @@ class ReaderProgressThrottleTests(unittest.TestCase):
         self.assertEqual(len(harness.error_signal.calls), 1)
         self.assertIn("CRASH: boom", harness.error_signal.calls[0][1])
         self.assertEqual(harness.finished_signal.calls, [(9,)])
+
+    def test_blocking_helper_times_out_without_waiting_for_thread(self):
+        started = time.monotonic()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.run(
+                _to_thread_with_timeout(
+                    "slow helper",
+                    0.1,
+                    time.sleep,
+                    2,
+                    poll_interval=0.02,
+                )
+            )
+
+        self.assertIn("timed out", str(ctx.exception))
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_blocking_helper_obeys_stop_callback(self):
+        started = time.monotonic()
+
+        with self.assertRaises(ReaderWorkerStopped):
+            asyncio.run(
+                _to_thread_with_timeout(
+                    "stoppable helper",
+                    5,
+                    time.sleep,
+                    2,
+                    should_continue=lambda: False,
+                    poll_interval=0.02,
+                )
+            )
+
+        self.assertLess(time.monotonic() - started, 1.0)
 
 
 if __name__ == "__main__":
