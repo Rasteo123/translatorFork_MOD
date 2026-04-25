@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QWidget, QTextEdit, QPushButton, QLabel,
     QProgressBar, QMessageBox, QInputDialog, QSplitter,
     QListWidget, QListWidgetItem, QToolBar, QSlider,
-    QSizePolicy, QCheckBox, QMenu, QComboBox, QSpinBox,
+    QSizePolicy, QCheckBox, QMenu, QComboBox, QSpinBox, QDoubleSpinBox,
     QDialog, QDialogButtonBox, QScrollArea, QTabWidget, QPlainTextEdit
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
@@ -165,8 +165,9 @@ READER_FFMPEG_NORMALIZE_TIMEOUT_SEC = 7200
 READER_FFMPEG_VIDEO_TIMEOUT_SEC = 7200
 READER_AUDIO_NORMALIZE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
 READER_MP3_EXPORT_BITRATE = "320k"
-READER_VIDEO_AUDIO_BITRATE = "192k"
+READER_VIDEO_AUDIO_BITRATE = "320k"
 READER_VIDEO_AUDIO_SAMPLE_RATE = 48000
+READER_LOSSLESS_TEMP_AUDIO_FORMAT = "wav"
 
 ENGINE_MODES = {
     "Live API": "live",
@@ -310,9 +311,25 @@ DEFAULT_TTS_DIRECTIVE = (
     "Keep diction clear and stable. Prioritize audiobook intelligibility over theatrical exaggeration."
 )
 
+YO_ORTHOGRAPHY_RULE = (
+    "- For audiobook pronunciation, actively restore the Russian letter Ё/ё in ordinary Russian words where standard spelling requires it, even if the source writes Е/е without dots.\n"
+    "- Do not leave obvious Ё/ё words with Е/е: use всё, ещё, её, идёт, шёл, нём, твоё, своё, моё, живёт, берёт, несёт, трёх, чёрный, жёлтый, лёгкий.\n"
+    "- Preserve Ё/ё wherever it already appears in the source or draft.\n"
+    "- Only avoid guessing Ё/ё in names, invented terms, titles, transliterations or truly ambiguous words.\n"
+)
+
 LIVE_API_DEFAULT_RPM = 5
 FLASH_PREPROCESS_DEFAULT_RPM = 5
 FLASH_TTS_DEFAULT_RPM = 3
+FLASH_TTS_DEFAULT_TPM = 10000
+FLASH_TTS_INPUT_TOKEN_LIMIT = 8192
+FLASH_TTS_SAFE_INPUT_TOKEN_LIMIT = 7000
+FLASH_TTS_DEFAULT_BLOCK_UNITS = 2.0
+FLASH_TTS_TOKENS_PER_BLOCK_UNIT = 1000
+FLASH_TTS_TOKEN_TO_CHAR_SPLIT_RATIO = 2.2
+FLASH_TTS_TOKEN_COUNT_TIMEOUT_SEC = 30
+FLASH_TTS_TOKEN_COUNT_ESTIMATE_MARGIN = 1.15
+FLASH_TTS_TOKEN_COUNT_API_THRESHOLD_RATIO = 0.65
 FLASH_TTS_CHAPTER_INTERVAL_SECONDS = 60
 DEFAULT_TPM_LIMIT = 0
 RATE_LIMIT_BACKOFF_SECONDS = 65
@@ -329,6 +346,18 @@ RPD_LIMIT_FALLBACKS = {
     "gemini-3.1-flash-tts-preview": 10,
     "gemini-2.5-flash-preview-tts": 10,
     "gemini-2.5-pro-preview-tts": 10,
+}
+
+TPM_LIMIT_FALLBACKS = {
+    "gemini-3.1-flash-tts-preview": FLASH_TTS_DEFAULT_TPM,
+    "gemini-2.5-flash-preview-tts": FLASH_TTS_DEFAULT_TPM,
+    "gemini-2.5-pro-preview-tts": FLASH_TTS_DEFAULT_TPM,
+}
+
+INPUT_TOKEN_LIMIT_FALLBACKS = {
+    "gemini-3.1-flash-tts-preview": FLASH_TTS_INPUT_TOKEN_LIMIT,
+    "gemini-2.5-flash-preview-tts": FLASH_TTS_INPUT_TOKEN_LIMIT,
+    "gemini-2.5-pro-preview-tts": FLASH_TTS_INPUT_TOKEN_LIMIT,
 }
 
 VOICES_MAP = {
@@ -688,6 +717,26 @@ def _extract_audio_bytes(response):
     return bytes(data)
 
 
+def _extract_total_tokens(count_response):
+    for attr_name in ("total_tokens", "totalTokens", "total_token_count"):
+        value = getattr(count_response, attr_name, None)
+        if value is not None:
+            try:
+                return max(1, int(value))
+            except Exception:
+                pass
+
+    if isinstance(count_response, dict):
+        for key in ("total_tokens", "totalTokens", "total_token_count"):
+            value = count_response.get(key)
+            if value is not None:
+                try:
+                    return max(1, int(value))
+                except Exception:
+                    pass
+    return None
+
+
 def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directive=""):
     profile_line = profile_prompt or PREPROCESS_PROFILE_OPTIONS["Бережно"]
     extra_line = (extra_directive or "").strip() or DEFAULT_PREPROCESS_DIRECTIVE
@@ -698,7 +747,7 @@ def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directi
         "- Keep the script in Russian.\n"
         "- Do not summarize, shorten, paraphrase or explain the text.\n"
         "- Do not invent any words, reactions, acknowledgements, connective phrases or narration that are absent from the source.\n"
-        "- Use the Russian letter Ё/ё wherever it is orthographically appropriate and unambiguous; do not replace Ё/ё with Е/е in words such as всё, ещё, её, идёт, шёл, нём.\n"
+        f"{YO_ORTHOGRAPHY_RULE}"
         f"- You may use sparse English audio tags such as {TTS_AUDIO_TAG_HINT}.\n"
         "- Tags must be short, tasteful and only where justified by the source scene.\n"
         "- Return only the final script text, with no markdown and no comments.\n"
@@ -1277,7 +1326,7 @@ def _build_author_gender_repair_prompt(raw_text, draft_script, issues, profile_p
         "- Do not summarize, shorten, paraphrase or explain the text.\n"
         "- Do not invent any new words, filler phrases, reactions or connective text that are absent from the source.\n"
         "- Do not invent standalone cues like `[Да]`, `[Нет]`, `[Хм]` unless that exact spoken word is present in the source at that point.\n"
-        "- Use the Russian letter Ё/ё wherever it is orthographically appropriate and unambiguous; do not replace Ё/ё with Е/е in words such as всё, ещё, её, идёт, шёл, нём.\n"
+        f"{YO_ORTHOGRAPHY_RULE}"
         f"- Direction profile: {profile_line}\n"
         f"- Additional director note: {extra_line}\n"
         f"- `{LIVE_ROLE_MALE}:` and `{LIVE_ROLE_FEMALE}:` may contain only words actually spoken aloud by that character.\n"
@@ -1525,6 +1574,81 @@ def _split_tts_script(script_text, voice_mode, max_chars):
     return chunks
 
 
+def _split_balanced_items(items, separator):
+    items = [item.strip() for item in items if str(item or "").strip()]
+    if len(items) <= 1:
+        return []
+
+    total_len = sum(max(1, len(item)) for item in items)
+    left_len = 0
+    split_at = 1
+    for idx, item in enumerate(items[:-1], start=1):
+        left_len += max(1, len(item))
+        split_at = idx
+        if left_len >= total_len / 2:
+            break
+
+    left = separator.join(items[:split_at]).strip()
+    right = separator.join(items[split_at:]).strip()
+    return [part for part in (left, right) if part]
+
+
+def _split_text_roughly_in_half(text):
+    text = (text or "").strip()
+    if len(text) <= 1:
+        return []
+
+    midpoint = len(text) // 2
+    window = max(24, len(text) // 5)
+    split_at = None
+
+    for idx in range(midpoint, max(0, midpoint - window), -1):
+        if text[idx:idx + 1].isspace():
+            split_at = idx
+            break
+    if split_at is None:
+        for idx in range(midpoint, min(len(text), midpoint + window)):
+            if text[idx:idx + 1].isspace():
+                split_at = idx
+                break
+    if split_at is None:
+        split_at = midpoint
+
+    left = text[:split_at].strip()
+    right = text[split_at:].strip()
+    return [part for part in (left, right) if part]
+
+
+def _split_tts_chunk_once(script_chunk, voice_mode):
+    script_chunk = (script_chunk or "").strip()
+    if not script_chunk:
+        return []
+
+    if voice_mode == "duo":
+        raw_lines = [line.strip() for line in script_chunk.splitlines() if line.strip()]
+        line_parts = _split_balanced_items(raw_lines, "\n")
+        if line_parts:
+            return line_parts
+
+        if ":" in script_chunk:
+            prefix, content = script_chunk.split(":", 1)
+            prefix = prefix.strip()
+            content_parts = _split_text_roughly_in_half(content)
+            if prefix in {TTS_SPEAKER_NARRATOR, TTS_SPEAKER_DIALOGUE} and len(content_parts) > 1:
+                return [f"{prefix}: {part}" for part in content_parts]
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", script_chunk) if part.strip()]
+    paragraph_parts = _split_balanced_items(paragraphs, "\n\n")
+    if paragraph_parts:
+        return paragraph_parts
+
+    sentence_parts = _split_balanced_items(_sentence_tokenize(script_chunk), " ")
+    if sentence_parts:
+        return sentence_parts
+
+    return _split_text_roughly_in_half(script_chunk)
+
+
 def _script_matches_voice_mode(script_text, voice_mode):
     script_text = (script_text or "").strip()
     if not script_text:
@@ -1676,18 +1800,37 @@ def _trim_audio_segment_boundaries(
     return segment[start_ms:end_ms]
 
 
-def _load_trimmed_mp3_segment(path):
+def _audio_format_from_path(path, fallback="mp3"):
+    ext = os.path.splitext(str(path or ""))[1].lower().lstrip(".")
+    return ext or fallback
+
+
+def _audio_export_kwargs(audio_format):
+    audio_format = (audio_format or "mp3").lower().lstrip(".")
+    kwargs = {"format": audio_format}
+    if audio_format == "mp3":
+        kwargs["bitrate"] = READER_MP3_EXPORT_BITRATE
+    return kwargs
+
+
+def _load_trimmed_audio_segment(path):
     if AudioSegment is None:
         raise RuntimeError("Для обрезки пауз нужен pydub.")
-    segment = AudioSegment.from_file(path, format="mp3")
+    audio_format = _audio_format_from_path(path, fallback=None)
+    segment = AudioSegment.from_file(path, format=audio_format)
     return _trim_audio_segment_boundaries(segment)
 
 
-def _export_trimmed_mp3_file(source_path, output_path):
-    segment = _load_trimmed_mp3_segment(source_path)
+def _load_trimmed_mp3_segment(path):
+    return _load_trimmed_audio_segment(path)
+
+
+def _export_trimmed_audio_file(source_path, output_path, output_format=None):
+    segment = _load_trimmed_audio_segment(source_path)
+    output_format = output_format or _audio_format_from_path(output_path)
     tmp_path = f"{output_path}.tmp"
     try:
-        segment.export(tmp_path, format="mp3", bitrate=READER_MP3_EXPORT_BITRATE)
+        segment.export(tmp_path, **_audio_export_kwargs(output_format))
         os.replace(tmp_path, output_path)
     except Exception as exc:
         if os.path.exists(tmp_path):
@@ -1695,15 +1838,20 @@ def _export_trimmed_mp3_file(source_path, output_path):
                 os.remove(tmp_path)
             except Exception:
                 pass
-        raise RuntimeError(f"Не удалось сохранить MP3 после обрезки пауз: {exc}") from exc
+        raise RuntimeError(f"Не удалось сохранить audio после обрезки пауз: {exc}") from exc
 
 
-def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
-    mp3_path = os.path.abspath(mp3_path)
-    if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) <= 0:
-        raise RuntimeError("MP3 file for normalization is missing or empty.")
+def _export_trimmed_mp3_file(source_path, output_path):
+    _export_trimmed_audio_file(source_path, output_path, output_format="mp3")
 
-    tmp_output = f"{mp3_path}.normalized.tmp.mp3"
+
+def _normalize_audio_to_mp3(source_path, output_path=None, ffmpeg_path=None):
+    source_path = os.path.abspath(source_path)
+    output_path = os.path.abspath(output_path or source_path)
+    if not os.path.exists(source_path) or os.path.getsize(source_path) <= 0:
+        raise RuntimeError("Audio file for normalization is missing or empty.")
+
+    tmp_output = f"{output_path}.normalized.tmp.mp3"
     ffmpeg_path = ffmpeg_path or _resolve_tool_path("ffmpeg")
     ffmpeg_error = None
     if ffmpeg_path:
@@ -1711,13 +1859,14 @@ def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
             normalize_cmd = [
                 ffmpeg_path,
                 "-y",
-                "-i", mp3_path,
+                "-i", source_path,
                 "-map", "0:a:0",
                 "-map_metadata", "0",
                 "-map_chapters", "0",
                 "-af", READER_AUDIO_NORMALIZE_FILTER,
                 "-c:a", "libmp3lame",
                 "-b:a", READER_MP3_EXPORT_BITRATE,
+                "-f", "mp3",
                 tmp_output,
             ]
             result = _run_subprocess(
@@ -1727,7 +1876,7 @@ def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
                 timeout=READER_FFMPEG_NORMALIZE_TIMEOUT_SEC,
             )
             if result.returncode == 0 and os.path.exists(tmp_output) and os.path.getsize(tmp_output) > 0:
-                os.replace(tmp_output, mp3_path)
+                os.replace(tmp_output, output_path)
                 return
             raise RuntimeError(result.stderr.strip() or "ffmpeg audio normalization failed.")
         except Exception as exc:
@@ -1746,10 +1895,10 @@ def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
     try:
         from pydub.effects import normalize as pydub_normalize
 
-        segment = AudioSegment.from_file(mp3_path, format="mp3")
+        segment = AudioSegment.from_file(source_path, format=_audio_format_from_path(source_path, fallback=None))
         normalized = pydub_normalize(segment, headroom=1.0)
         normalized.export(tmp_output, format="mp3", bitrate=READER_MP3_EXPORT_BITRATE)
-        os.replace(tmp_output, mp3_path)
+        os.replace(tmp_output, output_path)
     except Exception as exc:
         if os.path.exists(tmp_output):
             try:
@@ -1759,6 +1908,10 @@ def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
         if ffmpeg_error is not None:
             raise RuntimeError(f"Audio normalization failed: ffmpeg={ffmpeg_error}; pydub={exc}") from exc
         raise RuntimeError(f"Audio normalization failed: {exc}") from exc
+
+
+def _normalize_mp3_file(mp3_path, ffmpeg_path=None):
+    _normalize_audio_to_mp3(mp3_path, mp3_path, ffmpeg_path=ffmpeg_path)
 
 
 def _export_pcm_to_mp3(raw_audio, output_path):
@@ -1780,6 +1933,27 @@ def _export_pcm_to_mp3(raw_audio, output_path):
             except Exception:
                 pass
         raise RuntimeError(f"Не удалось сохранить MP3: {exc}") from exc
+
+
+def _export_pcm_to_wav(raw_audio, output_path):
+    if AudioSegment is None:
+        raise RuntimeError("Невозможно сохранить WAV: не найден pydub.")
+    if not raw_audio:
+        raise RuntimeError("Невозможно сохранить пустой аудиоблок.")
+
+    tmp_path = f"{output_path}.tmp"
+    try:
+        snap = AudioSegment(data=raw_audio, sample_width=2, frame_rate=AUDIO_RATE, channels=AUDIO_CHANNELS)
+        snap = _trim_audio_segment_boundaries(snap)
+        snap.export(tmp_path, format=READER_LOSSLESS_TEMP_AUDIO_FORMAT)
+        os.replace(tmp_path, output_path)
+    except Exception as exc:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise RuntimeError(f"Не удалось сохранить WAV: {exc}") from exc
 
 
 def _load_mp3_as_raw_pcm(path):
@@ -1829,7 +2003,10 @@ def _combine_mp3_sequence(input_paths, output_path):
                 "-f", "concat",
                 "-safe", "0",
                 "-i", concat_list_path,
-                "-c", "copy",
+                "-af", READER_AUDIO_NORMALIZE_FILTER,
+                "-c:a", "libmp3lame",
+                "-b:a", READER_MP3_EXPORT_BITRATE,
+                "-f", "mp3",
                 tmp_output,
             ]
             result = _run_subprocess(
@@ -1840,7 +2017,6 @@ def _combine_mp3_sequence(input_paths, output_path):
             )
             if result.returncode == 0 and os.path.exists(tmp_output):
                 os.replace(tmp_output, output_path)
-                _normalize_mp3_file(output_path, ffmpeg_path=ffmpeg_path)
                 return
             raise RuntimeError(result.stderr.strip() or "ffmpeg не смог собрать итоговый MP3.")
         except Exception:
@@ -1861,14 +2037,16 @@ def _combine_mp3_sequence(input_paths, output_path):
 
     combined = None
     try:
+        from pydub.effects import normalize as pydub_normalize
+
         for file_path in normalized_paths:
-            segment = AudioSegment.from_file(file_path, format="mp3")
+            segment = AudioSegment.from_file(file_path, format=_audio_format_from_path(file_path, fallback=None))
             combined = segment if combined is None else (combined + segment)
         if combined is None:
             raise RuntimeError("Нет валидных MP3-файлов для сборки.")
+        combined = pydub_normalize(combined, headroom=1.0)
         combined.export(tmp_output, format="mp3", bitrate=READER_MP3_EXPORT_BITRATE)
         os.replace(tmp_output, output_path)
-        _normalize_mp3_file(output_path, ffmpeg_path=ffmpeg_path)
     except Exception as exc:
         if os.path.exists(tmp_output):
             try:
@@ -1891,25 +2069,28 @@ def _is_rate_limited_error(exc):
     )
 
 
+def _model_limit_fallback(model_id, field_name, fallback=None):
+    if field_name == "rpd":
+        return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
+    if field_name == "tpm":
+        return TPM_LIMIT_FALLBACKS.get(model_id, fallback)
+    if field_name in {"input_token_limit", "max_input_tokens"}:
+        return INPUT_TOKEN_LIMIT_FALLBACKS.get(model_id, fallback)
+    return fallback
+
+
 def _lookup_model_limit(model_id, field_name, fallback=None):
+    fallback = _model_limit_fallback(model_id, field_name, fallback)
     if not model_id or reader_api_config is None:
-        if field_name == "rpd":
-            return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
         return fallback
     try:
         provider_cfg = reader_api_config.api_providers().get("gemini", {})
         for model_cfg in provider_cfg.get("models", {}).values():
             if str(model_cfg.get("id") or "").strip() == model_id:
                 value = model_cfg.get(field_name, fallback)
-                if value is None and field_name == "rpd":
-                    return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
                 return fallback if value is None else value
     except Exception:
-        if field_name == "rpd":
-            return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
         return fallback
-    if field_name == "rpd":
-        return RPD_LIMIT_FALLBACKS.get(model_id, fallback)
     return fallback
 
 
@@ -2825,9 +3006,26 @@ class AudioCombinerWorker(QThread):
 
                     self.progress_signal.emit(f"Подготовка части {idx + 1} из {len(parts)}...")
                     if AudioSegment is not None:
-                        _export_trimmed_mp3_file(file_path, part_output_path)
+                        shutil.rmtree(trim_dir_path, ignore_errors=True)
+                        os.makedirs(trim_dir_path, exist_ok=True)
+                        prepared_file_path = os.path.join(
+                            trim_dir_path,
+                            f"{os.path.splitext(file_name)[0]}.{READER_LOSSLESS_TEMP_AUDIO_FORMAT}",
+                        )
+                        try:
+                            _export_trimmed_audio_file(
+                                file_path,
+                                prepared_file_path,
+                                output_format=READER_LOSSLESS_TEMP_AUDIO_FORMAT,
+                            )
+                            self.progress_signal.emit(f"Нормализация части {idx + 1} из {len(parts)}...")
+                            _normalize_audio_to_mp3(prepared_file_path, part_output_path, ffmpeg_path=self.ffmpeg_path)
+                        finally:
+                            shutil.rmtree(trim_dir_path, ignore_errors=True)
                     else:
                         shutil.copy2(file_path, part_output_path)
+                        self.progress_signal.emit(f"Нормализация части {idx + 1} из {len(parts)}...")
+                        _normalize_mp3_file(part_output_path, ffmpeg_path=self.ffmpeg_path)
                 else:
                     list_txt_path = os.path.join(self.bm.book_dir, f"concat_list_{idx}.txt")
                     meta_txt_path = os.path.join(self.bm.book_dir, f"metadata_{idx}.txt")
@@ -2848,8 +3046,15 @@ class AudioCombinerWorker(QThread):
 
                             prepared_file_path = file_path
                             if AudioSegment is not None:
-                                prepared_file_path = os.path.join(trim_dir_path, file_name)
-                                _export_trimmed_mp3_file(file_path, prepared_file_path)
+                                prepared_file_path = os.path.join(
+                                    trim_dir_path,
+                                    f"{os.path.splitext(file_name)[0]}.{READER_LOSSLESS_TEMP_AUDIO_FORMAT}",
+                                )
+                                _export_trimmed_audio_file(
+                                    file_path,
+                                    prepared_file_path,
+                                    output_format=READER_LOSSLESS_TEMP_AUDIO_FORMAT,
+                                )
 
                             list_file.write(f"file '{_ffmpeg_concat_path(prepared_file_path)}'\n")
 
@@ -2902,7 +3107,10 @@ class AudioCombinerWorker(QThread):
                         "-i", list_txt_path,
                         "-i", meta_txt_path,
                         "-map_metadata", "1",
-                        "-c", "copy",
+                        "-af", READER_AUDIO_NORMALIZE_FILTER,
+                        "-c:a", "libmp3lame",
+                        "-b:a", READER_MP3_EXPORT_BITRATE,
+                        "-f", "mp3",
                         part_output_path,
                     ]
                     combine_process = _run_subprocess(
@@ -2925,10 +3133,6 @@ class AudioCombinerWorker(QThread):
                             f"Не удалось собрать часть {idx + 1}: "
                             f"{combine_process.stderr.strip() or 'ошибка ffmpeg'}"
                         )
-
-                self.progress_signal.emit(f"Нормализация части {idx + 1} из {len(parts)}...")
-                _normalize_mp3_file(part_output_path, ffmpeg_path=self.ffmpeg_path)
-
                 if self.video_image_path:
                     video_name = os.path.splitext(part_name)[0] + ".mp4"
                     video_output_path = os.path.join(self.bm.book_dir, video_name)
@@ -3075,7 +3279,10 @@ class GeminiWorker(QThread):
         self.speed = speed
         self.record = record
         self.fast = fast
-        self.chunk = chunk
+        try:
+            self.chunk = max(1, int(round(float(chunk))))
+        except Exception:
+            self.chunk = 1
         self.segment_mode = segment_mode or "sentences"
         self.voice_mode = voice_mode or "single"
         self.secondary_voice = secondary_voice or voice
@@ -3119,7 +3326,11 @@ class GeminiWorker(QThread):
             await asyncio.sleep(min(remaining, READER_WORKER_SLEEP_STEP_SEC))
         return False
 
-    def update_chunk_size(self, v): self.chunk = v
+    def update_chunk_size(self, v):
+        try:
+            self.chunk = max(1, int(round(float(v))))
+        except Exception:
+            self.chunk = 1
 
     def _emit_worker_progress(self, chapter_index, step_index, total_steps, force=False):
         payload = (self.worker_id, chapter_index, step_index, total_steps)
@@ -3258,12 +3469,23 @@ class GeminiWorker(QThread):
         daily_request_limiter=None,
         model_id=None,
         rpd_limit=0,
+        token_count=None,
     ):
         rpm_limiter = rpm_limiter or self.request_rpm_limiter
         tpm_limiter = tpm_limiter or self.request_tpm_limiter
         daily_request_limiter = daily_request_limiter or self.daily_request_limiter
         model_id = model_id or self.model_id
-        token_cost = self._estimate_tokens(payload_text)
+        token_cost = max(1, int(token_count or self._estimate_tokens(payload_text)))
+        if (
+            tpm_limiter is not None
+            and getattr(tpm_limiter, "tpm_limit", 0) > 0
+            and token_cost > tpm_limiter.tpm_limit
+        ):
+            raise RateLimitBudgetError(
+                f"{request_label} uses {token_cost} input tokens, above the model TPM limit "
+                f"{tpm_limiter.tpm_limit}. Split the request into smaller blocks.",
+                model_id=model_id,
+            )
         budget_acquired = False
 
         while self._is_running:
@@ -4022,9 +4244,9 @@ class GeminiParallelChapterWorker(GeminiWorker):
 
             if audio_bytes:
                 await _to_thread_with_timeout(
-                    "parallel MP3 export",
+                    "parallel WAV export",
                     READER_AUDIO_EXPORT_TIMEOUT_SEC,
-                    _export_pcm_to_mp3,
+                    _export_pcm_to_wav,
                     audio_bytes,
                     task["output_path"],
                     should_continue=self._should_continue_blocking_call,
@@ -4126,6 +4348,10 @@ class FlashTtsWorker(GeminiWorker):
             daily_request_limiter=daily_request_limiter,
             allow_edge_fallback=allow_edge_fallback,
         )
+        try:
+            self.chunk = max(0.5, float(chunk))
+        except Exception:
+            self.chunk = FLASH_TTS_DEFAULT_BLOCK_UNITS
         self.secondary_voice = secondary_voice or primary_voice
         self.preprocess_model_id = preprocess_model_id
         self.preprocess_profile = preprocess_profile or PREPROCESS_PROFILE_OPTIONS["Бережно"]
@@ -4137,15 +4363,39 @@ class FlashTtsWorker(GeminiWorker):
         self.preprocess_rpm_limiter = _make_rpm_limiter(self.preprocess_model_id, FLASH_PREPROCESS_DEFAULT_RPM)
         self.preprocess_tpm_limiter = TPMLimiter(_lookup_model_limit(self.preprocess_model_id, "tpm", DEFAULT_TPM_LIMIT))
         self.tts_rpm_limiter = _make_rpm_limiter(self.model_id, FLASH_TTS_DEFAULT_RPM)
-        self.tts_tpm_limiter = TPMLimiter(_lookup_model_limit(self.model_id, "tpm", DEFAULT_TPM_LIMIT))
+        self.tts_tpm_limiter = TPMLimiter(_lookup_model_limit(self.model_id, "tpm", FLASH_TTS_DEFAULT_TPM))
         self.preprocess_rpd_limit = _lookup_model_limit(self.preprocess_model_id, "rpd", 0)
         self.tts_rpd_limit = _lookup_model_limit(self.model_id, "rpd", 0)
 
     def _tts_chunk_limit(self):
-        base = max(1, int(self.chunk))
-        if self.voice_mode == "duo":
-            return max(1200, base * 700)
-        return max(1600, base * 900)
+        token_target = self._tts_chunk_token_target()
+        return max(900, int(token_target * FLASH_TTS_TOKEN_TO_CHAR_SPLIT_RATIO))
+
+    def _tts_chunk_token_target(self):
+        base = max(0.5, float(self.chunk))
+        target = base * FLASH_TTS_TOKENS_PER_BLOCK_UNIT
+        return max(1, min(int(round(target)), self._tts_safe_request_token_limit()))
+
+    def _tts_input_token_limit(self):
+        try:
+            limit = int(_lookup_model_limit(self.model_id, "input_token_limit", FLASH_TTS_INPUT_TOKEN_LIMIT) or 0)
+        except Exception:
+            limit = FLASH_TTS_INPUT_TOKEN_LIMIT
+        return max(1, limit or FLASH_TTS_INPUT_TOKEN_LIMIT)
+
+    def _tts_request_token_limit(self):
+        hard_limit = self._tts_input_token_limit()
+        tpm_limit = getattr(self.tts_tpm_limiter, "tpm_limit", 0) if self.tts_tpm_limiter is not None else 0
+        if tpm_limit and tpm_limit > 0:
+            hard_limit = min(hard_limit, tpm_limit)
+        return max(1, hard_limit)
+
+    def _tts_safe_request_token_limit(self):
+        hard_limit = self._tts_request_token_limit()
+        safe_limit = min(FLASH_TTS_SAFE_INPUT_TOKEN_LIMIT, hard_limit)
+        if hard_limit > 512:
+            safe_limit = min(safe_limit, hard_limit - 256)
+        return max(1, safe_limit)
 
     def _build_speech_config(self):
         if self.voice_mode == "duo":
@@ -4321,13 +4571,88 @@ class FlashTtsWorker(GeminiWorker):
 
         raise RuntimeError(f"Неизвестный режим Flash TTS: {self.run_mode}")
 
-    async def _synthesize_chunk(self, tts_client, script_chunk):
-        prompt_text = _build_tts_generation_prompt(
+    def _build_tts_prompt_for_chunk(self, script_chunk):
+        return _build_tts_generation_prompt(
             script_chunk,
             self.voice_mode,
             self.speed,
             extra_directive=self.tts_directive,
         )
+
+    async def _count_tts_prompt_tokens(self, tts_client, prompt_text, force_api=False):
+        estimated_tokens = max(1, self._estimate_tokens(prompt_text))
+        conservative_estimate = max(
+            1,
+            int(estimated_tokens * FLASH_TTS_TOKEN_COUNT_ESTIMATE_MARGIN + 0.999),
+        )
+        safe_limit = self._tts_safe_request_token_limit()
+        count_threshold = max(1, int(safe_limit * FLASH_TTS_TOKEN_COUNT_API_THRESHOLD_RATIO))
+
+        models_client = getattr(tts_client, "models", None)
+        count_tokens = getattr(models_client, "count_tokens", None)
+        if count_tokens is None or (not force_api and conservative_estimate < count_threshold):
+            return conservative_estimate, False
+
+        try:
+            response = await _to_thread_with_timeout(
+                f"count_tokens {self.model_id}",
+                FLASH_TTS_TOKEN_COUNT_TIMEOUT_SEC,
+                count_tokens,
+                model=self.model_id,
+                contents=prompt_text,
+                should_continue=self._should_continue_blocking_call,
+            )
+            token_count = _extract_total_tokens(response)
+            if token_count:
+                return token_count, True
+        except Exception as exc:
+            logger.warning(f"[W{self.worker_id}] Flash TTS count_tokens failed, using local estimate: {exc}")
+
+        return conservative_estimate, False
+
+    async def _prepare_tts_script_chunks(self, tts_client, script_text):
+        base_chunks = _split_tts_script(script_text, self.voice_mode, self._tts_chunk_limit())
+        if not base_chunks:
+            return []
+
+        safe_limit = self._tts_chunk_token_target()
+        hard_limit = self._tts_request_token_limit()
+        prepared = []
+        pending = list(base_chunks)
+
+        while pending:
+            script_chunk = pending.pop(0)
+            prompt_text = self._build_tts_prompt_for_chunk(script_chunk)
+            token_count, _ = await self._count_tts_prompt_tokens(tts_client, prompt_text)
+            if token_count <= safe_limit:
+                prepared.append((script_chunk, token_count))
+                continue
+
+            split_parts = _split_tts_chunk_once(script_chunk, self.voice_mode)
+            if len(split_parts) > 1:
+                pending = split_parts + pending
+                continue
+
+            if token_count <= hard_limit:
+                prepared.append((script_chunk, token_count))
+                continue
+
+            raise RuntimeError(
+                f"Flash TTS block is too large: {token_count} input tokens, limit is {hard_limit}. "
+                "Split the source text into smaller chapters or reduce the block size."
+            )
+
+        if len(prepared) != len(base_chunks):
+            tpm_limit = getattr(self.tts_tpm_limiter, "tpm_limit", 0) if self.tts_tpm_limiter is not None else 0
+            logger.info(
+                f"[W{self.worker_id}] Flash TTS token budget split: {len(base_chunks)} -> {len(prepared)} blocks "
+                f"(target={safe_limit}, hard={hard_limit}, tpm={tpm_limit or 'off'})."
+            )
+
+        return prepared
+
+    async def _synthesize_chunk(self, tts_client, script_chunk, token_count=None):
+        prompt_text = self._build_tts_prompt_for_chunk(script_chunk)
         config = genai_types.GenerateContentConfig(
             response_modalities=["AUDIO"],
             speech_config=self._build_speech_config(),
@@ -4345,6 +4670,7 @@ class FlashTtsWorker(GeminiWorker):
                     daily_request_limiter=self.daily_request_limiter,
                     model_id=self.model_id,
                     rpd_limit=self.tts_rpd_limit,
+                    token_count=token_count,
                 )
                 response = await _to_thread_with_timeout(
                     f"flash-tts {self.model_id}",
@@ -4405,6 +4731,13 @@ class FlashTtsWorker(GeminiWorker):
             "secondary_voice": self.secondary_voice,
             "speed": self.speed,
             "chunk_limit": self._tts_chunk_limit(),
+            "chunk_token_target": self._tts_chunk_token_target(),
+            "request_token_limit": self._tts_request_token_limit(),
+            "safe_request_token_limit": self._tts_safe_request_token_limit(),
+            "chunk_hashes": [
+                hashlib.sha256((chunk or "").encode("utf-8")).hexdigest()
+                for chunk in (script_chunks or [])
+            ],
             "tts_directive": self.tts_directive,
         }
         raw_value = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -4465,7 +4798,9 @@ class FlashTtsWorker(GeminiWorker):
 
     async def _synthesize_chapter(self, tts_client, chapter_index, script_text):
         self.audio_chunks = []
-        script_chunks = _split_tts_script(script_text, self.voice_mode, self._tts_chunk_limit())
+        prepared_chunks = await self._prepare_tts_script_chunks(tts_client, script_text)
+        script_chunks = [script_chunk for script_chunk, _ in prepared_chunks]
+        token_counts = [token_count for _, token_count in prepared_chunks]
         if not script_chunks:
             raise RuntimeError("Подготовленный сценарий пустой после разбиения на блоки.")
 
@@ -4484,7 +4819,7 @@ class FlashTtsWorker(GeminiWorker):
         for chunk_index, script_chunk in enumerate(script_chunks[completed_chunks:], start=completed_chunks + 1):
             if not self._is_running:
                 return False
-            audio_bytes = await self._synthesize_chunk(tts_client, script_chunk)
+            audio_bytes = await self._synthesize_chunk(tts_client, script_chunk, token_count=token_counts[chunk_index - 1])
             if self.record:
                 with self.buffer_lock:
                     self.audio_chunks.append(audio_bytes)
@@ -5021,16 +5356,52 @@ class MainWindow(QMainWindow):
         self._progress_flush_timer = QTimer(self)
         self._progress_flush_timer.setSingleShot(True)
         self._progress_flush_timer.timeout.connect(self._flush_worker_progress)
-        self.init_ui()
-        self.load_settings()
-        if self._settings_event_bus is not None:
-            try:
-                self._settings_event_bus.event_posted.connect(self._on_settings_bus_event)
-            except Exception:
-                pass
-        self.apply_runtime_capabilities()
-        self._update_key_state_ui()
-        log_fifo.new_log.connect(self.add_log_to_ui)
+        self._initial_show_done = False
+        self._reader_full_ui_ready = False
+        self._reader_log_connected = False
+        self._init_lazy_ui_skeleton()
+
+    def _init_lazy_ui_skeleton(self):
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        self.loading_label = QLabel("<h2>Загрузка интерфейса…</h2>")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.loading_label, 1)
+        self.setCentralWidget(central)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._initial_show_done:
+            return
+        self._initial_show_done = True
+        QTimer.singleShot(50, self._async_populate_and_load)
+
+    def _async_populate_and_load(self):
+        if self._reader_full_ui_ready:
+            return
+        try:
+            self.init_ui()
+            self.load_settings()
+            if self._settings_event_bus is not None:
+                try:
+                    self._settings_event_bus.event_posted.connect(self._on_settings_bus_event)
+                except Exception:
+                    pass
+            self.apply_runtime_capabilities()
+            self._update_key_state_ui()
+            if not self._reader_log_connected:
+                log_fifo.new_log.connect(self.add_log_to_ui)
+                self._reader_log_connected = True
+            self._reader_full_ui_ready = True
+        except Exception as exc:
+            logger.exception("Gemini Reader UI initialization failed.")
+            QMessageBox.critical(
+                self,
+                "Ошибка запуска Gemini Reader",
+                f"Не удалось загрузить интерфейс Gemini Reader.\n\n{type(exc).__name__}: {exc}",
+            )
 
     def init_ui(self):
         # Toolbar
@@ -5181,6 +5552,7 @@ class MainWindow(QMainWindow):
         self.combo_model = QComboBox()
         self.combo_model.currentIndexChanged.connect(self._update_worker_spinbox_limit)
         self.combo_model.currentIndexChanged.connect(self._update_key_state_ui)
+        self.combo_model.currentIndexChanged.connect(self._refresh_live_segment_controls)
         self.combo_model.currentTextChanged.connect(self.save_settings)
         top_controls.addWidget(QLabel("Модель TTS:"))
         top_controls.addWidget(self.combo_model)
@@ -5237,9 +5609,11 @@ class MainWindow(QMainWindow):
         middle_controls.addWidget(self.lbl_live_segment_mode)
         middle_controls.addWidget(self.combo_live_segment_mode)
 
-        self.spin_chunk = QSpinBox()
-        self.spin_chunk.setRange(1, 50)
-        self.spin_chunk.setValue(2)
+        self.spin_chunk = QDoubleSpinBox()
+        self.spin_chunk.setDecimals(1)
+        self.spin_chunk.setRange(0.5, 50.0)
+        self.spin_chunk.setSingleStep(0.5)
+        self.spin_chunk.setValue(FLASH_TTS_DEFAULT_BLOCK_UNITS)
         self.spin_chunk.valueChanged.connect(self.save_settings)
         self.lbl_chunk = QLabel("Блок:")
         middle_controls.addWidget(self.lbl_chunk)
@@ -5493,6 +5867,20 @@ class MainWindow(QMainWindow):
     def _is_flash_tts_mode(self):
         return self._current_engine_id() == "flash_tts"
 
+    def _chunk_setting_value(self):
+        value = float(self.spin_chunk.value())
+        if self._is_flash_tts_mode():
+            return int(value) if value.is_integer() else value
+        return max(1, int(round(value)))
+
+    def _set_chunk_setting_value(self, value):
+        try:
+            chunk_value = float(value)
+        except (TypeError, ValueError):
+            chunk_value = FLASH_TTS_DEFAULT_BLOCK_UNITS
+        chunk_value = max(float(self.spin_chunk.minimum()), min(chunk_value, float(self.spin_chunk.maximum())))
+        self.spin_chunk.setValue(chunk_value)
+
     def _refresh_model_combo(self, models_map):
         previous_label = self.combo_model.currentText()
         self.models_map = dict(models_map)
@@ -5527,11 +5915,20 @@ class MainWindow(QMainWindow):
         self.combo_live_segment_mode.setVisible(is_live_mode)
         self.chk_parallel_single_chapter.setVisible(is_live_mode)
         if not is_live_mode:
-            self.lbl_chunk.setText("Блок:")
+            self.spin_chunk.setDecimals(1)
+            self.spin_chunk.setSingleStep(0.5)
+            self.spin_chunk.setRange(0.5, 50.0)
+            self.lbl_chunk.setText("Токены:")
+            self.spin_chunk.setSuffix("k")
             self.spin_chunk.setToolTip(
-                "Базовый размер блока для текущего TTS-режима."
+                "Целевой бюджет входных токенов на один Flash TTS запрос: 1 = 1000 токенов. "
+                "Reader дополнительно ограничивает блок hard limit модели и TPM."
             )
             return
+        self.spin_chunk.setDecimals(0)
+        self.spin_chunk.setSingleStep(1)
+        self.spin_chunk.setRange(1, 50)
+        self.spin_chunk.setSuffix("")
         segment_mode = self._selected_live_segment_mode()
         if segment_mode == "paragraphs":
             self.lbl_chunk.setText("Блок абз.:")
@@ -6595,7 +6992,7 @@ class MainWindow(QMainWindow):
             "voice_tertiary": self.combo_voice_tertiary.currentData(),
             "speed": self.combo_speed.currentText(),
             "live_segment_mode": self._selected_live_segment_mode(),
-            "chunk": self.spin_chunk.value(),
+            "chunk": self._chunk_setting_value(),
             "worker_count": self.spin_workers.value(),
             "num_instances": self.spin_workers.value(),
             "selected_only": self.chk_selected_only.isChecked(),
@@ -6612,6 +7009,10 @@ class MainWindow(QMainWindow):
         }
 
     def closeEvent(self, event):
+        if not getattr(self, "_reader_full_ui_ready", False):
+            event.accept()
+            return
+
         if self._running_tasks_exist():
             QMessageBox.warning(self, "Подождите", "Сначала остановите генерацию или дождитесь завершения фоновых задач.")
             event.ignore()
@@ -7416,7 +7817,7 @@ class MainWindow(QMainWindow):
 
     def _build_parallel_live_tasks(self, chapter_index):
         segments = self._chapter_live_segments_for_parallel(chapter_index)
-        chunk_size = max(1, self.spin_chunk.value())
+        chunk_size = max(1, int(round(self.spin_chunk.value())))
         tasks = []
         for start_idx in range(0, len(segments), chunk_size):
             task_segments = segments[start_idx:start_idx + chunk_size]
@@ -7520,7 +7921,7 @@ class MainWindow(QMainWindow):
 
         task_queue = queue.Queue()
         for task in tasks:
-            task["output_path"] = os.path.join(temp_dir, f"seg_{task['task_index']:05d}.mp3")
+            task["output_path"] = os.path.join(temp_dir, f"seg_{task['task_index']:05d}.{READER_LOSSLESS_TEMP_AUDIO_FORMAT}")
             task_queue.put(task)
 
         num_workers = min(requested_workers, len(available_api_keys), len(tasks))
@@ -7871,7 +8272,7 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-        self.combiner = AudioCombinerWorker(
+        worker = AudioCombinerWorker(
             self.bm,
             self.combo_voices.currentData(),
             ffmpeg_path=ffmpeg_path,
@@ -7879,21 +8280,31 @@ class MainWindow(QMainWindow):
             video_image_path=video_image_path,
             chapter_indices=chapter_indices,
         )
-        self.combiner.progress_signal.connect(lambda m: self.statusBar().showMessage(m))
+        self.combiner = worker
+        worker.progress_signal.connect(lambda m: self.statusBar().showMessage(m))
+        combine_result = {"message": ""}
 
-        def on_combine_finished(message):
-            self.combiner = None
+        def on_combine_message(message):
+            combine_result["message"] = str(message)
+
+        def on_thread_finished():
+            message = combine_result.get("message") or (
+                "Экспорт видео завершён." if video_image_path else "Склейка завершена."
+            )
+            if self.combiner is worker:
+                self.combiner = None
             self._refresh_runtime_controls()
             if str(message).lower().startswith("ошибка"):
                 self.statusBar().showMessage(message)
             else:
                 self.statusBar().showMessage("✅ Экспорт видео завершён!" if video_image_path else "✅ Склейка завершена!")
-            QApplication.processEvents()
             QMessageBox.information(self, "Видео" if video_image_path else "Склейка", message)
+            worker.deleteLater()
 
-        self.combiner.finished_signal.connect(on_combine_finished)
+        worker.finished_signal.connect(on_combine_message)
+        worker.finished.connect(on_thread_finished)
         self._refresh_runtime_controls()
-        self.combiner.start()
+        worker.start()
 
     def run_combine(self):
         self._start_audio_combiner()
@@ -7923,6 +8334,8 @@ class MainWindow(QMainWindow):
 
 
     def save_settings(self):
+        if not getattr(self, "_reader_full_ui_ready", False):
+            return
         if self._loading_settings:
             return
         data = self._reader_ui_settings_payload()
@@ -7944,7 +8357,7 @@ class MainWindow(QMainWindow):
             "model": self.combo_model.currentText(),
             "voice": self.combo_voices.currentData(), # Сохраняем чистый ID голоса
             "speed": self.combo_speed.currentText(),
-            "chunk": self.spin_chunk.value(),
+            "chunk": self._chunk_setting_value(),
             "record": self.chk_mp3.isChecked(),
             "fast": self.chk_fast.isChecked()
         }
@@ -8029,12 +8442,7 @@ class MainWindow(QMainWindow):
             self.preprocess_directive = data.get("preprocess_directive") or DEFAULT_PREPROCESS_DIRECTIVE
             self.tts_directive = data.get("tts_directive") or DEFAULT_TTS_DIRECTIVE
 
-            chunk_value = data.get("chunk", 2)
-            try:
-                chunk_value = int(chunk_value)
-            except (TypeError, ValueError):
-                chunk_value = 2
-            self.spin_chunk.setValue(max(self.spin_chunk.minimum(), min(chunk_value, self.spin_chunk.maximum())))
+            self._set_chunk_setting_value(data.get("chunk", FLASH_TTS_DEFAULT_BLOCK_UNITS))
 
             self.chk_mp3.setChecked(data.get("record", True))
             self.chk_fast.setChecked(data.get("fast", False))
@@ -8152,7 +8560,7 @@ class MainWindow(QMainWindow):
         self.preprocess_directive = data.get("preprocess_directive") or DEFAULT_PREPROCESS_DIRECTIVE
         self.tts_directive = data.get("tts_directive") or DEFAULT_TTS_DIRECTIVE
 
-        self.spin_chunk.setValue(data.get("chunk", 2))
+        self._set_chunk_setting_value(data.get("chunk", FLASH_TTS_DEFAULT_BLOCK_UNITS))
         self.chk_mp3.setChecked(data.get("record", True))
         self.chk_fast.setChecked(data.get("fast", False))
         return
@@ -8178,7 +8586,7 @@ class MainWindow(QMainWindow):
                     s = data.get("speed")
                     if s in SPEED_PROMPTS: self.combo_speed.setCurrentText(s)
                     
-                    self.spin_chunk.setValue(data.get("chunk", 2))
+                    self._set_chunk_setting_value(data.get("chunk", FLASH_TTS_DEFAULT_BLOCK_UNITS))
                     self.chk_mp3.setChecked(data.get("record", True))
                     self.chk_fast.setChecked(data.get("fast", False))
             except: 
