@@ -80,6 +80,8 @@ import time # <-- НОВЫЙ ИМПОРТ
 BENCHMARK_GLOSSARY_SIZE = 100    # Увеличиваем количество терминов
 BENCHMARK_TEXT_SIZE = 10000     # Увеличиваем размер текста
 BASE_GLOSSARY_PROMPT_STATE_FILE = "base_glossary_prompt_state.json"
+AUTO_CJK_SHORT_RATIO_LIMIT = 1.80
+AUTO_CJK_CHAR_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
 # --- КОНЕЦ НОВЫХ КОНСТАНТ ---
 
 def _format_duration(seconds: float) -> str:
@@ -3899,11 +3901,50 @@ class InitialSetupDialog(QDialog):
             result_data = {}
 
         base_limit = float(auto_settings.get('retry_short_ratio', 0.70) or 0.70)
-        cjk_limit = 1.80
-        is_cjk_original = bool(result_data.get('is_cjk_original'))
-        if is_cjk_original:
-            return max(base_limit, cjk_limit), "CJK"
+        if self._auto_result_uses_cjk_ratio(result_data):
+            return max(base_limit, AUTO_CJK_SHORT_RATIO_LIMIT), "CJK"
         return base_limit, "alphabetic"
+
+    def _auto_result_uses_cjk_ratio(self, result_data: dict | None) -> bool:
+        if not isinstance(result_data, dict):
+            return False
+
+        if result_data.get('is_cjk_original') is True:
+            return True
+
+        for field_name in ('original_html', 'original_text', 'original_content'):
+            source_text = result_data.get(field_name)
+            if isinstance(source_text, str) and AUTO_CJK_CHAR_RE.search(source_text):
+                return True
+
+        return self._auto_original_chapter_has_cjk(result_data.get('internal_html_path'))
+
+    def _auto_original_chapter_has_cjk(self, internal_path: str | None) -> bool:
+        internal_path = str(internal_path or "").strip()
+        epub_path = getattr(self, 'selected_file', None)
+        if not internal_path or not epub_path or not os.path.exists(epub_path):
+            return False
+
+        cache = getattr(self, '_auto_cjk_original_cache', None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._auto_cjk_original_cache = cache
+
+        cache_key = (os.path.abspath(epub_path), internal_path)
+        if cache_key in cache:
+            return cache[cache_key]
+
+        has_cjk = False
+        try:
+            with zipfile.ZipFile(epub_path, 'r') as epub_zip:
+                if internal_path in epub_zip.namelist():
+                    original_html = epub_zip.read(internal_path).decode('utf-8', errors='ignore')
+                    has_cjk = bool(AUTO_CJK_CHAR_RE.search(original_html))
+        except Exception:
+            has_cjk = False
+
+        cache[cache_key] = has_cjk
+        return has_cjk
 
     def _resolve_auto_model_override(self, auto_settings: dict | None = None):
         if not isinstance(auto_settings, dict):

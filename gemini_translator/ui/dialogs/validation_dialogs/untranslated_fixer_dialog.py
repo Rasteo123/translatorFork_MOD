@@ -39,6 +39,28 @@ SOURCE_TYPE_LABELS = {
     'system': 'SYSTEM',
     'user': 'USER',
 }
+UNTRANSLATED_PROMPT_GUARDRAILS_MARKER = "## ОБЯЗАТЕЛЬНЫЙ ПАТЧ ПРОМПТА: CJK, ССЫЛКИ И РЕКЛАМА"
+UNTRANSLATED_PROMPT_GUARDRAILS = f"""{UNTRANSLATED_PROMPT_GUARDRAILS_MARKER}
+
+Эти правила имеют приоритет над любыми более ранними инструкциями текущего промпта:
+
+1. CJK-недоперевод в обычной русской фразе запрещен. Любые китайские, японские или корейские слова/иероглифы, которые не являются видимой надписью, знаком, татуировкой, позой, именем или намеренным визуальным объектом, нужно полностью заменить естественным русским переводом. Нельзя оставлять конструкцию вида «русский текст <иероглифы> русский текст».
+2. Если CJK-элемент стоит в кавычках после русского пояснения или как техническая вставка после названия, выбери один литературный русский вариант и удали оригинальные иероглифы. Не добавляй скобки, сноски или пояснения.
+3. Удаляй из содержимого фрагмента все внешние ссылки, URL, домены, рекламные призывы, донаты, Telegram/Discord/Patreon/Boosty, водяные знаки переводчика, подписи сайтов, навигационную рекламу и призывы перейти/подписаться/купить/читать дальше. Это исключение из правила структурной идентичности: рекламные `<a>`, `span`, `br` и другой мусор внутри обрабатываемого `<p data-id="...">` можно и нужно удалить.
+4. Внутренние художественные ссылки EPUB, сноски и якоря сохраняй только если они являются частью повествования или сноски книги. Внешние веб-ссылки и рекламные ссылки всегда удаляй вместе с рекламным текстом.
+5. После правки внутри каждого возвращенного `<p data-id="...">` не должно остаться CJK-символов, URL, доменов, `http`, `www`, `t.me`, `discord`, `patreon`, `boosty`, рекламных подписей и посторонних сервисных сообщений, кроме случаев намеренной визуальной графики по правилам промпта.
+"""
+
+
+def build_effective_untranslated_prompt(prompt_text: str | None) -> str:
+    base_prompt = str(prompt_text or "").strip()
+    if not base_prompt:
+        base_prompt = api_config.default_untranslated_prompt()
+
+    if UNTRANSLATED_PROMPT_GUARDRAILS_MARKER in base_prompt:
+        return base_prompt
+
+    return f"{base_prompt}\n\n{UNTRANSLATED_PROMPT_GUARDRAILS}".strip()
 
 # --- ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ИНТЕРФЕЙСА ---
 
@@ -2185,7 +2207,7 @@ class AITranslationDialog(QDialog):
             self._update_apply_button()
             
             tasks_to_add = []
-            prompt = self.prompt_widget.get_prompt()
+            prompt = build_effective_untranslated_prompt(self.prompt_widget.get_prompt())
             
             for i, payload in enumerate(self.tasks_payloads):
                 task = ('raw_text_translation', payload, prompt, f"Пакет {i+1}/{len(self.tasks_payloads)}")

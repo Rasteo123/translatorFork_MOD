@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from gemini_translator.core.consistency_engine import filter_consistency_problems_by_confidence
@@ -129,6 +130,15 @@ class _AutoWorkflowHarness:
         self.ready_calls += 1
 
 
+class _AutoRatioHarness:
+    _get_effective_auto_short_ratio_limit = InitialSetupDialog._get_effective_auto_short_ratio_limit
+    _auto_result_uses_cjk_ratio = InitialSetupDialog._auto_result_uses_cjk_ratio
+    _auto_original_chapter_has_cjk = InitialSetupDialog._auto_original_chapter_has_cjk
+
+    def __init__(self, selected_file=None):
+        self.selected_file = selected_file
+
+
 class _AutoValidatorDialogLaunchStub:
     instances = []
 
@@ -220,6 +230,60 @@ class _RunAutoValidatorHarness:
 
 
 class AutoWorkflowFollowupTests(unittest.TestCase):
+    def test_auto_short_ratio_uses_cjk_limit_from_flag(self):
+        harness = _AutoRatioHarness()
+
+        ratio_limit, profile = harness._get_effective_auto_short_ratio_limit(
+            {"retry_short_ratio": 0.70},
+            {"is_cjk_original": True},
+        )
+
+        self.assertEqual(ratio_limit, 1.80)
+        self.assertEqual(profile, "CJK")
+
+    def test_auto_short_ratio_detects_cjk_original_html_without_cached_flag(self):
+        harness = _AutoRatioHarness()
+
+        ratio_limit, profile = harness._get_effective_auto_short_ratio_limit(
+            {"retry_short_ratio": 0.70},
+            {"original_html": "<html><body><p>她抬头看向窗外。</p></body></html>"},
+        )
+
+        self.assertEqual(ratio_limit, 1.80)
+        self.assertEqual(profile, "CJK")
+
+    def test_auto_short_ratio_detects_cjk_original_from_epub(self):
+        with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as temp_file:
+            epub_path = temp_file.name
+
+        try:
+            internal_path = "Text/chapter1.xhtml"
+            with zipfile.ZipFile(epub_path, "w") as epub_zip:
+                epub_zip.writestr(internal_path, "<html><body><p>彼は静かに頷いた。</p></body></html>")
+
+            harness = _AutoRatioHarness(selected_file=epub_path)
+
+            ratio_limit, profile = harness._get_effective_auto_short_ratio_limit(
+                {"retry_short_ratio": 0.70},
+                {"internal_html_path": internal_path},
+            )
+
+            self.assertEqual(ratio_limit, 1.80)
+            self.assertEqual(profile, "CJK")
+        finally:
+            os.remove(epub_path)
+
+    def test_auto_short_ratio_keeps_user_limit_for_alphabetic_original(self):
+        harness = _AutoRatioHarness()
+
+        ratio_limit, profile = harness._get_effective_auto_short_ratio_limit(
+            {"retry_short_ratio": 0.70},
+            {"original_html": "<html><body><p>She looked out the window.</p></body></html>"},
+        )
+
+        self.assertEqual(ratio_limit, 0.70)
+        self.assertEqual(profile, "alphabetic")
+
     def test_repeated_untranslated_signature_advances_to_consistency(self):
         settings = {
             "retry_short_enabled": False,

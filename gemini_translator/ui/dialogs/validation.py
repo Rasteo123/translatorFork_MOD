@@ -41,6 +41,7 @@ from .validation_dialogs import UntranslatedWordDetector
 from .validation_dialogs.untranslated_fixer_dialog import (
     AITranslationDialog,
     UntranslatedFixerDialog,
+    build_effective_untranslated_prompt,
     build_translation_tasks_from_data_items,
 )
 
@@ -4200,12 +4201,15 @@ class TranslationValidatorDialog(QDialog):
         }
 
     def _get_auto_untranslated_prompt_text(self):
+        prompt_text = None
         if self.settings_manager:
             try:
-                return self.settings_manager.get_last_untranslated_prompt_text()
+                prompt_text = self.settings_manager.get_last_untranslated_prompt_text()
             except Exception:
                 pass
-        return api_config.default_untranslated_prompt()
+        if not prompt_text:
+            prompt_text = api_config.default_untranslated_prompt()
+        return build_effective_untranslated_prompt(prompt_text)
 
     @staticmethod
     def _truncate_auto_trace_text(text, limit: int = 4000):
@@ -4322,7 +4326,7 @@ class TranslationValidatorDialog(QDialog):
             prompt_text = self._get_auto_untranslated_prompt_text()
             if hasattr(dialog, 'prompt_widget') and dialog.prompt_widget:
                 try:
-                    prompt_text = dialog.prompt_widget.get_prompt()
+                    prompt_text = build_effective_untranslated_prompt(dialog.prompt_widget.get_prompt())
                 except Exception:
                     pass
             request_details_text = self._format_auto_untranslated_trace_details(
