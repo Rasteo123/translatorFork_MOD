@@ -21,6 +21,52 @@ from ..utils.helpers import check_value
 from ..api.managers import ApiKeyManager
 from ..core.chunk_assembler import ChunkAssembler
 
+def normalize_sequential_parallel_settings(settings: dict, log_callback=None):
+    if not settings.get('sequential_translation'):
+        return
+
+    try:
+        requested_splits = int(settings.get('sequential_translation_splits', 1) or 1)
+    except (TypeError, ValueError):
+        requested_splits = 1
+    requested_splits = max(1, requested_splits)
+    try:
+        requested_workers = int(settings.get('num_instances', 1) or 1)
+    except (TypeError, ValueError):
+        requested_workers = 1
+    try:
+        requested_concurrency = int(settings.get('max_concurrent_requests', 1) or 1)
+    except (TypeError, ValueError):
+        requested_concurrency = 1
+    requested_concurrency = max(1, requested_concurrency)
+
+    model_config = settings.get('model_config') if isinstance(settings.get('model_config'), dict) else {}
+    provider_id = str(settings.get('provider') or model_config.get('provider') or "").strip()
+    if provider_id == "workascii_chatgpt":
+        desired_concurrency = max(requested_splits, requested_concurrency)
+        if requested_workers != 1 or requested_concurrency != desired_concurrency:
+            if log_callback:
+                log_callback(
+                    "[SEQUENTIAL] ChatGPT Web uses one browser worker with "
+                    f"{desired_concurrency} parallel page(s), matching work_ascii."
+                )
+        settings['num_instances'] = 1
+        settings['max_concurrent_requests'] = desired_concurrency
+        return
+
+    if (
+        requested_workers != requested_splits
+        or requested_concurrency != 1
+    ):
+        if log_callback:
+            log_callback(
+                "[SEQUENTIAL] Sequential chapter translation forces "
+                f"ordered execution: {requested_splits} chain(s), "
+                "1 in-worker request per worker."
+            )
+    settings['num_instances'] = requested_splits
+    settings['max_concurrent_requests'] = 1
+
 class TranslationEngine(QObject):
     LONG_PAUSE_THRESHOLD_SECONDS = 60
     MAX_REPEATED_WAITS = 5
@@ -505,34 +551,10 @@ class TranslationEngine(QObject):
         use_jieba_for_glossary = settings.get('use_jieba', False)
         segment_cjk_text = settings.get('segment_cjk_text', False)
 
-        if settings.get('sequential_translation'):
-            try:
-                requested_splits = int(settings.get('sequential_translation_splits', 1) or 1)
-            except (TypeError, ValueError):
-                requested_splits = 1
-            requested_splits = max(1, requested_splits)
-            try:
-                requested_workers = int(settings.get('num_instances', 1) or 1)
-            except (TypeError, ValueError):
-                requested_workers = 1
-            try:
-                requested_concurrency = int(settings.get('max_concurrent_requests', 1) or 1)
-            except (TypeError, ValueError):
-                requested_concurrency = 1
-
-            if (
-                requested_workers != requested_splits
-                or requested_concurrency != 1
-            ):
-                self._post_event('log_message', {
-                    'message': (
-                        "[SEQUENTIAL] Sequential chapter translation forces "
-                        f"ordered execution: {requested_splits} chain(s), "
-                        "1 in-worker request per worker."
-                    )
-                })
-            settings['num_instances'] = requested_splits
-            settings['max_concurrent_requests'] = 1
+        normalize_sequential_parallel_settings(
+            settings,
+            lambda message: self._post_event('log_message', {'message': message})
+        )
 
         if full_glossary_dict and self.context_manager.chinese_processor and (use_jieba_for_glossary or segment_cjk_text):
             self._post_event('log_message', {'message': "[JIEBA] Обучение Jieba на глоссарии сессии…"})

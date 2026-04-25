@@ -5,6 +5,16 @@ const { createRequire } = require("module");
 
 const CHATGPT_URL = "https://chatgpt.com/";
 const ORIGINS = ["https://chatgpt.com", "https://chat.openai.com", "https://auth.openai.com"];
+const CHATGPT_APP_URL_PATTERN = /chatgpt\.com|chat\.openai\.com/i;
+const CHATGPT_LOGIN_URL_PATTERN = /auth\.openai\.com|\/auth\//i;
+const CHATGPT_EDITOR_SELECTOR =
+  "#prompt-textarea[contenteditable='true'], [data-testid='prompt-textarea'], div#prompt-textarea[role='textbox'], div[contenteditable='true'][role='textbox']";
+const CHATGPT_NEW_CHAT_PATTERN = /\u041d\u043e\u0432\u044b\u0439 \u0447\u0430\u0442|New chat/i;
+const CHATGPT_LOGIN_BUTTON_PATTERN = /^(?:\u0412\u043e\u0439\u0442\u0438|Log in)$/i;
+const CHATGPT_CONTINUE_WITH_GOOGLE_PATTERN =
+  /Continue with Google|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c (?:\u0441|\u0447\u0435\u0440\u0435\u0437) Google|Sign in with Google/i;
+const CHATGPT_CONTINUE_GENERATION_PATTERN =
+  /Continue generating|Continue writing|Continue response|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u0435|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044e|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u043e\u0442\u0432\u0435\u0442/i;
 const SHARED_SUBMIT_COOLDOWN_MS = 3000;
 const MANUAL_CHALLENGE_NOTICE_MS = 15000;
 const PROMPT_MARKERS = [
@@ -239,20 +249,513 @@ async function isVisible(locator) {
   return locator.first().isVisible().catch(() => false);
 }
 
+async function clickLocatorReliably(locator) {
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+
+  try {
+    await locator.click({ timeout: 1000 });
+    return true;
+  } catch {
+    // Try stronger fallbacks below.
+  }
+
+  try {
+    await locator.click({ timeout: 1000, force: true });
+    return true;
+  } catch {
+    // Fall through to DOM click.
+  }
+
+  try {
+    await locator.evaluate((element) => element.click());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function clickFirstVisible(locatorCandidates) {
+  for (const locator of locatorCandidates) {
+    try {
+      if (await locator.count().catch(() => 0)) {
+        const first = locator.first();
+        if (await first.isVisible().catch(() => false)) {
+          if (await clickLocatorReliably(first)) {
+            return true;
+          }
+        }
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return false;
+}
+
+async function hasVisibleLocator(locatorCandidates) {
+  for (const locator of locatorCandidates) {
+    if (await isVisible(locator)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function editor(page) {
-  return page.locator("#prompt-textarea, [data-testid='prompt-textarea'], div#prompt-textarea[contenteditable='true']").first();
+  return page.locator(CHATGPT_EDITOR_SELECTOR).first();
 }
 
 function sendButton(page) {
-  return page.locator("button[data-testid='send-button'], button[aria-label*='Send'], button[aria-label*='Отправить']").first();
+  return page
+    .locator(
+      [
+        "button[aria-label*='Send message']",
+        "button[aria-label*='Send prompt']",
+        "button[aria-label*='\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435']",
+        "button[data-testid='composer-submit-button']",
+        "button[data-testid='send-button']",
+        "form[data-type='unified-composer'] button[type='submit']",
+        "form button[type='submit']",
+        "button[aria-label*='Send']",
+        "button[aria-label*='Submit']",
+        "button[aria-label*='\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c']"
+      ].join(", ")
+    )
+    .first();
 }
 
 function stopButton(page) {
-  return page.locator("button[aria-label*='Stop'], button[aria-label*='Остановить'], button[data-testid='stop-button']").first();
+  return page
+    .locator("button[aria-label*='Stop'], button[aria-label*='\u041e\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c'], button[data-testid='stop-button']")
+    .first();
+}
+
+function getLoginButtonCandidates(page) {
+  return [
+    page.locator("[data-testid='login-button']").first(),
+    page.getByRole("button", { name: CHATGPT_LOGIN_BUTTON_PATTERN }).first(),
+    page.getByRole("link", { name: CHATGPT_LOGIN_BUTTON_PATTERN }).first(),
+    page.getByRole("button", { name: CHATGPT_CONTINUE_WITH_GOOGLE_PATTERN }).first(),
+    page.getByRole("link", { name: CHATGPT_CONTINUE_WITH_GOOGLE_PATTERN }).first(),
+    page.locator("a[href*='login']").first(),
+    page.locator("button[data-testid*='login']").first(),
+    page.locator("[data-provider='google']").first(),
+    page.locator("[data-testid*='google']").first()
+  ];
+}
+
+function uploadButton(page) {
+  return page
+    .locator(
+      "button[data-testid='composer-plus-btn'], button[aria-label*='Add files'], button[aria-label*='Add photos'], button[aria-label*='\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0444\u0430\u0439\u043b']"
+    )
+    .first();
+}
+
+function uploadMenuCandidates(page) {
+  const uploadLabel =
+    /Upload files|Upload from computer|Add files|Attach files|\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0444\u0430\u0439\u043b|\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0444\u0430\u0439\u043b|\u041f\u0440\u0438\u043a\u0440\u0435\u043f\u0438\u0442\u044c \u0444\u0430\u0439\u043b/i;
+  return [
+    page.locator("[data-testid='file-upload-button']").first(),
+    page.getByRole("menuitem", { name: uploadLabel }).first(),
+    page.getByRole("button", { name: uploadLabel }).first(),
+    page.getByRole("option", { name: uploadLabel }).first(),
+    page.locator("button, [role='menuitem'], [role='option']").filter({ hasText: uploadLabel }).first()
+  ];
+}
+
+async function getSupportedLocalFileTrigger(page) {
+  const fileInputs = page.locator("input[type='file']");
+  const count = await fileInputs.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const candidate = fileInputs.nth(index);
+    const supported = await candidate
+      .evaluate((input) => {
+        const imageOnlyTokens = new Set([
+          ".png",
+          ".jpg",
+          ".jpeg",
+          ".gif",
+          ".webp",
+          ".bmp",
+          ".svg",
+          ".avif",
+          ".heic",
+          ".heif"
+        ]);
+
+        const accept = (input.getAttribute("accept") || "").trim().toLowerCase();
+        if (!accept) {
+          return true;
+        }
+
+        const tokens = accept
+          .split(",")
+          .map((token) => token.trim())
+          .filter(Boolean);
+        if (!tokens.length) {
+          return true;
+        }
+
+        return tokens.some((token) => {
+          if (
+            token === "*/*" ||
+            token === ".txt" ||
+            token === ".md" ||
+            token === ".markdown" ||
+            token === ".json" ||
+            token === ".csv" ||
+            token === ".pdf" ||
+            token === ".doc" ||
+            token === ".docx" ||
+            token === ".rtf" ||
+            token.startsWith("text/") ||
+            token.startsWith("application/")
+          ) {
+            return true;
+          }
+          if (token.startsWith("image/") || imageOnlyTokens.has(token)) {
+            return false;
+          }
+          return true;
+        });
+      })
+      .catch(() => false);
+    if (supported) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function waitForSupportedLocalFileTrigger(page, timeoutMs = 15000) {
+  const attempts = Math.max(1, Math.ceil(timeoutMs / 300));
+  let clickedUploadButton = false;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const trigger = await getSupportedLocalFileTrigger(page);
+    if (trigger) {
+      return trigger;
+    }
+
+    if (!clickedUploadButton && (await isVisible(uploadButton(page)))) {
+      await clickLocatorReliably(uploadButton(page)).catch(() => false);
+      clickedUploadButton = true;
+      await page.waitForTimeout(500);
+      continue;
+    }
+
+    if (clickedUploadButton && (await clickFirstVisible(uploadMenuCandidates(page)))) {
+      await page.waitForTimeout(500);
+      continue;
+    }
+
+    await page.waitForTimeout(300);
+  }
+  return null;
+}
+
+async function uploadFailureMessage(page) {
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  if (!bodyText) {
+    return "";
+  }
+
+  const failurePattern =
+    /files\.oaiusercontent\.com|failed to upload|unable to upload|could not upload|upload failed|\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c|\u0441\u0431\u043e\u0439 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438/i;
+  if (!failurePattern.test(bodyText)) {
+    return "";
+  }
+
+  const lines = bodyText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const matchingLine = lines.find((line) => failurePattern.test(line));
+  return (matchingLine || "ChatGPT reported a file upload failure.").slice(0, 500);
+}
+
+async function throwIfUploadFailed(page) {
+  const message = await uploadFailureMessage(page);
+  if (message) {
+    throw new Error(`ChatGPT rejected file upload: ${message}`);
+  }
+}
+
+async function composerHasAttachment(page, fileName) {
+  return page
+    .evaluate((expectedName) => {
+      const editor =
+        document.querySelector("#prompt-textarea, [data-testid='prompt-textarea']") ||
+        document.querySelector("[contenteditable='true'][role='textbox']");
+      const composer = editor?.closest("form") || document.querySelector("form[data-type='unified-composer']");
+      if (!composer) {
+        return false;
+      }
+
+      const normalizedName = String(expectedName || "").toLowerCase();
+      if (!normalizedName) {
+        return false;
+      }
+
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+      };
+
+      const nodes = [composer, ...Array.from(composer.querySelectorAll("*"))];
+      return nodes.some((node) => {
+        if (node !== composer && !visible(node)) {
+          return false;
+        }
+        const text = [
+          node.getAttribute?.("aria-label") || "",
+          node.getAttribute?.("title") || "",
+          node.innerText || "",
+          node.textContent || ""
+        ]
+          .join(" ")
+          .toLowerCase();
+        return text.includes(normalizedName);
+      });
+    }, fileName)
+    .catch(() => false);
+}
+
+async function waitForAttachedFileChips(page, files, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  const fileNames = files.map((filePath) => path.basename(filePath));
+  let visibleSince = null;
+  let lastMissing = fileNames;
+
+  while (Date.now() < deadline) {
+    await throwIfUploadFailed(page);
+    const missing = [];
+    for (const fileName of fileNames) {
+      if (!(await composerHasAttachment(page, fileName))) {
+        missing.push(fileName);
+      }
+    }
+    if (!missing.length) {
+      visibleSince = visibleSince || Date.now();
+      if (Date.now() - visibleSince >= 2000) {
+        await throwIfUploadFailed(page);
+        return;
+      }
+    } else {
+      visibleSince = null;
+      lastMissing = missing;
+    }
+    await page.waitForTimeout(500);
+  }
+
+  await throwIfUploadFailed(page);
+  throw new Error(`ChatGPT did not show attached files: ${lastMissing.join(", ")}`);
+}
+
+async function composerAttachmentNames(page) {
+  return page
+    .evaluate(() => {
+      const editor =
+        document.querySelector("#prompt-textarea, [data-testid='prompt-textarea']") ||
+        document.querySelector("[contenteditable='true'][role='textbox']");
+      const composer = editor?.closest("form") || document.querySelector("form[data-type='unified-composer']");
+      if (!composer) {
+        return [];
+      }
+      const text = composer.innerText || composer.textContent || "";
+      const matches = text.match(/[^\s\\/:*?"<>|]+?\.(?:txt|md|markdown|json|csv|pdf|docx?|rtf)\b/gi) || [];
+      return Array.from(new Set(matches.map((value) => value.trim()).filter(Boolean)));
+    })
+    .catch(() => []);
+}
+
+async function clickComposerAttachmentRemove(page) {
+  return page
+    .evaluate(() => {
+      const editor =
+        document.querySelector("#prompt-textarea, [data-testid='prompt-textarea']") ||
+        document.querySelector("[contenteditable='true'][role='textbox']");
+      const composer = editor?.closest("form") || document.querySelector("form[data-type='unified-composer']");
+      if (!composer) {
+        return false;
+      }
+
+      const filePattern = /\.(?:txt|md|markdown|json|csv|pdf|docx?|rtf)\b/i;
+      const removePattern = /remove|delete|clear|close|удал|убрать|закрыть/i;
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+      };
+
+      const buttons = Array.from(composer.querySelectorAll("button, [role='button']"));
+      for (const button of buttons) {
+        if (!visible(button)) {
+          continue;
+        }
+        const aria = button.getAttribute("aria-label") || "";
+        const title = button.getAttribute("title") || "";
+        const text = button.innerText || button.textContent || "";
+        const label = `${aria} ${title} ${text}`;
+        const container = button.closest("[role='group'], li, [data-testid*='attachment'], [class*='attachment'], div");
+        const containerText = container ? container.innerText || container.textContent || "" : "";
+        if (removePattern.test(label) && (filePattern.test(containerText) || /attachment|file|файл/i.test(label))) {
+          button.click();
+          return true;
+        }
+      }
+
+      const fileNodes = Array.from(composer.querySelectorAll("*")).filter((node) => {
+        const text = node.innerText || node.textContent || "";
+        return filePattern.test(text) && visible(node);
+      });
+      for (const node of fileNodes) {
+        const container = node.closest("[role='group'], li, [data-testid*='attachment'], [class*='attachment'], div") || node.parentElement;
+        if (!container) {
+          continue;
+        }
+        const removeButton = Array.from(container.querySelectorAll("button, [role='button']")).find((button) => {
+          if (!visible(button)) {
+            return false;
+          }
+          const aria = button.getAttribute("aria-label") || "";
+          const title = button.getAttribute("title") || "";
+          const text = button.innerText || button.textContent || "";
+          return removePattern.test(`${aria} ${title} ${text}`);
+        });
+        if (removeButton) {
+          removeButton.click();
+          return true;
+        }
+      }
+
+      return false;
+    })
+    .catch(() => false);
+}
+
+async function clearComposerAttachments(page) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const names = await composerAttachmentNames(page);
+    if (!names.length) {
+      return;
+    }
+    const clicked = await clickComposerAttachmentRemove(page);
+    if (!clicked) {
+      console.error(`[chatgpt_workascii_bridge] Could not remove existing composer attachment(s): ${names.join(", ")}`);
+      return;
+    }
+    await page.waitForTimeout(400);
+  }
+}
+
+async function hasOnlyExpectedComposerAttachments(page, files) {
+  const names = await composerAttachmentNames(page);
+  if (!names.length) {
+    return true;
+  }
+  const expected = files.map((filePath) => path.basename(filePath));
+  return names.length === expected.length && names.every((name) => expected.includes(name));
+}
+
+async function uploadFilesOnce(page, files) {
+  const fileTrigger = await waitForSupportedLocalFileTrigger(page, 15000);
+  if (fileTrigger) {
+    await fileTrigger.setInputFiles(files);
+    await waitForAttachedFileChips(page, files, 30000);
+    return;
+  }
+
+  const fileChooserPromise = typeof page.waitForEvent === "function"
+    ? page.waitForEvent("filechooser", { timeout: 8000 }).catch(() => null)
+    : Promise.resolve(null);
+  await clickLocatorReliably(uploadButton(page)).catch(() => false);
+  await page.waitForTimeout(400);
+  await clickFirstVisible(uploadMenuCandidates(page)).catch(() => false);
+  const fileChooser = await fileChooserPromise;
+  if (!fileChooser) {
+    throw new Error("ChatGPT file input was not found.");
+  }
+  await fileChooser.setFiles(files);
+  await waitForAttachedFileChips(page, files, 30000);
+}
+
+async function uploadFiles(page, files) {
+  await waitForEditor(page, 30000);
+  await clearComposerAttachments(page);
+  await uploadFilesOnce(page, files);
+
+  if (!(await hasOnlyExpectedComposerAttachments(page, files))) {
+    const names = await composerAttachmentNames(page);
+    console.error(
+      `[chatgpt_workascii_bridge] Composer attachment set after upload differs from requested file; keeping it to avoid deleting the active upload. Current: ${names.join(", ")}`
+    );
+  }
 }
 
 function assistantTurns(page) {
   return page.locator("section[data-turn='assistant'], article[data-turn='assistant'], [data-testid^='conversation-turn'][data-turn='assistant']");
+}
+
+function conversationHistoryRateLimitModal(page) {
+  return page.locator("[data-testid='modal-conversation-history-rate-limit']").first();
+}
+
+async function dismissConversationHistoryRateLimit(page) {
+  const modal = conversationHistoryRateLimitModal(page);
+  if (!(await isVisible(modal))) {
+    return false;
+  }
+
+  const dismissed = await clickFirstVisible([
+    modal.getByRole("button", { name: /^(?:\u041f\u043e\u043d\u044f\u0442\u043d\u043e|Got it)$/i }),
+    page.getByRole("button", { name: /^(?:\u041f\u043e\u043d\u044f\u0442\u043d\u043e|Got it)$/i })
+  ]);
+
+  if (dismissed) {
+    await page.waitForTimeout(300);
+  }
+  return dismissed;
+}
+
+async function dismissCommonUi(page) {
+  const labels = [
+    /^(?:\u0417\u0430\u043a\u0440\u044b\u0442\u044c|Close)$/i,
+    /^(?:\u041f\u043e\u043d\u044f\u0442\u043d\u043e|Got it)$/i,
+    /^(?:\u041d\u0435 \u0441\u0435\u0439\u0447\u0430\u0441|Not now)$/i,
+    /^(?:\u0421\u043e\u0433\u043b\u0430\u0441\u0435\u043d|Agree)$/i
+  ];
+
+  let clickedAny = false;
+  for (let pass = 0; pass < 3; pass += 1) {
+    let clicked = false;
+    for (const label of labels) {
+      if (await clickFirstVisible([page.getByRole("button", { name: label }).first()])) {
+        await page.waitForTimeout(300);
+        clicked = true;
+        clickedAny = true;
+      }
+    }
+    if (!clicked) {
+      break;
+    }
+  }
+  return clickedAny;
+}
+
+async function dismissTransientChatGptUi(page) {
+  let dismissedAny = false;
+  for (let pass = 0; pass < 3; pass += 1) {
+    const dismissedRateLimit = await dismissConversationHistoryRateLimit(page);
+    const dismissedCommon = await dismissCommonUi(page);
+    if (!(dismissedRateLimit || dismissedCommon)) {
+      break;
+    }
+    dismissedAny = true;
+    await page.waitForTimeout(250);
+  }
+  return dismissedAny;
 }
 
 function normalizeResponseText(value) {
@@ -490,10 +993,10 @@ function chooseResponseCandidate(primaryCandidate, fallbackCandidate, promptEcho
 
 function newChatCandidates(page) {
   return [
-    page.getByRole("link", { name: /New chat|РќРѕРІС‹Р№ С‡Р°С‚/i }).first(),
-    page.getByRole("button", { name: /New chat|РќРѕРІС‹Р№ С‡Р°С‚/i }).first(),
+    page.getByRole("link", { name: CHATGPT_NEW_CHAT_PATTERN }).first(),
+    page.getByRole("button", { name: CHATGPT_NEW_CHAT_PATTERN }).first(),
     page.locator("[data-testid='create-new-chat-button']").first(),
-    page.locator("a[href='/']").first()
+    page.locator("a[data-testid='create-new-chat-button']").first()
   ];
 }
 
@@ -506,6 +1009,7 @@ function codeError(code, message) {
 async function waitForEditor(page, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    await dismissTransientChatGptUi(page).catch(() => {});
     if (await isVisible(editor(page))) {
       return editor(page);
     }
@@ -615,11 +1119,20 @@ async function waitForManualChallengeClear(page, config, reason, timeoutMs = nul
 }
 
 async function isLoginPage(page) {
-  if (/auth\.openai\.com|\/auth\//i.test(page.url())) {
+  if (CHATGPT_LOGIN_URL_PATTERN.test(page.url())) {
     return true;
   }
+
+  if (await hasVisibleLocator(getLoginButtonCandidates(page))) {
+    return true;
+  }
+
+  if (await isVisible(editor(page)) || (await hasVisibleLocator(newChatCandidates(page)))) {
+    return false;
+  }
+
   const bodyText = await page.locator("body").innerText().catch(() => "");
-  return /(log in|sign up|continue with google|войти|продолжить с google)/i.test(bodyText);
+  return /(log in|sign up|continue with google|\u0432\u043e\u0439\u0442\u0438|\u0437\u0430\u0440\u0435\u0433\u0438\u0441\u0442\u0440|\u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c (?:\u0441|\u0447\u0435\u0440\u0435\u0437) google)/i.test(bodyText);
 }
 
 async function maybeSelectWorkspace(page, workspaceIndex, workspaceName, timeoutMs) {
@@ -688,50 +1201,83 @@ async function maybeSelectWorkspace(page, workspaceIndex, workspaceName, timeout
   }
 }
 
-async function openFreshChat(page) {
-  await page.goto(CHATGPT_URL, { waitUntil: "domcontentloaded", timeout: 120000 }).catch(() => {});
-  await page.waitForTimeout(1200);
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+async function openFreshChat(page, options = {}) {
+  const config = state.config || {};
+  const shouldNavigate =
+    options.navigate === true || !CHATGPT_APP_URL_PATTERN.test(String(page.url ? page.url() : ""));
+
+  if (shouldNavigate) {
+    await page.goto(CHATGPT_URL, { waitUntil: "domcontentloaded", timeout: 120000 }).catch(() => {});
+    await page.waitForTimeout(1200);
+  } else {
+    await page.waitForTimeout(300);
+  }
+
+  const deadline = Date.now() + 45000;
+  let usedNavigationFallback = false;
+
+  while (Date.now() < deadline) {
+    await dismissTransientChatGptUi(page).catch(() => {});
+
     const blockedState = await detectBlockedState(page);
     if (blockedState) {
-      if (canWaitForInteractiveChallenge(state.config) && blockedState.interactive) {
-        await waitForManualChallengeClear(page, state.config, blockedState);
+      if (canWaitForInteractiveChallenge(config) && blockedState.interactive) {
+        await waitForManualChallengeClear(page, config, blockedState);
         continue;
       }
       throw codeError(blockedState.code, blockedState.message);
     }
 
-    if (await isVisible(editor(page))) {
-      const assistantTurnCount = await assistantTurns(page).count().catch(() => 0);
-      if (assistantTurnCount === 0 || !/\/c\//i.test(page.url())) {
-        await waitForEditor(page, 10000);
-        return;
+    if (await isLoginPage(page)) {
+      const loginRequired = codeError("login_required", "ChatGPT login is required in the saved browser profile.");
+      if (canWaitForInteractiveChallenge(config)) {
+        await waitForManualReady(page, config, loginRequired);
+        continue;
       }
+      throw loginRequired;
     }
 
-    let clicked = false;
-    /* const candidates = [
-        page.getByRole("link", { name: /New chat|Новый чат/i }).first(),
-        page.getByRole("button", { name: /New chat|Новый чат/i }).first(),
-        page.locator("[data-testid='create-new-chat-button']").first(),
-        page.locator("a[href='/']").first()
-      ]; */
-    for (const candidate of newChatCandidates(page)) {
-      if (await isVisible(candidate)) {
-        await candidate.click({ timeout: 5000 }).catch(() => {});
-        clicked = true;
-        break;
-      }
+    await maybeSelectWorkspace(page, config.workspace_index || 1, config.workspace_name || "", 1500).catch(() => {});
+
+    const composerVisible = await isVisible(editor(page));
+    const assistantTurnCount = composerVisible ? await assistantTurns(page).count().catch(() => 0) : 0;
+    const inConversation = /\/c\//i.test(String(page.url ? page.url() : ""));
+
+    if (composerVisible && !inConversation) {
+      await waitForEditor(page, 10000);
+      return;
     }
 
+    if (composerVisible && assistantTurnCount === 0 && inConversation) {
+      const clickedNewChat = await clickFirstVisible(newChatCandidates(page));
+      if (clickedNewChat) {
+        await page.waitForTimeout(1200);
+        continue;
+      }
+      await waitForEditor(page, 10000);
+      return;
+    }
 
-    if (clicked) {
+    if (await clickFirstVisible(newChatCandidates(page))) {
+      await page.waitForTimeout(1200);
+      continue;
+    }
+
+    if (composerVisible && !inConversation) {
+      await waitForEditor(page, 10000);
+      return;
+    }
+
+    if (!usedNavigationFallback && CHATGPT_APP_URL_PATTERN.test(String(page.url ? page.url() : ""))) {
+      usedNavigationFallback = true;
+      await page.goto(CHATGPT_URL, { waitUntil: "domcontentloaded", timeout: 120000 }).catch(() => {});
       await page.waitForTimeout(1200);
       continue;
     }
 
     await page.waitForTimeout(500);
   }
+
   await waitForEditor(page, 30000);
 }
 
@@ -775,47 +1321,198 @@ async function waitForManualReady(page, config, reason) {
 async function ensureReady(page, config, options = {}) {
   const interactiveInit = Boolean(options.interactive_init && !config.headless);
   const interactiveRecovery = Boolean(!config.headless);
-  await page.goto(CHATGPT_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
-  await page.waitForTimeout(1000);
+  const shouldNavigate =
+    options.navigate !== false || !CHATGPT_APP_URL_PATTERN.test(String(page.url ? page.url() : ""));
 
-  const blockedState = await detectBlockedState(page);
-  if (blockedState) {
-    if ((interactiveInit || interactiveRecovery) && blockedState.interactive) {
-      await waitForManualReady(page, config, blockedState);
-      return;
-    }
-    throw codeError(blockedState.code, blockedState.message);
+  if (shouldNavigate) {
+    await page.goto(CHATGPT_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+    await page.waitForTimeout(1000);
   }
 
-  await maybeSelectWorkspace(page, config.workspace_index || 1, config.workspace_name || "", Math.min(config.timeout_sec * 1000, 20000));
+  const deadline = Date.now() + Math.min(Math.max(Number(config.timeout_sec || 1800) * 1000, 30000), 60000);
+  while (Date.now() < deadline) {
+    await dismissTransientChatGptUi(page).catch(() => {});
 
-  if (await isVisible(editor(page))) {
-    await waitForEditor(page, 30000);
+    const blockedState = await detectBlockedState(page);
+    if (blockedState) {
+      if ((interactiveInit || interactiveRecovery) && blockedState.interactive) {
+        await waitForManualReady(page, config, blockedState);
+        return;
+      }
+      throw codeError(blockedState.code, blockedState.message);
+    }
+
+    await maybeSelectWorkspace(
+      page,
+      config.workspace_index || 1,
+      config.workspace_name || "",
+      Math.min(Number(config.timeout_sec || 1800) * 1000, 20000)
+    ).catch(() => {});
+
+    if (await isVisible(editor(page))) {
+      await waitForEditor(page, 30000);
+      return;
+    }
+
+    if (await isLoginPage(page)) {
+      const loginRequired = codeError("login_required", "ChatGPT login is required in the saved browser profile.");
+      if (interactiveInit || interactiveRecovery) {
+        await waitForManualReady(page, config, loginRequired);
+        return;
+      }
+      throw loginRequired;
+    }
+
+    if (options.open_fresh_chat) {
+      await openFreshChat(page, { navigate: false });
+      return;
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  if (options.open_fresh_chat) {
+    await openFreshChat(page, { navigate: false });
     return;
   }
+  await waitForEditor(page, 30000);
+}
 
-  if (await isLoginPage(page)) {
-    const loginRequired = codeError("login_required", "ChatGPT login is required in the saved browser profile.");
-    if (interactiveInit || interactiveRecovery) {
-      await waitForManualReady(page, config, loginRequired);
-      return;
-    }
-    throw loginRequired;
+async function readEditorText(input) {
+  try {
+    const text = await input.evaluate((element) => (element.innerText || element.textContent || "").trim());
+    return normalizeCandidateText(text);
+  } catch {
+    return null;
   }
+}
 
-  await openFreshChat(page);
+function hasFullPromptInEditor(editorText, promptText) {
+  if (editorText === null) {
+    return false;
+  }
+  const prompt = String(promptText || "");
+  const normalizedEditor = normalizeCandidateText(editorText);
+  const promptProbe = normalizeCandidateText(prompt.split(/\r?\n/)[0] || "").slice(0, 40);
+  const promptTailProbe = normalizeCandidateText(prompt).slice(-80);
+  const minExpectedLength = Math.max(1, Math.floor(prompt.length * 0.85));
+  return (
+    normalizedEditor.length >= minExpectedLength &&
+    (!promptProbe || normalizedEditor.includes(promptProbe)) &&
+    (!promptTailProbe || normalizedEditor.includes(promptTailProbe))
+  );
+}
+
+async function setEditorTextDom(page, promptText) {
+  return page
+    .evaluate(
+      ({ selector, text }) => {
+        const element =
+          document.querySelector(selector) ||
+          document.querySelector("#prompt-textarea, [data-testid='prompt-textarea']") ||
+          document.querySelector("[contenteditable='true'][role='textbox']");
+        if (!element) {
+          return false;
+        }
+
+        element.focus();
+        element.innerHTML = "";
+        const lines = String(text || "").split("\n");
+        const doc = element.ownerDocument;
+        for (const line of lines.length ? lines : [""]) {
+          const paragraph = doc.createElement("p");
+          if (line) {
+            paragraph.textContent = line;
+          } else {
+            paragraph.innerHTML = "<br>";
+          }
+          element.appendChild(paragraph);
+        }
+        element.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, data: text, inputType: "insertText" }));
+        element.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      },
+      { selector: CHATGPT_EDITOR_SELECTOR, text: promptText }
+    )
+    .catch(() => false);
+}
+
+async function pastePromptFromClipboard(page, input, promptText) {
+  const modifier = process.platform === "darwin" ? "Meta" : "Control";
+  const wroteClipboard = await page
+    .evaluate(async (text) => {
+      await navigator.clipboard.writeText(String(text || ""));
+      return true;
+    }, promptText)
+    .catch(() => false);
+  if (!wroteClipboard) {
+    return false;
+  }
+  await input.click({ timeout: 5000 }).catch(() => {});
+  await page.keyboard.press(`${modifier}+A`).catch(() => {});
+  await page.keyboard.press("Backspace").catch(() => {});
+  await page.keyboard.press(`${modifier}+V`).catch(() => {});
+  await page.waitForTimeout(400);
+  return true;
 }
 
 async function fillPrompt(page, promptText) {
   const input = await waitForEditor(page, 30000);
-  await input.click({ timeout: 5000 }).catch(() => {});
-  await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A").catch(() => {});
+  const modifier = process.platform === "darwin" ? "Meta" : "Control";
+
+  await input.click({ timeout: 5000 }).catch(async () => {
+    await input.evaluate((element) => element.focus()).catch(() => {});
+  });
+  await page.keyboard.press(`${modifier}+A`).catch(() => {});
   await page.keyboard.press("Backspace").catch(() => {});
 
-  try {
-    await input.fill(promptText);
-  } catch {
-    await page.keyboard.insertText(promptText);
+  const filled = await input
+    .fill(promptText)
+    .then(() => true)
+    .catch(async () => {
+      await page.keyboard.insertText(promptText).catch(() => {});
+      return false;
+    });
+  await page.waitForTimeout(250);
+
+  let currentText = await readEditorText(input);
+  if (hasFullPromptInEditor(currentText, promptText)) {
+    return;
+  }
+  if (filled && currentText === null) {
+    return;
+  }
+
+  const domFilled = await setEditorTextDom(page, promptText);
+  await page.waitForTimeout(250);
+
+  currentText = await readEditorText(input);
+  if (hasFullPromptInEditor(currentText, promptText)) {
+    return;
+  }
+  if (domFilled && currentText === null) {
+    return;
+  }
+
+  const pasted = await pastePromptFromClipboard(page, input, promptText).catch(() => false);
+  currentText = await readEditorText(input);
+  if (hasFullPromptInEditor(currentText, promptText)) {
+    return;
+  }
+  if (pasted && currentText === null) {
+    return;
+  }
+
+  await input.click({ timeout: 5000 }).catch(() => {});
+  await page.keyboard.press(`${modifier}+A`).catch(() => {});
+  await page.keyboard.press("Backspace").catch(() => {});
+  const typed = await page.keyboard.insertText(promptText).then(() => true).catch(() => false);
+  await page.waitForTimeout(400);
+
+  currentText = await readEditorText(input);
+  if (!hasFullPromptInEditor(currentText, promptText) && !(typed && currentText === null)) {
+    throw new Error("ChatGPT prompt text was not inserted into the editor.");
   }
 }
 
@@ -823,6 +1520,7 @@ async function waitForSendEnabled(page, timeoutMs = 30000) {
   let deadline = Date.now() + timeoutMs;
   const button = sendButton(page);
   while (Date.now() < deadline) {
+    await dismissTransientChatGptUi(page).catch(() => {});
     const blockedState = await detectBlockedState(page);
     if (blockedState) {
       if (canWaitForInteractiveChallenge(state.config) && blockedState.interactive) {
@@ -842,48 +1540,199 @@ async function waitForSendEnabled(page, timeoutMs = 30000) {
         return button;
       }
     }
+    if (await hasSendButtonDom(page)) {
+      return null;
+    }
     await page.waitForTimeout(250);
   }
   throw new Error("ChatGPT send button did not become enabled.");
 }
 
-async function submitPrompt(page, button, responseGuard = null) {
+async function promptStillInComposer(page, submittedPrompt) {
+  if (!submittedPrompt) {
+    return false;
+  }
+  if (!(await isVisible(editor(page)))) {
+    return false;
+  }
+  const currentText = await readEditorText(editor(page));
+  if (currentText === null) {
+    return true;
+  }
+  return hasFullPromptInEditor(currentText, submittedPrompt);
+}
+
+async function clickSendButtonDom(page) {
+  return page
+    .evaluate(() => {
+      const editor =
+        document.querySelector("#prompt-textarea, [data-testid='prompt-textarea']") ||
+        document.querySelector("[contenteditable='true'][role='textbox']");
+      const form = editor?.closest("form") || document.querySelector("form[data-type='unified-composer']");
+      const root = form || document;
+      const visible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+      };
+      const enabled = (button) =>
+        visible(button) && !button.disabled && button.getAttribute("aria-disabled") !== "true";
+      const labels = /send|submit|arrow|up|отправ/i;
+      const nonSendLabels = /add|attach|upload|file|photo|image|plus|добав|прикреп|загруз|файл|изображ/i;
+      const stopLabels = /stop|cancel|interrupt|abort|halt|pause|останов|прекрат|отмен/i;
+      const candidates = Array.from(root.querySelectorAll("button")).filter((button) => {
+        if (!enabled(button)) return false;
+        const text = [
+          button.getAttribute("data-testid") || "",
+          button.getAttribute("aria-label") || "",
+          button.getAttribute("title") || "",
+          button.getAttribute("type") || "",
+          button.innerText || "",
+          button.textContent || ""
+        ].join(" ");
+        if (stopLabels.test(text)) return false;
+        if (nonSendLabels.test(text)) return false;
+        if (labels.test(text)) return true;
+        if ((button.getAttribute("type") || "").toLowerCase() === "submit") return true;
+        return Boolean(button.querySelector("svg"));
+      });
+      const button = candidates.find((candidate) => {
+        const label = [
+          candidate.getAttribute("data-testid") || "",
+          candidate.getAttribute("aria-label") || "",
+          candidate.getAttribute("title") || "",
+          candidate.getAttribute("type") || ""
+        ].join(" ");
+        return /send|submit|отправ|composer-submit|send-button/i.test(label);
+      }) || candidates.at(-1);
+
+      if (button) {
+        button.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        button.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+        button.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, cancelable: true, view: window }));
+        button.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+        button.click();
+        return true;
+      }
+      if (form && typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+        return true;
+      }
+      return false;
+    })
+    .catch(() => false);
+}
+
+async function hasSendButtonDom(page) {
+  return page
+    .evaluate(() => {
+      const editor =
+        document.querySelector("#prompt-textarea, [data-testid='prompt-textarea']") ||
+        document.querySelector("[contenteditable='true'][role='textbox']");
+      const form = editor?.closest("form") || document.querySelector("form[data-type='unified-composer']");
+      const root = form || document;
+      const visible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+      };
+      return Array.from(root.querySelectorAll("button")).some((button) => {
+        if (!visible(button) || button.disabled || button.getAttribute("aria-disabled") === "true") {
+          return false;
+        }
+        const label = [
+          button.getAttribute("data-testid") || "",
+          button.getAttribute("aria-label") || "",
+          button.getAttribute("title") || "",
+          button.getAttribute("type") || ""
+        ].join(" ");
+        if (/stop|cancel|interrupt|abort|halt|pause|останов|прекрат|отмен/i.test(label)) {
+          return false;
+        }
+        if (/add|attach|upload|file|photo|image|plus|добав|прикреп|загруз|файл|изображ/i.test(label)) {
+          return false;
+        }
+        return /send|submit|отправ|composer-submit|send-button/i.test(label) || Boolean(button.querySelector("svg"));
+      });
+    })
+    .catch(() => false);
+}
+
+async function submitPrompt(page, button, responseGuard = null, submittedPrompt = "") {
   const modifier = process.platform === "darwin" ? "Meta" : "Control";
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
     if (attempt === 1) {
-      await button.click({ timeout: 5000 }).catch(() => {});
+      if (button) {
+        await clickLocatorReliably(button).catch(() => false);
+      } else {
+        await clickSendButtonDom(page).catch(() => false);
+      }
     } else if (attempt === 2) {
-      await button.click({ timeout: 5000, force: true }).catch(() => {});
-    } else {
+      await clickSendButtonDom(page).catch(() => false);
+    } else if (attempt === 3) {
+      if (button) {
+        await button.click({ timeout: 5000, force: true }).catch(() => {});
+      } else {
+        await clickSendButtonDom(page).catch(() => false);
+      }
+    } else if (attempt === 4) {
+      await editor(page).click({ timeout: 5000 }).catch(() => {});
       await page.keyboard.press(`${modifier}+Enter`).catch(() => {});
+    } else {
+      await editor(page).click({ timeout: 5000 }).catch(() => {});
       await page.keyboard.press("Enter").catch(() => {});
     }
     const deadline = Date.now() + 6000;
     while (Date.now() < deadline) {
+      const blockedState = await detectBlockedState(page);
+      if (blockedState) {
+        if (canWaitForInteractiveChallenge(state.config) && blockedState.interactive) {
+          await waitForManualChallengeClear(page, state.config, blockedState);
+          continue;
+        }
+        throw codeError(blockedState.code, blockedState.message);
+      }
+
       if ((await isVisible(stopButton(page))) || (await hasModelResponseStarted(page, responseGuard))) {
         return;
       }
 
-      const stillVisible = await isVisible(button);
-      const disabled = stillVisible
+      const promptStillPresent = await promptStillInComposer(page, submittedPrompt).catch(() => true);
+      const stillVisible = button ? await isVisible(button) : await hasSendButtonDom(page);
+      const disabled = button && stillVisible
         ? Boolean((await button.getAttribute("disabled").catch(() => null)) || (await button.getAttribute("aria-disabled").catch(() => null)) === "true")
         : false;
-      const enabled = stillVisible ? await button.isEnabled().catch(() => false) : false;
+      const enabled = button && stillVisible ? await button.isEnabled().catch(() => false) : stillVisible;
 
-      if (!stillVisible || disabled || !enabled) {
+      if (!promptStillPresent && (!stillVisible || disabled || !enabled)) {
         return;
       }
 
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(1000);
     }
   }
   throw new Error("ChatGPT prompt was not sent.");
 }
 
+function continueGeneratingCandidates(page) {
+  const buttonLocator = page.locator("button");
+  const filteredButton =
+    buttonLocator && typeof buttonLocator.filter === "function"
+      ? buttonLocator.filter({ hasText: CHATGPT_CONTINUE_GENERATION_PATTERN }).first()
+      : null;
+  return [
+    page.getByRole("button", { name: CHATGPT_CONTINUE_GENERATION_PATTERN }).first(),
+    filteredButton,
+    page
+      .locator("[data-testid*='continue'], [aria-label*='Continue'], [aria-label*='\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c']")
+      .first()
+  ].filter(Boolean);
+}
+
 async function maybeClickContinue(page) {
-  const button = page.locator("button:has-text('Continue generating'), button:has-text('Продолжить генерацию')").first();
-  if (await isVisible(button)) {
-    await button.click({ timeout: 5000 }).catch(() => {});
+  if (await clickFirstVisible(continueGeneratingCandidates(page))) {
     await page.waitForTimeout(1200);
   }
 }
@@ -1399,6 +2248,7 @@ async function waitForResponse(page, timeoutMs, responseGuard = null, submittedP
   }
 
   while (Date.now() < deadline) {
+    await dismissTransientChatGptUi(page).catch(() => {});
     await maybeClickContinue(page).catch(() => {});
     pollCount += 1;
 
@@ -1468,7 +2318,7 @@ async function waitForResponse(page, timeoutMs, responseGuard = null, submittedP
 
     if (pollCount % 5 === 0) {
       console.error(
-        `[chatgpt_workascii_bridge] poll=${pollCount} responseStarted=${responseStarted} primaryLen=${primaryCandidate?.text?.length ?? 0} fallbackLen=${fallbackCandidate?.text?.length ?? 0} snapshotLen=${snapshotCandidate?.text?.length ?? 0} clipboardLen=${clipboardCandidate?.text?.length ?? 0} candidateLen=${candidate.length} bestLen=${bestText.length} stable=${stableRounds}`
+        `[chatgpt_workascii_bridge] poll=${pollCount} responseStarted=${responseStarted} generating=${generating} primaryLen=${primaryCandidate?.text?.length ?? 0} fallbackLen=${fallbackCandidate?.text?.length ?? 0} snapshotLen=${snapshotCandidate?.text?.length ?? 0} clipboardLen=${clipboardCandidate?.text?.length ?? 0} candidateLen=${candidate.length} bestLen=${bestText.length} stable=${stableRounds}`
       );
     }
 
@@ -1498,6 +2348,9 @@ async function waitForResponse(page, timeoutMs, responseGuard = null, submittedP
         return bestText;
       }
       if (structuredGlossary && bestText.length >= 300 && stableRounds >= 6) {
+        return bestText;
+      }
+      if (!generating && bestText.length >= 1000 && stableRounds >= 1) {
         return bestText;
       }
       if (!generating && stableRounds >= 2) {
@@ -1636,7 +2489,6 @@ async function translate(prompt, systemInstruction) {
 
   try {
     await page.bringToFront().catch(() => {});
-    await ensureReady(page, state.config);
     await openFreshChat(page);
     const preparedPrompt = buildPrompt(prompt, systemInstruction);
     await fillPrompt(page, preparedPrompt);
@@ -1645,7 +2497,7 @@ async function translate(prompt, systemInstruction) {
     const releaseSubmitSlot = await acquireSharedSubmitSlot();
     try {
       await page.bringToFront().catch(() => {});
-      await submitPrompt(page, button, responseGuard);
+      await submitPrompt(page, button, responseGuard, preparedPrompt);
     } finally {
       releaseSubmitSlot();
     }

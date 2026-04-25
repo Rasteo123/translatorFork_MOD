@@ -12,6 +12,7 @@ from PyQt6 import QtCore, QtWidgets
 
 from gemini_translator.api import config as api_config
 from gemini_translator.core.task_manager import ChapterQueueManager
+from gemini_translator.core.translation_engine import normalize_sequential_parallel_settings
 from gemini_translator.core.worker_helpers.prompt_builder import PromptBuilder
 from gemini_translator.utils.glossary_tools import TaskPreparer
 
@@ -155,6 +156,36 @@ class SequentialTranslationTests(unittest.TestCase):
         next_first_chain = manager.get_next_task("worker-3")
 
         self.assertEqual(tuple(next_first_chain[1]), ("epub", "book.epub", "Text/ch2.xhtml"))
+
+    def test_workascii_sequential_mode_uses_parallel_pages_in_one_worker(self):
+        settings = {
+            "provider": "workascii_chatgpt",
+            "sequential_translation": True,
+            "sequential_translation_splits": 3,
+            "num_instances": 3,
+            "max_concurrent_requests": 1,
+        }
+        logs = []
+
+        normalize_sequential_parallel_settings(settings, logs.append)
+
+        self.assertEqual(settings["num_instances"], 1)
+        self.assertEqual(settings["max_concurrent_requests"], 3)
+        self.assertTrue(any("parallel page" in message for message in logs))
+
+    def test_non_workascii_sequential_mode_keeps_one_request_per_worker(self):
+        settings = {
+            "provider": "gemini",
+            "sequential_translation": True,
+            "sequential_translation_splits": 3,
+            "num_instances": 1,
+            "max_concurrent_requests": 4,
+        }
+
+        normalize_sequential_parallel_settings(settings)
+
+        self.assertEqual(settings["num_instances"], 3)
+        self.assertEqual(settings["max_concurrent_requests"], 1)
 
     def test_in_progress_filtered_batch_can_be_split_into_chapters(self):
         manager = ChapterQueueManager(event_bus=self.app.event_bus)

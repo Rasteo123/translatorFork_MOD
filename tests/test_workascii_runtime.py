@@ -809,6 +809,7 @@ const state = {{
   assistantTurnCount: 1,
   sendClicks: 0,
   newChatClicks: 0,
+  gotoCount: 0,
   sendDisabled: false,
   pendingResponse: false,
   urlValue: "https://chatgpt.com/c/stale",
@@ -859,7 +860,6 @@ const locatorFor = (selector) => {{
       if (isNewChat) {{
         state.newChatClicks += 1;
         state.response = "";
-        state.assistantTurnCount = 0;
         state.urlValue = "https://chatgpt.com/";
         return;
       }}
@@ -888,6 +888,7 @@ const page = {{
     return locatorFor("__missing__");
   }},
   goto: async () => {{
+    state.gotoCount += 1;
     state.urlValue = "https://chatgpt.com/c/stale";
   }},
   waitForTimeout: async (ms = 0) => {{
@@ -895,7 +896,7 @@ const page = {{
       state.pendingResponse = false;
       state.sendDisabled = false;
       state.assistantTurnCount += 1;
-      state.response = `fresh response (sendClicks=${{state.sendClicks}}, newChat=${{state.newChatClicks}})`;
+      state.response = `fresh response (sendClicks=${{state.sendClicks}}, newChat=${{state.newChatClicks}}, goto=${{state.gotoCount}})`;
     }}
   }},
   url: () => state.urlValue,
@@ -1007,9 +1008,240 @@ print(json.dumps(payload, ensure_ascii=False))
         self.assertEqual(payload["returncode"], 0, payload)
         self.assertEqual(
             payload["response"].get("text"),
-            "fresh response (sendClicks=1, newChat=1)",
+            "fresh response (sendClicks=1, newChat=1, goto=1)",
             payload,
         )
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-specific bridge regression")
+    def test_bridge_uses_direct_prompt_without_file_upload(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        controller = f"""
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, {str(repo_root)!r})
+from gemini_translator.api import config as api_config
+
+repo_root = Path({str(repo_root)!r})
+bridge_script = repo_root / "gemini_translator" / "scripts" / "chatgpt_workascii_bridge.cjs"
+node_path = api_config.find_node_executable(repo_root)
+if not node_path or not Path(node_path).exists():
+    print(json.dumps({{"skip": "Bundled node runtime is not available"}}, ensure_ascii=False))
+    raise SystemExit(0)
+
+mock_playwright_index = r'''
+const path = require("path");
+const state = {{
+  prompt: "",
+  response: "",
+  assistantTurnCount: 0,
+  sendClicks: 0,
+  sendDisabled: false,
+  pendingResponse: false,
+  uploadFailed: false,
+  uploadedFile: "",
+  closed: false
+}};
+
+const locatorFor = (selector) => {{
+  const text = String(selector);
+  const isPrompt = text.includes("prompt-textarea");
+  const isBody = text === "body";
+  const isSend = text.includes("send-button") || text.includes("Send") || text.includes("РћС‚РїСЂР°РІРёС‚СЊ");
+  const isStop = text.includes("stop-button") || text.includes("Stop") || text.includes("РћСЃС‚Р°РЅРѕРІРёС‚СЊ");
+  const isAssistant = text.includes("section[data-turn='assistant']") || text.includes("article[data-turn='assistant']") || text.includes("conversation-turn");
+  const isCopy = text.includes("copy-turn-action-button") || text.includes("Copy");
+  const isFileInput = text === "input[type='file']";
+
+  return {{
+    count: async () => {{
+      if (isFileInput) return 1;
+      if (isPrompt || isBody || isSend) return 1;
+      if (isStop || isCopy) return 0;
+      if (isAssistant) return state.assistantTurnCount;
+      return 0;
+    }},
+    first() {{ return this; }},
+    last() {{ return this; }},
+    nth() {{ return this; }},
+    filter() {{ return this; }},
+    locator: (nested) => locatorFor(nested),
+    isVisible: async () => {{
+      if (isFileInput) return true;
+      if (isPrompt || isBody || isSend) return true;
+      if (isStop || isCopy) return false;
+      if (isAssistant) return state.assistantTurnCount > 0;
+      return false;
+    }},
+    innerText: async () => {{
+      if (isBody) {{
+        return state.uploadFailed
+          ? "ChatGPT\\n\\u041d\\u0435 \\u0443\\u0434\\u0430\\u043b\\u043e\\u0441\\u044c \\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u0438\\u0442\\u044c \\u0444\\u0430\\u0439\\u043b \\u043d\\u0430 \\u0441\\u0430\\u0439\\u0442 files.oaiusercontent.com."
+          : "ChatGPT";
+      }}
+      if (isAssistant) return state.response || "";
+      if (isPrompt) return state.prompt;
+      return "";
+    }},
+    getAttribute: async (name) => {{
+      if (isFileInput && name === "accept") return ".txt";
+      if (!isSend) return null;
+      if (name === "disabled") return state.sendDisabled ? "" : null;
+      if (name === "aria-disabled") return state.sendDisabled ? "true" : null;
+      return null;
+    }},
+    isEnabled: async () => !state.sendDisabled,
+    evaluate: async (fn) => {{
+      if (isFileInput) {{
+        return fn({{ getAttribute: (name) => (name === "accept" ? ".txt" : "") }});
+      }}
+      if (isPrompt) return state.prompt;
+      return false;
+    }},
+    setInputFiles: async (files) => {{
+      const first = Array.isArray(files) ? files[0] : files;
+      state.uploadedFile = path.basename(String(first || ""));
+      state.uploadFailed = true;
+    }},
+    click: async () => {{
+      if (isSend) {{
+        state.sendClicks += 1;
+        state.sendDisabled = true;
+        state.pendingResponse = true;
+      }}
+    }},
+    fill: async (value) => {{
+      state.prompt = String(value || "");
+    }},
+    hover: async () => {{}},
+    scrollIntoViewIfNeeded: async () => {{}}
+  }};
+}};
+
+const page = {{
+  locator: (selector) => locatorFor(selector),
+  getByRole: () => locatorFor("__missing__"),
+  goto: async () => {{}},
+  waitForTimeout: async (ms = 0) => {{
+    if (state.pendingResponse && Number(ms) >= 1000) {{
+      state.pendingResponse = false;
+      state.sendDisabled = false;
+      state.assistantTurnCount += 1;
+      state.response = state.uploadedFile ? "FILE_UPLOAD_ATTEMPTED" : "DIRECT_TEXT";
+    }}
+  }},
+  url: () => "https://chatgpt.com/",
+  content: async () => "<html><body>ok</body></html>",
+  evaluate: async () => false,
+  bringToFront: async () => {{}},
+  keyboard: {{
+    press: async () => {{}},
+    insertText: async (value) => {{
+      state.prompt = String(value || "");
+    }}
+  }},
+  context: () => ({{ grantPermissions: async () => {{}} }}),
+  isClosed: () => state.closed,
+  close: async () => {{
+    state.closed = true;
+  }}
+}};
+
+module.exports = {{
+  chromium: {{
+    launchPersistentContext: async () => {{
+      return {{
+        grantPermissions: async () => {{}},
+        pages: () => [page].filter((candidate) => !candidate.isClosed()),
+        newPage: async () => page,
+        close: async () => {{
+          await page.close();
+        }}
+      }};
+    }}
+  }}
+}};
+'''
+
+payload = {{}}
+with tempfile.TemporaryDirectory() as tmpdir:
+    tmp_path = Path(tmpdir)
+    mock_root = tmp_path / "mock_playwright"
+    mock_root.mkdir()
+    (mock_root / "package.json").write_text(json.dumps({{"name": "playwright", "main": "index.js"}}), encoding="utf-8")
+    (mock_root / "index.js").write_text(mock_playwright_index, encoding="utf-8")
+
+    process = subprocess.Popen(
+        [str(node_path), str(bridge_script)],
+        cwd=str(repo_root),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        init_message = {{
+            "id": "init-1",
+            "type": "init",
+            "config": {{
+                "workascii_root": str(tmp_path),
+                "profile_dir": str(tmp_path / "profile"),
+                "playwright_package_root": str(mock_root),
+                "browsers_path": "",
+                "workspace_name": "",
+                "workspace_index": 1,
+                "headless": True,
+                "timeout_sec": 60,
+                "parallel_requests": 1,
+            }},
+        }}
+        process.stdin.write(json.dumps(init_message, ensure_ascii=False) + "\\n")
+        process.stdin.flush()
+        init_line = json.loads(process.stdout.readline().strip())
+
+        process.stdin.write(json.dumps({{"id": "t1", "type": "translate", "prompt": "one", "system_instruction": ""}}, ensure_ascii=False) + "\\n")
+        process.stdin.flush()
+        response_line = json.loads(process.stdout.readline().strip())
+
+        process.stdin.write(json.dumps({{"id": "shutdown-1", "type": "shutdown"}}, ensure_ascii=False) + "\\n")
+        process.stdin.flush()
+        shutdown_line = json.loads(process.stdout.readline().strip())
+        process.wait(timeout=10)
+
+        payload = {{
+            "init": init_line,
+            "response": response_line,
+            "shutdown": shutdown_line,
+            "stderr": process.stderr.read(),
+            "returncode": process.returncode,
+        }}
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+
+print(json.dumps(payload, ensure_ascii=False))
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", controller],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertTrue(completed.stdout.strip(), completed.stderr)
+        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+        if payload.get("skip"):
+            self.skipTest(payload["skip"])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(payload["init"].get("ok"), payload)
+        self.assertTrue(payload["shutdown"].get("ok"), payload)
+        self.assertEqual(payload["returncode"], 0, payload)
+        self.assertEqual(payload["response"].get("text"), "DIRECT_TEXT", payload)
+        self.assertNotIn("falling back to direct composer text", payload["stderr"].lower(), payload)
 
     def test_bridge_ignores_prompt_echo_from_copy_button_until_real_response_arrives(self):
         repo_root = Path(__file__).resolve().parents[1]
@@ -1361,6 +1593,34 @@ print(json.dumps(payload, ensure_ascii=False))
         self.assertEqual(handler.playwright_package_root, package_root)
         self.assertEqual(handler.playwright_browsers_path, browsers_root)
 
+    def test_handler_preserves_configured_parallel_requests(self):
+        class DummyWorker:
+            provider_config = {}
+            workascii_workspace_name = ""
+            workascii_workspace_index = 1
+            workascii_timeout_sec = 1800
+            workascii_headless = False
+            workascii_refresh_every_requests = 0
+            max_concurrent_requests = 3
+
+        project_root = Path(r"C:\project-runtime")
+        profile_dir = project_root / "chatgpt-profile-run"
+        node_path = project_root / "playwright_runtime" / "node.exe"
+        package_root = project_root / "playwright_runtime" / "package"
+        browsers_root = project_root / "playwright_runtime" / "ms-playwright"
+
+        handler = WorkAsciiChatGptApiHandler(DummyWorker())
+
+        with patch.object(api_config, "default_workascii_runtime_root", return_value=project_root), \
+             patch.object(api_config, "default_workascii_profile_dir", return_value=profile_dir), \
+             patch.object(api_config, "find_node_executable", return_value=node_path), \
+             patch.object(api_config, "find_playwright_package_root", return_value=package_root), \
+             patch.object(api_config, "find_playwright_browsers_path", return_value=browsers_root), \
+             patch.object(api_config, "get_resource_path", return_value=project_root / "bridge.cjs"):
+            handler.setup_client()
+
+        self.assertEqual(handler.parallel_requests, 3)
+
     def test_profile_template_replaces_runtime_profile_before_bridge_launch(self):
         class DummyWorker:
             provider_config = {}
@@ -1387,6 +1647,60 @@ print(json.dumps(payload, ensure_ascii=False))
                 (runtime_dir / "Default" / "Preferences").read_text(encoding="utf-8"),
                 '{"fresh": true}',
             )
+
+    def test_bridge_subprocess_uses_large_pipe_limit_for_long_responses(self):
+        class DummyWorker:
+            provider_config = {}
+            workascii_workspace_name = ""
+            workascii_workspace_index = 1
+            workascii_timeout_sec = 1800
+            workascii_headless = False
+            workascii_refresh_every_requests = 0
+
+        class DummyProcess:
+            returncode = None
+            stdin = None
+            stdout = None
+            stderr = None
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                node_path = tmp_path / "node.exe"
+                package_root = tmp_path / "package"
+                bridge_path = tmp_path / "bridge.cjs"
+                profile_dir = tmp_path / "profile"
+                browsers_path = tmp_path / "browsers"
+
+                node_path.write_bytes(b"node")
+                package_root.mkdir()
+                (package_root / "package.json").write_text("{}", encoding="utf-8")
+                bridge_path.write_text("", encoding="utf-8")
+                browsers_path.mkdir()
+
+                handler = WorkAsciiChatGptApiHandler(DummyWorker())
+                handler.profile_dir = profile_dir
+                handler.execution_cwd = tmp_path
+                handler.node_path = node_path
+                handler.bridge_script_path = bridge_path
+                handler.playwright_package_root = package_root
+                handler.playwright_browsers_path = browsers_path
+                handler.workascii_root = tmp_path
+                handler.timeout_sec = 1800
+                handler.headless = False
+                handler.parallel_requests = 1
+
+                with patch.object(handler, "_prepare_profile_dir_for_launch", new=AsyncMock()), \
+                     patch.object(handler, "_send_command", new=AsyncMock(return_value={"ok": True})), \
+                     patch(
+                         "gemini_translator.api.handlers.workascii_chatgpt.asyncio.create_subprocess_exec",
+                         new=AsyncMock(return_value=DummyProcess()),
+                     ) as create_process:
+                    await handler._ensure_bridge_ready()
+
+                self.assertEqual(create_process.await_args.kwargs.get("limit"), 16 * 1024 * 1024)
+
+        asyncio.run(scenario())
 
     def test_call_api_restarts_bridge_after_refresh_budget(self):
         class DummyWorker:

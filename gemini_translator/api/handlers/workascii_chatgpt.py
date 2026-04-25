@@ -40,6 +40,8 @@ class WorkAsciiChatGptApiHandler(BaseApiHandler):
         self.workspace_index = 1
         self.headless = False
         self.timeout_sec = 1800
+        # Matches work_ascii: one persistent browser profile with one page per worker,
+        # while the bridge serializes only the submit action through a shared slot.
         self.parallel_requests = 1
         self.profile_template_dir = None
         self.refresh_every_requests = 0
@@ -249,6 +251,7 @@ class WorkAsciiChatGptApiHandler(BaseApiHandler):
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(self.execution_cwd),
                     env=process_env,
+                    limit=16 * 1024 * 1024,
                 )
             except NotImplementedError as exc:
                 raise RuntimeError(
