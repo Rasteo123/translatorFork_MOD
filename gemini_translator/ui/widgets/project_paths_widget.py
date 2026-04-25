@@ -28,6 +28,7 @@ class ProjectPathsWidget(QWidget):
         self._file_path = None
         self._folder_path = None
         self._chapters_count = 0
+        self._collapsed = False
         self._init_ui()
 
     def _init_ui(self):
@@ -49,20 +50,26 @@ class ProjectPathsWidget(QWidget):
         intro_layout.setContentsMargins(0, 0, 0, 0)
         intro_layout.setSpacing(2)
 
-        eyebrow_label = QLabel("Рабочая область")
-        eyebrow_label.setObjectName("sectionEyebrow")
-        intro_layout.addWidget(eyebrow_label)
+        self.eyebrow_label = QLabel("Рабочая область")
+        self.eyebrow_label.setObjectName("sectionEyebrow")
+        intro_layout.addWidget(self.eyebrow_label)
 
-        title_label = QLabel("Подготовка проекта перевода")
-        title_label.setObjectName("heroTitle")
-        intro_layout.addWidget(title_label)
+        self.title_label = QLabel("Подготовка проекта перевода")
+        self.title_label.setObjectName("heroTitle")
+        intro_layout.addWidget(self.title_label)
 
-        subtitle_label = QLabel(
+        self.subtitle_label = QLabel(
             "Выберите книгу и папку проекта, затем настройте сессию и очередь задач."
         )
-        subtitle_label.setObjectName("heroSubtitle")
-        subtitle_label.setWordWrap(True)
-        intro_layout.addWidget(subtitle_label)
+        self.subtitle_label.setObjectName("heroSubtitle")
+        self.subtitle_label.setWordWrap(True)
+        intro_layout.addWidget(self.subtitle_label)
+
+        self.compact_summary_label = QLabel()
+        self.compact_summary_label.setObjectName("heroSubtitle")
+        self.compact_summary_label.setWordWrap(True)
+        self.compact_summary_label.setVisible(False)
+        intro_layout.addWidget(self.compact_summary_label)
 
         self.context_status_label = QLabel()
         self.context_status_label.setObjectName("projectStateLabel")
@@ -70,11 +77,24 @@ class ProjectPathsWidget(QWidget):
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
 
+        self.toggle_header_btn = QPushButton("Скрыть")
+        self.toggle_header_btn.setObjectName("compactActionButton")
+        self.toggle_header_btn.setToolTip("Свернуть рабочую область и освободить место для списка задач.")
+        self.toggle_header_btn.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
+
+        top_actions_layout = QVBoxLayout()
+        top_actions_layout.setContentsMargins(0, 0, 0, 0)
+        top_actions_layout.setSpacing(6)
+        top_actions_layout.addWidget(self.context_status_label, 0, Qt.AlignmentFlag.AlignRight)
+        top_actions_layout.addWidget(self.toggle_header_btn, 0, Qt.AlignmentFlag.AlignRight)
+        top_actions_layout.addStretch(1)
+
         top_row.addLayout(intro_layout, 1)
-        top_row.addWidget(self.context_status_label, 0, Qt.AlignmentFlag.AlignTop)
+        top_row.addLayout(top_actions_layout, 0)
         header_layout.addLayout(top_row)
 
-        cards_row = QHBoxLayout()
+        self.cards_container = QWidget(self.header_card)
+        cards_row = QHBoxLayout(self.cards_container)
         cards_row.setContentsMargins(0, 0, 0, 0)
         cards_row.setSpacing(10)
 
@@ -140,10 +160,30 @@ class ProjectPathsWidget(QWidget):
         cards_row.addWidget(self.file_card, 4)
         cards_row.addWidget(self.folder_card, 4)
         cards_row.addWidget(self.stats_card, 2)
-        header_layout.addLayout(cards_row)
+        header_layout.addWidget(self.cards_container)
 
         root_layout.addWidget(self.header_card)
         self._refresh_header_state()
+
+    def set_collapsed(self, collapsed: bool):
+        self._collapsed = bool(collapsed)
+        self.cards_container.setVisible(not self._collapsed)
+        self.subtitle_label.setVisible(not self._collapsed)
+        self.compact_summary_label.setVisible(self._collapsed)
+        self.toggle_header_btn.setText("Показать" if self._collapsed else "Скрыть")
+        self.toggle_header_btn.setToolTip(
+            "Развернуть рабочую область."
+            if self._collapsed
+            else "Свернуть рабочую область и освободить место для списка задач."
+        )
+        self._refresh_header_state()
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent:
+            parent.updateGeometry()
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
 
     def _create_path_card(self, title, empty_value, empty_detail, button_text, slot):
         card = QFrame(self.header_card)
@@ -272,6 +312,13 @@ class ProjectPathsWidget(QWidget):
         else:
             self.context_status_label.setProperty("ready", False)
             self.context_status_label.setText("Выберите исходную книгу")
+
+        file_name = os.path.basename(self._file_path) if has_file else "источник не выбран"
+        folder_name = os.path.basename(self._folder_path) if has_folder else "папка не выбрана"
+        chapters_text = f"{self._chapters_count} глав" if self._chapters_count else "главы не выбраны"
+        self.compact_summary_label.setText(
+            f"{file_name} · {folder_name} · {chapters_text}"
+        )
 
         self.style().unpolish(self.context_status_label)
         self.style().polish(self.context_status_label)

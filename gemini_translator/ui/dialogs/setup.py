@@ -464,8 +464,16 @@ class InitialSetupDialog(QDialog):
         tasks_tab_layout = QVBoxLayout(tasks_tab_container)
         tasks_tab_layout.setContentsMargins(4, 4, 4, 4)
         tasks_tab_layout.setSpacing(8)
-        tasks_tab_layout.addWidget(self.task_management_widget, 1)
-        tasks_tab_layout.addWidget(self.translation_options_widget, 0)
+        self.tasks_splitter = QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.tasks_splitter.setChildrenCollapsible(False)
+        self.tasks_splitter.addWidget(self.task_management_widget)
+        self.tasks_splitter.addWidget(self.translation_options_widget)
+        self.tasks_splitter.setStretchFactor(0, 5)
+        self.tasks_splitter.setStretchFactor(1, 1)
+        self.tasks_splitter.setCollapsible(0, False)
+        self.tasks_splitter.setCollapsible(1, True)
+        self.tasks_splitter.setSizes([560, 150])
+        tasks_tab_layout.addWidget(self.tasks_splitter, 1)
         tabs_group.addTab(tasks_tab_container, "Список Задач")
 
         # Остальные вкладки

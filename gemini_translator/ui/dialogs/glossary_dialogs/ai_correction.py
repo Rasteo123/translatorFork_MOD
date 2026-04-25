@@ -13,7 +13,8 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel,
     QWidget, QGroupBox, QCheckBox, QHBoxLayout, QGridLayout, QTableWidget,
-    QHeaderView, QTableWidgetItem, QMessageBox, QAbstractItemView, QSlider
+    QHeaderView, QTableWidgetItem, QMessageBox, QAbstractItemView, QSlider,
+    QSplitter
 )
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
 from PyQt6.QtGui import QColor, QFont
@@ -2484,9 +2485,16 @@ class CorrectionPreviewDialog(QDialog):
         review_preferences = self._load_review_preferences()
         self.preview_scroll_speed = review_preferences["scroll_speed"]
         self.preview_font_size = review_preferences["font_size"]
+        self.manual_editor_collapsed = review_preferences["manual_editor_collapsed"]
 
         self.setWindowTitle("Предпросмотр AI-исправлений")
         self.setMinimumSize(1200, 700)
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
 
         self._filter_and_prepare_data()
 
@@ -2717,9 +2725,23 @@ class CorrectionPreviewDialog(QDialog):
         controls_layout.addWidget(font_label)
         controls_layout.addWidget(self.font_slider)
         controls_layout.addWidget(self.font_value_label)
+
+        self.toggle_editor_btn = QPushButton("Скрыть ручную правку")
+        self.toggle_editor_btn.setToolTip("Скрыть редактор под таблицей и освободить место для списка исправлений.")
+        self.toggle_editor_btn.clicked.connect(self._toggle_manual_editor)
+        controls_layout.addWidget(self.toggle_editor_btn)
+
+        self.window_size_btn = QPushButton("Развернуть окно")
+        self.window_size_btn.setToolTip("Развернуть или вернуть окно предпросмотра AI-исправлений.")
+        self.window_size_btn.clicked.connect(self._toggle_window_size)
+        controls_layout.addWidget(self.window_size_btn)
+
         controls_layout.addStretch()
         main_layout.addLayout(controls_layout)
-        
+
+        self.preview_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.preview_splitter.setChildrenCollapsible(False)
+
         self.table = QTableWidget()
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["Применить?", "Оригинал", "Было (Перевод)", "Стало (Перевод)", "Было (Примечание)", "Стало (Примечание)"])
@@ -2730,10 +2752,10 @@ class CorrectionPreviewDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self._remember_selected_row)
         self.table.currentCellChanged.connect(self._on_table_current_cell_changed)
-        main_layout.addWidget(self.table)
+        self.preview_splitter.addWidget(self.table)
 
-        editor_group = QGroupBox("Ручная правка: Стало (Перевод)")
-        editor_layout = QVBoxLayout(editor_group)
+        self.editor_group = QGroupBox("Ручная правка: Стало (Перевод)")
+        editor_layout = QVBoxLayout(self.editor_group)
 
         editor_header = QHBoxLayout()
         self.translation_target_label = QLabel("Термин: —")
@@ -2762,7 +2784,14 @@ class CorrectionPreviewDialog(QDialog):
         editor_actions.addWidget(self.translation_save_btn)
         editor_actions.addWidget(self.translation_next_btn)
         editor_layout.addLayout(editor_actions)
-        main_layout.addWidget(editor_group)
+
+        self.preview_splitter.addWidget(self.editor_group)
+        self.preview_splitter.setStretchFactor(0, 5)
+        self.preview_splitter.setStretchFactor(1, 1)
+        self.preview_splitter.setCollapsible(0, False)
+        self.preview_splitter.setCollapsible(1, True)
+        self.preview_splitter.setSizes([560, 150])
+        main_layout.addWidget(self.preview_splitter, 1)
         
         bottom_panel = QHBoxLayout()
         select_all_btn = QPushButton("Выделить всё"); select_all_btn.clicked.connect(lambda: self._toggle_all_checkboxes(True))
@@ -2792,6 +2821,70 @@ class CorrectionPreviewDialog(QDialog):
         main_layout.addLayout(bottom_panel)
 
         self._update_translation_editor_state()
+        self._apply_manual_editor_visibility()
+        self._refresh_window_size_button()
+
+    def _toggle_manual_editor(self):
+        if not self.manual_editor_collapsed and self._translation_edit_dirty:
+            if not self._resolve_pending_translation_edit("скрытием ручной правки"):
+                return
+
+        self.manual_editor_collapsed = not self.manual_editor_collapsed
+        self._apply_manual_editor_visibility()
+        self._queue_review_preferences_save()
+
+    def _apply_manual_editor_visibility(self):
+        collapsed = bool(getattr(self, "manual_editor_collapsed", False))
+
+        if hasattr(self, "editor_group"):
+            self.editor_group.setVisible(not collapsed)
+
+        if hasattr(self, "toggle_editor_btn"):
+            self.toggle_editor_btn.setText(
+                "Показать ручную правку" if collapsed else "Скрыть ручную правку"
+            )
+            self.toggle_editor_btn.setToolTip(
+                "Показать редактор для ручной правки выбранного перевода."
+                if collapsed
+                else "Скрыть редактор под таблицей и освободить место для списка исправлений."
+            )
+
+        if hasattr(self, "preview_splitter"):
+            QtCore.QTimer.singleShot(0, self._restore_preview_splitter_sizes)
+
+    def _restore_preview_splitter_sizes(self):
+        if not hasattr(self, "preview_splitter"):
+            return
+
+        total_height = self.preview_splitter.height()
+        if total_height <= 0:
+            sizes = self.preview_splitter.sizes()
+            total_height = sum(sizes) if sizes else 700
+
+        if self.manual_editor_collapsed:
+            self.preview_splitter.setSizes([max(1, total_height), 0])
+            self.table.setFocus()
+            return
+
+        editor_height = max(140, min(220, total_height // 4))
+        self.preview_splitter.setSizes([max(1, total_height - editor_height), editor_height])
+
+    def _toggle_window_size(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        QtCore.QTimer.singleShot(0, self._refresh_window_size_button)
+
+    def _refresh_window_size_button(self):
+        if not hasattr(self, "window_size_btn"):
+            return
+        self.window_size_btn.setText("Обычный размер" if self.isMaximized() else "Развернуть окно")
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QtCore.QEvent.Type.WindowStateChange:
+            self._refresh_window_size_button()
 
     def _load_review_preferences(self):
         default_font_size = QApplication.font().pointSize()
@@ -2816,7 +2909,11 @@ class CorrectionPreviewDialog(QDialog):
 
         scroll_speed = max(self.SCROLL_SPEED_MIN, min(self.SCROLL_SPEED_MAX, scroll_speed))
         font_size = max(self.FONT_SIZE_MIN, min(self.FONT_SIZE_MAX, font_size))
-        return {"scroll_speed": scroll_speed, "font_size": font_size}
+        return {
+            "scroll_speed": scroll_speed,
+            "font_size": font_size,
+            "manual_editor_collapsed": bool(saved.get("manual_editor_collapsed", False)),
+        }
 
     def _queue_review_preferences_save(self):
         if self.settings_manager and hasattr(self.settings_manager, 'save_ai_correction_review_settings'):
@@ -2827,6 +2924,7 @@ class CorrectionPreviewDialog(QDialog):
             self.settings_manager.save_ai_correction_review_settings({
                 "scroll_speed": self.preview_scroll_speed,
                 "font_size": self.preview_font_size,
+                "manual_editor_collapsed": bool(self.manual_editor_collapsed),
             })
 
     def _flush_review_preferences(self):
