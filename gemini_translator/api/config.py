@@ -74,6 +74,7 @@ def get_resource_path(relative_path: str) -> Path:
 
 _PROVIDERS_FILE = get_resource_path("config/api_providers.json")
 _PROMPT_FILE = get_resource_path("config/default_prompt.txt")
+_SEQUENTIAL_PROMPT_FILE = get_resource_path("config/default_sequential_prompt.txt")
 _GLOSSARY_PROMPT_FILE = get_resource_path("config/default_glossary_prompt.txt")
 _GENRE_GLOSSARY_PROMPT_FILE = get_resource_path("config/default_genre_promt.txt")
 _CORRECTION_PROMPT_FILE = get_resource_path("config/default_correction_prompt.txt")
@@ -102,6 +103,30 @@ _DEFAULT_API_PROVIDERS_CONFIG = {
     }
 }
 _DEFAULT_PROMPT_TEXT = """**I. РОЛЬ И ГЛАВНАЯ ЦЕЛЬ** (встроенный промпт) …"""
+_DEFAULT_SEQUENTIAL_PROMPT_TEXT = """# SYSTEM PROTOCOL: SEQUENTIAL RUSSIAN LITERARY ADAPTATION
+
+You are a professional literary translator into Russian.
+
+Sequential mode is enabled. A previous translated chapter may be provided below as a locked reference for continuity. Use it only to preserve terminology, pronouns, names, tone, typography, dialogue rhythm, and narrative style. Do not summarize it, do not translate it again, and do not copy any unrelated content from it into the output.
+
+<glossary>
+{glossary}
+</glossary>
+
+<previous_chapter_reference>
+{previous_chapter_reference}
+</previous_chapter_reference>
+
+<formatting_examples>
+{format_examples}
+</formatting_examples>
+
+Translate only the current source fragment into literary Russian. Preserve HTML structure, comments, attributes, and media placeholders exactly. Return only raw HTML for the current fragment, with no markdown fences and no explanations.
+
+<source_text>
+{text}
+</source_text>
+"""
 _DEFAULT_GLOSSARY_PROMPT_TEXT = """Проанализируй весь предоставленный текст …"""
 _DEFAULT_WORD_EXCEPTIONS_TEXT = "# Пустой список исключений по умолчанию"
 _DEFAULT_CORRECTION_PROMPT_TEXT = """Проанализируй представленный глоссарий…"""
@@ -158,6 +183,15 @@ def _load_default_prompt():
         except Exception:
             return _DEFAULT_PROMPT_TEXT
     return _DEFAULT_PROMPT_TEXT
+
+def _load_default_sequential_prompt():
+    if _SEQUENTIAL_PROMPT_FILE.exists():
+        try:
+            with open(_SEQUENTIAL_PROMPT_FILE, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception:
+            return _DEFAULT_SEQUENTIAL_PROMPT_TEXT
+    return _DEFAULT_SEQUENTIAL_PROMPT_TEXT
 
 def _load_default_glossary_prompt():
     if _GLOSSARY_PROMPT_FILE.exists():
@@ -294,6 +328,7 @@ def _load_internal_prompts():
 # --- ЭТАП 2: ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ-ХРАНИЛИЩА ---
 _API_PROVIDERS = {}
 _DEFAULT_PROMPT = ""
+_DEFAULT_SEQUENTIAL_PROMPT = ""
 _DEFAULT_GLOSSARY_PROMPT = ""
 _DEFAULT_WORD_EXCEPTIONS = ""
 _DEFAULT_CORRECTION_PROMPT = ""
@@ -947,11 +982,12 @@ def _refresh_dynamic_provider_models(provider_id: str, force: bool = False) -> d
 
 # --- ЭТАП 3: ГЛАВНАЯ ФУНКЦИЯ-ИНИЦИАЛИЗАТОР ---
 def initialize_configs():
-    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS, _DYNAMIC_PROVIDER_MODELS, _DYNAMIC_PROVIDER_MODELS_TS
+    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_SEQUENTIAL_PROMPT, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS, _DYNAMIC_PROVIDER_MODELS, _DYNAMIC_PROVIDER_MODELS_TS
     
     print("[CONFIG INFO] Централизованная инициализация конфигураций…")
     _API_PROVIDERS = _load_providers_config()
     _DEFAULT_PROMPT = _load_default_prompt()
+    _DEFAULT_SEQUENTIAL_PROMPT = _load_default_sequential_prompt()
     _DEFAULT_GLOSSARY_PROMPT = _load_default_glossary_prompt()
     _DEFAULT_WORD_EXCEPTIONS = _load_default_word_exceptions()
     _DEFAULT_CORRECTION_PROMPT = _load_default_correction_prompt()
@@ -991,6 +1027,9 @@ def api_providers():
 def default_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_PROMPT
+def default_sequential_prompt():
+    _ensure_configs_initialized()
+    return _DEFAULT_SEQUENTIAL_PROMPT
 def default_glossary_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_GLOSSARY_PROMPT

@@ -201,7 +201,13 @@ class UniversalWorker(QObject):
         self.prompt_builder = PromptBuilder(
             getattr(self, 'custom_prompt', ''), 
             self.context_manager, 
-            getattr(self, 'use_system_instruction', False)
+            getattr(self, 'use_system_instruction', False),
+            sequential_mode=getattr(self, 'sequential_translation', False),
+            project_manager=self.project_manager,
+            provider_file_suffix=self.provider_config.get("file_suffix"),
+            sequential_chapter_order=getattr(self, 'sequential_chapter_order', []),
+            sequential_chain_starts=getattr(self, 'sequential_chain_starts', []),
+            sequential_reference_char_limit=getattr(self, 'sequential_reference_char_limit', 60000),
         )
 
         # D. ResponseParser
@@ -302,6 +308,31 @@ class UniversalWorker(QObject):
             # raise e  # Раскомментировать, если нужно видеть реальные баги в консоли
             print(f"CRITICAL ERROR in worker on_event: {e}") # Лучше залогировать
             self.cancel()
+
+    def _split_batch_after_content_filter(self, task_info, error_type):
+        if error_type != ErrorType.CONTENT_FILTER:
+            return False
+        if not task_info or len(task_info) < 2:
+            return False
+
+        payload = task_info[1]
+        if not payload or payload[0] != 'epub_batch':
+            return False
+
+        split_method = getattr(self.task_manager, 'split_in_progress_batch_into_chapters', None)
+        if not split_method:
+            return False
+
+        if split_method(task_info, worker_id=self.worker_id, priority=1):
+            self._post_event('log_message', {
+                'message': (
+                    "[BATCH FILTER] Content filter hit a batch. "
+                    "The batch was split into individual chapters and returned to the queue."
+                )
+            })
+            return True
+
+        return False
             
     def run(self):
         """
@@ -508,6 +539,9 @@ class UniversalWorker(QObject):
     
         except Exception as exc:
             action, error_type, original_exc = self.error_analyzer.analyze_and_act(exc, task_info, task_history)
+
+            if self._split_batch_after_content_filter(task_info, error_type):
+                return
     
             if action == WorkerAction.ABORT_WORKER:
                 self.is_shutting_down = True

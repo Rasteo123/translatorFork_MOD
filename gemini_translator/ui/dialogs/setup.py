@@ -38,7 +38,12 @@ from ...api.managers import ApiKeyManager
 from ...core.translation_engine import TranslationEngine
 from ...core.task_manager import ChapterQueueManager, TaskDBWorker
 from ...utils.settings import SettingsManager
-from ...utils.epub_tools import extract_number_from_path, calculate_potential_output_size, get_epub_chapter_sizes_with_cache
+from ...utils.epub_tools import (
+    extract_number_from_path,
+    calculate_potential_output_size,
+    get_epub_chapter_sizes_with_cache,
+    get_epub_chapter_order,
+)
 from ...utils.helpers import TokenCounter
 from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
 from ...utils.project_migrator import ProjectMigrator
@@ -2804,7 +2809,14 @@ class InitialSetupDialog(QDialog):
                 self._apply_ui_theme_colors(extract_theme_colors(settings), mark_dirty=False)
 
             self.model_settings_widget.set_settings(settings)
-            if any(key in settings for key in ('use_batching', 'chunking', 'chunk_on_error', 'task_size_limit')):
+            if any(key in settings for key in (
+                'use_batching',
+                'chunking',
+                'chunk_on_error',
+                'sequential_translation',
+                'sequential_translation_splits',
+                'task_size_limit',
+            )):
                 self.translation_options_widget.set_settings(settings)
 
             auto_translation_settings = settings.get('auto_translation')
@@ -4124,6 +4136,24 @@ class InitialSetupDialog(QDialog):
 
         return translation_options, mode, has_override, batch_token_limit, batch_char_limit, token_profile
 
+    def _build_sequential_chapter_chains(self, chapters: list, split_count: int) -> list[list]:
+        chapters = list(chapters or [])
+        if not chapters:
+            return []
+        try:
+            split_count = int(split_count)
+        except (TypeError, ValueError):
+            split_count = 1
+        split_count = max(1, min(split_count, len(chapters)))
+
+        chains = []
+        for index in range(split_count):
+            start = (index * len(chapters)) // split_count
+            end = ((index + 1) * len(chapters)) // split_count
+            if start < end:
+                chains.append(chapters[start:end])
+        return chains
+
     def _prepare_and_display_tasks(self, clean_rebuild=False, translation_options_override: dict | None = None):
         """
         Собирает задачи, создает/обновляет ChapterQueueManager и
@@ -4180,8 +4210,20 @@ class InitialSetupDialog(QDialog):
             display_tasks_settings = settings.copy()
 
             preparer = TaskPreparer(display_tasks_settings, real_chapter_sizes)
-            plain_payloads = preparer.prepare_tasks(source_chapters)
-            self.task_manager.set_pending_tasks(plain_payloads)
+            if display_tasks_settings.get('sequential_translation'):
+                chapter_chains = self._build_sequential_chapter_chains(
+                    source_chapters,
+                    display_tasks_settings.get('sequential_translation_splits', 1),
+                )
+                task_chains = [
+                    preparer.prepare_tasks(chapter_chain)
+                    for chapter_chain in chapter_chains
+                    if chapter_chain
+                ]
+                self.task_manager.set_pending_task_chains(task_chains)
+            else:
+                plain_payloads = preparer.prepare_tasks(source_chapters)
+                self.task_manager.set_pending_tasks(plain_payloads)
 
         QtCore.QTimer.singleShot(15, lambda: self.translation_options_widget._update_info_text())
 
@@ -5412,6 +5454,27 @@ class InitialSetupDialog(QDialog):
 
         settings.update(model_settings)
         settings.update(translation_options)
+
+        if settings.get('sequential_translation'):
+            try:
+                chapter_order = get_epub_chapter_order(self.selected_file) if self.selected_file else []
+            except Exception as exc:
+                print(f"[SEQUENTIAL] Failed to read EPUB chapter order: {exc}")
+                chapter_order = []
+
+            if not chapter_order:
+                chapter_order = self._unpack_tasks_to_chapters() or list(self.html_files or [])
+            settings['sequential_chapter_order'] = chapter_order
+            active_chapter_order = self._unpack_tasks_to_chapters() or list(self.html_files or [])
+            chapter_chains = self._build_sequential_chapter_chains(
+                active_chapter_order,
+                settings.get('sequential_translation_splits', 1),
+            )
+            if chapter_chains:
+                settings['sequential_translation_splits'] = len(chapter_chains)
+            settings['sequential_chain_starts'] = [
+                chain[0] for chain in chapter_chains if chain
+            ]
 
         return settings
 

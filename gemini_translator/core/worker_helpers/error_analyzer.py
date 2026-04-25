@@ -22,7 +22,7 @@ class ErrorAnalyzer:
     # --- Конфигурация правил отказов ---
     FAILURE_RULES = {
         ErrorType.PARTIAL_GENERATION:   {'max_attempts': 3, 'allows_chunking': True},
-        ErrorType.VALIDATION:           {'max_attempts': 3, 'allows_chunking': True},
+        ErrorType.VALIDATION:           {'max_attempts': 6, 'max_total_attempts': 6, 'allows_chunking': True},
         ErrorType.NETWORK:              {'max_attempts': 2, 'allows_chunking': False},
         ErrorType.CONTENT_FILTER:       {'max_attempts': 2, 'allows_chunking': False},
         ErrorType.API_ERROR:            {'max_attempts': 2, 'allows_chunking': True},
@@ -106,6 +106,7 @@ class ErrorAnalyzer:
         # --- Шаг 3: Получаем правила для error_for_rules ---
         rule = self.FAILURE_RULES.get(error_for_rules, {'max_attempts': 1})
         max_attempts = rule['max_attempts']
+        max_total_attempts = rule.get('max_total_attempts', self.TOTAL_ATTEMPTS_LIMIT)
 
         # --- Шаг 4: Обработка не-счетных и фатальных ошибок (используем error_for_rules) ---
         if error_for_rules in [ErrorType.GEOBLOCK, ErrorType.QUOTA_EXCEEDED, ErrorType.MODEL_NOT_FOUND]:
@@ -166,10 +167,10 @@ class ErrorAnalyzer:
         total_attempts_count = task_history.get('total_count', 0)
 
         if (current_type_count + 1 >= max_attempts) or \
-           (total_attempts_count + 1 >= self.TOTAL_ATTEMPTS_LIMIT):
+           (total_attempts_count + 1 >= max_total_attempts):
             
-            if total_attempts_count + 1 >= self.TOTAL_ATTEMPTS_LIMIT:
-                self.worker._post_event('log_message', {'message': f"[ANALYZER] Превышен общий лимит ({self.TOTAL_ATTEMPTS_LIMIT}) попыток для задачи '{task_name}'."})
+            if total_attempts_count + 1 >= max_total_attempts:
+                self.worker._post_event('log_message', {'message': f"[ANALYZER] Превышен общий лимит ({max_total_attempts}) попыток для задачи '{task_name}'."})
             
             # Записываем в историю финальный, самый точный тип ошибки
             self._record_and_log_failure(task_info, error_for_history, exc)

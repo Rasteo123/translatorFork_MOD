@@ -2419,6 +2419,36 @@ def process_body_tag(full_html_content: str, return_parts: bool = False, body_co
             return body_with_tags
 
 
+def normalize_translated_body_wrapper(original_html: str, translated_html: str) -> str:
+    """
+    Restores the original <body ...>...</body> wrapper when the model returns
+    only body inner HTML or only one side of the wrapper.
+    """
+    if not isinstance(translated_html, str) or not translated_html.strip():
+        return translated_html
+    if not isinstance(original_html, str):
+        return translated_html
+
+    original_lower = original_html.lower()
+    if '<body' not in original_lower or '</body>' not in original_lower:
+        return translated_html
+
+    translated_lower = translated_html.lower()
+    has_body_start = bool(re.search(r'<body\b', translated_lower))
+    has_body_end = bool(re.search(r'</body>', translated_lower))
+    if has_body_start and has_body_end:
+        return translated_html
+
+    open_body_match = re.search(r'<body\b[^>]*>', original_html, re.IGNORECASE)
+    open_body_tag = open_body_match.group(0) if open_body_match else "<body>"
+
+    inner_html = translated_html.strip()
+    inner_html = re.sub(r'^\s*<body\b[^>]*>\s*', '', inner_html, flags=re.IGNORECASE)
+    inner_html = re.sub(r'\s*</body>\s*$', '', inner_html, flags=re.IGNORECASE)
+
+    return f"{open_body_tag}{inner_html}</body>"
+
+
 def _create_structural_fingerprint(soup):
         """Создает 'отпечаток' HTML-структуры для быстрого сравнения."""
         fp = {
@@ -2527,12 +2557,11 @@ def validate_html_structure(original_html, translated_html):
     if not translated_html or not translated_html.strip():
         return False, "API вернуло пустой ответ.", translated_html
     
-    final_translated_html = optimize_headings(translated_html)
+    final_translated_html = translated_html
     normalized_orig = prettify_html_for_ai(original_html)
     orig_lower = normalized_orig.lower().strip()
-    trans_lower = translated_html.lower().strip()
-    
-    final_translated_html = translated_html # По умолчанию возвращаем то, что пришло
+    final_translated_html = normalize_translated_body_wrapper(original_html, final_translated_html)
+    trans_lower = final_translated_html.lower().strip()
 
     # --- ПРОВЕРКА 1: Целостность <body> (Regex) ---
     orig_has_body_start = bool(re.search(r'<body\b', orig_lower))

@@ -505,6 +505,35 @@ class TranslationEngine(QObject):
         use_jieba_for_glossary = settings.get('use_jieba', False)
         segment_cjk_text = settings.get('segment_cjk_text', False)
 
+        if settings.get('sequential_translation'):
+            try:
+                requested_splits = int(settings.get('sequential_translation_splits', 1) or 1)
+            except (TypeError, ValueError):
+                requested_splits = 1
+            requested_splits = max(1, requested_splits)
+            try:
+                requested_workers = int(settings.get('num_instances', 1) or 1)
+            except (TypeError, ValueError):
+                requested_workers = 1
+            try:
+                requested_concurrency = int(settings.get('max_concurrent_requests', 1) or 1)
+            except (TypeError, ValueError):
+                requested_concurrency = 1
+
+            if (
+                requested_workers != requested_splits
+                or requested_concurrency != 1
+            ):
+                self._post_event('log_message', {
+                    'message': (
+                        "[SEQUENTIAL] Sequential chapter translation forces "
+                        f"ordered execution: {requested_splits} chain(s), "
+                        "1 in-worker request per worker."
+                    )
+                })
+            settings['num_instances'] = requested_splits
+            settings['max_concurrent_requests'] = 1
+
         if full_glossary_dict and self.context_manager.chinese_processor and (use_jieba_for_glossary or segment_cjk_text):
             self._post_event('log_message', {'message': "[JIEBA] Обучение Jieba на глоссарии сессии…"})
             self.context_manager.chinese_processor.add_custom_words(full_glossary_dict)

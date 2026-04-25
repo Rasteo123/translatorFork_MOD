@@ -55,10 +55,23 @@ class TranslationOptionsWidget(QGroupBox):
             "\u043e\u0448\u0438\u0431\u043a\u0430\u0445"
         )
         self.chunk_on_error_checkbox.setChecked(True)
+        self.sequential_checkbox = QCheckBox(
+            "\u041f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0439 "
+            "\u043f\u0435\u0440\u0435\u0432\u043e\u0434 \u0433\u043b\u0430\u0432"
+        )
+        self.sequential_checkbox.setToolTip(
+            "\u041f\u0435\u0440\u0435\u0432\u043e\u0434\u0438\u0442 \u0433\u043b\u0430\u0432\u044b "
+            "\u0432 \u043f\u043e\u0440\u044f\u0434\u043a\u0435 \u043e\u0447\u0435\u0440\u0435\u0434\u0438 \u0438 \u043f\u043e\u0434\u0441\u0442\u0430\u0432\u043b\u044f\u0435\u0442 "
+            "\u043f\u0440\u043e\u0448\u043b\u0443\u044e \u043f\u0435\u0440\u0435\u0432\u0435\u0434\u0435\u043d\u043d\u0443\u044e "
+            "\u0433\u043b\u0430\u0432\u0443 \u043a\u0430\u043a \u0440\u0435\u0444\u0435\u0440\u0435\u043d\u0441. "
+            "\u041f\u0430\u043a\u0435\u0442\u044b \u0438 \u0447\u0430\u043d\u043a\u0438 "
+            "\u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0442 \u043a\u0430\u043a \u043e\u0431\u044b\u0447\u043d\u043e."
+        )
 
         modes_layout.addWidget(self.batch_checkbox)
         modes_layout.addWidget(self.chunking_checkbox)
         modes_layout.addWidget(self.chunk_on_error_checkbox)
+        modes_layout.addWidget(self.sequential_checkbox)
 
         settings_group = QGroupBox(
             "\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u0438 "
@@ -79,6 +92,18 @@ class TranslationOptionsWidget(QGroupBox):
         )
         self._recommended_task_size = self.task_size_spin.value()
 
+        self.sequential_splits_spin = NoScrollSpinBox()
+        self.sequential_splits_spin.setRange(1, 32)
+        self.sequential_splits_spin.setValue(1)
+        self.sequential_splits_spin.setToolTip(
+            "\u0421\u043a\u043e\u043b\u044c\u043a\u043e \u043f\u0430\u0440\u0430\u043b\u043b\u0435\u043b\u044c\u043d\u044b\u0445 "
+            "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
+            "\u0446\u0435\u043f\u043e\u0447\u0435\u043a \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c: "
+            "1 = \u0441 \u043d\u0430\u0447\u0430\u043b\u0430, 2 = \u0441 \u043d\u0430\u0447\u0430\u043b\u0430 "
+            "\u0438 \u0441 \u0441\u0435\u0440\u0435\u0434\u0438\u043d\u044b, \u0438 \u0442.\u0434."
+        )
+        self.sequential_splits_spin.setEnabled(False)
+
         self.info_label = QLabel(
             "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 "
             "\u0433\u043b\u0430\u0432\u044b \u0434\u043b\u044f \u0430\u043d\u0430\u043b\u0438\u0437\u0430."
@@ -93,7 +118,13 @@ class TranslationOptionsWidget(QGroupBox):
             0,
         )
         settings_layout.addWidget(self.task_size_spin, 0, 1)
-        settings_layout.addWidget(self.info_label, 2, 0, 1, 2)
+        settings_layout.addWidget(
+            QLabel("\u0420\u0430\u0437\u0431\u0438\u0435\u043d\u0438\u0435 \u043f\u043e\u0441\u043b. \u043f\u0435\u0440\u0435\u0432\u043e\u0434\u0430:"),
+            1,
+            0,
+        )
+        settings_layout.addWidget(self.sequential_splits_spin, 1, 1)
+        settings_layout.addWidget(self.info_label, 3, 0, 1, 2)
 
         main_layout.addWidget(modes_group, 0, 0)
         main_layout.addWidget(settings_group, 0, 1)
@@ -101,6 +132,8 @@ class TranslationOptionsWidget(QGroupBox):
         self.batch_checkbox.toggled.connect(self._on_mode_changed)
         self.chunking_checkbox.toggled.connect(self._on_mode_changed)
         self.chunk_on_error_checkbox.toggled.connect(self._on_mode_changed)
+        self.sequential_checkbox.toggled.connect(self._on_mode_changed)
+        self.sequential_splits_spin.valueChanged.connect(self._on_mode_changed)
         self.task_size_spin.valueChanged.connect(self._on_task_size_changed)
         line_edit = self.task_size_spin.lineEdit()
         if line_edit is not None:
@@ -113,6 +146,8 @@ class TranslationOptionsWidget(QGroupBox):
             "use_batching": self.batch_checkbox.isChecked(),
             "chunking": self.chunking_checkbox.isChecked(),
             "chunk_on_error": self.chunk_on_error_checkbox.isChecked(),
+            "sequential_translation": self.sequential_checkbox.isChecked(),
+            "sequential_translation_splits": self.sequential_splits_spin.value(),
             "task_size_limit": self.task_size_spin.value(),
             "task_size_limit_user_defined": self._task_size_user_defined,
         }
@@ -144,6 +179,8 @@ class TranslationOptionsWidget(QGroupBox):
         current_batching = self.batch_checkbox.isChecked()
         current_chunking = self.chunking_checkbox.isChecked()
         current_chunk_on_error = self.chunk_on_error_checkbox.isChecked()
+        current_sequential = self.sequential_checkbox.isChecked()
+        current_sequential_splits = self.sequential_splits_spin.value()
         current_task_size = self.task_size_spin.value()
         has_explicit_task_size = (
             "task_size_limit" in settings and settings.get("task_size_limit") is not None
@@ -160,6 +197,12 @@ class TranslationOptionsWidget(QGroupBox):
             self.chunking_checkbox.setChecked(settings.get("chunking", current_chunking))
             self.chunk_on_error_checkbox.setChecked(
                 settings.get("chunk_on_error", current_chunk_on_error)
+            )
+            self.sequential_checkbox.setChecked(
+                settings.get("sequential_translation", current_sequential)
+            )
+            self.sequential_splits_spin.setValue(
+                settings.get("sequential_translation_splits", current_sequential_splits)
             )
             if has_explicit_task_size:
                 user_defined = bool(settings.get("task_size_limit_user_defined", True))
@@ -362,6 +405,13 @@ class TranslationOptionsWidget(QGroupBox):
             return
 
         current_target_size = self.task_size_spin.value()
+        sequential_enabled = self.sequential_checkbox.isChecked()
+        sequential_splits = self.sequential_splits_spin.value() if sequential_enabled else 1
+        sequential_suffix = (
+            f" \u0432 {sequential_splits} \u0446\u0435\u043f\u043e\u0447\u043a\u0430\u0445"
+            if sequential_enabled and sequential_splits > 1
+            else ""
+        )
 
         if self.chunking_checkbox.isChecked():
             total_tasks = sum(
@@ -370,9 +420,14 @@ class TranslationOptionsWidget(QGroupBox):
                 else 1
                 for comp in self.chapter_compositions.values()
             )
+            sequential_prefix = (
+                "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
+                if sequential_enabled
+                else ""
+            )
             self.info_label.setText(
                 f"\u0411\u0443\u0434\u0435\u0442 \u0441\u043e\u0437\u0434\u0430\u043d\u043e ~{total_tasks} "
-                "\u0437\u0430\u0434\u0430\u0447 (\u0447\u0430\u043d\u043a\u043e\u0432)."
+                f"{sequential_prefix}\u0437\u0430\u0434\u0430\u0447 (\u0447\u0430\u043d\u043a\u043e\u0432){sequential_suffix}."
             )
         elif self.batch_checkbox.isChecked():
             batches, current_size = 0, 0
@@ -384,15 +439,25 @@ class TranslationOptionsWidget(QGroupBox):
                 current_size += size
             if current_size > 0:
                 batches += 1
+            sequential_prefix = (
+                "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
+                if sequential_enabled
+                else ""
+            )
             self.info_label.setText(
                 f"\u0411\u0443\u0434\u0435\u0442 \u0441\u043e\u0437\u0434\u0430\u043d\u043e ~{batches} "
-                "\u043f\u0430\u043a\u0435\u0442\u043e\u0432."
+                f"{sequential_prefix}\u043f\u0430\u043a\u0435\u0442\u043e\u0432{sequential_suffix}."
             )
         else:
+            sequential_prefix = (
+                "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
+                if sequential_enabled
+                else ""
+            )
             self.info_label.setText(
                 f"\u0411\u0443\u0434\u0435\u0442 {len(self.html_files)} "
-                "\u0438\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u044b\u0445 "
-                "\u0437\u0430\u0434\u0430\u0447."
+                f"{sequential_prefix}\u0438\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u044b\u0445 "
+                f"\u0437\u0430\u0434\u0430\u0447{sequential_suffix}."
             )
 
     def _on_task_size_changed(self, _value: int):
@@ -409,6 +474,8 @@ class TranslationOptionsWidget(QGroupBox):
         self.batch_checkbox.blockSignals(True)
         self.chunking_checkbox.blockSignals(True)
         self.chunk_on_error_checkbox.blockSignals(True)
+        self.sequential_checkbox.blockSignals(True)
+        self.sequential_splits_spin.blockSignals(True)
 
         if sender == self.batch_checkbox and is_batch:
             self.chunking_checkbox.setChecked(False)
@@ -418,9 +485,17 @@ class TranslationOptionsWidget(QGroupBox):
         elif sender == self.chunk_on_error_checkbox and self.chunk_on_error_checkbox.isChecked():
             self.batch_checkbox.setChecked(False)
 
+        if self.batch_checkbox.isChecked():
+            self.chunking_checkbox.setChecked(False)
+
         self.batch_checkbox.blockSignals(False)
         self.chunking_checkbox.blockSignals(False)
         self.chunk_on_error_checkbox.blockSignals(False)
+        self.sequential_checkbox.blockSignals(False)
+        self.sequential_splits_spin.blockSignals(False)
+
+        self.batch_checkbox.setEnabled(len(self.html_files) > 1)
+        self.sequential_splits_spin.setEnabled(self.sequential_checkbox.isChecked())
 
         self._update_info_text()
         if emit_signal:

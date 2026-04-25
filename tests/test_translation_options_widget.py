@@ -79,6 +79,41 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
         self.assertEqual(widget.task_size_spin.value(), 10000)
         self.assertTrue(widget.is_task_size_user_defined())
 
+    def test_sequential_mode_preserves_batching_choice(self):
+        widget = self._create_widget()
+        widget.html_files = ["Text/ch1.xhtml", "Text/ch2.xhtml"]
+        widget._update_batching_availability()
+
+        widget.batch_checkbox.setChecked(True)
+        widget.sequential_checkbox.setChecked(True)
+        widget.sequential_splits_spin.setValue(2)
+
+        settings = widget.get_settings()
+        self.assertTrue(settings["sequential_translation"])
+        self.assertEqual(settings["sequential_translation_splits"], 2)
+        self.assertTrue(settings["use_batching"])
+        self.assertFalse(settings["chunking"])
+        self.assertTrue(widget.batch_checkbox.isEnabled())
+        self.assertTrue(widget.sequential_splits_spin.isEnabled())
+
+    def test_loading_sequential_settings_keeps_existing_split_mode(self):
+        widget = self._create_widget()
+        widget.html_files = ["Text/ch1.xhtml", "Text/ch2.xhtml"]
+        widget._update_batching_availability()
+
+        widget.set_settings({
+            "use_batching": False,
+            "chunking": True,
+            "sequential_translation": True,
+            "sequential_translation_splits": 3,
+        })
+
+        settings = widget.get_settings()
+        self.assertTrue(settings["sequential_translation"])
+        self.assertEqual(settings["sequential_translation_splits"], 3)
+        self.assertFalse(settings["use_batching"])
+        self.assertTrue(settings["chunking"])
+
 
 if __name__ == "__main__":
     unittest.main()

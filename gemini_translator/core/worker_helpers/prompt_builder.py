@@ -1,6 +1,7 @@
 import zipfile
 import re
 import json
+import os
 
 from bs4 import BeautifulSoup, NavigableString
 
@@ -41,12 +42,124 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
 - Return ONLY one valid JSON object with the same top-level `documents` array.
 """.strip()
 
-    def __init__(self, custom_prompt, context_manager, use_system_instruction):
+    def __init__(
+        self,
+        custom_prompt,
+        context_manager,
+        use_system_instruction,
+        sequential_mode=False,
+        project_manager=None,
+        provider_file_suffix=None,
+        sequential_chapter_order=None,
+        sequential_chain_starts=None,
+        sequential_reference_char_limit=60000,
+    ):
         self.custom_prompt = custom_prompt
         self.context_manager = context_manager
         self.use_system_instruction = use_system_instruction
+        self.sequential_mode = bool(sequential_mode)
+        self.project_manager = project_manager
+        self.provider_file_suffix = provider_file_suffix
+        self.sequential_chapter_order = list(sequential_chapter_order or [])
+        self.sequential_chain_starts = {
+            self._normalize_chapter_path(path)
+            for path in (sequential_chain_starts or [])
+            if self._normalize_chapter_path(path)
+        }
+        self.sequential_reference_char_limit = max(0, int(sequential_reference_char_limit or 0))
         self.system_instruction = None
         self.media_map = {}
+
+    def _effective_translation_prompt(self):
+        if self.sequential_mode:
+            return api_config.default_sequential_prompt()
+        return self.custom_prompt
+
+    def _normalize_chapter_path(self, chapter_path):
+        return str(chapter_path or "").replace("\\", "/").strip()
+
+    def _previous_chapter_for(self, current_chapters_list=None):
+        if not self.sequential_mode or not current_chapters_list:
+            return None
+
+        first_current = None
+        for item in current_chapters_list:
+            item_norm = self._normalize_chapter_path(item)
+            if item_norm:
+                first_current = item_norm
+                break
+        if not first_current:
+            return None
+        if first_current in self.sequential_chain_starts:
+            return None
+
+        normalized_order = [
+            self._normalize_chapter_path(path)
+            for path in self.sequential_chapter_order
+            if self._normalize_chapter_path(path)
+        ]
+        try:
+            current_index = normalized_order.index(first_current)
+        except ValueError:
+            return None
+
+        if current_index <= 0:
+            return None
+        return normalized_order[current_index - 1]
+
+    def _load_translation_reference(self, previous_chapter_path):
+        if not previous_chapter_path or not self.project_manager:
+            return ""
+
+        try:
+            versions = self.project_manager.get_versions_for_original(previous_chapter_path)
+        except Exception:
+            versions = {}
+        if not isinstance(versions, dict) or not versions:
+            return ""
+
+        rel_path = ""
+        if self.provider_file_suffix:
+            rel_path = versions.get(self.provider_file_suffix, "")
+        if not rel_path:
+            for candidate in versions.values():
+                if candidate:
+                    rel_path = candidate
+                    break
+        if not rel_path:
+            return ""
+
+        if os.path.isabs(rel_path):
+            reference_path = rel_path
+        else:
+            project_folder = getattr(self.project_manager, "project_folder", "")
+            reference_path = os.path.join(project_folder, rel_path.replace("/", os.sep))
+
+        try:
+            with open(reference_path, "r", encoding="utf-8") as reference_file:
+                reference_text = reference_file.read()
+        except OSError:
+            return ""
+
+        if self.sequential_reference_char_limit and len(reference_text) > self.sequential_reference_char_limit:
+            omitted = len(reference_text) - self.sequential_reference_char_limit
+            reference_text = (
+                reference_text[-self.sequential_reference_char_limit:]
+                + f"\n\n[previous chapter reference truncated: {omitted} chars omitted from the beginning]"
+            )
+
+        return f"Previous translated chapter: {previous_chapter_path}\n\n{reference_text}"
+
+    def _build_previous_chapter_reference(self, current_chapters_list=None):
+        if not self.sequential_mode:
+            return None
+        previous_chapter = self._previous_chapter_for(current_chapters_list)
+        if not previous_chapter:
+            return "NO PREVIOUS TRANSLATED CHAPTER AVAILABLE."
+        reference_text = self._load_translation_reference(previous_chapter)
+        if not reference_text:
+            return f"PREVIOUS TRANSLATED CHAPTER NOT AVAILABLE YET: {previous_chapter}"
+        return reference_text
 
     def _replace_media_with_placeholders(self, html_content, return_maps=False):
         if not html_content:
@@ -298,7 +411,14 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
 
         final_text_for_api = safe_format(template, full_text_for_api=full_text_for_api)
 
-        user_prompt, _, debug_report = self._build_with_placeholders(final_text_for_api, glossary_string, system_instruction_text, batch_mode=True)
+        previous_reference = self._build_previous_chapter_reference(chapter_list)
+        user_prompt, _, debug_report = self._build_with_placeholders(
+            final_text_for_api,
+            glossary_string,
+            system_instruction_text,
+            batch_mode=True,
+            previous_chapter_reference=previous_reference,
+        )
         return user_prompt, self.system_instruction, debug_report, original_contents
 
     def prepare_json_for_api(self, document_model, raw_source_text, system_instruction_text, current_chapters_list=None):
@@ -310,10 +430,12 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
         transport_payload = build_transport_payload(source_payload)
         payload_text = json.dumps(transport_payload, ensure_ascii=False, indent=2)
         base_text_for_api = f"\n```json\n{payload_text}\n```\n"
+        previous_reference = self._build_previous_chapter_reference(current_chapters_list)
         user_prompt, _, debug_report = self._build_with_placeholders(
             base_text_for_api,
             glossary_string,
-            system_instruction_text
+            system_instruction_text,
+            previous_chapter_reference=previous_reference,
         )
         debug_report = f"{debug_report}\nTRANSPORT: JSON"
         return f"{user_prompt}\n\n{self.JSON_CONTRACT}", self.system_instruction, debug_report, source_payload
@@ -326,11 +448,13 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
         payload = build_batch_translation_payload(documents_payload)
         payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
         base_text_for_api = f"\n```json\n{payload_text}\n```\n"
+        previous_reference = self._build_previous_chapter_reference(current_chapters_list)
         user_prompt, _, debug_report = self._build_with_placeholders(
             base_text_for_api,
             glossary_string,
             system_instruction_text,
-            batch_mode=True
+            batch_mode=True,
+            previous_chapter_reference=previous_reference,
         )
         debug_report = f"{debug_report}\nTRANSPORT: JSON_BATCH"
         return f"{user_prompt}\n\n{self.JSON_BATCH_CONTRACT}", self.system_instruction, debug_report, payload
@@ -359,7 +483,13 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
         # --- Собираем ОСНОВНУЮ часть промпта ---
         # Эта часть будет одинаковой и для первого, и для второго запуска
         base_text_for_api = f"\n```html\n{prettified_content}\n```\n"
-        user_prompt_base, _, _ = self._build_with_placeholders(base_text_for_api, glossary_string, system_instruction_text)
+        previous_reference = self._build_previous_chapter_reference(current_chapters_list)
+        user_prompt_base, _, _ = self._build_with_placeholders(
+            base_text_for_api,
+            glossary_string,
+            system_instruction_text,
+            previous_chapter_reference=previous_reference,
+        )
 
         # --- Если это задача на завершение, ДОБАВЛЯЕМ "ХВОСТ" ---
         if completion_data:
@@ -394,7 +524,14 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
             # Если это обычная задача, возвращаем базовый промпт
             return user_prompt_base, self.system_instruction, "Стандартный промпт"
         
-    def _build_with_placeholders(self, text_for_api, glossary_string, system_instruction_text, batch_mode=False):
+    def _build_with_placeholders(
+        self,
+        text_for_api,
+        glossary_string,
+        system_instruction_text,
+        batch_mode=False,
+        previous_chapter_reference=None,
+    ):
         """
         Собирает промпт. Версия с прямой поддержкой системных инструкций.
         """
@@ -441,11 +578,13 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
 
         # 2. Формируем пользовательский промпт, который теперь НИЧЕГО не знает о системных инструкциях.
         #    Он просто заполняет шаблон основного промпта.
+        effective_prompt = self._effective_translation_prompt()
         user_prompt = safe_format(
-            self.custom_prompt,
+            effective_prompt,
             text=text_for_api,
             glossary=glossary_string if glossary_string and "Глоссарий пуст" not in glossary_string else "",
-            format_examples=examples_content # <-- Вставляем динамические примеры
+            format_examples=examples_content, # <-- Вставляем динамические примеры
+            previous_chapter_reference=previous_chapter_reference or "",
         )
         
         # 3. Собираем отчет (без изменений)
@@ -461,6 +600,9 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
     
         est_user_tokens = token_estimator.estimate_tokens(user_prompt)
         report_lines.append(f"Пользовательский контент: ~{est_user_tokens:,} токенов")
+        if self.sequential_mode:
+            reference_tokens = token_estimator.estimate_tokens(previous_chapter_reference or "")
+            report_lines.append(f"SEQUENTIAL REFERENCE: ~{reference_tokens:,} tokens")
         report_lines.append(f"ИТОГО НА ВХОД: ~{(est_sys_tokens if self.system_instruction else 0) + est_user_tokens:,} токенов")
         
         debug_report = "\n".join(report_lines)

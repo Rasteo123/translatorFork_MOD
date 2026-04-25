@@ -200,10 +200,20 @@ class ChapterQueueManager(QObject):
                     status TEXT NOT NULL,
                     worker_id TEXT,
                     sequence INTEGER,
-                    priority INTEGER DEFAULT 0 NOT NULL
+                    priority INTEGER DEFAULT 0 NOT NULL,
+                    chain_id INTEGER,
+                    chain_index INTEGER
                 );
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_seq ON tasks (status, priority DESC, sequence ASC);")
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            if 'chain_id' not in existing_columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN chain_id INTEGER")
+            if 'chain_index' not in existing_columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN chain_index INTEGER")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status_chain ON tasks (status, chain_id, chain_index);")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS task_errors (
                     error_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -383,6 +393,25 @@ class ChapterQueueManager(QObject):
             return list(payload[2])
         return []
 
+    def _eligible_pending_task_sql(self, select_clause="task_id"):
+        return f"""
+            SELECT {select_clause}
+            FROM tasks AS t
+            WHERE t.status = 'pending'
+              AND (
+                    t.chain_id IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM tasks AS prev
+                        WHERE prev.chain_id = t.chain_id
+                          AND prev.chain_index < t.chain_index
+                          AND prev.status IN ('pending', 'in_progress', 'held')
+                    )
+              )
+            ORDER BY t.priority DESC, t.sequence ASC
+            LIMIT 1
+        """
+
     def _restore_snapshot_payload(self, payload: tuple, current_epub_path: str) -> tuple:
         """
         Освежает путь к EPUB внутри восстановленного payload.
@@ -510,7 +539,7 @@ class ChapterQueueManager(QObject):
     
             # Определение ID цели, если он не задан
             if not target_task_id_str:
-                cursor = conn.execute("SELECT task_id FROM tasks WHERE status = 'pending' ORDER BY priority DESC, sequence ASC LIMIT 1")
+                cursor = conn.execute(self._eligible_pending_task_sql("t.task_id"))
                 row = cursor.fetchone()
                 if not row: 
                     return None # Нет задач для обновления
@@ -795,6 +824,96 @@ class ChapterQueueManager(QObject):
         if done:
             self._log(f"[TASK] 🔄 Задача '{self._get_task_display_name(payload)}' возвращена для повтора.")
             self._safe_request_ui_update()
+
+    def split_in_progress_batch_into_chapters(self, task_info: tuple, worker_id: str | None = None, priority: int = 1) -> bool:
+        """
+        Replaces an active epub_batch task with individual pending epub tasks.
+        Used when a batch-level content filter blocks the whole request.
+        """
+        if not task_info or len(task_info) < 2:
+            return False
+
+        task_id, payload = task_info
+        if not payload or payload[0] != 'epub_batch':
+            return False
+
+        epub_path = payload[1] if len(payload) > 1 else None
+        chapters = self._extract_chapters_from_payload(payload)
+        if not epub_path or not chapters:
+            return False
+
+        task_id_str = str(task_id)
+        inserted_count = 0
+
+        with self._get_write_conn() as conn:
+            row = conn.execute(
+                "SELECT status, worker_id, sequence, chain_id, chain_index FROM tasks WHERE task_id = ?",
+                (task_id_str,)
+            ).fetchone()
+
+            if not row or row['status'] != 'in_progress':
+                return False
+            if worker_id and row['worker_id'] and row['worker_id'] != worker_id:
+                return False
+
+            base_sequence = row['sequence']
+            if base_sequence is None:
+                seq_row = conn.execute("SELECT COALESCE(MIN(sequence), 0) FROM tasks").fetchone()
+                base_sequence = (seq_row[0] if seq_row else 0) - len(chapters)
+
+            chain_id = row['chain_id']
+            base_chain_index = row['chain_index']
+            if chain_id is not None and base_chain_index is not None and len(chapters) > 1:
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET chain_index = chain_index + ?
+                    WHERE chain_id = ?
+                      AND chain_index > ?
+                    """,
+                    (len(chapters) - 1, chain_id, base_chain_index)
+                )
+
+            conn.execute("DELETE FROM task_errors WHERE task_id = ?", (task_id_str,))
+            conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id_str,))
+
+            tasks_to_insert = []
+            for index, chapter in enumerate(chapters):
+                single_payload = ('epub', epub_path, chapter)
+                new_chain_index = (
+                    base_chain_index + index
+                    if chain_id is not None and base_chain_index is not None
+                    else None
+                )
+                tasks_to_insert.append((
+                    str(uuid.uuid4()),
+                    json.dumps(single_payload, default=tuple_serializer),
+                    'pending',
+                    base_sequence + index,
+                    priority,
+                    chain_id,
+                    new_chain_index,
+                ))
+
+            conn.executemany(
+                """
+                INSERT INTO tasks
+                    (task_id, payload, status, sequence, priority, chain_id, chain_index)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                tasks_to_insert,
+            )
+            inserted_count = len(tasks_to_insert)
+
+        self._log(
+            f"[TASK MANAGER] Batch blocked by content filter was split into {inserted_count} chapter tasks."
+        )
+        self._safe_request_ui_update()
+        self._post_event('tasks_added', {
+            'count': inserted_count,
+            'reason': 'batch_split_content_filter',
+        })
+        return inserted_count > 0
 
     def remove_tasks(self, task_ids: list) -> bool:
         """Атомарно удаляет список задач из очереди."""
@@ -1458,12 +1577,7 @@ class ChapterQueueManager(QObject):
         payload_json = None
         with self._get_read_only_conn() as conn:
             cursor = conn.execute(
-                """
-                SELECT payload FROM tasks
-                WHERE status = 'pending'
-                ORDER BY priority DESC, sequence ASC
-                LIMIT 1
-                """
+                self._eligible_pending_task_sql("t.payload")
             )
             row = cursor.fetchone()
             if row:
@@ -1486,12 +1600,7 @@ class ChapterQueueManager(QObject):
         with self._get_write_conn() as conn: # Атомарная транзакция
             # 1. Находим ID первой задачи в очереди
             cursor = conn.execute(
-                """
-                SELECT task_id FROM tasks
-                WHERE status = 'pending'
-                ORDER BY priority DESC, sequence ASC
-                LIMIT 1
-                """
+                self._eligible_pending_task_sql("t.task_id")
             )
             first_task_row = cursor.fetchone()
     
@@ -1587,6 +1696,70 @@ class ChapterQueueManager(QObject):
                 )
         
         # --- ЭТАП 3: Уведомление UI (вне транзакции) ---
+        self._safe_request_ui_update()
+
+    def set_pending_task_chains(self, task_chains: list[list], initial_history: dict = None):
+        """
+        Replaces the queue with dependency-aware task chains.
+        Only the first pending task of each chain is eligible for workers.
+        """
+        normalized_chains = [
+            [payload for payload in chain if payload]
+            for chain in (task_chains or [])
+            if chain
+        ]
+        normalized_chains = [chain for chain in normalized_chains if chain]
+
+        tasks_to_insert = []
+        errors_to_insert = []
+        sequence = 0
+        max_chain_len = max((len(chain) for chain in normalized_chains), default=0)
+
+        timestamp = time.time()
+        for chain_index in range(max_chain_len):
+            for chain_id, chain in enumerate(normalized_chains):
+                if chain_index >= len(chain):
+                    continue
+
+                task_id = uuid.uuid4()
+                task_id_str = str(task_id)
+                payload = self._normalize_payload(chain[chain_index])
+                tasks_to_insert.append((
+                    task_id_str,
+                    json.dumps(payload, default=tuple_serializer),
+                    'pending',
+                    sequence,
+                    0,
+                    chain_id,
+                    chain_index,
+                ))
+                sequence += 1
+
+                if initial_history:
+                    for error_type, count in initial_history.get('errors', {}).items():
+                        for _ in range(count):
+                            errors_to_insert.append((task_id_str, error_type, timestamp))
+
+        with self._get_write_conn() as conn:
+            conn.execute("DELETE FROM tasks")
+            conn.execute("DELETE FROM task_errors")
+
+            if tasks_to_insert:
+                conn.executemany(
+                    """
+                    INSERT INTO tasks
+                        (task_id, payload, status, sequence, priority, chain_id, chain_index)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    tasks_to_insert
+                )
+
+            if errors_to_insert:
+                conn.executemany(
+                    "INSERT INTO task_errors (task_id, error_type, timestamp) VALUES (?, ?, ?)",
+                    errors_to_insert
+                )
+
         self._safe_request_ui_update()
 
 
@@ -1892,6 +2065,7 @@ class ChapterQueueManager(QObject):
                 # ШАГ В: Выполняем подмену.
                 # disk_conn (source) -> mem_conn (dest)
                 disk_conn.backup(mem_conn)
+                self._create_schema(mem_conn)
 
                 cursor = mem_conn.execute(
                     "SELECT task_id, payload, status FROM tasks ORDER BY priority DESC, sequence ASC"

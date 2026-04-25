@@ -503,6 +503,7 @@ class TaskPreparer:
     def __init__(self, settings, real_chapter_sizes):
         self.settings = settings
         self.real_chapter_sizes = real_chapter_sizes # <--- Теперь это основной источник данных
+        self.sequential_translation = settings.get('sequential_translation', False)
         self.use_batching = settings.get('use_batching', False)
         self.use_chunking = settings.get('chunking', False)
         self.task_input_size_limit = settings.get('task_size_limit', 30000)
