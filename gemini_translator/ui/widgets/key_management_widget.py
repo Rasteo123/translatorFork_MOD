@@ -524,6 +524,36 @@ class KeyManagementWidget(QWidget):
             self.provider_combo.blockSignals(False)
             self._on_provider_changed(index_to_set)
 
+    def discard_active_key_for_session(self, api_key: str):
+        if not api_key or not self._provider_requires_api_key():
+            return False
+
+        provider_id = self.get_selected_provider()
+        active_keys_for_provider = self.current_active_keys_by_provider.get(
+            provider_id, set()
+        )
+        changed = api_key in active_keys_for_provider
+        if changed:
+            active_keys_for_provider.discard(api_key)
+            self.current_active_keys_by_provider[provider_id] = active_keys_for_provider
+
+        for row in range(self.active_keys_list.count()):
+            item = self.active_keys_list.item(row)
+            if item and item.data(QtCore.Qt.ItemDataRole.UserRole) == api_key:
+                moved_item = self.active_keys_list.takeItem(row)
+                if moved_item:
+                    self.available_keys_list.addItem(moved_item)
+                changed = True
+                break
+
+        if changed:
+            self._update_key_counts()
+            self._update_active_key_count()
+            self.active_empty_label.setVisible(self.active_keys_list.count() == 0)
+            self.active_keys_changed.emit()
+
+        return changed
+
     def _update_active_key_count(self):
         if not self._provider_requires_api_key():
             self.active_key_count_label.setText("Выбрано: встроенная сессия")

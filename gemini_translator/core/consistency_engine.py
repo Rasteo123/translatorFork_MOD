@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from ..api.errors import RateLimitExceededError, TemporaryRateLimitError
 from ..api.factory import get_api_handler_class
 from ..api import config as api_config
 from ..utils.text import repair_json_string
@@ -83,6 +84,40 @@ def filter_consistency_problems_by_confidence(
         for problem in problems
         if normalize_consistency_confidence(problem.get("confidence")) in allowed_set
     ]
+
+
+def _redact_api_key(api_key: Any) -> str:
+    key = str(api_key or "")
+    if not key:
+        return "<empty>"
+    return f"...{key[-4:]}" if len(key) > 4 else "..."
+
+
+def _sanitize_api_keys(text: Any) -> str:
+    sanitized = str(text or "")
+
+    def _replace_api_key_match(match: re.Match) -> str:
+        prefix = match.group(1) or ""
+        return f"{prefix}{_redact_api_key(match.group(2))}"
+
+    sanitized = re.sub(
+        r"(api_key:)([A-Za-z0-9_\-]{8,})",
+        _replace_api_key_match,
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        r"(\bkey=)([A-Za-z0-9_\-]{8,})",
+        _replace_api_key_match,
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(
+        r"\b(AIza[0-9A-Za-z_\-]{20,})\b",
+        lambda match: _redact_api_key(match.group(1)),
+        sanitized,
+    )
+    return sanitized
 
 
 def _normalize_text_list(value: Any) -> list[str]:
@@ -390,6 +425,7 @@ class ConsistencyEngine(QObject):
     chunk_analyzed = pyqtSignal(dict)             # результат анализа чанка
     error_occurred = pyqtSignal(str)
     log_message = pyqtSignal(str)
+    key_discarded = pyqtSignal(str, str)             # api_key, sanitized reason
     finished = pyqtSignal(list)                   # список всех найденных проблем
     fix_progress = pyqtSignal(int, int, str)      # current, total, chapter_name (для массового исправления)
     fix_completed = pyqtSignal(str, str)          # chapter_path, new_content
@@ -405,6 +441,7 @@ class ConsistencyEngine(QObject):
         self.chapter_problems_map: Dict[str, List[Dict[str, Any]]] = {}
         self.request_response_trace: List[Dict[str, Any]] = []
         self._thread_handler_cache: Dict[int, Dict[tuple, Dict[str, Any]]] = {}
+        self._discarded_keys: set[str] = set()
         
         # Индекс текущего ключа для ротации
         self._current_key_index = 0
@@ -420,11 +457,12 @@ class ConsistencyEngine(QObject):
         self.all_problems.clear()
         self.chapter_problems_map.clear()
         self.request_response_trace.clear()
+        self._discarded_keys.clear()
         self.is_cancelled = False
         self._current_key_index = 0
 
     def _emit_log_message(self, message: str) -> None:
-        text = str(message or "").strip()
+        text = _sanitize_api_keys(message).strip()
         if not text:
             return
         logger.info("[Consistency] %s", text)
@@ -557,12 +595,16 @@ class ConsistencyEngine(QObject):
                 self.progress_updated.emit(i + 1, total_chunks * 2)  # *2 для двух проходов
                 
                 try:
-                    api_key = self._get_next_key(active_keys)
                     prompt = self._build_glossary_collection_prompt(chunk, config)
                     self._emit_log_message(
                         f"[Glossary] Чанк {i + 1}/{total_chunks}: {self._format_chunk_label(chunk)}"
                     )
-                    response_text = self._call_api(prompt, config, api_key)
+                    response_text = self._call_api_with_key_retry(
+                        prompt,
+                        config,
+                        active_keys,
+                        retry_label=f"глоссария (чанк {i + 1}/{total_chunks})",
+                    )
                     self._record_request_response_trace(
                         phase='glossary_collection',
                         prompt=prompt,
@@ -591,8 +633,12 @@ class ConsistencyEngine(QObject):
                         })
                         
                 except Exception as e:
-                    logger.error(f"Error collecting glossary for chunk {i + 1}: {e}")
-                    self.error_occurred.emit(f"Ошибка сбора глоссария (чанк {i + 1}): {e}")
+                    error_text = self._sanitize_exception_message(e)
+                    logger.error(f"Error collecting glossary for chunk {i + 1}: {error_text}")
+                    self.error_occurred.emit(f"Ошибка сбора глоссария (чанк {i + 1}): {error_text}")
+                    if not active_keys:
+                        self.is_cancelled = True
+                        break
             
             logger.info("Двухпроходный режим: проход 2 - поиск проблем с глоссарием")
 
@@ -611,11 +657,15 @@ class ConsistencyEngine(QObject):
 
             # 3. Вызов API с ротацией ключей
             try:
-                api_key = self._get_next_key(active_keys)
                 self._emit_log_message(
                     f"[Analysis] Чанк {i + 1}/{total_chunks}: {self._format_chunk_label(chunk)}"
                 )
-                response_text = self._call_api(prompt, config, api_key)
+                response_text = self._call_api_with_key_retry(
+                    prompt,
+                    config,
+                    active_keys,
+                    retry_label=f"анализа (чанк {i + 1}/{total_chunks})",
+                )
                 self._record_request_response_trace(
                     phase='analysis',
                     prompt=prompt,
@@ -653,8 +703,12 @@ class ConsistencyEngine(QObject):
                     self.chunk_analyzed.emit(analysis_result)
 
             except Exception as e:
-                logger.error(f"Error analyzing chunk {i + 1}: {e}")
-                self.error_occurred.emit(f"Ошибка анализа чанка {i + 1}: {e}")
+                error_text = self._sanitize_exception_message(e)
+                logger.error(f"Error analyzing chunk {i + 1}: {error_text}")
+                self.error_occurred.emit(f"Ошибка анализа чанка {i + 1}: {error_text}")
+                if not active_keys:
+                    self.is_cancelled = True
+                    break
 
         self.finished.emit(self.all_problems)
 
@@ -666,6 +720,128 @@ class ConsistencyEngine(QObject):
         key = active_keys[self._current_key_index % len(active_keys)]
         self._current_key_index += 1
         return key
+
+    def _sanitize_exception_message(self, exc: Exception | str) -> str:
+        return _sanitize_api_keys(str(exc))
+
+    def _is_key_retryable_error(self, exc: Exception) -> bool:
+        text = str(exc or "")
+        lowered = text.lower()
+
+        if isinstance(exc, TemporaryRateLimitError):
+            return True
+
+        permanent_markers = (
+            "suspended",
+            "permission denied",
+            "permission_denied",
+            "api key not valid",
+            "invalid api key",
+            "invalid_api_key",
+            "api_key_invalid",
+            "api_key:",
+            "api key",
+            "невалид",
+            "заблок",
+        )
+        has_auth_status = bool(re.search(r"\b(?:400|401|403)\b", lowered))
+        if has_auth_status and any(marker in lowered for marker in permanent_markers):
+            return True
+
+        if any(marker in lowered for marker in ("suspended", "permission denied", "permission_denied")):
+            return True
+
+        quota_markers = (
+            "quota",
+            "квота",
+            "исчерпал лимит",
+            "исчерпан",
+            "exhausted",
+            "rate limit",
+            "лимит запросов",
+            "недостаточно средств",
+        )
+        if isinstance(exc, RateLimitExceededError) and any(marker in lowered for marker in quota_markers):
+            return True
+
+        return False
+
+    def _mark_key_unavailable_for_current_model(self, api_key: str, config: Dict[str, Any]) -> None:
+        if not api_key:
+            return
+        try:
+            _, model_name, _, model_config = self._resolve_provider_and_model_config(config)
+            model_id = model_config.get("id", model_name)
+            marker = getattr(self.settings_manager, "mark_key_as_exhausted", None)
+            if callable(marker):
+                marker(api_key, model_id)
+        except Exception as marker_error:
+            logger.debug(
+                "Failed to mark consistency key as unavailable: %s",
+                self._sanitize_exception_message(marker_error),
+            )
+
+    def _should_persist_key_unavailable_status(self, exc: Exception) -> bool:
+        return not isinstance(exc, TemporaryRateLimitError)
+
+    def _discard_key_for_retry(
+        self,
+        active_keys: List[str],
+        api_key: str,
+        config: Dict[str, Any],
+        exc: Exception,
+    ) -> bool:
+        before = len(active_keys)
+        active_keys[:] = [key for key in active_keys if key != api_key]
+        removed = len(active_keys) != before
+        if not removed:
+            return False
+
+        self._discarded_keys.add(api_key)
+        reason = self._sanitize_exception_message(exc)
+        masked_key = _redact_api_key(api_key)
+        if self._should_persist_key_unavailable_status(exc):
+            self._mark_key_unavailable_for_current_model(api_key, config)
+        self._emit_log_message(
+            f"⚠️ Ключ {masked_key} отключён для текущей проверки: {reason}"
+        )
+        self.key_discarded.emit(api_key, reason)
+        return True
+
+    def _call_api_with_key_retry(
+        self,
+        prompt: str,
+        config: Dict[str, Any],
+        active_keys: List[str],
+        *,
+        retry_label: str,
+    ) -> str:
+        last_error: Exception | None = None
+
+        while active_keys and not self.is_cancelled:
+            api_key = self._get_next_key(active_keys)
+            try:
+                return self._call_api(prompt, config, api_key)
+            except Exception as exc:
+                if not self._is_key_retryable_error(exc):
+                    raise
+
+                last_error = exc
+                if not self._discard_key_for_retry(active_keys, api_key, config, exc):
+                    raise
+
+                if active_keys:
+                    self._emit_log_message(
+                        f"↻ Повтор {retry_label} с другим ключом. Осталось ключей: {len(active_keys)}"
+                    )
+
+        if last_error is not None:
+            raise RuntimeError(
+                "Нет доступных ключей для повтора чанка после отключения неисправных ключей. "
+                f"Последняя ошибка: {self._sanitize_exception_message(last_error)}"
+            ) from last_error
+
+        raise ValueError("Нет доступных ключей для анализа")
 
     def _split_into_chunks(self, chapters: List[Dict[str, Any]], chunk_size: int) -> List[List[Dict[str, Any]]]:
         """Разбивает список глав на группы (чанки)."""

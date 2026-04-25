@@ -743,6 +743,7 @@ class ConsistencyValidatorDialog(QDialog):
         self.engine.finished.connect(self.on_analysis_finished)
         self.engine.error_occurred.connect(self.on_engine_error)
         self.engine.log_message.connect(self._log)
+        self.engine.key_discarded.connect(self.on_key_discarded)
         self.engine.fix_progress.connect(self.on_fix_progress)
         self.engine.fix_completed.connect(self.on_single_fix_completed)
         
@@ -1377,6 +1378,12 @@ class ConsistencyValidatorDialog(QDialog):
         self.select_chapters_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self._update_batch_fix_button_state()
+
+    @pyqtSlot(str, str)
+    def on_key_discarded(self, api_key, reason):
+        discard = getattr(self.key_management_widget, 'discard_active_key_for_session', None)
+        if callable(discard):
+            discard(api_key)
 
     def on_problem_selected(self):
         """Обрабатывает выбор проблемы в таблице."""
