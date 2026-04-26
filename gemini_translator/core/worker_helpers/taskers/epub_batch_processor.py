@@ -16,6 +16,40 @@ from gemini_translator.utils.text import clean_html_content, prettify_html
 
 
 class EpubBatchProcessor(BaseTaskProcessor):
+    SAVE_CHAPTERS_KEY = "save_chapters"
+
+    def _get_filter_repack_save_chapter_set(self, task_payload, chapter_list):
+        if not task_payload or len(task_payload) <= 3 or not isinstance(task_payload[3], dict):
+            return None
+
+        raw_save_chapters = task_payload[3].get(self.SAVE_CHAPTERS_KEY)
+        if raw_save_chapters is None:
+            return None
+
+        chapter_set = {str(chapter) for chapter in chapter_list}
+        return {
+            str(chapter)
+            for chapter in raw_save_chapters
+            if chapter and str(chapter) in chapter_set
+        }
+
+    def _filter_report_by_save_targets(self, report, save_chapter_set):
+        if save_chapter_set is None:
+            return report
+
+        return {
+            "successful": [
+                item
+                for item in report.get("successful", [])
+                if str(item.get("original_path")) in save_chapter_set
+            ],
+            "failed": [
+                item
+                for item in report.get("failed", [])
+                if item and str(item[0]) in save_chapter_set
+            ],
+        }
+
     async def _execute_json_batch_pipeline(self, task_info, epub_path, chapter_list, batch_log_prefix, use_stream):
         source_documents = []
         documents_payload = []
@@ -73,13 +107,15 @@ class EpubBatchProcessor(BaseTaskProcessor):
         })
         return raw_response, report
 
-    def _save_successful_chapters(self, successful_chapters_data, file_suffix, log_prefix):
+    def _save_successful_chapters(self, successful_chapters_data, file_suffix, log_prefix, save_chapter_set=None):
         successful_paths = []
         save_failed_paths = []
         registrations_to_make = []
 
         for success_data in successful_chapters_data:
             original_path = success_data.get("original_path")
+            if save_chapter_set is not None and str(original_path) not in save_chapter_set:
+                continue
             try:
                 final_html = success_data["final_html"]
                 chapter_basename = os.path.splitext(os.path.basename(original_path))[0]
@@ -147,6 +183,10 @@ class EpubBatchProcessor(BaseTaskProcessor):
         if not chapter_list:
             raise ValueError(f"Empty epub_batch task: {task_payload}")
 
+        save_chapter_set = self._get_filter_repack_save_chapter_set(task_payload, chapter_list)
+        if save_chapter_set is not None and not save_chapter_set:
+            raise ValueError("Filter repack batch has no save targets inside its chapter list.")
+
         if len(chapter_list) == 1:
             single_payload = ("epub", epub_path, chapter_list[0])
             try:
@@ -181,6 +221,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
                     "message": f"[JSON EPUB BATCH] Fallback to legacy HTML batch: {json_error}"
                 })
             else:
+                report = self._filter_report_by_save_targets(report, save_chapter_set)
                 successful_chapters_data = report.get("successful", [])
                 failed_chapters_details = report.get("failed", [])
                 failed_chapters_paths = [item[0] for item in failed_chapters_details]
@@ -189,6 +230,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
                     successful_chapters_data,
                     self.worker.provider_config["file_suffix"],
                     "JSON EPUB BATCH",
+                    save_chapter_set=save_chapter_set,
                 )
                 for path in save_failed_paths:
                     if path not in failed_chapters_paths:
@@ -202,7 +244,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
                     raw_response=raw_response,
                 )
 
-                total_count = len(chapter_list)
+                total_count = len(save_chapter_set) if save_chapter_set is not None else len(chapter_list)
                 failed_count = len(failed_chapters_paths)
                 if failed_count == 0:
                     self.worker._post_event("log_message", {
@@ -257,6 +299,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
             original_contents,
         )
 
+        report = self._filter_report_by_save_targets(report, save_chapter_set)
         successful_chapters_data = report.get("successful", [])
         failed_chapters_details = report.get("failed", [])
         failed_chapters_paths = [item[0] for item in failed_chapters_details]
@@ -265,6 +308,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
             successful_chapters_data,
             self.worker.provider_config["file_suffix"],
             "BATCH",
+            save_chapter_set=save_chapter_set,
         )
         for path in save_failed_paths:
             if path not in failed_chapters_paths:
@@ -278,7 +322,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
             raw_response=raw_response,
         )
 
-        total_count = len(chapter_list)
+        total_count = len(save_chapter_set) if save_chapter_set is not None else len(chapter_list)
         failed_count = len(failed_chapters_paths)
         success_count = len(successful_paths)
 

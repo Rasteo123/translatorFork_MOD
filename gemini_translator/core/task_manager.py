@@ -393,6 +393,15 @@ class ChapterQueueManager(QObject):
             return list(payload[2])
         return []
 
+    def _extract_save_targets_from_payload(self, payload: tuple) -> set[str] | None:
+        if not payload or len(payload) <= 3 or not isinstance(payload[3], dict):
+            return None
+
+        raw_targets = payload[3].get('save_chapters')
+        if raw_targets is None:
+            return None
+        return {str(chapter) for chapter in raw_targets if chapter}
+
     def _eligible_pending_task_sql(self, select_clause="task_id"):
         return f"""
             SELECT {select_clause}
@@ -839,6 +848,9 @@ class ChapterQueueManager(QObject):
 
         epub_path = payload[1] if len(payload) > 1 else None
         chapters = self._extract_chapters_from_payload(payload)
+        save_targets = self._extract_save_targets_from_payload(payload)
+        if save_targets is not None:
+            chapters = [chapter for chapter in chapters if str(chapter) in save_targets]
         if not epub_path or not chapters:
             return False
 

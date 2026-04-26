@@ -11,6 +11,10 @@ from ..utils.epub_tools import extract_number_from_path
 from ..ui.widgets.common_widgets import NoScrollSpinBox
 
 class FilterPackagingDialog(QDialog):
+    SAVE_CHAPTERS_KEY = "save_chapters"
+    FILTER_REPACK_KEY = "filter_repack"
+    CONTEXT_CHAPTERS_KEY = "context_chapters"
+
     """
     Диалог для умной подготовки отфильтрованных глав к повторному переводу
     путем их "разбавления" успешно переведенными главами для пакетной обработки.
@@ -79,6 +83,70 @@ class FilterPackagingDialog(QDialog):
         self.only_filter_btn.clicked.connect(self._process_only_filter_and_accept)
         
         main_layout.addWidget(buttons)
+
+    def _make_filter_repack_metadata(self, save_chapters, all_chapters):
+        save_list = [str(chapter) for chapter in save_chapters if chapter]
+        save_set = set(save_list)
+        context_list = [
+            str(chapter)
+            for chapter in all_chapters
+            if chapter and str(chapter) not in save_set
+        ]
+        return {
+            self.FILTER_REPACK_KEY: True,
+            self.SAVE_CHAPTERS_KEY: save_list,
+            self.CONTEXT_CHAPTERS_KEY: context_list,
+        }
+
+    def _payload_chapters(self, payload):
+        if not payload:
+            return []
+        task_type = payload[0]
+        if task_type in ("epub", "epub_chunk") and len(payload) > 2:
+            return [payload[2]]
+        if task_type == "epub_batch" and len(payload) > 2:
+            return list(payload[2])
+        return []
+
+    def _with_filter_save_targets(self, payload, filtered_set):
+        chapters = self._payload_chapters(payload)
+        save_targets = [chapter for chapter in chapters if chapter in filtered_set]
+        if not save_targets:
+            return None
+
+        task_type = payload[0]
+        if task_type != "epub_batch":
+            return payload
+
+        payload_parts = list(payload)
+        metadata = {}
+        if len(payload_parts) > 3 and isinstance(payload_parts[3], dict):
+            metadata.update(payload_parts[3])
+        metadata.update(self._make_filter_repack_metadata(save_targets, chapters))
+
+        if len(payload_parts) > 3 and isinstance(payload_parts[3], dict):
+            payload_parts[3] = metadata
+        else:
+            payload_parts.append(metadata)
+        return tuple(payload_parts)
+
+    def _build_filter_repack_payloads(self, chapter_list):
+        from gemini_translator.utils.glossary_tools import TaskPreparer
+
+        settings = {
+            "file_path": self.epub_path,
+            "use_batching": True,
+            "chunking": False,
+            "task_size_limit": self.recommended_size,
+        }
+        preparer = TaskPreparer(settings, self.real_chapter_sizes)
+        filtered_set = set(self.filtered_chapters)
+        payloads = []
+        for payload in preparer.prepare_tasks(chapter_list):
+            marked_payload = self._with_filter_save_targets(payload, filtered_set)
+            if marked_payload:
+                payloads.append(marked_payload)
+        return payloads
 
     def process_and_accept(self):
         try:
@@ -196,7 +264,12 @@ class FilterPackagingDialog(QDialog):
                         batch.append(next(successful_cycler))
                 
                 # Создаем готовый пейлоад, который TaskPreparer не будет трогать
-                payload = ('epub_batch', self.epub_path, tuple(batch))
+                payload = (
+                    'epub_batch',
+                    self.epub_path,
+                    tuple(batch),
+                    self._make_filter_repack_metadata([filtered_chapter], batch),
+                )
                 final_payloads.append(payload)
             
             # Возвращаем специальный объект, чтобы вызывающий код понял, что это готовые задачи
@@ -231,7 +304,11 @@ class FilterPackagingDialog(QDialog):
             
             chapter_list.extend(successful_iter)
 
-            return {'type': 'chapters', 'data': chapter_list}
+            final_payloads = self._build_filter_repack_payloads(chapter_list)
+            if not final_payloads:
+                return {'type': 'chapters', 'data': self.filtered_chapters}
+
+            return {'type': 'payloads', 'data': final_payloads}
 
     def get_result(self):
         return self.result

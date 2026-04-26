@@ -3477,8 +3477,14 @@ class InitialSetupDialog(QDialog):
             # Обновляем UI счетчик глав
             all_chapters_in_payloads = set()
             for payload in plain_payloads:
-                if payload[0] == 'epub_batch':
+                metadata = payload[3] if len(payload) > 3 and isinstance(payload[3], dict) else {}
+                save_chapters = metadata.get('save_chapters')
+                if save_chapters:
+                    all_chapters_in_payloads.update(save_chapters)
+                elif payload[0] == 'epub_batch':
                     all_chapters_in_payloads.update(payload[2])
+                elif payload[0] in ('epub', 'epub_chunk') and len(payload) > 2:
+                    all_chapters_in_payloads.add(payload[2])
 
             self.html_files = sorted(list(all_chapters_in_payloads), key=extract_number_from_path)
             self.paths_widget.update_chapters_info(len(self.html_files))
