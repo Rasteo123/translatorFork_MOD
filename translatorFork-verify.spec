@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 datas = [('config', 'config'), ('README.md', '.'), ('ffmpeg.exe', '.'), ('ffprobe.exe', '.'), ('gemini_translator\\scripts\\chatgpt_workascii_bridge.cjs', 'gemini_translator\\scripts'), ('gemini_translator\\scripts\\chatgpt_profile_launcher.cjs', 'gemini_translator\\scripts'), ('.venv\\Lib\\site-packages\\playwright\\driver\\node.exe', 'playwright_runtime'), ('.venv\\Lib\\site-packages\\playwright\\driver\\package', 'playwright_runtime\\package'), ('C:\\Users\\shest\\AppData\\Local\\ms-playwright', 'playwright_runtime\\ms-playwright')]
 datas += collect_data_files('PyQt6')
+datas += collect_data_files('docx')
 datas += collect_data_files('emoji')
 datas += collect_data_files('jieba')
 datas += collect_data_files('lxml')
@@ -14,7 +15,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types'],
+    hiddenimports=['PyQt6.sip', 'docx', 'pypdf', 'playwright.sync_api', 'google.genai', 'google.genai.types'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

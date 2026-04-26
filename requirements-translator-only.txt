@@ -12,8 +12,10 @@ jieba
 lxml
 num2words
 pymorphy3
+pypdf
 PyQt6
 PySocks
+python-docx
 python-Levenshtein
 pytz
 recognizers-text

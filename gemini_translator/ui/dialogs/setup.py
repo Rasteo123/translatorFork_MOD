@@ -1669,9 +1669,21 @@ class InitialSetupDialog(QDialog):
             return
 
         # 1. Выбор нового файла
+        from ...utils.document_importer import DOCUMENT_INPUT_FILTER, convert_source_to_epub_with_dialog
+
         new_file_source, _ = QFileDialog.getOpenFileName(
-            self, "Выберите НОВУЮ версию EPUB файла",
-            os.path.dirname(self.selected_file), "EPUB файлы (*.epub)"
+            self,
+            "Выберите НОВУЮ версию исходника",
+            os.path.dirname(self.selected_file),
+            DOCUMENT_INPUT_FILTER,
+        )
+        if not new_file_source:
+            return
+
+        new_file_source = convert_source_to_epub_with_dialog(
+            new_file_source,
+            self.output_folder or os.path.dirname(self.selected_file),
+            self,
         )
         if not new_file_source or os.path.abspath(new_file_source) == os.path.abspath(self.selected_file):
             return

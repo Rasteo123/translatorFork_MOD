@@ -13,6 +13,7 @@ datas = [
     ('config', 'config'),
 ]
 datas += collect_data_files('PyQt6')
+datas += collect_data_files('docx')
 datas += collect_data_files('emoji')
 datas += collect_data_files('jieba')
 datas += collect_data_files('lxml')
@@ -24,12 +25,11 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['PyQt6.sip', 'google.genai', 'google.genai.types'],
+    hiddenimports=['PyQt6.sip', 'docx', 'pypdf', 'google.genai', 'google.genai.types'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'docx',
         'edge_tts',
         'gemini_reader_v3',
         'nltk',

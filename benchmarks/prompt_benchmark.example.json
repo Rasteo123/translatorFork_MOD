@@ -1,0 +1,91 @@
+{
+  "name": "prompt-model-smoke",
+  "output_dir": "benchmark_results",
+  "defaults": {
+    "use_system_instruction": true,
+    "system_instruction": "You are a professional literary translator into Russian.",
+    "prompt_mode": "project"
+  },
+  "prompts": [
+    {
+      "id": "project-default",
+      "mode": "project",
+      "builtin": "default",
+      "use_system_instruction": true
+    },
+    {
+      "id": "compact-raw",
+      "mode": "raw",
+      "template": "Translate the source fragment into literary Russian. Preserve HTML tags, comments, attributes, and placeholders exactly. Use glossary terms when applicable. Return only translated HTML.\n\nGlossary:\n{glossary}\n\nSource:\n{text}",
+      "use_system_instruction": true
+    }
+  ],
+  "models": [
+    {
+      "id": "local-openai-compatible",
+      "provider": "local",
+      "use_stream": false,
+      "model": "local-model",
+      "base_url": "http://127.0.0.1:11434/v1/chat/completions"
+    },
+    {
+      "id": "gemini-flash-env",
+      "provider": "web_chatgpt_free",
+      "use_stream": true,
+      "model": "gpt-4o-mini",
+      "api_key_env": "GEMINI_API_KEY"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sample-case",
+      "source_html": "<p>青云宗的弟子低声说：“师尊来了。”</p><!-- MEDIA_0 -->",
+      "reference": "<p>Ученик Секты Лазурного Облака тихо сказал: «Наставник пришёл».</p><!-- MEDIA_0 -->",
+      "glossary": [
+        {
+          "original": "青云宗",
+          "rus": "Секта Лазурного Облака"
+        },
+        {
+          "original": "师尊",
+          "rus": "наставник"
+        }
+      ],
+      "checks": {
+        "preserve_html_tags": true,
+        "allow_cjk": false,
+        "glossary_required": true,
+        "expect_json": false,
+        "min_length_ratio": 0.25,
+        "max_length_ratio": 4.0,
+        "required": [
+          "Секта Лазурного Облака"
+        ],
+        "forbidden": [
+          "青云宗"
+        ],
+        "placeholders": [
+          "<!-- MEDIA_0 -->"
+        ],
+        "min_similarity": 0.25
+      }
+    },
+    {
+      "id": "html-link-preservation",
+      "source_html": "<p><a href=\"notes.xhtml#n1\">Note</a>: The tower opened.</p>",
+      "reference": "<p><a href=\"notes.xhtml#n1\">Примечание</a>: башня открылась.</p>",
+      "checks": {
+        "preserve_html_tags": true,
+        "allow_cjk": false,
+        "glossary_required": true,
+        "expect_json": false,
+        "min_length_ratio": 0.25,
+        "max_length_ratio": 4.0,
+        "required": [
+          "башня"
+        ],
+        "min_similarity": 0.2
+      }
+    }
+  ]
+}

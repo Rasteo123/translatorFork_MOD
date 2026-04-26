@@ -198,6 +198,12 @@ class StartupToolDialog(QDialog):
             "ranobelib_uploader"
         )
         extra_tools_layout.addWidget(ranobelib_widget)
+        benchmark_widget = self._create_tool_widget(
+            "Бенчмарк промптов",
+            "Сравнение промптов и моделей на фиксированных фрагментах: сборка prompt-only, live-запуск через API и отчёты JSON/CSV/Markdown.",
+            "prompt_benchmark"
+        )
+        extra_tools_layout.addWidget(benchmark_widget)
         extra_tools_layout.addStretch()
         main_layout.addLayout(extra_tools_layout)
 

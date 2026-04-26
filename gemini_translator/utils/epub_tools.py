@@ -13,6 +13,7 @@ import re
 import uuid
 import mimetypes
 import zipfile
+import html as html_lib
 from xml.etree import ElementTree as ET
 from ..api import config as api_config
 
@@ -256,6 +257,9 @@ class EpubCreator:
                 with open(self.cover_image_path, 'rb') as f:
                     epub.writestr(f'OEBPS/{cover_filename}', f.read())
 
+    def _xml_escape(self, value):
+        return html_lib.escape(str(value or ""), quote=True)
+
     def _create_container(self):
         return '''<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -265,12 +269,15 @@ class EpubCreator:
 </container>'''
 
     def _create_opf(self):
+        title = self._xml_escape(self.title)
+        author = self._xml_escape(self.author)
+        language = self._xml_escape(self.language)
         opf = f'''<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookID" version="2.0">
     <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
-        <dc:title>{self.title}</dc:title>
-        <dc:creator>{self.author}</dc:creator>
-        <dc:language>{self.language}</dc:language>
+        <dc:title>{title}</dc:title>
+        <dc:creator>{author}</dc:creator>
+        <dc:language>{language}</dc:language>
         <dc:identifier id="BookID">urn:uuid:{self.uuid}</dc:identifier>'''
         
         if self.cover_image_path:
@@ -299,6 +306,7 @@ class EpubCreator:
 
     def _create_ncx(self):
         # (Без изменений, но нужно включить в общий класс)
+        title = self._xml_escape(self.title)
         ncx = f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
@@ -308,12 +316,13 @@ class EpubCreator:
         <meta name="dtb:totalPageCount" content="0"/>
         <meta name="dtb:maxPageNumber" content="0"/>
     </head>
-    <docTitle><text>{self.title}</text></docTitle>
+    <docTitle><text>{title}</text></docTitle>
     <navMap>'''
         for i, chapter in enumerate(self.chapters):
+            chapter_title = self._xml_escape(chapter["title"])
             ncx += f'''
         <navPoint id="navPoint-{i+1}" playOrder="{i+1}">
-            <navLabel><text>{chapter["title"]}</text></navLabel>
+            <navLabel><text>{chapter_title}</text></navLabel>
             <content src="{chapter["filename"]}"/>
         </navPoint>'''
         ncx += '\n    </navMap>\n</ncx>'

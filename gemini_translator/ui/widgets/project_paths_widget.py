@@ -12,6 +12,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...utils.document_importer import (
+    DOCUMENT_INPUT_FILTER,
+    convert_source_to_epub_with_dialog,
+)
+
 
 class ProjectPathsWidget(QWidget):
     """
@@ -105,8 +110,8 @@ class ProjectPathsWidget(QWidget):
             self.file_path_btn,
         ) = self._create_path_card(
             title="Источник",
-            empty_value="EPUB или TXT не выбран",
-            empty_detail="Откройте книгу, чтобы создать или продолжить проект.",
+            empty_value="Файл не выбран",
+            empty_detail="Поддерживаются EPUB, DOCX, TXT, Markdown, HTML и PDF.",
             button_text="Выбрать файл",
             slot=self._on_select_file,
         )
@@ -151,7 +156,7 @@ class ProjectPathsWidget(QWidget):
         self.btn_swap_file = QPushButton("Заменить исходник")
         self.btn_swap_file.setObjectName("compactActionButton")
         self.btn_swap_file.setToolTip(
-            "Заменить исходный EPUB в текущем проекте с сохранением совместимых переводов."
+            "Заменить исходник в текущем проекте. Не-EPUB документы будут сначала импортированы в EPUB."
         )
         self.btn_swap_file.clicked.connect(self.swap_file_requested.emit)
         stats_layout.addWidget(self.btn_swap_file)
@@ -217,24 +222,16 @@ class ProjectPathsWidget(QWidget):
     def _on_select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Выберите EPUB или TXT файл",
+            "Выберите книгу или документ",
             "",
-            "Книги (*.epub *.txt);;EPUB файлы (*.epub);;Текстовые файлы (*.txt)",
+            DOCUMENT_INPUT_FILTER,
         )
         if file_path:
-            if file_path.lower().endswith(".txt"):
-                from ...utils.txt_importer import TxtImportWizardDialog
-
-                output_dir = os.path.dirname(file_path)
-                wizard = TxtImportWizardDialog(file_path, output_dir, self)
-                if wizard.exec():
-                    new_epub_path = wizard.get_generated_epub_path()
-                    if new_epub_path:
-                        file_path = new_epub_path
-                    else:
-                        return
-                else:
-                    return
+            output_dir = self._folder_path or os.path.dirname(file_path)
+            imported_path = convert_source_to_epub_with_dialog(file_path, output_dir, self)
+            if not imported_path:
+                return
+            file_path = imported_path
             self.file_selected.emit(file_path)
 
     def _on_select_folder(self):
@@ -250,9 +247,9 @@ class ProjectPathsWidget(QWidget):
             self.file_detail_label.setText(self._file_path)
             self.file_path_btn.setText("Сменить файл")
         else:
-            self.file_value_label.setText("EPUB или TXT не выбран")
+            self.file_value_label.setText("Файл не выбран")
             self.file_detail_label.setText(
-                "Откройте книгу, чтобы создать или продолжить проект."
+                "Поддерживаются EPUB, DOCX, TXT, Markdown, HTML и PDF."
             )
             self.file_path_btn.setText("Выбрать файл")
             self._chapters_count = 0

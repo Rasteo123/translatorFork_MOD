@@ -32,6 +32,7 @@ if localappdata:
     add_runtime_data(datas, Path(localappdata) / "ms-playwright", "playwright_runtime\\ms-playwright")
 
 datas += collect_data_files("PyQt6")
+datas += collect_data_files("docx")
 datas += collect_data_files("emoji")
 datas += collect_data_files("jieba")
 datas += collect_data_files("lxml")
@@ -43,7 +44,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=["PyQt6.sip", "docx", "playwright.sync_api", "google.genai", "google.genai.types"],
+    hiddenimports=["PyQt6.sip", "docx", "pypdf", "playwright.sync_api", "google.genai", "google.genai.types"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

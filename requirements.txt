@@ -20,6 +20,7 @@ PyAudio
 pydantic>=2.0.0
 pydub
 pymorphy3
+pypdf
 PyQt6
 PySocks
 python-docx

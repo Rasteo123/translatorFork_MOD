@@ -1056,6 +1056,9 @@ if __name__ == "__main__":
                         main_window_to_run = ranobelib_window
                     else:
                         continue
+                elif selected_tool == 'prompt_benchmark':
+                    from gemini_translator.ui.dialogs.benchmark import PromptBenchmarkDialog
+                    main_window_to_run = PromptBenchmarkDialog()
             else:
                 # Пользователь закрыл меню — выход
                 break
