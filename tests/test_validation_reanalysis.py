@@ -248,6 +248,51 @@ class ValidationReanalysisTests(unittest.TestCase):
                  patch("builtins.open", _failing_open):
                 TranslationValidatorDialog._on_consistency_check(harness)
 
+    def test_consistency_check_uses_unsaved_in_memory_translation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            internal_path = "Text/chapter1.xhtml"
+            rel_path = "translated/chapter1.xhtml"
+            full_path = os.path.join(temp_dir, rel_path)
+
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w", encoding="utf-8") as temp_file:
+                temp_file.write("<p>stale hero</p>")
+
+            captured = {}
+            fake_dialog_module = types.ModuleType("gemini_translator.ui.dialogs.consistency_checker")
+
+            class _ConsistencyDialogStub:
+                def __init__(self, chapters, *args, **kwargs):
+                    captured["chapters"] = chapters
+
+                def exec(self):
+                    return 0
+
+            fake_dialog_module.ConsistencyValidatorDialog = _ConsistencyDialogStub
+
+            harness = type("ConsistencyHarness", (), {})()
+            harness.settings_manager = object()
+            harness.project_manager = _ProjectManagerStub(
+                temp_dir,
+                [internal_path],
+                {internal_path: {"": rel_path}},
+            )
+            harness.results_data = {
+                0: {
+                    "internal_html_path": internal_path,
+                    "path": full_path,
+                    "translated_html": "<p>fixed in memory</p>",
+                    "is_edited": True,
+                }
+            }
+
+            with patch.dict(sys.modules, {fake_dialog_module.__name__: fake_dialog_module}), \
+                 patch("gemini_translator.ui.dialogs.validation.QProgressDialog", _ProgressDialogStub), \
+                 patch("gemini_translator.ui.dialogs.validation.QMessageBox", _MessageBoxStub):
+                TranslationValidatorDialog._on_consistency_check(harness)
+
+            self.assertEqual(captured["chapters"][0]["content"], "<p>fixed in memory</p>")
+
 
 if __name__ == "__main__":
     unittest.main()

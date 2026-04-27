@@ -78,6 +78,47 @@ class _ConsistencyDialogHarness:
 
 
 class ConsistencyResponseNormalizationTests(unittest.TestCase):
+    def test_sanitize_fixed_chapter_rejects_new_latin_residue(self):
+        engine = ConsistencyEngine(object())
+        original = (
+            "<html><body><p>"
+            "\u0413\u0435\u0440\u043e\u0439 \u0432\u043e\u0448\u0435\u043b \u0432 \u0437\u0430\u043b."
+            "</p></body></html>"
+        )
+        response = (
+            "<html><body><p>"
+            "The hero \u0432\u043e\u0448\u0435\u043b \u0432 \u0437\u0430\u043b."
+            "</p></body></html>"
+        )
+
+        with self.assertRaisesRegex(ValueError, "untranslated Latin/CJK"):
+            engine._sanitize_fixed_chapter_response(response, original)
+
+    def test_sanitize_fixed_chapter_allows_existing_latin_residue(self):
+        engine = ConsistencyEngine(object())
+        original = (
+            "<html><body><p>Status Window: "
+            "\u0413\u0435\u0440\u043e\u0439 \u0432\u043e\u0448\u0435\u043b.</p></body></html>"
+        )
+        response = (
+            "<html><body><p>Status Window: "
+            "\u0413\u0435\u0440\u043e\u0439 \u0432\u043e\u0448\u0435\u043b \u0442\u0438\u0445\u043e."
+            "</p></body></html>"
+        )
+
+        self.assertEqual(
+            engine._sanitize_fixed_chapter_response(response, original),
+            response,
+        )
+
+    def test_sanitize_fixed_chapter_rejects_new_cjk_residue(self):
+        engine = ConsistencyEngine(object())
+        original = "<p>\u041e\u043d \u043a\u0438\u0432\u043d\u0443\u043b.</p>"
+        response = "<p>\u041e\u043d \u043a\u0438\u0432\u043d\u0443\u043b \u5934.</p>"
+
+        with self.assertRaisesRegex(ValueError, "untranslated Latin/CJK"):
+            engine._sanitize_fixed_chapter_response(response, original)
+
     def test_validate_response_normalizes_malformed_nested_fields(self):
         engine = ConsistencyEngine(object())
         raw_response = {

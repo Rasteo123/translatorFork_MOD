@@ -2108,12 +2108,31 @@ class TranslationValidatorDialog(QDialog):
                 continue
                 
             full_path = os.path.join(project_folder, rel_path)
+            in_memory_content = None
+            for row_data in getattr(self, 'results_data', {}).values():
+                if not isinstance(row_data, dict) or not row_data.get('is_edited', False):
+                    continue
+
+                row_path = row_data.get('path')
+                same_internal_path = row_data.get('internal_html_path') == internal_path
+                same_file_path = (
+                    row_path
+                    and os.path.abspath(row_path) == os.path.abspath(full_path)
+                )
+                if same_internal_path or same_file_path:
+                    in_memory_content = row_data.get('translated_html')
+                    break
             
             try:
-                if os.path.exists(full_path):
+                if in_memory_content is not None:
+                    content = in_memory_content
+                elif os.path.exists(full_path):
                     with open(full_path, 'r', encoding='utf-8') as f:
                         content = f.read()
-                    
+                else:
+                    continue
+
+                if content is not None:
                     chapters_to_analyze.append({
                         'name': os.path.basename(internal_path), # Или full_path
                         'content': content,

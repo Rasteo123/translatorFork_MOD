@@ -5,6 +5,7 @@ ConsistencyEngine v2 — Движок для проверки согласова
 """
 
 import asyncio
+import html
 import inspect
 import json
 import logging
@@ -429,6 +430,15 @@ class ConsistencyEngine(QObject):
     finished = pyqtSignal(list)                   # список всех найденных проблем
     fix_progress = pyqtSignal(int, int, str)      # current, total, chapter_name (для массового исправления)
     fix_completed = pyqtSignal(str, str)          # chapter_path, new_content
+
+    _SCRIPT_STYLE_RE = re.compile(
+        r"<(?:script|style)\b[^>]*>[\s\S]*?</(?:script|style)>",
+        re.IGNORECASE,
+    )
+    _HTML_TAG_RE = re.compile(r"<[^>]+>")
+    _LATIN_RESIDUE_RE = re.compile(r"[A-Za-z][A-Za-z'\-]{2,}")
+    _CJK_RESIDUE_RE = re.compile(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+")
+    _RATING_TOKEN_RE = re.compile(r"^[A-Sa-s][+-]?$")
 
     def __init__(self, settings_manager, parent=None):
         super().__init__(parent)
@@ -1127,6 +1137,53 @@ class ConsistencyEngine(QObject):
 
         return "\n".join(lines).strip()
 
+    def _plain_text_for_residue_scan(self, content: str) -> str:
+        stripped = self._SCRIPT_STYLE_RE.sub(" ", content or "")
+        stripped = self._HTML_TAG_RE.sub(" ", stripped)
+        stripped = html.unescape(stripped)
+        return re.sub(r"\s+", " ", stripped)
+
+    def _collect_residue_tokens(self, content: str) -> Dict[str, str]:
+        text = self._plain_text_for_residue_scan(content)
+        tokens: Dict[str, str] = {}
+
+        for match in self._CJK_RESIDUE_RE.finditer(text):
+            token = match.group().strip()
+            if token:
+                tokens.setdefault(token, token)
+
+        for match in self._LATIN_RESIDUE_RE.finditer(text):
+            token = match.group().strip("'-")
+            if len(token) < 3:
+                continue
+            if self._RATING_TOKEN_RE.fullmatch(token):
+                continue
+            tokens.setdefault(token.casefold(), token)
+
+        return tokens
+
+    def _new_residue_tokens_after_fix(self, original_content: str, fixed_content: str) -> List[str]:
+        original_tokens = set(self._collect_residue_tokens(original_content).keys())
+        fixed_tokens = self._collect_residue_tokens(fixed_content)
+        return [
+            token
+            for key, token in fixed_tokens.items()
+            if key not in original_tokens
+        ]
+
+    def _validate_fixed_chapter_residue(self, original_content: str, fixed_content: str) -> None:
+        new_tokens = self._new_residue_tokens_after_fix(original_content, fixed_content)
+        if not new_tokens:
+            return
+
+        preview = ", ".join(new_tokens[:12])
+        if len(new_tokens) > 12:
+            preview += f", +{len(new_tokens) - 12}"
+        raise ValueError(
+            "Consistency fix introduced new untranslated Latin/CJK residue: "
+            f"{preview}"
+        )
+
     def _sanitize_fixed_chapter_response(self, response_text: str, original_content: str) -> str:
         """
         Убирает служебные обертки модели и возвращает только исправленный текст главы.
@@ -1140,6 +1197,7 @@ class ConsistencyEngine(QObject):
             cleaned = self._trim_html_wrappers(cleaned, original_content)
 
         cleaned = self._strip_meta_prefix(cleaned, original_content)
+        self._validate_fixed_chapter_residue(original_content, cleaned)
         return cleaned.strip()
 
     def fix_chapter(self, chapter_content: str, problems: List[Dict[str, Any]], 
