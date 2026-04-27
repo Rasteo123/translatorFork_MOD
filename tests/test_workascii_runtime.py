@@ -1050,8 +1050,8 @@ const locatorFor = (selector) => {{
   const text = String(selector);
   const isPrompt = text.includes("prompt-textarea");
   const isBody = text === "body";
-  const isSend = text.includes("send-button") || text.includes("Send") || text.includes("РћС‚РїСЂР°РІРёС‚СЊ");
-  const isStop = text.includes("stop-button") || text.includes("Stop") || text.includes("РћСЃС‚Р°РЅРѕРІРёС‚СЊ");
+  const isSend = text.includes("send-button") || text.includes("Send") || text.includes("Отправить");
+  const isStop = text.includes("stop-button") || text.includes("Stop") || text.includes("Остановить");
   const isAssistant = text.includes("section[data-turn='assistant']") || text.includes("article[data-turn='assistant']") || text.includes("conversation-turn");
   const isCopy = text.includes("copy-turn-action-button") || text.includes("Copy");
   const isFileInput = text === "input[type='file']";
@@ -1280,8 +1280,8 @@ const locatorFor = (selector) => {{
   const text = String(selector);
   const isPrompt = text.includes("prompt-textarea");
   const isBody = text === "body";
-  const isSend = text.includes("send-button") || text.includes("Send") || text.includes("РћС‚РїСЂР°РІРёС‚СЊ");
-  const isStop = text.includes("stop-button") || text.includes("Stop") || text.includes("РћСЃС‚Р°РЅРѕРІРёС‚СЊ");
+  const isSend = text.includes("send-button") || text.includes("Send") || text.includes("Отправить");
+  const isStop = text.includes("stop-button") || text.includes("Stop") || text.includes("Остановить");
   const isAssistant = text.includes("section[data-turn='assistant']") || text.includes("article[data-turn='assistant']") || text.includes("conversation-turn");
   const isCopy = text.includes("copy-turn-action-button") || text.includes("Copy");
 

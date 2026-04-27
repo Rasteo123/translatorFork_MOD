@@ -2726,7 +2726,7 @@ class BookManager:
         try:
             shutil.copy(filepath, os.path.join(self.book_dir, filename))
         except Exception as e:
-            logger.error(f"РћС€РёР±РєР° РїСЂРё РєРѕРїРёСЂРѕРІР°РЅРёРё С„Р°Р№Р»Р°: {e}")
+            logger.error(f"Ошибка при копировании файла: {e}")
 
         try:
             self.chapters = _reader_load_supported_chapters(filepath)

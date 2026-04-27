@@ -430,12 +430,6 @@ class ModelSettingsWidget(QGroupBox):
         )
         workascii_hint.setWordWrap(True)
         workascii_hint.setStyleSheet("color: #888; font-size: 9pt;")
-        workascii_hint.setText(
-            "РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ СЃРѕС…СЂР°РЅРµРЅРЅС‹Р№ Р±СЂР°СѓР·РµСЂРЅС‹Р№ РїСЂРѕС„РёР»СЊ ChatGPT. "
-            "Если задан шаблон, runtime-профиль будет пересоздаваться из него "
-            "перед каждым запуском bridge. Параметр Refresh every перезапускает "
-            "браузер после N успешных запросов."
-        )
         workascii_layout.addWidget(workascii_hint, 6, 0, 1, 3)
         workascii_hint.setText(
             "Используется сохраненный браузерный профиль ChatGPT. "

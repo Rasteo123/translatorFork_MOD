@@ -538,10 +538,10 @@ def collect_boundary_duplicate_findings(chapter_infos):
                 continue
 
             preview = (
-                f"Р“Р»Р°РІР°: {info['name']}\n"
-                f"РџРѕРІС‚РѕСЂСЏСЋС‰РёР№СЃСЏ С…РІРѕСЃС‚: {block['text']}\n\n"
-                f"РџРѕСЃР»РµРґРЅРёРµ СЃС‚СЂРѕРєРё РіР»Р°РІС‹:\n{format_duplicate_preview_blocks(info['blocks'][-4:], [block['tag_path']])}\n\n"
-                f"РўР°РєР¶Рµ РІСЃС‚СЂРµС‡Р°РµС‚СЃСЏ РІ РіР»Р°РІР°С…:\n{chapter_names}"
+                f"Глава: {info['name']}\n"
+                f"Повторяющийся хвост: {block['text']}\n\n"
+                f"Последние строки главы:\n{format_duplicate_preview_blocks(info['blocks'][-4:], [block['tag_path']])}\n\n"
+                f"Также встречается в главах:\n{chapter_names}"
             )
             findings.append({
                 'category': 'boundary',
@@ -552,8 +552,8 @@ def collect_boundary_duplicate_findings(chapter_infos):
                 'tag_paths': [list(block['tag_path'])],
                 'text': block['text'],
                 'block_count': 1,
-                'location': "РљРѕРЅРµС† РіР»Р°РІС‹",
-                'reason': f"РћРґРёРЅР°РєРѕРІР°СЏ РєРѕРЅС†РѕРІРєР° РІСЃС‚СЂРµС‡Р°РµС‚СЃСЏ РІ {len(chapter_paths)} РіР»Р°РІР°С….",
+                'location': "Конец главы",
+                'reason': f"Одинаковая концовка встречается в {len(chapter_paths)} главах.",
                 'preview': preview,
             })
             existing_paths.add(block_key)

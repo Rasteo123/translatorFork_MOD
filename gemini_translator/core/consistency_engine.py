@@ -1524,7 +1524,7 @@ class ConsistencyEngine(QObject):
         model_id = model_config.get('id', model_name)
         key_info = {'key': api_key, 'provider': provider_name}
         if self.settings_manager.is_key_limit_active(key_info, model_id):
-            raise ValueError(f"РљР»СЋС‡ {api_key[:8]}... РёСЃС‡РµСЂРїР°Р» Р»РёРјРёС‚ РґР»СЏ РјРѕРґРµР»Рё {model_id}")
+            raise ValueError(f"Ключ {api_key[:8]}... исчерпал лимит для модели {model_id}")
 
         proxy_settings = config.get('proxy_settings')
         if proxy_settings is None:
