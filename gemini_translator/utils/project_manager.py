@@ -17,6 +17,7 @@ except (ImportError, AttributeError):
 import zipfile
 import re
 from ..api import config as api_config
+from .translated_paths import build_translated_relative_path
 
 class TranslationProjectManager:
     """
@@ -490,6 +491,11 @@ class TranslationProjectManager:
         # Создаем удобную структуру для поиска оригиналов
         # {'OEBPS/Text/chapter1': 'OEBPS/Text/chapter1.xhtml', …}
         epub_base_map = {os.path.splitext(f)[0]: f for f in epub_files}
+        expected_translated_map = {}
+        for original_path in epub_files:
+            for suffix in all_possible_suffixes:
+                expected_rel_path = build_translated_relative_path(self.project_folder, original_path, suffix)
+                expected_translated_map[expected_rel_path] = (original_path, suffix)
 
         for file_path in unregistered_files_on_disk:
             # `file_path` - это, например, "OEBPS/Text/chapter1_translated.html"
@@ -505,6 +511,8 @@ class TranslationProjectManager:
             
             # Ищем этот базовый путь в нашей карте оригиналов
             original_internal_path = epub_base_map.get(base_path)
+            if not original_internal_path and file_path in expected_translated_map:
+                original_internal_path, file_suffix = expected_translated_map[file_path]
 
             if original_internal_path:
                 # Нашли!

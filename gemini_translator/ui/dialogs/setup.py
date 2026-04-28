@@ -48,6 +48,7 @@ from ...utils.helpers import TokenCounter
 from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
 from ...utils.project_migrator import ProjectMigrator
 from ...utils.project_manager import TranslationProjectManager
+from ...utils.translated_paths import build_translated_output_path
 
 from ..themes import (
     THEME_SETTINGS_KEY,
@@ -2734,13 +2735,12 @@ class InitialSetupDialog(QDialog):
             with zipfile.ZipFile(open(self.selected_file, 'rb'), 'r') as epub_zip:
                 for chapter_path in chapters_to_process:
                     try:
-                        base_name = os.path.splitext(os.path.basename(chapter_path))[0]
-                        internal_dir = os.path.dirname(chapter_path)
-
-                        new_filename = f"{base_name}{file_suffix}"
-                        destination_dir = os.path.join(self.output_folder, internal_dir)
-                        os.makedirs(destination_dir, exist_ok=True)
-                        full_dest_path = os.path.join(destination_dir, new_filename)
+                        full_dest_path = build_translated_output_path(
+                            self.output_folder,
+                            chapter_path,
+                            file_suffix,
+                        )
+                        os.makedirs(os.path.dirname(full_dest_path), exist_ok=True)
 
                         if os.path.exists(full_dest_path):
                             skipped_count += 1

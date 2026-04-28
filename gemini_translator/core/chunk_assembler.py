@@ -8,6 +8,7 @@ from PyQt6 import QtWidgets
 from PyQt6 import QtCore
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..api import config as api_config
+from ..utils.translated_paths import build_translated_output_path
 from ..utils.text import prettify_html, process_body_tag
 class ChunkAssembler(QObject):
     """
@@ -156,10 +157,12 @@ class ChunkAssembler(QObject):
             provider_config = api_config.api_providers().get(provider_id, {})
             file_suffix = provider_config.get('file_suffix', '_translated.html')
 
-            new_filename = f"{os.path.splitext(os.path.basename(original_chapter_path))[0]}{file_suffix}"
-            destination_dir = os.path.join(self.output_folder, os.path.dirname(original_chapter_path))
-            os.makedirs(destination_dir, exist_ok=True)
-            final_path = os.path.join(destination_dir, new_filename)
+            final_path = build_translated_output_path(
+                self.output_folder,
+                original_chapter_path,
+                file_suffix,
+            )
+            os.makedirs(os.path.dirname(final_path), exist_ok=True)
             with open(final_path, "w", encoding="utf-8") as f: f.write(final_html)
 
             if self.project_manager:

@@ -12,6 +12,7 @@ from gemini_translator.utils.epub_json import (
     build_translation_payload,
     estimate_translation_noise,
 )
+from gemini_translator.utils.translated_paths import build_translated_output_path
 from gemini_translator.utils.text import clean_html_content, prettify_html
 
 
@@ -118,11 +119,12 @@ class EpubBatchProcessor(BaseTaskProcessor):
                 continue
             try:
                 final_html = success_data["final_html"]
-                chapter_basename = os.path.splitext(os.path.basename(original_path))[0]
-                new_filename = f"{chapter_basename}{file_suffix}"
-                destination_dir = os.path.join(self.worker.output_folder, os.path.dirname(original_path))
-                os.makedirs(destination_dir, exist_ok=True)
-                out_path = os.path.join(destination_dir, new_filename)
+                out_path = build_translated_output_path(
+                    self.worker.output_folder,
+                    original_path,
+                    file_suffix,
+                )
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
                 if getattr(self.worker, "use_prettify", False):
                     final_html = prettify_html(final_html)

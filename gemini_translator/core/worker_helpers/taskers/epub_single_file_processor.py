@@ -9,6 +9,7 @@ from gemini_translator.utils.epub_json import (
     build_html_document_model,
     estimate_translation_noise,
 )
+from gemini_translator.utils.translated_paths import build_translated_output_path
 from gemini_translator.utils.text import (
     process_body_tag, is_content_effectively_empty, clean_html_content, validate_html_structure
 )
@@ -65,12 +66,12 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
         prefix_html, body_content, html_suffix = process_body_tag(original_content, return_parts=True, body_content_only=False)
 
         version_suffix = self.worker.provider_config['file_suffix']
-        internal_dir = os.path.dirname(internal_chapter_path)
-        chapter_basename = os.path.splitext(os.path.basename(internal_chapter_path))[0]
-        new_filename = f"{chapter_basename}{version_suffix}"
-        destination_dir = os.path.join(self.worker.output_folder, internal_dir)
-        os.makedirs(destination_dir, exist_ok=True)
-        out_path = os.path.join(destination_dir, new_filename)
+        out_path = build_translated_output_path(
+            self.worker.output_folder,
+            internal_chapter_path,
+            version_suffix,
+        )
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
         if not body_content.strip():
             self._copy_original_as_result(out_path, original_content, internal_chapter_path, version_suffix)
