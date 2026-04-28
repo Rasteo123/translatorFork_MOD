@@ -228,6 +228,7 @@ class ConsistencyValidatorDialog(QDialog):
         # Кэш исправлений для применения
         self.pending_fixes = {}  # {path: new_content}
         self.fix_previews = {}   # {problem_id: (old_content, fixed_content)}
+        self.resolved_problem_keys = set()
         self.current_problem = None
         self.current_chapter = None
 
@@ -422,6 +423,10 @@ class ConsistencyValidatorDialog(QDialog):
         self.fix_btn = QPushButton("🔧 Создать исправление")
         self.fix_btn.setEnabled(False)
         text_header.addWidget(self.fix_btn)
+
+        self.manual_fix_btn = QPushButton("✍️ Править вручную")
+        self.manual_fix_btn.setEnabled(False)
+        text_header.addWidget(self.manual_fix_btn)
         
         self.apply_btn = QPushButton("✅ Применить")
         self.apply_btn.setEnabled(False)
@@ -448,13 +453,13 @@ class ConsistencyValidatorDialog(QDialog):
         self.diff_splitter.addWidget(orig_group)
         
         # Исправление
-        fix_group = QGroupBox("Предварительный просмотр исправления")
+        fix_group = QGroupBox("Исправление / ручной редактор")
         fix_layout = QVBoxLayout(fix_group)
         fix_layout.setContentsMargins(0, 5, 0, 0)
         self.corrected_text = QTextEdit()
         configure_wrapped_text_edit(self.corrected_text)
         self.corrected_text.setFont(QFont("Consolas", 10))
-        self.corrected_text.setPlaceholderText("Здесь появится сгенерированный вариант исправления...")
+        self.corrected_text.setPlaceholderText("Здесь появится сгенерированный или ручной вариант исправления...")
         fix_layout.addWidget(self.corrected_text)
         self.diff_splitter.addWidget(fix_group)
         
@@ -650,6 +655,9 @@ class ConsistencyValidatorDialog(QDialog):
         for row in range(self.problems_table.rowCount()):
             if self.problems_table.isRowHidden(row):
                 continue
+            prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+            if self._is_problem_resolved(prob):
+                continue
             item = self.problems_table.item(row, 0)
             if item:
                 item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
@@ -729,6 +737,7 @@ class ConsistencyValidatorDialog(QDialog):
         self.problems_table.itemSelectionChanged.connect(self.on_problem_selected)
         self.problems_table.itemChanged.connect(self._on_problem_item_changed)
         self.fix_btn.clicked.connect(self.run_fix)
+        self.manual_fix_btn.clicked.connect(self.start_manual_fix)
         self.apply_btn.clicked.connect(self.apply_fix)
         self.skip_btn.clicked.connect(self.skip_problem)
         self.batch_fix_btn.clicked.connect(self.run_batch_fix)
@@ -1045,6 +1054,15 @@ class ConsistencyValidatorDialog(QDialog):
         self.select_chapters_btn.setEnabled(False)
         self.batch_fix_btn.setEnabled(False)
         self.fix_previews.clear()
+        self.resolved_problem_keys.clear()
+        self.current_problem = None
+        self.current_chapter = None
+        self.original_text.clear()
+        self.corrected_text.clear()
+        self.fix_btn.setEnabled(False)
+        self.manual_fix_btn.setEnabled(False)
+        self.apply_btn.setEnabled(False)
+        self.skip_btn.setEnabled(False)
         self.log_text.clear()
 
         config = self._get_current_config()
@@ -1200,6 +1218,11 @@ class ConsistencyValidatorDialog(QDialog):
 
         for row in self._iter_visible_problem_rows():
             item = self.problems_table.item(row, 0)
+            prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+            if self._is_problem_resolved(prob):
+                if item and item.checkState() != Qt.CheckState.Unchecked:
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                continue
             if item and item.checkState() != target_state:
                 item.setCheckState(target_state)
 
@@ -1209,12 +1232,63 @@ class ConsistencyValidatorDialog(QDialog):
         checked_count = 0
 
         for row in self._iter_visible_problem_rows():
-            visible_count += 1
             item = self.problems_table.item(row, 0)
+            prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+            if self._is_problem_resolved(prob):
+                if item and item.checkState() != Qt.CheckState.Unchecked:
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                continue
+
+            visible_count += 1
             if item and item.checkState() == Qt.CheckState.Checked:
                 checked_count += 1
 
         return visible_count, checked_count
+
+    def _problem_key(self, problem: dict) -> str:
+        """Возвращает стабильный ключ проблемы для исключения уже принятых правок."""
+        if not isinstance(problem, dict):
+            return ""
+
+        raw_id = str(problem.get('id') or "").strip()
+        if raw_id:
+            return f"id:{raw_id}"
+
+        payload = {
+            key: str(problem.get(key) or "")
+            for key in ('chapter', 'type', 'quote', 'description', 'suggestion')
+        }
+        return "meta:" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    def _is_problem_resolved(self, problem: dict) -> bool:
+        key = self._problem_key(problem)
+        return bool(key and key in self.resolved_problem_keys)
+
+    def _mark_problem_resolved(self, problem: dict, row: int | None = None):
+        """Помечает проблему как принятую, чтобы она не попадала в повторные действия."""
+        key = self._problem_key(problem)
+        if not key:
+            return
+
+        self.resolved_problem_keys.add(key)
+
+        rows = [row] if row is not None else range(self.problems_table.rowCount())
+        for row_idx in rows:
+            if row_idx is None or row_idx < 0 or row_idx >= self.problems_table.rowCount():
+                continue
+            row_problem = self.problems_table.item(row_idx, 1).data(Qt.ItemDataRole.UserRole)
+            if self._problem_key(row_problem) != key:
+                continue
+
+            check_item = self.problems_table.item(row_idx, 0)
+            if check_item:
+                check_item.setCheckState(Qt.CheckState.Unchecked)
+            for col in range(self.problems_table.columnCount()):
+                item = self.problems_table.item(row_idx, col)
+                if item:
+                    item.setBackground(QColor('#c8e6c9'))
+
+        self._update_batch_fix_button_state()
 
     def _is_thread_running(self, thread_attr: str) -> bool:
         """Safely check QThread state even if Qt already deleted the C++ object."""
@@ -1305,7 +1379,19 @@ class ConsistencyValidatorDialog(QDialog):
 
     def _sync_corrected_preview_content(self):
         """Синхронизирует сохранённый preview с реальным текстом из редактора."""
-        self.corrected_text.setProperty('new_content', self._get_corrected_preview_content())
+        new_content = self._get_corrected_preview_content()
+        self.corrected_text.setProperty('new_content', new_content)
+
+        if not self.current_problem or not self.current_chapter:
+            return
+
+        problem_id = self.current_problem.get('id')
+        if not problem_id or problem_id not in self.fix_previews:
+            return
+
+        old_content, _ = self.fix_previews[problem_id]
+        if old_content == self.current_chapter.get('content'):
+            self.fix_previews[problem_id] = (old_content, new_content)
 
     def _get_type_colors(self, problem_type: str) -> tuple:
         """Возвращает (bg_color, text_color) для типа проблемы."""
@@ -1407,6 +1493,7 @@ class ConsistencyValidatorDialog(QDialog):
 
         # Находим соответствующую главу
         chapter_name = prob_data.get('chapter', '')
+        self.current_chapter = None
         for ch in self.chapters:
             if ch['name'] == chapter_name or chapter_name in ch['name']:
                 self.current_chapter = ch
@@ -1416,6 +1503,7 @@ class ConsistencyValidatorDialog(QDialog):
             # Показываем оригинальный текст с подсветкой проблемного места
             self._display_original_with_highlight(prob_data)
             self.fix_btn.setEnabled(True)
+            self.manual_fix_btn.setEnabled(True)
             self.skip_btn.setEnabled(True)
             
             # Восстанавливаем превью, если оно есть
@@ -1435,7 +1523,10 @@ class ConsistencyValidatorDialog(QDialog):
         else:
             self.original_text.setPlainText(f"Глава '{chapter_name}' не найдена в списке.")
             self.corrected_text.clear()
+            self.fix_btn.setEnabled(False)
+            self.manual_fix_btn.setEnabled(False)
             self.apply_btn.setEnabled(False)
+            self.skip_btn.setEnabled(False)
 
     def _display_original_with_highlight(self, prob_data: dict):
         """Показывает оригинальный текст с подсветкой проблемного места."""
@@ -1527,6 +1618,7 @@ class ConsistencyValidatorDialog(QDialog):
             return
 
         self.fix_btn.setEnabled(False)
+        self.manual_fix_btn.setEnabled(False)
         self.fix_btn.setText("⏳ Генерация...")
         config = self._get_current_config()
         chapter_snapshot = {
@@ -1570,6 +1662,39 @@ class ConsistencyValidatorDialog(QDialog):
             lambda worker=worker: self.on_single_fix_error(worker)
         )
         worker.start()
+
+    def start_manual_fix(self):
+        """Подготавливает текущую главу для ручного исправления без AI-запроса."""
+        if not self.current_problem or not self.current_chapter:
+            return
+        if self._is_thread_running('single_fix_thread'):
+            return
+
+        chapter_content = self._sanitize_preview_text(self.current_chapter.get('content', ''))
+        if not chapter_content.strip():
+            QMessageBox.warning(self, "Пустая глава", "В выбранной главе нет текста для ручного исправления.")
+            return
+
+        problem_id = self.current_problem.get('id')
+        self._set_corrected_preview_plain_text(chapter_content)
+        self.corrected_text.setProperty('new_content', chapter_content)
+        if problem_id:
+            self.fix_previews[problem_id] = (chapter_content, chapter_content)
+
+        self.apply_btn.setEnabled(True)
+        self.corrected_text.setFocus()
+        self._focus_corrected_preview_on_quote(self.current_problem.get('quote', ''))
+        self._log(f"✍️ Ручное исправление: {self.current_chapter.get('name', '')}")
+
+    def _focus_corrected_preview_on_quote(self, quote: str):
+        """Прокручивает ручной редактор к найденной AI цитате, если она есть."""
+        if not quote:
+            self.corrected_text.moveCursor(QTextCursor.MoveOperation.Start)
+            return
+
+        self.corrected_text.moveCursor(QTextCursor.MoveOperation.Start)
+        if not self.corrected_text.find(quote):
+            self.corrected_text.moveCursor(QTextCursor.MoveOperation.Start)
 
     def _escape_html(self, text: str) -> str:
         """Экранирует HTML-символы."""
@@ -1654,6 +1779,7 @@ class ConsistencyValidatorDialog(QDialog):
         worker = self.single_fix_thread
         self.single_fix_thread = None
         self.fix_btn.setEnabled(bool(self.current_problem and self.current_chapter))
+        self.manual_fix_btn.setEnabled(bool(self.current_problem and self.current_chapter))
         self.fix_btn.setText("🔧 Создать исправление")
         self.skip_btn.setEnabled(bool(self.current_problem and self.current_chapter))
         self.problems_table.setEnabled(True)
@@ -1771,7 +1897,9 @@ class ConsistencyValidatorDialog(QDialog):
             selected_rows = self.problems_table.selectionModel().selectedRows()
             if selected_rows:
                 row = selected_rows[0].row()
-                self.problems_table.item(row, 1).setBackground(QColor('#c8e6c9'))
+                self._mark_problem_resolved(self.current_problem, row=row)
+            else:
+                self._mark_problem_resolved(self.current_problem)
             
             self._log(f"✅ Исправление принято: {os.path.basename(path)}")
 
@@ -1782,6 +1910,7 @@ class ConsistencyValidatorDialog(QDialog):
         self.current_problem = None
         self.current_chapter = None
         self.fix_btn.setEnabled(False)
+        self.manual_fix_btn.setEnabled(False)
         self.apply_btn.setEnabled(False)
         self.skip_btn.setEnabled(False)
 
@@ -1798,6 +1927,8 @@ class ConsistencyValidatorDialog(QDialog):
         for row in self._iter_visible_problem_rows():
             if self.problems_table.item(row, 0).checkState() == Qt.CheckState.Checked:
                 prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+                if self._is_problem_resolved(prob):
+                    continue
                 ch_name = prob.get('chapter')
                 if ch_name not in selected_problems_map:
                     selected_problems_map[ch_name] = []
@@ -2043,7 +2174,10 @@ class ConsistencyValidatorDialog(QDialog):
         try:
             problems_data = []
             for probs_list in self.engine.chapter_problems_map.values():
-                problems_data.extend(probs_list)
+                problems_data.extend(
+                    prob for prob in probs_list
+                    if not self._is_problem_resolved(prob)
+                )
                 
             data = {
                 'timestamp': str(datetime.now()),

@@ -1195,6 +1195,10 @@ class TranslationValidatorDialog(QDialog):
         ):
             data.pop(key, None)
 
+        internal_path = data.get('internal_html_path')
+        if internal_path and hasattr(self, 'previous_problem_paths'):
+            self.previous_problem_paths.discard(internal_path)
+
     def _get_selected_analysis_mode(self):
         if not hasattr(self, 'analysis_mode_combo'):
             return "all"
@@ -1369,6 +1373,29 @@ class TranslationValidatorDialog(QDialog):
             current_reasons, _ = self._calculate_status_for_data(cached_data, override_bounds=current_bounds)
             if current_reasons:
                 self.previous_problem_paths.add(internal_path)
+
+    def _update_previous_problem_path_for_data(self, data, override_bounds=None):
+        """Синхронизирует список проблемных глав с актуальными данными строки."""
+        if not isinstance(data, dict) or not hasattr(self, 'previous_problem_paths'):
+            return
+
+        internal_path = data.get('internal_html_path')
+        if not internal_path:
+            return
+
+        if data.get('status') in {'ok', 'delete', 'retry'}:
+            self.previous_problem_paths.discard(internal_path)
+            return
+
+        if not data.get('has_cached_analysis', False):
+            self.previous_problem_paths.discard(internal_path)
+            return
+
+        current_reasons, _ = self._calculate_status_for_data(data, override_bounds=override_bounds)
+        if current_reasons:
+            self.previous_problem_paths.add(internal_path)
+        else:
+            self.previous_problem_paths.discard(internal_path)
 
     def _get_eligible_analysis_paths(self):
         include_validated = self.check_revalidate_ok.isChecked() if hasattr(self, 'check_revalidate_ok') else False
@@ -3067,6 +3094,8 @@ class TranslationValidatorDialog(QDialog):
         
         if result.get('status') not in ['ok', 'delete', 'retry', 'edited']:
             result['status'] = visual_status
+
+        self._update_previous_problem_path_for_data(result)
             
         # 4. Применение текста и цвета
         status_map = {'problem': "Проблема", 'neutral': "Проблем нет", 'ok': "Готов", 'delete': "На удаление", 'retry': "К переотправке", 'edited': "Редакт."}

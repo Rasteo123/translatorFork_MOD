@@ -25,6 +25,14 @@ class _CheckStub:
         return self._checked
 
 
+class _SpinStub:
+    def __init__(self, value):
+        self._value = value
+
+    def value(self):
+        return self._value
+
+
 class _ValidationHarness:
     _read_text_file = TranslationValidatorDialog._read_text_file
     _invalidate_analysis_for_data = TranslationValidatorDialog._invalidate_analysis_for_data
@@ -34,6 +42,8 @@ class _ValidationHarness:
     _get_manual_excluded_paths = TranslationValidatorDialog._get_manual_excluded_paths
     _get_eligible_analysis_paths = TranslationValidatorDialog._get_eligible_analysis_paths
     _compute_analysis_targets = TranslationValidatorDialog._compute_analysis_targets
+    _calculate_status_for_data = TranslationValidatorDialog._calculate_status_for_data
+    _update_previous_problem_path_for_data = TranslationValidatorDialog._update_previous_problem_path_for_data
 
     def __init__(self):
         self.validation_snapshot_entries = {}
@@ -43,6 +53,18 @@ class _ValidationHarness:
         self.results_data = {}
         self.dirty_files = set()
         self.previous_problem_paths = set()
+        self.check_structure = _CheckStub(True)
+        self.check_length_ratio = _CheckStub(True)
+        self.check_simplification = _CheckStub(True)
+        self.check_repeating_chars = _CheckStub(True)
+        self.check_paragraph_size = _CheckStub(True)
+        self.check_untranslated = _CheckStub(True)
+        self.max_paragraph_spinbox = _SpinStub(2000)
+        self.simplification_threshold_spinbox = _SpinStub(30)
+        self.repeating_chars_spinbox = _SpinStub(5)
+
+    def _get_current_ratio_bounds(self):
+        return 0.70, 1.80
 
 
 class _ProjectManagerStub:
@@ -185,7 +207,9 @@ class ValidationReanalysisTests(unittest.TestCase):
 
     def test_invalidate_analysis_for_data_clears_cached_problem_markers(self):
         harness = _ValidationHarness()
+        harness.previous_problem_paths = {"Text/chapter.xhtml"}
         data = {
+            "internal_html_path": "Text/chapter.xhtml",
             "translated_html": "<p>Fresh text</p>",
             "has_cached_analysis": True,
             "analyzed_content_hash": "old",
@@ -204,6 +228,37 @@ class ValidationReanalysisTests(unittest.TestCase):
         self.assertNotIn("structural_errors", data)
         self.assertNotIn("untranslated_words", data)
         self.assertNotIn("ratio_value", data)
+        self.assertNotIn("Text/chapter.xhtml", harness.previous_problem_paths)
+
+    def test_previous_problem_paths_follow_fresh_analysis_result(self):
+        harness = _ValidationHarness()
+        harness.previous_problem_paths = {"Text/fixed.xhtml"}
+
+        harness._update_previous_problem_path_for_data(
+            {
+                "internal_html_path": "Text/fixed.xhtml",
+                "status": "neutral",
+                "has_cached_analysis": True,
+                "len_orig": 1000,
+                "len_trans": 1100,
+                "ratio_value": 1.1,
+            }
+        )
+
+        self.assertNotIn("Text/fixed.xhtml", harness.previous_problem_paths)
+
+        harness._update_previous_problem_path_for_data(
+            {
+                "internal_html_path": "Text/problem.xhtml",
+                "status": "neutral",
+                "has_cached_analysis": True,
+                "len_orig": 1000,
+                "len_trans": 100,
+                "ratio_value": 0.1,
+            }
+        )
+
+        self.assertIn("Text/problem.xhtml", harness.previous_problem_paths)
 
     def test_consistency_check_skips_unreadable_chapter_without_name_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
