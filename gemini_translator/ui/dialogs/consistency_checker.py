@@ -655,12 +655,16 @@ class ConsistencyValidatorDialog(QDialog):
         for row in range(self.problems_table.rowCount()):
             if self.problems_table.isRowHidden(row):
                 continue
-            prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+            prob = self._problem_for_row(row)
+            if prob is None:
+                continue
             if self._is_problem_resolved(prob):
                 continue
             item = self.problems_table.item(row, 0)
-            if item:
-                item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            self._set_check_state_silently(
+                item,
+                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked,
+            )
         self._update_batch_fix_button_state()
 
     def _on_problem_item_changed(self, item):
@@ -1014,14 +1018,16 @@ class ConsistencyValidatorDialog(QDialog):
         if updated_chapter:
             chapter_name = updated_chapter.get('name', '')
             for row in range(self.problems_table.rowCount()):
-                prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+                prob = self._problem_for_row(row)
                 if not prob:
                     continue
                 prob_chapter = prob.get('chapter', '')
                 if prob_chapter and chapter_name and (
                     prob_chapter == chapter_name or chapter_name in prob_chapter or prob_chapter in chapter_name
                 ):
-                    self.problems_table.item(row, 1).setBackground(QColor('#c8e6c9'))
+                    item = self.problems_table.item(row, 1)
+                    if item:
+                        item.setBackground(QColor('#c8e6c9'))
 
         self.save_all_btn.setEnabled(bool(self.pending_fixes))
         self._update_size_info()
@@ -1115,7 +1121,11 @@ class ConsistencyValidatorDialog(QDialog):
             # Колонка 0: Чекбокс
             check_item = QTableWidgetItem()
             check_item.setCheckState(Qt.CheckState.Checked)
-            self.problems_table.setItem(row, 0, check_item)
+            signals_were_blocked = self.problems_table.blockSignals(True)
+            try:
+                self.problems_table.setItem(row, 0, check_item)
+            finally:
+                self.problems_table.blockSignals(signals_were_blocked)
 
             self.problems_table.setItem(row, 1, QTableWidgetItem(str(prob.get('id', ''))))
             
@@ -1208,6 +1218,24 @@ class ConsistencyValidatorDialog(QDialog):
             if not self.problems_table.isRowHidden(row):
                 yield row
 
+    def _problem_for_row(self, row: int):
+        """Возвращает данные проблемы, только если строка уже полностью заполнена."""
+        item = self.problems_table.item(row, 1)
+        if item is None:
+            return None
+        problem = item.data(Qt.ItemDataRole.UserRole)
+        return problem if isinstance(problem, dict) else None
+
+    def _set_check_state_silently(self, item, state):
+        if item is None or item.checkState() == state:
+            return
+
+        signals_were_blocked = self.problems_table.blockSignals(True)
+        try:
+            item.setCheckState(state)
+        finally:
+            self.problems_table.blockSignals(signals_were_blocked)
+
     def _sync_visible_problem_checks_with_toggle(self):
         """Приводит видимые чекбоксы к состоянию переключателя `Все`."""
         target_state = (
@@ -1218,13 +1246,13 @@ class ConsistencyValidatorDialog(QDialog):
 
         for row in self._iter_visible_problem_rows():
             item = self.problems_table.item(row, 0)
-            prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
-            if self._is_problem_resolved(prob):
-                if item and item.checkState() != Qt.CheckState.Unchecked:
-                    item.setCheckState(Qt.CheckState.Unchecked)
+            prob = self._problem_for_row(row)
+            if prob is None:
                 continue
-            if item and item.checkState() != target_state:
-                item.setCheckState(target_state)
+            if self._is_problem_resolved(prob):
+                self._set_check_state_silently(item, Qt.CheckState.Unchecked)
+                continue
+            self._set_check_state_silently(item, target_state)
 
     def _count_visible_checked_problems(self) -> tuple[int, int]:
         """Возвращает количество видимых и отмеченных видимых проблем."""
@@ -1233,10 +1261,11 @@ class ConsistencyValidatorDialog(QDialog):
 
         for row in self._iter_visible_problem_rows():
             item = self.problems_table.item(row, 0)
-            prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+            prob = self._problem_for_row(row)
+            if prob is None:
+                continue
             if self._is_problem_resolved(prob):
-                if item and item.checkState() != Qt.CheckState.Unchecked:
-                    item.setCheckState(Qt.CheckState.Unchecked)
+                self._set_check_state_silently(item, Qt.CheckState.Unchecked)
                 continue
 
             visible_count += 1
@@ -1276,13 +1305,12 @@ class ConsistencyValidatorDialog(QDialog):
         for row_idx in rows:
             if row_idx is None or row_idx < 0 or row_idx >= self.problems_table.rowCount():
                 continue
-            row_problem = self.problems_table.item(row_idx, 1).data(Qt.ItemDataRole.UserRole)
+            row_problem = self._problem_for_row(row_idx)
             if self._problem_key(row_problem) != key:
                 continue
 
             check_item = self.problems_table.item(row_idx, 0)
-            if check_item:
-                check_item.setCheckState(Qt.CheckState.Unchecked)
+            self._set_check_state_silently(check_item, Qt.CheckState.Unchecked)
             for col in range(self.problems_table.columnCount()):
                 item = self.problems_table.item(row_idx, col)
                 if item:
@@ -1478,7 +1506,9 @@ class ConsistencyValidatorDialog(QDialog):
             return
 
         row = selected_rows[0].row()
-        prob_data = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+        prob_data = self._problem_for_row(row)
+        if prob_data is None:
+            return
         self.current_problem = prob_data
 
         # Показываем полное описание в информационном блоке
@@ -1925,8 +1955,11 @@ class ConsistencyValidatorDialog(QDialog):
         selected_problems_map = {} # {chapter_name: [problems]}
         count = 0
         for row in self._iter_visible_problem_rows():
-            if self.problems_table.item(row, 0).checkState() == Qt.CheckState.Checked:
-                prob = self.problems_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+            check_item = self.problems_table.item(row, 0)
+            prob = self._problem_for_row(row)
+            if prob is None:
+                continue
+            if check_item and check_item.checkState() == Qt.CheckState.Checked:
                 if self._is_problem_resolved(prob):
                     continue
                 ch_name = prob.get('chapter')

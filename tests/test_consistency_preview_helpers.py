@@ -60,6 +60,8 @@ class _ResolvedProblemHarness:
     _mark_problem_resolved = ConsistencyValidatorDialog._mark_problem_resolved
     _count_visible_checked_problems = ConsistencyValidatorDialog._count_visible_checked_problems
     _iter_visible_problem_rows = ConsistencyValidatorDialog._iter_visible_problem_rows
+    _problem_for_row = ConsistencyValidatorDialog._problem_for_row
+    _set_check_state_silently = ConsistencyValidatorDialog._set_check_state_silently
 
     def __init__(self):
         self.resolved_problem_keys = set()
@@ -162,6 +164,15 @@ class ConsistencyPreviewHelpersTests(unittest.TestCase):
         )
         self.assertEqual(harness._count_visible_checked_problems(), (0, 0))
         self.assertEqual(harness.batch_fix_updates, 1)
+
+    def test_incomplete_problem_row_is_ignored_during_batch_count(self):
+        harness = _ResolvedProblemHarness()
+        harness.problems_table.setRowCount(2)
+        check_item = QTableWidgetItem()
+        check_item.setCheckState(Qt.CheckState.Checked)
+        harness.problems_table.setItem(1, 0, check_item)
+
+        self.assertEqual(harness._count_visible_checked_problems(), (1, 1))
 
     def test_session_save_skips_resolved_problems(self):
         with tempfile.TemporaryDirectory() as temp_dir:
