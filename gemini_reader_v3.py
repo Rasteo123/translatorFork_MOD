@@ -92,6 +92,11 @@ except Exception:
     reader_api_config = None
 
 try:
+    from gemini_translator.api.handlers.workascii_chatgpt import WorkAsciiChatGptApiHandler
+except Exception:
+    WorkAsciiChatGptApiHandler = None
+
+try:
     from gemini_translator.core.worker_helpers.rpm_limiter import RPMLimiter
 except Exception:
     RPMLimiter = None
@@ -280,6 +285,9 @@ PREPROCESS_MODEL_FALLBACKS = {
     "Gemini 3.1 Flash-Lite": "gemini-3.1-flash-lite-preview",
     "Gemini 3.0 Flash Preview": "gemini-3-flash-preview",
 }
+CHATGPT_WEB_PREPROCESS_MODEL_ID = "chatgpt-web-current"
+CHATGPT_WEB_PREPROCESS_LABEL = "ChatGPT Web (current profile model)"
+CHATGPT_WEB_PLACEHOLDER_API_KEY = "__workascii_chatgpt_session__"
 
 TTS_AUDIO_TAG_HINT = (
     "[whispers] [laughs] [sighs] [gasp] [shouting] "
@@ -398,7 +406,7 @@ def custom_log_handler(message):
         # Упрощение ошибок сети для читаемости в логе
         if "websockets.exceptions" in msg or "1008" in msg:
             msg = "Сеть: Ошибка протокола (возможно цензура фрагмента). Воркер пробует обход."
-        elif "1011" in msg or "timeout" in msg.lower():
+        elif ("1011" in msg or "timeout" in msg.lower()) and "chatgpt" not in msg.lower():
             msg = "Сеть: Сервер Gemini временно недоступен или занят."
 
         level = record["level"].name
@@ -419,7 +427,7 @@ class _GuiLoggingHandler(logging.Handler):
                 return
             if "websockets.exceptions" in msg or "1008" in msg:
                 msg = "Сеть: Ошибка протокола (возможно цензура фрагмента). Воркер пробует обход."
-            elif "1011" in msg or "timeout" in msg.lower():
+            elif ("1011" in msg or "timeout" in msg.lower()) and "chatgpt" not in msg.lower():
                 msg = "Сеть: Сервер Gemini временно недоступен или занят."
             log_fifo.new_log.emit(msg, record.levelname)
         except Exception:
@@ -565,6 +573,45 @@ def _make_genai_client(api_key, timeout_seconds=READER_GENERATE_CONTENT_TIMEOUT_
     return genai.Client(api_key=api_key)
 
 
+def _new_reader_event_loop(require_subprocess=False):
+    if require_subprocess and sys.platform == "win32":
+        proactor_loop_class = getattr(asyncio, "ProactorEventLoop", None)
+        if proactor_loop_class is not None:
+            return proactor_loop_class()
+    return asyncio.new_event_loop()
+
+
+class _ReaderChatGptPromptBuilder:
+    system_instruction = ""
+
+
+class _ReaderChatGptWorkerShim:
+    def __init__(self, reader_worker, provider_config, model_config):
+        self._reader_worker = reader_worker
+        self.provider_config = provider_config
+        self.model_config = model_config
+        self.prompt_builder = _ReaderChatGptPromptBuilder()
+        self.max_concurrent_requests = 1
+        self.debug_logging_enabled = False
+        self.workascii_workspace_name = ""
+        self.workascii_workspace_index = 1
+        self.workascii_timeout_sec = int(provider_config.get("base_timeout", 1800) or 1800)
+        self.workascii_headless = False
+        self.workascii_profile_template_dir = ""
+        self.workascii_refresh_every_requests = 0
+
+    @property
+    def is_cancelled(self):
+        return not bool(getattr(self._reader_worker, "_is_running", False))
+
+    def _post_event(self, event_name, data=None):
+        if event_name != "log_message":
+            return
+        message = str((data or {}).get("message") or "").strip()
+        if message:
+            logger.info(message)
+
+
 def _runtime_base_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -625,12 +672,20 @@ def _build_preprocess_models_map():
                 if not model_id or "tts" in model_id.lower():
                     continue
                 models_map[display_name] = model_id
+
+            chatgpt_cfg = reader_api_config.api_providers().get("workascii_chatgpt", {})
+            for display_name, model_cfg in chatgpt_cfg.get("models", {}).items():
+                model_id = str(model_cfg.get("id") or "").strip()
+                if model_id == CHATGPT_WEB_PREPROCESS_MODEL_ID:
+                    models_map[display_name or CHATGPT_WEB_PREPROCESS_LABEL] = model_id
         except Exception:
             models_map = {}
 
     if models_map:
         return models_map
-    return dict(PREPROCESS_MODEL_FALLBACKS)
+    fallback_models = dict(PREPROCESS_MODEL_FALLBACKS)
+    fallback_models[CHATGPT_WEB_PREPROCESS_LABEL] = CHATGPT_WEB_PREPROCESS_MODEL_ID
+    return fallback_models
 
 
 def _default_preprocess_model_label(models_map):
@@ -638,6 +693,19 @@ def _default_preprocess_model_label(models_map):
         if preferred in models_map:
             return preferred
     return next(iter(models_map), "")
+
+
+def _is_chatgpt_web_preprocess_model(model_id):
+    return str(model_id or "").strip() == CHATGPT_WEB_PREPROCESS_MODEL_ID
+
+
+def _chatgpt_web_placeholder_api_key():
+    if reader_api_config is not None:
+        try:
+            return reader_api_config.provider_placeholder_api_key("workascii_chatgpt")
+        except Exception:
+            pass
+    return CHATGPT_WEB_PLACEHOLDER_API_KEY
 
 
 def _extract_response_text(response):
@@ -4366,10 +4434,129 @@ class FlashTtsWorker(GeminiWorker):
         self.tts_tpm_limiter = TPMLimiter(_lookup_model_limit(self.model_id, "tpm", FLASH_TTS_DEFAULT_TPM))
         self.preprocess_rpd_limit = _lookup_model_limit(self.preprocess_model_id, "rpd", 0)
         self.tts_rpd_limit = _lookup_model_limit(self.model_id, "rpd", 0)
+        self._chatgpt_preprocess_handler = None
 
     def _tts_chunk_limit(self):
         token_target = self._tts_chunk_token_target()
         return max(900, int(token_target * FLASH_TTS_TOKEN_TO_CHAR_SPLIT_RATIO))
+
+    def _preprocess_uses_chatgpt_web(self):
+        return _is_chatgpt_web_preprocess_model(self.preprocess_model_id)
+
+    def _chatgpt_preprocess_configs(self):
+        provider_config = {
+            "base_timeout": 1800,
+            "models": {
+                CHATGPT_WEB_PREPROCESS_LABEL: {
+                    "id": CHATGPT_WEB_PREPROCESS_MODEL_ID,
+                    "max_concurrent_requests": 1,
+                }
+            },
+        }
+        model_config = provider_config["models"][CHATGPT_WEB_PREPROCESS_LABEL]
+        if reader_api_config is not None:
+            try:
+                configured_provider = reader_api_config.api_providers().get("workascii_chatgpt", {})
+                if configured_provider:
+                    provider_config.update(configured_provider)
+                    for candidate in configured_provider.get("models", {}).values():
+                        if str(candidate.get("id") or "").strip() == CHATGPT_WEB_PREPROCESS_MODEL_ID:
+                            model_config = candidate
+                            break
+            except Exception:
+                pass
+        return provider_config, model_config
+
+    def _ensure_chatgpt_preprocess_handler(self):
+        if WorkAsciiChatGptApiHandler is None:
+            raise RuntimeError("Для AI-сценария через ChatGPT Web требуется обработчик workascii_chatgpt.")
+        if self._chatgpt_preprocess_handler is not None:
+            return self._chatgpt_preprocess_handler
+
+        provider_config, model_config = self._chatgpt_preprocess_configs()
+        worker_shim = _ReaderChatGptWorkerShim(self, provider_config, model_config)
+        handler = WorkAsciiChatGptApiHandler(worker_shim)
+        handler.setup_client(proxy_settings=None)
+        self._chatgpt_preprocess_handler = handler
+        return handler
+
+    async def _close_chatgpt_preprocess_handler(self):
+        handler = self._chatgpt_preprocess_handler
+        self._chatgpt_preprocess_handler = None
+        if handler is None:
+            return
+        close_method = getattr(handler, "_close_thread_session_internal", None)
+        if close_method is not None:
+            await close_method()
+
+    async def _call_chatgpt_web_generation(self, prompt_text):
+        last_error = None
+        for attempt in range(1, 3):
+            try:
+                return await self._call_chatgpt_web_generation_once(prompt_text)
+            except Exception as exc:
+                last_error = exc
+                message = str(exc)
+                should_restart = any(
+                    marker in message
+                    for marker in (
+                        "Target page, context or browser has been closed",
+                        "ChatGPT prompt text was not inserted into the editor",
+                        "ChatGPT composer did not become idle",
+                    )
+                )
+                if attempt >= 2 or not should_restart:
+                    raise
+                logger.warning(
+                    f"[W{self.worker_id}] ChatGPT Web bridge будет перезапущен после ошибки: {message}"
+                )
+                await self._close_chatgpt_preprocess_handler()
+                if not await self._sleep_interruptibly(2):
+                    raise ReaderWorkerStopped()
+        raise RuntimeError(f"ChatGPT Web не вернул ответ: {last_error}")
+
+    async def _call_chatgpt_web_generation_once(self, prompt_text):
+        handler = self._ensure_chatgpt_preprocess_handler()
+        timeout_sec = int(getattr(handler, "timeout_sec", 1800) or 1800) + 180
+        response_text = await _await_with_timeout(
+            f"chatgpt-web {self.preprocess_model_id}",
+            timeout_sec,
+            handler.call_api(
+                prompt_text,
+                f"[W{self.worker_id}] chatgpt-web-preprocess",
+                use_stream=False,
+            ),
+            should_continue=self._should_continue_blocking_call,
+        )
+        response_text = str(response_text or "").strip()
+        if response_text:
+            return response_text
+        raise RuntimeError("ChatGPT Web вернул пустой текстовый ответ.")
+
+    def run(self):
+        loop = _new_reader_event_loop(require_subprocess=self._preprocess_uses_chatgpt_web())
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self.main_loop())
+        except ReaderWorkerStopped:
+            pass
+        except Exception as exc:
+            logger.exception(f"[W{self.worker_id}] Worker crashed: {exc}")
+            self.error_signal.emit(self.worker_id, f"CRASH: {str(exc)}")
+        finally:
+            if self._chatgpt_preprocess_handler is not None:
+                try:
+                    loop.run_until_complete(self._close_chatgpt_preprocess_handler())
+                except Exception:
+                    pass
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            asyncio.set_event_loop(None)
+            loop.close()
+            self._is_running = False
+            self._emit_finished()
 
     def _tts_chunk_token_target(self):
         base = max(0.5, float(self.chunk))
@@ -4423,6 +4610,9 @@ class FlashTtsWorker(GeminiWorker):
             self._last_chapter_started_at = time.time()
 
     async def _call_text_generation(self, client, model_id, prompt_text):
+        if _is_chatgpt_web_preprocess_model(model_id):
+            return await self._call_chatgpt_web_generation(prompt_text)
+
         last_error = None
         for attempt in range(1, 4):
             budget_acquired = False
@@ -4836,7 +5026,9 @@ class FlashTtsWorker(GeminiWorker):
         return True
 
     async def main_loop(self):
-        if genai is None or genai_types is None:
+        preprocess_uses_chatgpt = self._preprocess_uses_chatgpt_web()
+        requires_genai = self.run_mode != "prepare" or not preprocess_uses_chatgpt
+        if requires_genai and (genai is None or genai_types is None):
             raise RuntimeError("Для Flash TTS и AI-предобработки требуется пакет google-genai.")
 
         if self.run_mode in {"auto", "prepare"} and not self.preprocess_model_id:
@@ -4845,8 +5037,8 @@ class FlashTtsWorker(GeminiWorker):
         await self._wait_before_worker_start(READER_FLASH_WORKER_START_STAGGER_SECONDS)
         if not self._is_running:
             return
-        text_client = _make_genai_client(self.api_key)
-        tts_client = _make_genai_client(self.api_key)
+        text_client = None if preprocess_uses_chatgpt else _make_genai_client(self.api_key)
+        tts_client = None if self.run_mode == "prepare" else _make_genai_client(self.api_key)
         logger.info(
             f"FlashTTS воркер {self.worker_id} запущен (TTS={self.model_id}, preprocess={self.preprocess_model_id}, "
             f"voice_mode={self.voice_mode}, primary={self.voice}, secondary={self.secondary_voice})."
@@ -4900,6 +5092,8 @@ class FlashTtsWorker(GeminiWorker):
                 self.error_signal.emit(self.worker_id, f"Глава {chapter_index + 1}: {exc}")
             finally:
                 self.c_idx = -1
+
+        await self._close_chatgpt_preprocess_handler()
 
 
 # --- UI КОМПОНЕНТЫ ---
@@ -5672,6 +5866,11 @@ class MainWindow(QMainWindow):
         self.btn_prepare_script.clicked.connect(self.prepare_selected_scripts)
         script_controls.addWidget(self.btn_prepare_script)
 
+        self.btn_prepare_missing_script = QPushButton("AI где нет")
+        self.btn_prepare_missing_script.setFixedSize(105, 30)
+        self.btn_prepare_missing_script.clicked.connect(self.prepare_missing_scripts)
+        script_controls.addWidget(self.btn_prepare_missing_script)
+
         self.btn_save_script = QPushButton("💾 Сохранить сценарий")
         self.btn_save_script.setFixedSize(160, 30)
         self.btn_save_script.clicked.connect(self.save_current_script)
@@ -5828,12 +6027,15 @@ class MainWindow(QMainWindow):
         self.btn_export_video.setEnabled(chapter_scope_enabled and has_video_tools and has_video_cover)
 
         author_gender_script_mode = not is_flash_tts and self._selected_voice_mode() == "author_gender"
+        ai_script_mode_available = not running and (is_flash_tts or author_gender_script_mode)
+        preprocess_transport_available = has_genai or self._selected_preprocess_uses_chatgpt_web()
         flash_controls_enabled = not running and is_flash_tts and has_genai
-        ai_script_controls_enabled = not running and has_genai and (is_flash_tts or author_gender_script_mode)
+        ai_script_controls_enabled = ai_script_mode_available and preprocess_transport_available
         self.btn_prepare_script.setEnabled(ai_script_controls_enabled)
+        self.btn_prepare_missing_script.setEnabled(ai_script_controls_enabled)
         self.btn_save_script.setEnabled(ai_script_controls_enabled)
-        self.combo_preprocess_model.setEnabled(ai_script_controls_enabled)
-        self.combo_preprocess_profile.setEnabled(ai_script_controls_enabled)
+        self.combo_preprocess_model.setEnabled(ai_script_mode_available)
+        self.combo_preprocess_profile.setEnabled(ai_script_mode_available)
         self.combo_pipeline_mode.setEnabled(flash_controls_enabled)
         self.combo_voice_mode.setEnabled(not running and has_genai)
         self.act_prompt_tuning.setEnabled((is_flash_tts or author_gender_script_mode) and not running)
@@ -5956,7 +6158,11 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "spin_workers"):
             return
         current_value = self.spin_workers.value()
-        available_count = len(self._get_available_api_keys(self._worker_models_for_limit()))
+        worker_model_ids = self._worker_models_for_limit()
+        api_key_model_ids = self._api_key_required_model_ids(worker_model_ids)
+        available_count = len(self._get_available_api_keys(api_key_model_ids))
+        if self._is_flash_tts_mode() and self._flash_run_uses_chatgpt_preprocess():
+            available_count = 1 if not api_key_model_ids else min(1, available_count)
         max_workers = max(1, available_count)
         self.spin_workers.blockSignals(True)
         self.spin_workers.setMaximum(max_workers)
@@ -5999,13 +6205,36 @@ class MainWindow(QMainWindow):
             self.combo_preprocess_model.currentText(), ""
         )
 
+    def _selected_preprocess_uses_chatgpt_web(self):
+        return _is_chatgpt_web_preprocess_model(self._selected_preprocess_model_id())
+
+    def _api_key_required_model_ids(self, model_ids):
+        return [
+            model_id
+            for model_id in dict.fromkeys(model_id for model_id in (model_ids or []) if model_id)
+            if not _is_chatgpt_web_preprocess_model(model_id)
+        ]
+
+    def _runtime_keys_for_required_models(self, required_model_ids):
+        model_ids = [model_id for model_id in (required_model_ids or []) if model_id]
+        api_key_model_ids = self._api_key_required_model_ids(model_ids)
+        if api_key_model_ids:
+            return self._get_available_api_keys(api_key_model_ids)
+        if any(_is_chatgpt_web_preprocess_model(model_id) for model_id in model_ids):
+            return [_chatgpt_web_placeholder_api_key()]
+        return self._get_available_api_keys([])
+
+    def _flash_run_uses_chatgpt_preprocess(self, run_mode=None):
+        selected_run_mode = run_mode or self._selected_pipeline_mode()
+        return selected_run_mode in {"auto", "prepare"} and self._selected_preprocess_uses_chatgpt_web()
+
     def _reader_status_model_ids(self):
         if not hasattr(self, "combo_engine"):
             return []
         if self._is_flash_tts_mode():
             pipeline_mode = self._selected_pipeline_mode()
             if pipeline_mode == "prepare":
-                return [model_id for model_id in [self._selected_preprocess_model_id()] if model_id]
+                return self._api_key_required_model_ids([self._selected_preprocess_model_id()])
             return [model_id for model_id in [self._selected_model_id()] if model_id]
         return [model_id for model_id in [self._selected_model_id()] if model_id]
 
@@ -6883,7 +7112,27 @@ class MainWindow(QMainWindow):
             self.save_settings()
             self.statusBar().showMessage("Промпты AI-сценария и TTS обновлены.")
 
-    def prepare_selected_scripts(self):
+    def _chapter_has_tts_script_for_current_voice_mode(self, chapter_index):
+        if not self.bm:
+            return False
+        try:
+            script_text = self.bm.load_tts_script(chapter_index)
+        except Exception:
+            return False
+        return _script_matches_voice_mode(script_text, self._selected_voice_mode())
+
+    def _filter_indices_without_matching_script(self, chapter_indices):
+        return [
+            chapter_index
+            for chapter_index in (chapter_indices or [])
+            if not self._chapter_has_tts_script_for_current_voice_mode(chapter_index)
+        ]
+
+    def prepare_missing_scripts(self, *_args):
+        self.prepare_selected_scripts(only_missing=True)
+
+    def prepare_selected_scripts(self, only_missing=False):
+        only_missing = bool(only_missing)
         allow_live_author_gender = (not self._is_flash_tts_mode()) and self._selected_voice_mode() == "author_gender"
         if not self._is_flash_tts_mode() and not allow_live_author_gender:
             QMessageBox.information(
@@ -6892,10 +7141,14 @@ class MainWindow(QMainWindow):
                 "AI-подготовка сценария доступна в режиме Flash TTS и в Live API для режима 'Автор + Муж./Жен. роли'."
             )
             return
-        if genai is None or genai_types is None:
+        preprocess_requires_api_key = not self._selected_preprocess_uses_chatgpt_web()
+        if not preprocess_requires_api_key and WorkAsciiChatGptApiHandler is None:
+            QMessageBox.warning(self, "ChatGPT Web", "ChatGPT Web handler is not available in this build.")
+            return
+        if preprocess_requires_api_key and (genai is None or genai_types is None):
             QMessageBox.warning(self, "Зависимости", "Для AI-подготовки сценария требуется пакет google-genai.")
             return
-        if not self.api_keys:
+        if preprocess_requires_api_key and not self.api_keys:
             self.set_api_keys()
             if not self.api_keys:
                 return
@@ -6906,7 +7159,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Внимание", "Сначала дождитесь завершения текущей задачи или остановите её.")
             return
 
-        target_indices = self._collect_run_scope_indices(include_done=True, action_label="AI-подготовки сценария")
+        action_label = "AI-подготовки недостающих сценариев" if only_missing else "AI-подготовки сценария"
+        target_indices = self._collect_run_scope_indices(include_done=True, action_label=action_label)
         if target_indices is None:
             return
         if not target_indices:
@@ -6915,6 +7169,22 @@ class MainWindow(QMainWindow):
                 return
             QMessageBox.information(self, "Сценарии", "Нет глав для AI-подготовки.")
             return
+
+        if only_missing:
+            source_count = len(target_indices)
+            target_indices = self._filter_indices_without_matching_script(target_indices)
+            skipped_count = source_count - len(target_indices)
+            if not target_indices:
+                QMessageBox.information(
+                    self,
+                    "AI-сценарии",
+                    "В выбранной области уже есть AI-сценарии для текущего режима голоса.",
+                )
+                return
+            if skipped_count > 0:
+                self.statusBar().showMessage(
+                    f"Пропущено готовых AI-сценариев: {skipped_count}. Создаются недостающие: {len(target_indices)}."
+                )
 
         self._launch_flash_workers(target_indices, run_mode="prepare")
 
@@ -7327,6 +7597,11 @@ class MainWindow(QMainWindow):
         prepare_action.setEnabled(self._is_flash_tts_mode() or self._selected_voice_mode() == "author_gender")
         menu.addAction(prepare_action)
 
+        prepare_missing_action = QAction("🪄 Создать AI-сценарий где его нет", self)
+        prepare_missing_action.triggered.connect(self.prepare_missing_scripts)
+        prepare_missing_action.setEnabled(self._is_flash_tts_mode() or self._selected_voice_mode() == "author_gender")
+        menu.addAction(prepare_missing_action)
+
         clear_script_action = QAction("🗑️ Удалить сценарий", self)
         clear_script_action.triggered.connect(lambda: self.clear_selected_scripts(selected_items))
         menu.addAction(clear_script_action)
@@ -7385,6 +7660,10 @@ class MainWindow(QMainWindow):
         self.worker_widgets = {}
 
     def _active_worker_target_count(self):
+        if getattr(self, "_active_reader_engine", None) == "flash_tts":
+            run_mode = self._active_flash_run_mode or self._selected_pipeline_mode()
+            if self._flash_run_uses_chatgpt_preprocess(run_mode):
+                return 1
         try:
             return max(1, int(self.spin_workers.value()))
         except Exception:
@@ -7426,9 +7705,15 @@ class MainWindow(QMainWindow):
 
     def _replacement_api_keys(self, required_model_ids=None):
         active_keys = self._active_worker_api_keys()
+        runtime_key_getter = getattr(self, "_runtime_keys_for_required_models", None)
+        candidate_keys = (
+            runtime_key_getter(required_model_ids or [])
+            if callable(runtime_key_getter)
+            else self._get_available_api_keys(required_model_ids or [])
+        )
         return [
             api_key
-            for api_key in self._get_available_api_keys(required_model_ids or [])
+            for api_key in candidate_keys
             if api_key not in active_keys
         ]
 
@@ -7631,7 +7916,13 @@ class MainWindow(QMainWindow):
             for worker in self.workers
             if getattr(worker, "api_key", "")
         }
-        for api_key in self._get_available_api_keys(required_model_ids):
+        runtime_key_getter = getattr(self, "_runtime_keys_for_required_models", None)
+        candidate_keys = (
+            runtime_key_getter(required_model_ids)
+            if callable(runtime_key_getter)
+            else self._get_available_api_keys(required_model_ids)
+        )
+        for api_key in candidate_keys:
             if api_key not in active_keys:
                 return api_key
         return ""
@@ -8100,14 +8391,18 @@ class MainWindow(QMainWindow):
             required_model_ids.append(self._selected_preprocess_model_id())
         if run_mode != "prepare":
             required_model_ids.append(self._selected_model_id())
+        api_key_model_ids = self._api_key_required_model_ids(required_model_ids)
+        if self._flash_run_uses_chatgpt_preprocess(run_mode) and WorkAsciiChatGptApiHandler is None:
+            QMessageBox.warning(self, "ChatGPT Web", "ChatGPT Web handler is not available in this build.")
+            return False
 
-        for model_id in required_model_ids:
+        for model_id in api_key_model_ids:
             exhausted_message = self._project_rpd_exhausted_message(model_id)
             if exhausted_message:
                 QMessageBox.warning(self, "Лимит RPD", exhausted_message)
                 return False
 
-        available_api_keys = self._get_available_api_keys(required_model_ids)
+        available_api_keys = self._runtime_keys_for_required_models(required_model_ids)
         if not available_api_keys:
             pipeline_label = "AI-подготовки сценария" if run_mode == "prepare" else "Flash TTS pipeline"
             QMessageBox.warning(
@@ -8120,6 +8415,8 @@ class MainWindow(QMainWindow):
 
         requested_workers = max(1, self.spin_workers.value())
         num_workers = min(requested_workers, len(available_api_keys), q.qsize())
+        if self._flash_run_uses_chatgpt_preprocess(run_mode):
+            num_workers = min(num_workers, 1)
         if num_workers == 0:
             num_workers = 1
 

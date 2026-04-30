@@ -8,7 +8,7 @@ const ORIGINS = ["https://chatgpt.com", "https://chat.openai.com", "https://auth
 const CHATGPT_APP_URL_PATTERN = /chatgpt\.com|chat\.openai\.com/i;
 const CHATGPT_LOGIN_URL_PATTERN = /auth\.openai\.com|\/auth\//i;
 const CHATGPT_EDITOR_SELECTOR =
-  "#prompt-textarea[contenteditable='true'], [data-testid='prompt-textarea'], div#prompt-textarea[role='textbox'], div[contenteditable='true'][role='textbox']";
+  "textarea#prompt-textarea, textarea[data-testid='prompt-textarea'], #prompt-textarea[contenteditable='true'], [data-testid='prompt-textarea'], div#prompt-textarea[role='textbox'], div[contenteditable='true'][role='textbox']";
 const CHATGPT_NEW_CHAT_PATTERN = /\u041d\u043e\u0432\u044b\u0439 \u0447\u0430\u0442|New chat/i;
 const CHATGPT_LOGIN_BUTTON_PATTERN = /^(?:\u0412\u043e\u0439\u0442\u0438|Log in)$/i;
 const CHATGPT_CONTINUE_WITH_GOOGLE_PATTERN =
@@ -1380,7 +1380,12 @@ async function ensureReady(page, config, options = {}) {
 
 async function readEditorText(input) {
   try {
-    const text = await input.evaluate((element) => (element.innerText || element.textContent || "").trim());
+    const text = await input.evaluate((element) => {
+      if ("value" in element) {
+        return String(element.value || "").trim();
+      }
+      return String(element.innerText || element.textContent || "").trim();
+    });
     return normalizeCandidateText(text);
   } catch {
     return null;
@@ -1391,11 +1396,18 @@ function hasFullPromptInEditor(editorText, promptText) {
   if (editorText === null) {
     return false;
   }
-  const prompt = String(promptText || "");
-  const normalizedEditor = normalizeCandidateText(editorText);
-  const promptProbe = normalizeCandidateText(prompt.split(/\r?\n/)[0] || "").slice(0, 40);
-  const promptTailProbe = normalizeCandidateText(prompt).slice(-80);
-  const minExpectedLength = Math.max(1, Math.floor(prompt.length * 0.85));
+  const normalizedEditor = normalizeCandidateText(editorText).replace(/\s+/g, " ").trim();
+  const normalizedPrompt = normalizeCandidateText(promptText).replace(/\s+/g, " ").trim();
+  if (!normalizedEditor || !normalizedPrompt) {
+    return false;
+  }
+  if (normalizedEditor === normalizedPrompt || normalizedEditor.includes(normalizedPrompt)) {
+    return true;
+  }
+
+  const promptProbe = normalizedPrompt.slice(0, Math.min(120, normalizedPrompt.length));
+  const promptTailProbe = normalizedPrompt.slice(-120);
+  const minExpectedLength = Math.max(300, Math.floor(normalizedPrompt.length * 0.55));
   return (
     normalizedEditor.length >= minExpectedLength &&
     (!promptProbe || normalizedEditor.includes(promptProbe)) &&
@@ -1416,6 +1428,14 @@ async function setEditorTextDom(page, promptText) {
         }
 
         element.focus();
+        if ("value" in element) {
+          element.value = String(text || "");
+          element.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, data: text, inputType: "insertText" }));
+          element.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+          element.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        }
+
         element.innerHTML = "";
         const lines = String(text || "").split("\n");
         const doc = element.ownerDocument;
