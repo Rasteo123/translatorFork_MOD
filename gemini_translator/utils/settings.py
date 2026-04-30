@@ -749,6 +749,10 @@ class SettingsManager(QObject):
     def save_last_glossary_pipeline_template_name(self, name): return self._generic_saver('last_glossary_pipeline_template', name)
     def get_last_auto_translation_settings(self): return self._generic_loader('last_auto_translation_settings', {})
     def save_last_auto_translation_settings(self, settings_dict): return self._generic_saver('last_auto_translation_settings', settings_dict or {})
+    def get_last_glossary_generation_settings(self):
+        settings = self._generic_loader('last_glossary_generation_settings', {})
+        return settings.copy() if isinstance(settings, dict) else {}
+    def save_last_glossary_generation_settings(self, settings_dict): return self._generic_saver('last_glossary_generation_settings', settings_dict or {})
     def get_ai_correction_review_settings(self): return self._generic_loader('ai_correction_review_settings', {})
     def save_ai_correction_review_settings(self, settings_dict): return self._generic_saver('ai_correction_review_settings', settings_dict or {})
     

@@ -283,7 +283,21 @@ class SequentialTaskProvider(QObject):
 class GenerationSessionDialog(QDialog):
     generation_finished = pyqtSignal(list, set)
 
-    def __init__(self, settings_manager, initial_glossary, merge_mode, html_files, epub_path, project_manager, initial_ui_settings, parent=None, event_bus=None, translate_engine=None):
+    def __init__(
+        self,
+        settings_manager,
+        initial_glossary,
+        merge_mode,
+        html_files,
+        epub_path,
+        project_manager,
+        initial_ui_settings,
+        parent=None,
+        event_bus=None,
+        translate_engine=None,
+        restore_saved_ui_settings=True,
+        persist_ui_settings=True,
+    ):
         super().__init__(parent)
         self.settings_manager = settings_manager
         self._accumulated_processed_chapters = set()
@@ -310,6 +324,9 @@ class GenerationSessionDialog(QDialog):
         self._pipeline_waiting_for_next_step = False
         self._pipeline_stop_requested = False
         self._is_refreshing_pipeline_table = False
+        self._restore_saved_ui_settings = bool(restore_saved_ui_settings)
+        self._persist_ui_settings = bool(persist_ui_settings)
+        self._pending_new_terms_limit = None
         
         app = QtWidgets.QApplication.instance()
         self.bus = event_bus
@@ -362,8 +379,9 @@ class GenerationSessionDialog(QDialog):
         self._check_for_recovery_session()
 
         if not self._session_was_restored:
-            if initial_ui_settings:
-                self._apply_initial_settings(initial_ui_settings)
+            initial_settings_to_apply = self._merge_initial_ui_settings(initial_ui_settings)
+            if initial_settings_to_apply:
+                self._apply_initial_settings(initial_settings_to_apply)
             
             # Просто устанавливаем начальный глоссарий в виджет
             if initial_glossary:
@@ -379,6 +397,41 @@ class GenerationSessionDialog(QDialog):
             'data': data or {}
         }
         self.bus.event_posted.emit(event)
+
+    def _merge_initial_ui_settings(self, initial_ui_settings):
+        merged = dict(initial_ui_settings or {})
+        if not self._restore_saved_ui_settings:
+            return merged
+        if not hasattr(self.settings_manager, 'get_last_glossary_generation_settings'):
+            return merged
+
+        try:
+            saved_settings = self.settings_manager.get_last_glossary_generation_settings() or {}
+        except Exception as e:
+            print(f"[WARN] Failed to load glossary generation settings: {e}")
+            return merged
+
+        if isinstance(saved_settings, dict):
+            saved_settings = dict(saved_settings)
+            if any(key in saved_settings for key in ('task_size_limit', 'task_size_limit_user_defined')):
+                saved_settings['_glossary_generation_saved_task_size'] = True
+            merged.update(saved_settings)
+        return merged
+
+    def _save_persistent_ui_settings(self):
+        if not self._persist_ui_settings:
+            return
+        if not hasattr(self.settings_manager, 'save_last_glossary_generation_settings'):
+            return
+        if not hasattr(self, 'model_settings_widget'):
+            return
+
+        try:
+            self.settings_manager.save_last_glossary_generation_settings(
+                self._get_full_ui_settings()
+            )
+        except Exception as e:
+            print(f"[WARN] Failed to save glossary generation settings: {e}")
     
     
     
@@ -1082,6 +1135,34 @@ class GenerationSessionDialog(QDialog):
         # 3. Умножаем обратно на 10 (3.0 * 10 -> 30.0)
         # 4. Преобразуем в целое число (30.0 -> 30)
         return int(math.ceil(n / 10.0)) * 10
+
+    def _apply_instances_value(self, value):
+        if value is None or not hasattr(self, 'instances_spin'):
+            return
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = 1
+        value = max(1, min(value, self.instances_spin.maximum()))
+        self.instances_spin.setValue(value)
+
+    def _apply_new_terms_limit_value(self, value):
+        if value is None or not hasattr(self, 'new_terms_limit_spin'):
+            return
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return
+
+        spin = self.new_terms_limit_spin
+        value = max(spin.minimum(), min(value, spin.maximum()))
+        if hasattr(spin, 'blockSignals'):
+            spin.blockSignals(True)
+        try:
+            spin.setValue(value)
+        finally:
+            if hasattr(spin, 'blockSignals'):
+                spin.blockSignals(False)
   
     def _apply_initial_settings(self, settings: dict):
         """Применяет начальные настройки, принудительно отключая системные инструкции."""
@@ -1089,10 +1170,11 @@ class GenerationSessionDialog(QDialog):
             return
 
         initial_settings = dict(settings)
+        has_saved_task_size = bool(initial_settings.pop('_glossary_generation_saved_task_size', False))
         # Не наследуем системные инструкции из основного окна.
         initial_settings['system_instruction'] = None
         initial_settings['use_system_instruction'] = False
-        if not initial_settings.get('glossary_task_size_limit_override'):
+        if not has_saved_task_size and not initial_settings.get('glossary_task_size_limit_override'):
             # The glossary dialog has its own model-based batch-size heuristic.
             # A task_size_limit inherited from the main translation window is only
             # a seed value and must not block the glossary auto-size (e.g. 69k for Gemini).
@@ -1129,16 +1211,26 @@ class GenerationSessionDialog(QDialog):
         if 'pipeline_enabled' in initial_settings:
             self.pipeline_enabled_checkbox.setChecked(initial_settings.get('pipeline_enabled', False))
 
-        saved_instances = initial_settings.get('num_instances')
-        if saved_instances is not None and hasattr(self, 'instances_spin'):
-            try:
-                saved_instances = int(saved_instances)
-            except (TypeError, ValueError):
-                saved_instances = 1
-            saved_instances = max(1, min(saved_instances, self.instances_spin.maximum()))
-            self.instances_spin.setValue(saved_instances)
+        if 'is_sequential' in initial_settings:
+            self.sequential_mode_checkbox.setChecked(bool(initial_settings.get('is_sequential')))
+        if 'send_notes_in_sequence' in initial_settings:
+            self.send_notes_checkbox.setChecked(bool(initial_settings.get('send_notes_in_sequence', True)))
+
+        merge_mode = initial_settings.get('merge_mode') or initial_settings.get('glossary_merge_mode')
+        if merge_mode == 'update':
+            self.ai_mode_update_radio.setChecked(True)
+        elif merge_mode == 'accumulate':
+            self.ai_mode_accumulate_radio.setChecked(True)
+        elif merge_mode == 'supplement':
+            self.ai_mode_supplement_radio.setChecked(True)
+
+        self._apply_instances_value(initial_settings.get('num_instances'))
+        if 'new_terms_limit' in initial_settings:
+            self._pending_new_terms_limit = initial_settings.get('new_terms_limit')
+            self._apply_new_terms_limit_value(self._pending_new_terms_limit)
 
         self._update_dependent_widgets()
+        self._update_sequential_mode_widgets(self.sequential_mode_checkbox.isChecked())
         self._update_start_button_state()
 
     def _get_available_session_capacity(self) -> int:
@@ -1473,6 +1565,8 @@ class GenerationSessionDialog(QDialog):
         # Добавляем специфичные для UI настройки
         settings['is_sequential'] = self.sequential_mode_checkbox.isChecked()
         settings['merge_mode'] = self.get_merge_mode()
+        if hasattr(self, 'instances_spin'):
+            settings['num_instances'] = self.instances_spin.value()
         settings.update(self.translation_options_widget.get_settings())
         settings['pipeline_enabled'] = bool(getattr(self, 'pipeline_enabled_checkbox', None) and self.pipeline_enabled_checkbox.isChecked())
         settings['pipeline_steps'] = steps_to_template_payload(self.pipeline_steps)
@@ -1497,6 +1591,7 @@ class GenerationSessionDialog(QDialog):
             settings.get('provider'), 
             settings.get('api_keys', [])
         )
+        self._update_instances_spinbox_limit()
 
         # Восстанавливаем настройки модели
         self.model_settings_widget.set_settings(settings)
@@ -1523,6 +1618,11 @@ class GenerationSessionDialog(QDialog):
         if merge_mode == 'update': self.ai_mode_update_radio.setChecked(True)
         elif merge_mode == 'accumulate': self.ai_mode_accumulate_radio.setChecked(True)
         else: self.ai_mode_supplement_radio.setChecked(True)
+
+        self._apply_instances_value(settings.get('num_instances'))
+        if 'new_terms_limit' in settings:
+            self._pending_new_terms_limit = settings.get('new_terms_limit')
+            self._apply_new_terms_limit_value(self._pending_new_terms_limit)
 
         if 'pipeline_steps' in settings:
             pipeline_payload = settings.get('pipeline_steps')
@@ -2287,6 +2387,7 @@ class GenerationSessionDialog(QDialog):
         self._set_ui_active(True)
         self.settings_manager.save_last_glossary_prompt_text(self.prompt_widget.get_prompt())
         self.settings_manager.save_last_glossary_prompt_preset_name(self.prompt_widget.get_current_preset_name())
+        self._save_persistent_ui_settings()
         
         settings = self._get_common_settings()
         
@@ -2648,6 +2749,8 @@ class GenerationSessionDialog(QDialog):
         
         if hasattr(self, 'glossary_widget'):
             self.glossary_widget.commit_active_editor()
+
+        self._save_persistent_ui_settings()
         
         final_glossary = self._snapshot_glossary_entries()
         if self._session_finished_successfully and not self._manual_glossary_edits_after_finish:
@@ -2679,6 +2782,7 @@ class GenerationSessionDialog(QDialog):
         
         is_running = (self.orchestrator and self.orchestrator._is_running) or (self.engine and self.engine.session_id)
         if is_running:
+            self._save_persistent_ui_settings()
             self.force_exit_on_interrupt = True
             self._on_hard_stop_clicked()
             return 
@@ -2702,11 +2806,13 @@ class GenerationSessionDialog(QDialog):
                 return 
 
             if clicked_button == save_recovery_btn:
+                self._save_persistent_ui_settings()
                 self._perform_safe_recovery_save()
                 self._cleanup(keep_recovery_file=True)
                 super().reject()
                 return
             
+        self._save_persistent_ui_settings()
         self._cleanup()
         super().reject()
     
@@ -2727,6 +2833,9 @@ class GenerationSessionDialog(QDialog):
         self.reselect_chapters_btn.setText(f"Главы: {len(self.html_files)}")
         # 1. Считаем оптимальный размер пакета (это вызовет расчет лимита терминов через сигнал)
         self._calculate_optimal_batch_size()
+        if self._pending_new_terms_limit is not None:
+            self._apply_new_terms_limit_value(self._pending_new_terms_limit)
+            self._pending_new_terms_limit = None
         # 2. И только теперь строим задачи
         self._rebuild_glossary_tasks()
         # 3. Обновляем визуальные CJK опции

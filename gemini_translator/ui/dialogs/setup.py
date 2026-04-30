@@ -4413,6 +4413,8 @@ class InitialSetupDialog(QDialog):
             project_manager=self.project_manager,
             initial_ui_settings=glossary_initial_settings,
             parent=self,
+            restore_saved_ui_settings=False,
+            persist_ui_settings=False,
         )
         dialog.hide()
         dialog.generation_finished.connect(self._on_auto_glossary_generation_finished)
