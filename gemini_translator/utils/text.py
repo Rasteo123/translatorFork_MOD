@@ -2461,20 +2461,27 @@ def _create_structural_fingerprint(soup):
             fp['headings'][h_tag.name] = fp['headings'].get(h_tag.name, 0) + 1
         return fp
 
+EXPECTED_BODY_START_BLOCKS = {'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div'}
+INLINE_BODY_START_TAGS = {
+    'a', 'abbr', 'b', 'bdi', 'bdo', 'cite', 'code', 'data', 'dfn', 'em',
+    'i', 'kbd', 'mark', 'q', 'rp', 'rt', 'ruby', 's', 'small', 'span',
+    'strong', 'sub', 'sup', 'time', 'u', 'var',
+}
+
+
 def _find_leading_visible_text_before_expected_block(soup):
     """Finds stray visible text before the first expected content block in <body>."""
     body = soup.body
     if not body:
         return ""
 
-    expected_blocks = {'h1', 'p', 'div'}
     ignored_nodes = (Comment, Declaration, ProcessingInstruction)
 
     for node in body.descendants:
         if node is body or isinstance(node, ignored_nodes):
             continue
 
-        if getattr(node, 'name', None) in expected_blocks:
+        if getattr(node, 'name', None) in EXPECTED_BODY_START_BLOCKS:
             return ""
 
         if isinstance(node, NavigableString):
@@ -2483,6 +2490,86 @@ def _find_leading_visible_text_before_expected_block(soup):
                 return re.sub(r'\s+', ' ', text)[:120]
 
     return ""
+
+
+def _first_expected_body_block_name(soup):
+    body = soup.body
+    if not body:
+        return "p"
+
+    ignored_nodes = (Comment, Declaration, ProcessingInstruction)
+    for node in body.descendants:
+        if node is body or isinstance(node, ignored_nodes):
+            continue
+        name = getattr(node, 'name', None)
+        if name in EXPECTED_BODY_START_BLOCKS:
+            return name
+    return "p"
+
+
+def _repair_leading_visible_text_before_expected_block(original_soup, translated_html):
+    """
+    Wraps a leading root-level text run in the same first block type used by
+    the source document. This repairs model responses like:
+    <body>Chapter title<p>...</p></body>
+    """
+    soup = BeautifulSoup(translated_html, 'html.parser')
+    body = soup.body
+    if not body:
+        return translated_html, False
+
+    wrapper_name = _first_expected_body_block_name(original_soup)
+    wrapper = soup.new_tag(wrapper_name)
+    insert_before = None
+    moved_any = False
+    ignored_nodes = (Comment, Declaration, ProcessingInstruction)
+
+    for child in list(body.children):
+        if isinstance(child, ignored_nodes):
+            continue
+
+        if isinstance(child, NavigableString):
+            text = str(child)
+            if not text.strip():
+                if moved_any:
+                    child.extract()
+                continue
+            if wrapper.contents:
+                wrapper.append(NavigableString(" "))
+            wrapper.append(NavigableString(text.strip()))
+            child.extract()
+            moved_any = True
+            continue
+
+        child_name = getattr(child, 'name', None)
+        if child_name in EXPECTED_BODY_START_BLOCKS:
+            insert_before = child
+            break
+
+        if child_name == 'br':
+            if moved_any:
+                child.extract()
+            continue
+
+        if child_name in INLINE_BODY_START_TAGS and child.get_text(" ", strip=True):
+            if wrapper.contents:
+                wrapper.append(NavigableString(" "))
+            wrapper.append(child.extract())
+            moved_any = True
+            continue
+
+        insert_before = child
+        break
+
+    if not moved_any:
+        return translated_html, False
+
+    if insert_before is not None and getattr(insert_before, 'parent', None) is body:
+        insert_before.insert_before(wrapper)
+    else:
+        body.append(wrapper)
+
+    return str(soup), True
 
 
 def optimize_headings(html_content: str) -> str:
@@ -2634,11 +2721,21 @@ def validate_html_structure(original_html, translated_html):
         orig_leading_text = _find_leading_visible_text_before_expected_block(soup_orig_raw)
         trans_leading_text = _find_leading_visible_text_before_expected_block(soup_trans)
         if not orig_leading_text and trans_leading_text:
-            return False, (
-                "Leading stray text appeared inside <body> before the first expected block "
-                "(<h1>/<p>/<div>): "
-                f"{trans_leading_text!r}"
-            ), final_translated_html
+            repaired_html, repaired = _repair_leading_visible_text_before_expected_block(
+                soup_orig_raw,
+                final_translated_html,
+            )
+            if repaired:
+                final_translated_html = repaired_html
+                soup_trans = BeautifulSoup(final_translated_html, 'html.parser')
+                trans_lower = final_translated_html.lower().strip()
+                trans_leading_text = _find_leading_visible_text_before_expected_block(soup_trans)
+            if trans_leading_text:
+                return False, (
+                    "Leading stray text appeared inside <body> before the first expected block "
+                    "(<h1>-<h6>/<p>/<div>): "
+                    f"{trans_leading_text!r}"
+                ), final_translated_html
 
         orig_fp = _create_structural_fingerprint(soup_orig)
         trans_fp = _create_structural_fingerprint(soup_trans)
