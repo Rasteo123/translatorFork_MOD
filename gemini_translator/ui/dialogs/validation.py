@@ -22,6 +22,9 @@ from ...utils.validation_cache import (
 )
 from ...utils.text import is_well_formed_xml
 from ...utils.project_migrator import ProjectMigrator
+from ...utils.translation_versions import (
+    select_target_translation_version,
+)
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -96,7 +99,6 @@ USER_PROBLEM_TERM_LABELS = {
     'system': 'Системная',
     'user': 'Пользовательская',
 }
-
 
 def _normalize_problem_term_text(raw_fragment):
     if not raw_fragment:
@@ -959,10 +961,15 @@ class ValidationThread(QThread):
                     continue
                     
                 versions = project_manager.get_versions_for_original(internal_path)
-                for suffix, rel_path in versions.items():
-                    if (suffix == '_validated.html') and not self.config.get('revalidate_ok', False):
-                        continue
-                    files_to_process.append({'internal_html_path': internal_path, 'rel_path': rel_path})
+                target_rel_path, is_validated = select_target_translation_version(
+                    versions,
+                    self.translated_folder,
+                )
+                if not target_rel_path:
+                    continue
+                if is_validated and not self.config.get('revalidate_ok', False):
+                    continue
+                files_to_process.append({'internal_html_path': internal_path, 'rel_path': target_rel_path})
 
             total_to_scan = len(files_to_process)
 
@@ -1291,17 +1298,7 @@ class TranslationValidatorDialog(QDialog):
         )
 
     def _resolve_target_translation_version(self, versions):
-        if not versions:
-            return None, False
-
-        is_validated_present = '_validated.html' in versions
-        if is_validated_present:
-            return versions['_validated.html'], True
-
-        target_rel_path = versions.get('')
-        if not target_rel_path and versions:
-            target_rel_path = next(iter(versions.values()))
-        return target_rel_path, False
+        return select_target_translation_version(versions, self.translated_folder)
 
     def _create_base_result_data(self, full_path, internal_path, is_validated, current_hash):
         return {

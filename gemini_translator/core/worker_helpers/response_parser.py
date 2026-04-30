@@ -1,4 +1,3 @@
-import re
 import os
 import copy
 
@@ -12,6 +11,7 @@ from gemini_translator.utils.epub_json import (
     extract_json_payload,
     render_document_html,
 )
+from gemini_translator.utils.batch_markers import find_boundary_markers
 from gemini_translator.utils.text import (
     prettify_html,
     clean_html_content
@@ -220,7 +220,10 @@ class ResponseParser:
         """
         report = {'successful': [], 'failed': []}
         try:
-            markers_map = self._find_boundary_markers(translated_full_text)
+            markers_map = self._find_boundary_markers(
+                translated_full_text,
+                chapter_count=len(chapter_list),
+            )
 
             for i, chapter_path in enumerate(chapter_list):
                 try:
@@ -322,15 +325,5 @@ class ResponseParser:
                 translated_relative_path=relative_path
             )
     
-    def _find_boundary_markers(self, text):
-        """Находит все атомарные маркеры и возвращает их карту позиций."""
-        markers_map = {}
-        pattern = re.compile(r'<!--\s*(\d+)\s*-->')
-        
-        for match in pattern.finditer(text):
-            marker_id = int(match.group(1))
-            
-            # Теперь сохраняем кортеж: (начало_маркера, конец_маркера)
-            markers_map[marker_id] = (match.start(), match.end())
-            
-        return markers_map
+    def _find_boundary_markers(self, text, chapter_count=None):
+        return find_boundary_markers(text, chapter_count=chapter_count)
