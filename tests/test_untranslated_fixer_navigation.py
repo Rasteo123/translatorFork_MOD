@@ -16,6 +16,7 @@ class _FixerHarness:
     _pre_analyze_data = UntranslatedFixerDialog._pre_analyze_data
     _get_effective_context_payload = UntranslatedFixerDialog._get_effective_context_payload
     _collect_visible_candidates_for_item = UntranslatedFixerDialog._collect_visible_candidates_for_item
+    _sort_visible_candidates = UntranslatedFixerDialog._sort_visible_candidates
     _build_chapter_navigation_payload = UntranslatedFixerDialog._build_chapter_navigation_payload
 
 
@@ -55,7 +56,7 @@ class UntranslatedFixerNavigationTests(unittest.TestCase):
     def test_context_symbol_is_available_even_when_term_is_word(self):
         item = {
             "term": "Level",
-            "context": "<p>Level 10 】 рядом с пунктом списка</p>",
+            "context": "<p>Level 10 】 。 рядом с пунктом списка</p>",
             "location_info": "Text/chapter1.xhtml",
             "source_type": "system",
         }
@@ -65,6 +66,28 @@ class UntranslatedFixerNavigationTests(unittest.TestCase):
 
         self.assertIn("Level", payload["remaining_candidates"])
         self.assertIn("】", payload["remaining_candidates"])
+        self.assertIn("。", payload["remaining_candidates"])
+
+    def test_problem_symbols_are_prioritized_before_long_word_list(self):
+        item = {
+            "term": "Level",
+            "context": (
+                "<p>Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India "
+                "Juliet Kilo Lima Mike November Oscar Papa Quebec 。</p>"
+            ),
+            "location_info": "Text/chapter1.xhtml",
+            "source_type": "system",
+        }
+        dialog = self._build_dialog_stub(item)
+
+        payload = dialog._collect_visible_candidates_for_item(item)
+        sorted_candidates = dialog._sort_visible_candidates(
+            payload["remaining_candidates"],
+            item["term"],
+        )
+
+        self.assertEqual(sorted_candidates[0], "Level")
+        self.assertIn("。", sorted_candidates[:3])
 
     def test_symbol_term_can_be_hidden_by_blacklist(self):
         item = {

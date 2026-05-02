@@ -784,6 +784,23 @@ class UntranslatedFixerDialog(QDialog):
             'stats': (total_len, alien_chars, alien_ratio),
         }
 
+    def _sort_visible_candidates(self, candidates, term=""):
+        term_key = str(term or "").strip().lower()
+
+        def sort_key(candidate):
+            candidate_text = str(candidate or "")
+            candidate_key = candidate_text.lower()
+            is_current_term = bool(term_key and candidate_key == term_key)
+            is_problem_symbol = (
+                len(candidate_text) == 1
+                and not NORMAL_CHARS_PATTERN.match(candidate_text)
+                and not ALIEN_WORD_PATTERN.fullmatch(candidate_text)
+            )
+            priority = 0 if is_current_term else (1 if is_problem_symbol else 2)
+            return (priority, -len(candidate_text), candidate_key)
+
+        return sorted(candidates, key=sort_key)
+
     def _get_glossary_entries_for_term(self, term):
         return self.glossary_controller.find_entries(self.project_glossary, term)
 
@@ -1250,7 +1267,10 @@ class UntranslatedFixerDialog(QDialog):
                 continue
 
             # Обновляем данные для отображения в таблице (показываем только актуальные проблемы)
-            remaining_candidates.sort(key=len, reverse=True)
+            remaining_candidates = self._sort_visible_candidates(
+                remaining_candidates,
+                item.get('term', ''),
+            )
             display_terms = ", ".join(remaining_candidates[:3])
             if len(remaining_candidates) > 3: display_terms += "..."
             
