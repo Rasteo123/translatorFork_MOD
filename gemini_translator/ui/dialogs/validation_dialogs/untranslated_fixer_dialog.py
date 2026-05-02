@@ -626,6 +626,8 @@ class UntranslatedFixerDialog(QDialog):
     Диалог для пакетного исправления найденных недопереводов.
     Версия 6.0: Пагинация и сохранение выделения.
     """
+    navigate_to_chapter_requested = pyqtSignal(dict)
+
     def __init__(self, data_list, parent=None, initial_source_filter='all'):
         super().__init__(parent)
         self.setWindowTitle("Помощник исправления недопереводов")
@@ -732,8 +734,26 @@ class UntranslatedFixerDialog(QDialog):
         term_lower = term.lower()
 
         all_candidates = ALIEN_WORD_PATTERN.findall(clean_text)
+        symbol_candidates = []
+        seen_symbols = set()
+        for char in clean_text:
+            if not char.strip():
+                continue
+            if NORMAL_CHARS_PATTERN.match(char):
+                continue
+            if ALIEN_WORD_PATTERN.fullmatch(char):
+                continue
+            if char in seen_symbols:
+                continue
+            seen_symbols.add(char)
+            symbol_candidates.append(char)
+
         display_candidates = list(all_candidates)
-        if source_type == 'user' and term and not any(candidate.lower() == term_lower for candidate in display_candidates):
+        for symbol in symbol_candidates:
+            if not any(candidate.lower() == symbol.lower() for candidate in display_candidates):
+                display_candidates.append(symbol)
+
+        if term and not any(candidate.lower() == term_lower for candidate in display_candidates):
             display_candidates.insert(0, term)
         remaining_candidates = []
         valid_alien_chars_count = 0
@@ -742,7 +762,7 @@ class UntranslatedFixerDialog(QDialog):
             if word.lower() not in self.blacklist_set:
                 remaining_candidates.append(word)
 
-        for word in all_candidates:
+        for word in all_candidates + symbol_candidates:
             if word.lower() not in self.blacklist_set:
                 valid_alien_chars_count += len(word)
 
@@ -754,7 +774,7 @@ class UntranslatedFixerDialog(QDialog):
             alien_chars = stats[1]
             alien_ratio = stats[2]
 
-        if source_type == 'user' and not remaining_candidates and term and term_lower not in self.blacklist_set:
+        if not remaining_candidates and term and term_lower not in self.blacklist_set:
             remaining_candidates = [term]
 
         return {
@@ -1431,6 +1451,13 @@ class UntranslatedFixerDialog(QDialog):
         open_context_action = menu.addAction("Открыть контекст")
         open_context_action.triggered.connect(lambda: self._show_context_preview(data_index))
 
+        go_to_chapter_action = menu.addAction("Перейти к главе в проверке")
+        go_to_chapter_action.setToolTip("Закрыть помощник и выбрать эту главу в основном окне проверки.")
+        go_to_chapter_action.setEnabled(bool(item_data.get('internal_html_path')))
+        go_to_chapter_action.triggered.connect(lambda: self._request_chapter_navigation(data_index))
+
+        menu.addSeparator()
+
         if item_data.get('source_type') == 'user' and item_data.get('entry_id'):
             delete_mark_action = menu.addAction("Удалить пометку из проекта")
             delete_mark_action.triggered.connect(lambda: self._delete_user_mark(data_index))
@@ -1511,6 +1538,47 @@ class UntranslatedFixerDialog(QDialog):
 
         # Показываем меню
         menu.exec(button_widget.mapToGlobal(button_widget.rect().bottomLeft()))
+
+    def _build_chapter_navigation_payload(self, data_index):
+        item_data = self.original_data[data_index]
+        occurrences = item_data.get('occurrences') or []
+        literal_html = ""
+        for occurrence in occurrences:
+            literal_html = occurrence.get('literal_html') or ""
+            if literal_html:
+                break
+
+        context = item_data.get('new_context', item_data.get('context', ''))
+        context_preview = item_data.get('context_preview') or ""
+        if not context_preview and context:
+            try:
+                context_preview = BeautifulSoup(context, 'html.parser').get_text(" ", strip=True)
+            except Exception:
+                context_preview = str(context)
+
+        return {
+            'internal_html_path': item_data.get('internal_html_path'),
+            'term': item_data.get('term') or item_data.get('_display_term') or "",
+            'source_type': item_data.get('source_type', 'system'),
+            'context': context,
+            'context_preview': context_preview,
+            'literal_html': literal_html,
+            'location_info': item_data.get('location_info', ''),
+        }
+
+    def _request_chapter_navigation(self, data_index):
+        self._save_current_view_changes()
+        payload = self._build_chapter_navigation_payload(data_index)
+        if not payload.get('internal_html_path'):
+            QMessageBox.information(
+                self,
+                "Переход недоступен",
+                "Для этой строки не удалось определить файл главы."
+            )
+            return
+
+        self.navigate_to_chapter_requested.emit(payload)
+        self.reject()
 
     def _start_context_edit(self, data_index):
         for row in range(self.table.rowCount()):

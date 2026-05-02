@@ -2954,6 +2954,133 @@ class TranslationValidatorDialog(QDialog):
             # 4. Если по какой-то причине тег не найден, сообщаем об этом
             QMessageBox.information(self, "Не найдено", f"Не удалось найти тег {tag_to_find.replace('<', '&lt;')} в коде.")
 
+    def _find_result_row_by_internal_path(self, internal_path):
+        if not internal_path:
+            return None
+
+        row = self.path_row_map.get(internal_path)
+        if row in self.results_data and self.results_data[row].get('internal_html_path') == internal_path:
+            return row
+
+        for candidate_row, data in self.results_data.items():
+            if isinstance(data, dict) and data.get('internal_html_path') == internal_path:
+                return candidate_row
+
+        return None
+
+    @staticmethod
+    def _normalize_navigation_search_text(value, *, html_to_text=False, limit=300):
+        text = str(value or "")
+        if html_to_text:
+            try:
+                text = BeautifulSoup(text, 'html.parser').get_text(" ", strip=True)
+            except Exception:
+                pass
+
+        text = re.sub(r'\s+', ' ', text).strip()
+        if len(text) > limit:
+            text = text[:limit].rstrip()
+        return text
+
+    def _navigation_search_candidates(self, payload, *, raw_html=False):
+        values = []
+        if raw_html:
+            values.extend([
+                payload.get('literal_html'),
+                payload.get('context'),
+            ])
+        else:
+            values.extend([
+                payload.get('context_preview'),
+                self._normalize_navigation_search_text(payload.get('literal_html'), html_to_text=True),
+                self._normalize_navigation_search_text(payload.get('context'), html_to_text=True),
+                payload.get('term'),
+            ])
+
+        candidates = []
+        seen = set()
+        for value in values:
+            text = self._normalize_navigation_search_text(value, html_to_text=False)
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(text)
+
+        return candidates
+
+    def _find_problem_text_in_widget(self, text_widget, candidates):
+        document = text_widget.document()
+        for candidate in candidates:
+            parts = [part for part in re.split(r'\s+', candidate) if part]
+            if not parts:
+                continue
+
+            pattern = r'\s+'.join(QRegularExpression.escape(part) for part in parts)
+            cursor = document.find(
+                QRegularExpression(pattern, QRegularExpression.PatternOption.CaseInsensitiveOption)
+            )
+            if cursor.isNull():
+                cursor = document.find(candidate)
+
+            if not cursor.isNull():
+                text_widget.setTextCursor(cursor)
+                text_widget.ensureCursorVisible()
+                text_widget.setFocus()
+                return True
+
+        return False
+
+    def _focus_problem_fragment_from_payload(self, payload):
+        visible_candidates = self._navigation_search_candidates(payload, raw_html=False)
+        if self._find_problem_text_in_widget(self.view_translated, visible_candidates):
+            return
+
+        if not self.is_code_view:
+            self.toggle_code_view()
+
+        raw_candidates = (
+            self._navigation_search_candidates(payload, raw_html=True)
+            + visible_candidates
+        )
+        self._find_problem_text_in_widget(self.view_translated, raw_candidates)
+
+    @pyqtSlot(dict)
+    def navigate_to_problem_chapter(self, payload):
+        internal_path = (payload or {}).get('internal_html_path')
+        row = self._find_result_row_by_internal_path(internal_path)
+        if row is None:
+            QMessageBox.warning(
+                self,
+                "Глава не найдена",
+                "Не удалось найти главу в текущем списке проверки."
+            )
+            return
+
+        if self.table_results.isRowHidden(row):
+            self.table_results.setRowHidden(row, False)
+
+        item = self.table_results.item(row, 0)
+        self.table_results.clearSelection()
+        self.table_results.setCurrentCell(row, 0)
+        self.table_results.selectRow(row)
+        if item:
+            self.table_results.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+        self.update_comparison_view()
+        self.raise_()
+        self.activateWindow()
+
+        QtCore.QTimer.singleShot(
+            0,
+            lambda payload=dict(payload or {}): self._focus_problem_fragment_from_payload(payload)
+        )
+
+        term = (payload or {}).get('term') or os.path.basename(internal_path or '')
+        self.lbl_status.setText(f"Переход к проблеме: {term}")
+
     # --- НОВЫЙ МЕТОД ---
     def show_structure_details(self, errors_dict):
         """Создает и показывает диалог с деталями, подключая сигнал для поиска."""
@@ -4469,6 +4596,7 @@ class TranslationValidatorDialog(QDialog):
                 self,
                 initial_source_filter=initial_source_filter
             )
+            dialog.navigate_to_chapter_requested.connect(self.navigate_to_problem_chapter)
             dialog_result = dialog.exec()
             glossary_updated = dialog.has_glossary_updates()
 
