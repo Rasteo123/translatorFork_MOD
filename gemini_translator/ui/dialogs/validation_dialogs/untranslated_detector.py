@@ -301,6 +301,10 @@ class UntranslatedWordDetector:
     
     # Pattern for detecting CJK characters
     CJK_PATTERN = re.compile(UnicodeRanges.ALL_CJK_PATTERN)
+
+    # CJK punctuation marks are common in titles/lists and should not be
+    # treated as untranslated text when they appear by themselves.
+    CJK_PUNCTUATION_PATTERN = re.compile(f'^[{UnicodeRanges.CJK_SYMBOLS_AND_PUNCTUATION}]+$')
     
     # Pattern for detecting any CJK (extended)
     CJK_EXTENDED_PATTERN = re.compile(UnicodeRanges.ALL_CJK_EXTENDED_PATTERN)
@@ -379,6 +383,9 @@ class UntranslatedWordDetector:
         if not word or len(word) < 1:
             return False
         
+        if self.CJK_PUNCTUATION_PATTERN.fullmatch(word):
+            return False
+
         # Check if it's a CJK character FIRST (always include, even single chars)
         if self.CJK_PATTERN.search(word):
             return True
@@ -456,6 +463,8 @@ class UntranslatedWordDetector:
             # Find all CJK characters with their positions
             for match in self.CJK_PATTERN.finditer(plain_text):
                 char = match.group()
+                if self.CJK_PUNCTUATION_PATTERN.fullmatch(char):
+                    continue
                 start = match.start()
                 end = match.end()
                 
