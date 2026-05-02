@@ -517,7 +517,7 @@ class SettingsManager(QObject):
                 'temperature': self._cache.get('last_temperature', 1.0),
                 'temperature_override_enabled': self._cache.get('last_temperature_override_enabled', False),
                 'rpm_limit': self._cache.get('last_concurrent_requests', 10),
-                'chunking': self._cache.get('last_chunking', True),
+                'chunking': self._cache.get('last_chunking', False),
                 'dynamic_glossary': self._cache.get('last_dynamic_glossary', True),
                 'system_instruction': self._cache.get('last_system_instruction', False),
                 'thinking_enabled': self._cache.get('last_thinking_enabled', False),

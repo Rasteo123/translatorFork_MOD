@@ -1,7 +1,11 @@
+import os
+import tempfile
 import unittest
+import zipfile
 
-from gemini_translator.api.errors import ValidationFailedError, WorkerAction
+from gemini_translator.api.errors import PartialGenerationError, ValidationFailedError, WorkerAction
 from gemini_translator.core.worker_helpers.error_analyzer import ErrorAnalyzer
+from gemini_translator.core.worker_helpers.emerger_tasks import EmergencyTask
 
 
 class _DummyTaskManager:
@@ -25,6 +29,7 @@ class _DummyWorker:
     def __init__(self):
         self.task_manager = _DummyTaskManager()
         self.events = []
+        self.chunking = False
         self.chunk_on_error = False
 
     def _post_event(self, name, data=None):
@@ -62,6 +67,37 @@ class ErrorAnalyzerRetryTests(unittest.TestCase):
 
         self.assertEqual(action, WorkerAction.FAIL_PERMANENTLY)
         self.assertEqual(error_type.name, "VALIDATION")
+
+    def test_partial_completion_does_not_create_chunk_when_chunk_options_are_disabled(self):
+        worker = _DummyWorker()
+        emerger = EmergencyTask(worker)
+        task_info = ("task-id", ("epub", "missing.epub", "Text/ch.xhtml"))
+        exc = PartialGenerationError("partial", "<p>translated</p>", "MAX_TOKENS")
+
+        mutated = emerger._mutate_task_for_completion(task_info, exc)
+
+        self.assertEqual(mutated, task_info)
+        self.assertIn("epub_chunk", worker.events[-1][1]["message"])
+
+    def test_partial_completion_still_uses_chunk_when_chunk_on_error_is_enabled(self):
+        with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as epub_file:
+            epub_path = epub_file.name
+        self.addCleanup(lambda: os.path.exists(epub_path) and os.remove(epub_path))
+        with zipfile.ZipFile(epub_path, "w") as epub_zip:
+            epub_zip.writestr("Text/ch.xhtml", "<html><body><p>source</p></body></html>")
+
+        worker = _DummyWorker()
+        worker.chunk_on_error = True
+        emerger = EmergencyTask(worker)
+        task_info = ("task-id", ("epub", epub_path, "Text/ch.xhtml"))
+        exc = PartialGenerationError("partial", "<p>translated</p>", "MAX_TOKENS")
+
+        task_id, payload = emerger._mutate_task_for_completion(task_info, exc)
+
+        self.assertEqual(task_id, "task-id")
+        self.assertEqual(payload[0], "epub_chunk")
+        self.assertEqual(payload[5], 1)
+        self.assertEqual(payload[-1], "<p>translated</p>")
 
 
 if __name__ == "__main__":

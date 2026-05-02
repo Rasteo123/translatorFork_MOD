@@ -162,6 +162,48 @@ class ReaderAudioNormalizationTests(unittest.TestCase):
             self.assertIn("идёт", prompt)
             self.assertIn("Only avoid guessing Ё/ё in names", prompt)
 
+    def test_flash_tts_preprocess_prompt_recommends_more_bracketed_tags(self):
+        preprocess_prompt = reader._build_preprocess_prompt(
+            "Он тихо вздохнул. — Пошли, — сказала она.",
+            voice_mode="single",
+            profile_prompt="",
+            extra_directive="",
+        )
+
+        self.assertIn("Recommended density: about 10-18 bracketed tags per 1000 Russian words", preprocess_prompt)
+        self.assertIn("up to 20-24 in dialogue-heavy or action-heavy passages", preprocess_prompt)
+        self.assertIn("[hesitates]", preprocess_prompt)
+
+    def test_duo_prompt_uses_male_female_roles(self):
+        preprocess_prompt = reader._build_preprocess_prompt(
+            "— Пошли, — сказала она.",
+            voice_mode="duo",
+            profile_prompt="",
+            extra_directive="",
+        )
+        tts_prompt = reader._build_tts_generation_prompt(
+            "Male: Он кивнул.\nFemale: Пошли.",
+            voice_mode="duo",
+            speed_key="Normal",
+        )
+
+        self.assertIn("Male and Female", preprocess_prompt)
+        self.assertIn("Use `Female:` only for direct speech", preprocess_prompt)
+        self.assertNotIn("Narrator and Dialogue", preprocess_prompt)
+        self.assertIn("`Male` is the male/primary voice", tts_prompt)
+
+    def test_duo_script_matching_rejects_legacy_narrator_dialogue(self):
+        self.assertTrue(reader._script_matches_voice_mode("Male: ready\nFemale: ready", "duo"))
+        self.assertFalse(reader._script_matches_voice_mode("Narrator: ready\nDialogue: ready", "duo"))
+        self.assertFalse(reader._script_matches_voice_mode("Author: intro\nMale: ready", "duo"))
+        self.assertFalse(reader._script_matches_voice_mode("Male: ready\nFemale: ready", "author_gender"))
+
+    def test_live_duo_fallback_detects_female_dialogue(self):
+        script = reader._build_live_role_script("— Пошли, — сказала она.\n\nОн кивнул.")
+
+        self.assertIn("Female: Пошли,", script)
+        self.assertIn("Male: сказала она. Он кивнул.", script)
+
 
 if __name__ == "__main__":
     unittest.main()

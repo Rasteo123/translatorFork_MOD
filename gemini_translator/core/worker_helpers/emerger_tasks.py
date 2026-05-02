@@ -20,6 +20,10 @@ class EmergencyTask:
 
         task_id, task_payload = task_info
         untrimmed_partial_text = exc.partial_text
+        allow_chunk_completion = bool(
+            getattr(self.worker, 'chunking', False)
+            or getattr(self.worker, 'chunk_on_error', False)
+        )
         
         # --- УМНАЯ ОБРЕЗКА ХВОСТА ---
         split_markers = ["</p>", "</div>", "</h1>", "</h2>", "</h3>", "</h4>", "</h5>", "</h6>", "</li>", "</blockquote>", "<br>", "\n"]
@@ -37,6 +41,12 @@ class EmergencyTask:
         base_payload_list = list(task_payload)
         
         if base_payload_list[0] == 'epub':
+            if not allow_chunk_completion:
+                self.worker._post_event('log_message', {
+                    'message': "[INFO] Получен частичный ответ, но чанки отключены. Повторяем целую главу без преобразования в epub_chunk."
+                })
+                return task_info
+
             _, epub_path, chapter_path = base_payload_list
             try:
                 # zipfile.ZipFile работает прозрачно благодаря os_patch, даже если epub_path в RAM.

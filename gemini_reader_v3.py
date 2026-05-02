@@ -197,7 +197,7 @@ FLASH_TTS_MODELS = {
 
 VOICE_MODE_OPTIONS = {
     "Один голос": "single",
-    "Два голоса (Narrator + Dialogue)": "duo",
+    "Два голоса (Муж. + Жен.)": "duo",
     "Автор + Муж./Жен. роли": "author_gender",
 }
 
@@ -208,17 +208,23 @@ PIPELINE_MODE_OPTIONS = {
 }
 
 PREPROCESS_PROFILE_OPTIONS = {
-    "Бережно": "Keep tags sparse. Only add them where emotion or sound is explicit in the source text.",
-    "Выразительно": "Add tasteful performance cues and a few non-verbal sounds when clearly supported by the scene.",
+    "Бережно": "Use a controlled but noticeable number of tags. Prefer explicit emotion or sound; do not tag every line.",
+    "Выразительно": "Use a richer but still tasteful set of performance cues and non-verbal sounds when clearly supported by the scene.",
 }
 
 TTS_SPEAKER_NARRATOR = "Narrator"
 TTS_SPEAKER_DIALOGUE = "Dialogue"
+TTS_SPEAKER_MALE = "Male"
+TTS_SPEAKER_FEMALE = "Female"
 LIVE_ROLE_AUTHOR = "Author"
-LIVE_ROLE_MALE = "Male"
-LIVE_ROLE_FEMALE = "Female"
+LIVE_ROLE_MALE = TTS_SPEAKER_MALE
+LIVE_ROLE_FEMALE = TTS_SPEAKER_FEMALE
 ROLE_SPEAKER_PATTERN = re.compile(
     rf"^\s*({TTS_SPEAKER_NARRATOR}|{TTS_SPEAKER_DIALOGUE})\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+DUO_SPEAKER_PATTERN = re.compile(
+    rf"^\s*({TTS_SPEAKER_MALE}|{TTS_SPEAKER_FEMALE})\s*:\s*(.+)$",
     re.IGNORECASE,
 )
 AUTHOR_GENDER_ROLE_PATTERN = re.compile(
@@ -290,8 +296,13 @@ CHATGPT_WEB_PREPROCESS_LABEL = "ChatGPT Web (current profile model)"
 CHATGPT_WEB_PLACEHOLDER_API_KEY = "__workascii_chatgpt_session__"
 
 TTS_AUDIO_TAG_HINT = (
-    "[whispers] [laughs] [sighs] [gasp] [shouting] "
-    "[serious] [excited] [tired] [very slow] [very fast]"
+    "[whispers] [softly] [laughs] [sighs] [gasp] [shouting] "
+    "[angry] [sad] [nervous] [serious] [excited] [tired] "
+    "[breathless] [hesitates] [very slow] [slow] [fast] [very fast]"
+)
+TTS_AUDIO_TAG_DENSITY_HINT = (
+    "Recommended density: about 10-18 bracketed tags per 1000 Russian words in regular prose, "
+    "up to 20-24 in dialogue-heavy or action-heavy passages, and fewer in calm exposition."
 )
 
 LIVE_TAG_STYLE_HINTS = {
@@ -816,7 +827,8 @@ def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directi
         "- Do not summarize, shorten, paraphrase or explain the text.\n"
         "- Do not invent any words, reactions, acknowledgements, connective phrases or narration that are absent from the source.\n"
         f"{YO_ORTHOGRAPHY_RULE}"
-        f"- You may use sparse English audio tags such as {TTS_AUDIO_TAG_HINT}.\n"
+        f"- Use English bracketed audio tags such as {TTS_AUDIO_TAG_HINT}.\n"
+        f"- {TTS_AUDIO_TAG_DENSITY_HINT}\n"
         "- Tags must be short, tasteful and only where justified by the source scene.\n"
         "- Return only the final script text, with no markdown and no comments.\n"
         f"- Direction profile: {profile_line}\n"
@@ -826,13 +838,15 @@ def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directi
     if voice_mode == "duo":
         return (
             f"{common_rules}\n"
-            f"Transform the source into a strict two-speaker script using exactly these speakers: "
-            f"{TTS_SPEAKER_NARRATOR} and {TTS_SPEAKER_DIALOGUE}.\n"
+            "Transform the source into a strict two-speaker script using exactly these speakers: "
+            f"{TTS_SPEAKER_MALE} and {TTS_SPEAKER_FEMALE}.\n"
             f"Rules for speakers:\n"
-            f"- Prefix every spoken line with `{TTS_SPEAKER_NARRATOR}:` or `{TTS_SPEAKER_DIALOGUE}:`.\n"
-            f"- Narrative prose, author remarks, scene description and exposition go to `{TTS_SPEAKER_NARRATOR}`.\n"
-            f"- Direct speech and quoted dialogue go to `{TTS_SPEAKER_DIALOGUE}`.\n"
+            f"- Prefix every output line with `{TTS_SPEAKER_MALE}:` or `{TTS_SPEAKER_FEMALE}:`.\n"
+            f"- Use `{TTS_SPEAKER_MALE}:` for narration, scene description, speech attributions, exposition, male dialogue and any ambiguous dialogue.\n"
+            f"- Use `{TTS_SPEAKER_FEMALE}:` only for direct speech when the source clearly identifies the speaker as female.\n"
+            "- Never guess female attribution. If gender is unclear, keep the text under Male.\n"
             f"- If a paragraph mixes narration and dialogue, split it into several speaker lines.\n"
+            f"- If female dialogue is followed by author text such as `— сказала она`, put only the spoken words under `{TTS_SPEAKER_FEMALE}:` and the attribution under `{TTS_SPEAKER_MALE}:`.\n"
             f"- Do not invent extra speakers beyond those two names.\n\n"
             f"SOURCE TEXT:\n{raw_text}"
         )
@@ -880,7 +894,8 @@ def _build_tts_generation_prompt(script_text, voice_mode, speed_key, extra_direc
     if voice_mode == "duo":
         return (
             "Perform the following Russian two-speaker audiobook script exactly as written.\n"
-            f"Use the speaker names `{TTS_SPEAKER_NARRATOR}` and `{TTS_SPEAKER_DIALOGUE}` exactly as provided.\n"
+            f"Use the speaker names `{TTS_SPEAKER_MALE}` and `{TTS_SPEAKER_FEMALE}` exactly as provided.\n"
+            f"`{TTS_SPEAKER_MALE}` is the male/primary voice; `{TTS_SPEAKER_FEMALE}` is the female/secondary voice.\n"
             "Respect inline audio tags and emotional cues.\n"
             f"{speed_prompt}\n"
             f"{director_note}\n"
@@ -915,7 +930,7 @@ def _build_duo_voice_speech_config(primary_voice, secondary_voice):
         multi_speaker_voice_config=genai_types.MultiSpeakerVoiceConfig(
             speaker_voice_configs=[
                 genai_types.SpeakerVoiceConfig(
-                    speaker=TTS_SPEAKER_NARRATOR,
+                    speaker=TTS_SPEAKER_MALE,
                     voice_config=genai_types.VoiceConfig(
                         prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
                             voice_name=primary_voice,
@@ -923,7 +938,7 @@ def _build_duo_voice_speech_config(primary_voice, secondary_voice):
                     ),
                 ),
                 genai_types.SpeakerVoiceConfig(
-                    speaker=TTS_SPEAKER_DIALOGUE,
+                    speaker=TTS_SPEAKER_FEMALE,
                     voice_config=genai_types.VoiceConfig(
                         prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
                             voice_name=secondary_voice,
@@ -1134,44 +1149,100 @@ def _append_role_segment(segments, speaker, text):
     segments.append((speaker, normalized))
 
 
-def _split_role_paragraph(paragraph):
+def _duo_speaker_for_gender(gender):
+    return TTS_SPEAKER_FEMALE if gender == "female" else TTS_SPEAKER_MALE
+
+
+def _duo_gender_for_speaker(speaker):
+    if (speaker or "").strip().lower() == TTS_SPEAKER_FEMALE.lower():
+        return "female"
+    if (speaker or "").strip().lower() == TTS_SPEAKER_MALE.lower():
+        return "male"
+    return None
+
+
+def _normalize_duo_speaker_label(speaker):
+    normalized = (speaker or "").strip().lower()
+    if normalized == TTS_SPEAKER_FEMALE.lower():
+        return TTS_SPEAKER_FEMALE
+    if normalized == TTS_SPEAKER_MALE.lower():
+        return TTS_SPEAKER_MALE
+    return None
+
+
+def _split_duo_gender_paragraph(paragraph, previous_dialogue_gender=None):
     paragraph = re.sub(r"\s+", " ", (paragraph or "").strip())
     if not paragraph:
-        return []
+        return [], previous_dialogue_gender
+
+    duo_label_match = DUO_SPEAKER_PATTERN.match(paragraph)
+    if duo_label_match:
+        speaker = _normalize_duo_speaker_label(duo_label_match.group(1))
+        gender = _duo_gender_for_speaker(speaker) or previous_dialogue_gender
+        return [(speaker, duo_label_match.group(2).strip())], gender
 
     existing_label_match = ROLE_SPEAKER_PATTERN.match(paragraph)
     if existing_label_match:
         speaker = existing_label_match.group(1).strip()
-        speaker = TTS_SPEAKER_DIALOGUE if speaker.lower() == TTS_SPEAKER_DIALOGUE.lower() else TTS_SPEAKER_NARRATOR
-        return [(speaker, existing_label_match.group(2).strip())]
+        if speaker.lower() == TTS_SPEAKER_DIALOGUE.lower():
+            speaker = _duo_speaker_for_gender(previous_dialogue_gender)
+        else:
+            speaker = TTS_SPEAKER_MALE
+        return [(speaker, existing_label_match.group(2).strip())], previous_dialogue_gender
 
     if re.match(r"^\s*[—–-]\s*", paragraph):
         core = re.sub(r"^\s*[—–-]\s*", "", paragraph).strip()
         raw_parts = [part.strip() for part in re.split(r"\s+[—–-]\s+", core) if part.strip()]
         if len(raw_parts) >= 2:
             segments = []
+            running_gender = previous_dialogue_gender
             for idx, part in enumerate(raw_parts):
-                speaker = TTS_SPEAKER_DIALOGUE if idx % 2 == 0 else TTS_SPEAKER_NARRATOR
+                if idx % 2 == 0:
+                    local_gender = running_gender
+                    if idx > 0:
+                        local_gender = _infer_dialogue_gender(raw_parts[idx - 1]) or local_gender
+                    if idx + 1 < len(raw_parts):
+                        local_gender = _infer_dialogue_gender(raw_parts[idx + 1]) or local_gender
+                    if local_gender:
+                        running_gender = local_gender
+                    speaker = _duo_speaker_for_gender(local_gender)
+                else:
+                    speaker = TTS_SPEAKER_MALE
+                    narrator_gender = _infer_dialogue_gender(part)
+                    if narrator_gender:
+                        running_gender = narrator_gender
                 _append_role_segment(segments, speaker, part)
             if segments:
-                return segments
-        return [(TTS_SPEAKER_DIALOGUE, core)]
+                return segments, running_gender
+        return [(_duo_speaker_for_gender(previous_dialogue_gender), core)], previous_dialogue_gender
 
     quote_matches = list(ROLE_QUOTE_PATTERN.finditer(paragraph))
     if quote_matches:
         segments = []
         cursor = 0
-        for match in quote_matches:
+        running_gender = previous_dialogue_gender
+        for idx, match in enumerate(quote_matches):
             before_text = paragraph[cursor:match.start()]
             quote_text = (match.group(1) or match.group(2) or "").strip()
-            _append_role_segment(segments, TTS_SPEAKER_NARRATOR, before_text)
-            _append_role_segment(segments, TTS_SPEAKER_DIALOGUE, quote_text)
-            cursor = match.end()
-        _append_role_segment(segments, TTS_SPEAKER_NARRATOR, paragraph[cursor:])
-        if segments:
-            return segments
+            _append_role_segment(segments, TTS_SPEAKER_MALE, before_text)
 
-    return [(TTS_SPEAKER_NARRATOR, paragraph)]
+            next_start = quote_matches[idx + 1].start() if idx + 1 < len(quote_matches) else len(paragraph)
+            after_context = paragraph[match.end():next_start]
+            local_gender = _infer_dialogue_gender(before_text) or _infer_dialogue_gender(after_context) or running_gender
+            if local_gender:
+                running_gender = local_gender
+            _append_role_segment(segments, _duo_speaker_for_gender(local_gender), quote_text)
+            cursor = match.end()
+        _append_role_segment(segments, TTS_SPEAKER_MALE, paragraph[cursor:])
+        if segments:
+            return segments, running_gender
+
+    return [(TTS_SPEAKER_MALE, paragraph)], previous_dialogue_gender
+
+
+def _split_role_paragraph(paragraph):
+    segments, _ = _split_duo_gender_paragraph(paragraph)
+    return segments
 
 
 def _build_live_role_script(raw_text):
@@ -1184,8 +1255,10 @@ def _build_live_role_script(raw_text):
         paragraphs = [(raw_text or "").strip()]
 
     segments = []
+    running_gender = None
     for paragraph in paragraphs:
-        for speaker, text in _split_role_paragraph(paragraph):
+        paragraph_segments, running_gender = _split_duo_gender_paragraph(paragraph, running_gender)
+        for speaker, text in paragraph_segments:
             _append_role_segment(segments, speaker, text)
 
     if not segments:
@@ -1525,7 +1598,12 @@ def _build_author_gender_live_plan(raw_text, author_voice, male_voice, female_vo
 
 
 def _clean_tts_markup(text):
-    cleaned = re.sub(rf"^\s*(?:{TTS_SPEAKER_NARRATOR}|{TTS_SPEAKER_DIALOGUE})\s*:\s*", "", text, flags=re.MULTILINE)
+    cleaned = re.sub(
+        rf"^\s*(?:{TTS_SPEAKER_MALE}|{TTS_SPEAKER_FEMALE}|{TTS_SPEAKER_NARRATOR}|{TTS_SPEAKER_DIALOGUE}|{LIVE_ROLE_AUTHOR})\s*:\s*",
+        "",
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
     cleaned = re.sub(r"\[[^\]\n]{1,40}\]", " ", cleaned)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -1575,12 +1653,12 @@ def _split_tts_script(script_text, voice_mode, max_chars):
         for line in raw_lines:
             if ":" in line:
                 prefix, content = line.split(":", 1)
-                prefix = prefix.strip()
+                prefix = _normalize_duo_speaker_label(prefix)
                 content = content.strip()
-                if prefix in {TTS_SPEAKER_NARRATOR, TTS_SPEAKER_DIALOGUE}:
+                if prefix:
                     prepared_lines.extend(_split_long_tts_line(prefix, content, max_chars))
                     continue
-            prepared_lines.extend(_split_long_tts_line(TTS_SPEAKER_NARRATOR, line, max_chars))
+            prepared_lines.extend(_split_long_tts_line(TTS_SPEAKER_MALE, line, max_chars))
 
         chunks = []
         current_lines = []
@@ -1700,9 +1778,9 @@ def _split_tts_chunk_once(script_chunk, voice_mode):
 
         if ":" in script_chunk:
             prefix, content = script_chunk.split(":", 1)
-            prefix = prefix.strip()
+            prefix = _normalize_duo_speaker_label(prefix)
             content_parts = _split_text_roughly_in_half(content)
-            if prefix in {TTS_SPEAKER_NARRATOR, TTS_SPEAKER_DIALOGUE} and len(content_parts) > 1:
+            if prefix and len(content_parts) > 1:
                 return [f"{prefix}: {part}" for part in content_parts]
 
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", script_chunk) if part.strip()]
@@ -1724,27 +1802,42 @@ def _script_matches_voice_mode(script_text, voice_mode):
 
     has_duo_labels = bool(
         re.search(
+            rf"^\s*(?:{TTS_SPEAKER_MALE}|{TTS_SPEAKER_FEMALE})\s*:",
+            script_text,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+    )
+    has_legacy_duo_labels = bool(
+        re.search(
             rf"^\s*(?:{TTS_SPEAKER_NARRATOR}|{TTS_SPEAKER_DIALOGUE})\s*:",
             script_text,
-            flags=re.MULTILINE,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+    )
+    has_author_label = bool(
+        re.search(
+            rf"^\s*{LIVE_ROLE_AUTHOR}\s*:",
+            script_text,
+            flags=re.MULTILINE | re.IGNORECASE,
         )
     )
     has_author_gender_labels = bool(
         re.search(
             rf"^\s*(?:{LIVE_ROLE_AUTHOR}|{LIVE_ROLE_MALE}|{LIVE_ROLE_FEMALE})\s*:",
             script_text,
-            flags=re.MULTILINE,
+            flags=re.MULTILINE | re.IGNORECASE,
         )
     )
     if voice_mode == "duo":
-        return has_duo_labels
+        return has_duo_labels and not has_author_label
     if voice_mode == "author_gender":
         return bool(
-            has_author_gender_labels
+            has_author_label
+            and has_author_gender_labels
             and _parse_author_gender_script(script_text)
             and not _find_author_gender_script_issues(script_text)
         )
-    return not has_duo_labels and not has_author_gender_labels
+    return not has_duo_labels and not has_legacy_duo_labels and not has_author_gender_labels
 
 
 class InvalidApiKeyError(RuntimeError):
@@ -3451,7 +3544,7 @@ class GeminiWorker(QThread):
         if self.voice_mode == "author_gender":
             return f"author={self.voice}, male={self.secondary_voice}, female={self.tertiary_voice}"
         if self.voice_mode == "duo":
-            return f"{self.voice}/{self.secondary_voice}"
+            return f"male={self.voice}, female={self.secondary_voice}"
         return self.voice
 
     def _build_live_single_config(self, voice_name, role_hint="default", segment_directive=""):
@@ -3790,9 +3883,9 @@ class GeminiWorker(QThread):
                 f"Ты профессиональная студия озвучки аудиокниг. {self.style_prompt} "
                 f"{speed_instr} "
                 "Озвучивай входной текст СЛОВО В СЛОВО. "
-                f"Во входе используются только роли {TTS_SPEAKER_NARRATOR} и {TTS_SPEAKER_DIALOGUE}. "
-                f"{TTS_SPEAKER_NARRATOR} — авторский текст, ремарки и описание сцены. "
-                f"{TTS_SPEAKER_DIALOGUE} — прямая речь и цитаты. "
+                f"Во входе используются только роли {TTS_SPEAKER_MALE} и {TTS_SPEAKER_FEMALE}. "
+                f"{TTS_SPEAKER_MALE} — мужской/основной голос, включая авторский текст и неоднозначные реплики. "
+                f"{TTS_SPEAKER_FEMALE} — женский голос для реплик, явно принадлежащих женщине. "
                 "Если встретишь сценические теги в квадратных скобках, воспринимай их как пометки к подаче и не произноси их вслух. "
                 "Не меняй слова, не добавляй новых ролей, новых фраз или междометий и обязательно дочитывай текст до самой последней точки. "
                 "Выдай полный аудиоответ. Язык: Русский."
@@ -3803,7 +3896,7 @@ class GeminiWorker(QThread):
                 speech_config=_build_duo_voice_speech_config(self.voice, self.secondary_voice),
                 system_instruction=sys_instr
             )
-            return config, f"{self.voice}/{self.secondary_voice}"
+            return config, f"male={self.voice}, female={self.secondary_voice}"
 
         return self._build_live_single_config(self.voice, "default"), self.voice
 
@@ -5286,6 +5379,49 @@ class PromptTuningDialog(QDialog):
         )
 
 
+class ManualScriptDialog(QDialog):
+    def __init__(self, chapter_title, chapter_number, voice_mode, initial_text="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Ручной сценарий: глава {chapter_number}")
+        self.resize(820, 620)
+
+        layout = QVBoxLayout(self)
+        title_label = QLabel(f"Глава {chapter_number}: {chapter_title}")
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        hint_label = QLabel(self._voice_mode_hint(voice_mode))
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #cfcfcf;")
+        layout.addWidget(hint_label)
+
+        self.script_edit = QPlainTextEdit()
+        self.script_edit.setPlainText(initial_text or "")
+        layout.addWidget(self.script_edit, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _voice_mode_hint(voice_mode):
+        if voice_mode == "duo":
+            return (
+                "Вставьте или отредактируйте TTS-сценарий для двух голосов Муж./Жен. "
+                f"Строки должны начинаться с {TTS_SPEAKER_MALE}: или {TTS_SPEAKER_FEMALE}:."
+            )
+        if voice_mode == "author_gender":
+            return (
+                "Вставьте или отредактируйте TTS-сценарий для ролей Author/Male/Female. "
+                f"Строки должны начинаться с {LIVE_ROLE_AUTHOR}:, {LIVE_ROLE_MALE}: или {LIVE_ROLE_FEMALE}:."
+            )
+        return "Вставьте или отредактируйте TTS-сценарий для одного голоса без ролевых префиксов."
+
+    def get_script_text(self):
+        return self.script_edit.toPlainText().strip()
+
+
 # --- ТЕСТОВЫЙ ВОСПРОИЗВОДИТЕЛЬ ГОЛОСА ---
 class VoiceSampleWorker(QThread):
     finished_signal = pyqtSignal()
@@ -5350,8 +5486,8 @@ class VoiceSampleWorker(QThread):
                     self.voice_mode = "duo"
                 if self.voice_mode == "duo":
                     test_script = (
-                        f"{TTS_SPEAKER_NARRATOR}: [serious] Рассказчик открывает сцену.\n"
-                        f"{TTS_SPEAKER_DIALOGUE}: [excited] А я отвечаю другим голосом."
+                        f"{TTS_SPEAKER_MALE}: [serious] Я читаю мужским голосом.\n"
+                        f"{TTS_SPEAKER_FEMALE}: [excited] А я отвечаю женским голосом."
                     )
                     speech_config = _build_duo_voice_speech_config(self.voice, self.secondary_voice)
                 else:
@@ -5396,15 +5532,15 @@ class VoiceSampleWorker(QThread):
                     ]
                 elif self.voice_mode == "duo":
                     live_test_text = (
-                        f"{TTS_SPEAKER_NARRATOR}: Рассказчик открывает сцену.\n"
-                        f"{TTS_SPEAKER_DIALOGUE}: А я отвечаю другим голосом."
+                        f"{TTS_SPEAKER_MALE}: Я читаю мужским голосом.\n"
+                        f"{TTS_SPEAKER_FEMALE}: А я отвечаю женским голосом."
                     )
                     request_plan = [
                         (
                             genai_types.LiveConnectConfig(
                                 response_modalities=["AUDIO"],
                                 speech_config=_build_duo_voice_speech_config(self.voice, self.secondary_voice),
-                                system_instruction="Ты профессиональная студия озвучки. Строго соблюдай роли Narrator и Dialogue.",
+                                system_instruction="Ты профессиональная студия озвучки. Строго соблюдай роли Male и Female.",
                             ),
                             live_test_text,
                         )
@@ -5871,6 +6007,11 @@ class MainWindow(QMainWindow):
         self.btn_prepare_missing_script.clicked.connect(self.prepare_missing_scripts)
         script_controls.addWidget(self.btn_prepare_missing_script)
 
+        self.btn_manual_script = QPushButton("✍ Вручную")
+        self.btn_manual_script.setFixedSize(110, 30)
+        self.btn_manual_script.clicked.connect(self.add_manual_script)
+        script_controls.addWidget(self.btn_manual_script)
+
         self.btn_save_script = QPushButton("💾 Сохранить сценарий")
         self.btn_save_script.setFixedSize(160, 30)
         self.btn_save_script.clicked.connect(self.save_current_script)
@@ -6031,14 +6172,17 @@ class MainWindow(QMainWindow):
         preprocess_transport_available = has_genai or self._selected_preprocess_uses_chatgpt_web()
         flash_controls_enabled = not running and is_flash_tts and has_genai
         ai_script_controls_enabled = ai_script_mode_available and preprocess_transport_available
+        manual_script_controls_enabled = chapter_scope_enabled
         self.btn_prepare_script.setEnabled(ai_script_controls_enabled)
         self.btn_prepare_missing_script.setEnabled(ai_script_controls_enabled)
-        self.btn_save_script.setEnabled(ai_script_controls_enabled)
+        self.btn_manual_script.setEnabled(manual_script_controls_enabled)
+        self.btn_save_script.setEnabled(manual_script_controls_enabled)
         self.combo_preprocess_model.setEnabled(ai_script_mode_available)
         self.combo_preprocess_profile.setEnabled(ai_script_mode_available)
         self.combo_pipeline_mode.setEnabled(flash_controls_enabled)
         self.combo_voice_mode.setEnabled(not running and has_genai)
         self.act_prompt_tuning.setEnabled((is_flash_tts or author_gender_script_mode) and not running)
+        self.script_view.setReadOnly(running)
         self.preprocess_prompt_view.setReadOnly(running)
         self.tts_prompt_view.setReadOnly(running)
         self.btn_save_prompts.setEnabled(not running)
@@ -6179,8 +6323,8 @@ class MainWindow(QMainWindow):
             self.lbl_voice_secondary.setText("Voice B:")
             self.lbl_voice_tertiary.setText("Voice C:")
         elif mode == "duo":
-            self.lbl_voice_primary.setText("Narrator:")
-            self.lbl_voice_secondary.setText("Dialogue:")
+            self.lbl_voice_primary.setText("Муж.:")
+            self.lbl_voice_secondary.setText("Жен.:")
             self.lbl_voice_tertiary.setText("Voice C:")
         else:
             self.lbl_voice_primary.setText("Автор:")
@@ -7044,6 +7188,113 @@ class MainWindow(QMainWindow):
         else:
             self.script_view.setPlainText(self.bm.chapters[chapter_index].raw_text)
 
+    def _manual_script_target_index(self, selected_items=None):
+        if not self.bm:
+            return None
+
+        for item in selected_items or []:
+            idx = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(idx, int) and 0 <= idx < len(self.bm.chapters):
+                return idx
+
+        if (
+            isinstance(self._current_chapter_index, int)
+            and 0 <= self._current_chapter_index < len(self.bm.chapters)
+        ):
+            return self._current_chapter_index
+
+        for idx in self._selected_chapter_indices():
+            if 0 <= idx < len(self.bm.chapters):
+                return idx
+
+        return None
+
+    def _script_mode_mismatch_message(self, script_text):
+        voice_mode = self._selected_voice_mode()
+        if _script_matches_voice_mode(script_text, voice_mode):
+            return ""
+        if voice_mode == "duo":
+            return (
+                "Текущий режим голоса: два голоса Муж./Жен. Для него сценарий должен содержать строки "
+                f"{TTS_SPEAKER_MALE}: и/или {TTS_SPEAKER_FEMALE}:."
+            )
+        if voice_mode == "author_gender":
+            return (
+                "Текущий режим голоса: Author + Male/Female. Для него сценарий должен быть размечен "
+                f"строками {LIVE_ROLE_AUTHOR}:, {LIVE_ROLE_MALE}: или {LIVE_ROLE_FEMALE}:."
+            )
+        return (
+            "Текущий режим голоса: один голос. Для него сценарий не должен содержать ролевые префиксы "
+            f"{TTS_SPEAKER_MALE}:, {TTS_SPEAKER_FEMALE}:, {TTS_SPEAKER_NARRATOR}:, {TTS_SPEAKER_DIALOGUE}: или {LIVE_ROLE_AUTHOR}:."
+        )
+
+    def _confirm_script_mode_mismatch(self, script_text):
+        mismatch_message = self._script_mode_mismatch_message(script_text)
+        if not mismatch_message:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Сценарий",
+            f"{mismatch_message}\n\nСохранить сценарий всё равно?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _save_manual_script_text(self, chapter_index, script_text):
+        if not self.bm or chapter_index is None or chapter_index < 0 or chapter_index >= len(self.bm.chapters):
+            raise ValueError("Некорректная глава для сценария.")
+        saved_path = self.bm.save_tts_script(chapter_index, script_text)
+        self.refresh_chapters_list()
+        if self._current_chapter_index == chapter_index:
+            self.script_view.setPlainText(script_text)
+        return saved_path
+
+    def add_manual_script(self, selected_items=None):
+        if not self.bm:
+            QMessageBox.information(self, "Сценарий", "Сначала откройте книгу.")
+            return
+        if self.workers:
+            QMessageBox.warning(self, "Сценарий", "Сначала дождитесь завершения текущей задачи или остановите её.")
+            return
+
+        chapter_index = self._manual_script_target_index(selected_items)
+        if chapter_index is None:
+            QMessageBox.information(self, "Сценарий", "Сначала выберите главу.")
+            return
+
+        chapter = self.bm.chapters[chapter_index]
+        saved_script = self.bm.load_tts_script(chapter_index)
+        if saved_script.strip():
+            initial_text = saved_script
+        elif self._current_chapter_index == chapter_index:
+            initial_text = self.script_view.toPlainText().strip() or chapter.raw_text
+        else:
+            initial_text = chapter.raw_text
+
+        dialog = ManualScriptDialog(
+            chapter.title,
+            chapter_index + 1,
+            self._selected_voice_mode(),
+            initial_text,
+            self,
+        )
+        if not dialog.exec():
+            return
+
+        script_text = dialog.get_script_text()
+        if not script_text:
+            QMessageBox.warning(self, "Сценарий", "Нельзя сохранить пустой сценарий.")
+            return
+        if not self._confirm_script_mode_mismatch(script_text):
+            return
+
+        self._current_chapter_index = chapter_index
+        self.txt_view.setPlainText(chapter.raw_text)
+        self._save_manual_script_text(chapter_index, script_text)
+        self.tabs.setCurrentWidget(self.script_view)
+        self.statusBar().showMessage(f"Ручной сценарий главы {chapter_index + 1} сохранён.")
+
     def save_current_script(self):
         if not self.bm or self._current_chapter_index is None:
             QMessageBox.information(self, "Сценарий", "Сначала выберите главу.")
@@ -7052,8 +7303,9 @@ class MainWindow(QMainWindow):
         if not script_text:
             QMessageBox.warning(self, "Сценарий", "Нельзя сохранить пустой сценарий.")
             return
-        self.bm.save_tts_script(self._current_chapter_index, script_text)
-        self.refresh_chapters_list()
+        if not self._confirm_script_mode_mismatch(script_text):
+            return
+        self._save_manual_script_text(self._current_chapter_index, script_text)
         self.statusBar().showMessage(f"Сценарий главы {self._current_chapter_index + 1} сохранён.")
 
     def _sync_prompt_views(self):
@@ -7601,6 +7853,11 @@ class MainWindow(QMainWindow):
         prepare_missing_action.triggered.connect(self.prepare_missing_scripts)
         prepare_missing_action.setEnabled(self._is_flash_tts_mode() or self._selected_voice_mode() == "author_gender")
         menu.addAction(prepare_missing_action)
+
+        manual_target_items = [item_at_pos] if item_at_pos is not None else selected_items
+        manual_script_action = QAction("✍ Добавить сценарий вручную", self)
+        manual_script_action.triggered.connect(lambda: self.add_manual_script(manual_target_items))
+        menu.addAction(manual_script_action)
 
         clear_script_action = QAction("🗑️ Удалить сценарий", self)
         clear_script_action.triggered.connect(lambda: self.clear_selected_scripts(selected_items))

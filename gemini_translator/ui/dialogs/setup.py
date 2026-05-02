@@ -3457,6 +3457,22 @@ class InitialSetupDialog(QDialog):
             if result:
                 self._process_filter_dialog_result(result)
 
+    def _get_filter_retry_translation_options(self) -> dict:
+        """
+        Filter retries should follow the visible chunk checkboxes only.
+        Passing this as an explicit override also prevents auto-translation
+        mode overrides from silently rebuilding filter retries as chunks.
+        """
+        widget = getattr(self, 'translation_options_widget', None)
+        get_settings = getattr(widget, 'get_settings', None)
+        if callable(get_settings):
+            options = get_settings().copy()
+        else:
+            options = {}
+        options.setdefault('chunking', False)
+        options.setdefault('chunk_on_error', False)
+        return options
+
     def _process_filter_dialog_result(self, result: dict):
         """
         Обрабатывает результат из FilterPackagingDialog.
@@ -3480,7 +3496,10 @@ class InitialSetupDialog(QDialog):
             # В этом случае мы не можем легко внедрить историю, так как TaskPreparer внутри.
             # Но обычно диалог фильтрации возвращает payloads (Тип 2).
             self.html_files = data
-            self._prepare_and_display_tasks(clean_rebuild=True)
+            self._prepare_and_display_tasks(
+                clean_rebuild=True,
+                translation_options_override=self._get_filter_retry_translation_options(),
+            )
 
         elif result_type == 'payloads':
             # Тип 2: Готовые пейлоады.
@@ -3506,7 +3525,7 @@ class InitialSetupDialog(QDialog):
             self.translation_options_widget._update_info_text()
 
         # Общие действия после обработки
-        self._post_event('log_message', {'message': f"[INFO] Сформированы задачи для обхода фильтров. Активирован безопасный режим (Content Filter x2)."})
+        self._post_event('log_message', {'message': f"[INFO] Сформированы задачи для обхода фильтров. Активирован безопасный режим (Content Filter x2); авто-чанкинг фильтра не включается."})
         self.task_management_widget.set_retry_filtered_button_visible(False)
 
 
@@ -5010,7 +5029,10 @@ class InitialSetupDialog(QDialog):
 
         self.html_files = normalized_chapters
         self.paths_widget.update_chapters_info(len(self.html_files))
-        self._prepare_and_display_tasks(clean_rebuild=True)
+        self._prepare_and_display_tasks(
+            clean_rebuild=True,
+            translation_options_override=self._get_filter_retry_translation_options(),
+        )
         self.task_management_widget.set_retry_filtered_button_visible(False)
 
         redirect_provider = redirect_override.get('provider')

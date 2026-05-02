@@ -54,7 +54,7 @@ class TranslationOptionsWidget(QGroupBox):
             "\u0427\u0430\u043d\u043a\u0438\u043d\u0433 \u043f\u0440\u0438 "
             "\u043e\u0448\u0438\u0431\u043a\u0430\u0445"
         )
-        self.chunk_on_error_checkbox.setChecked(True)
+        self.chunk_on_error_checkbox.setChecked(False)
         self.sequential_checkbox = QCheckBox(
             "\u041f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0439 "
             "\u043f\u0435\u0440\u0435\u0432\u043e\u0434 \u0433\u043b\u0430\u0432"

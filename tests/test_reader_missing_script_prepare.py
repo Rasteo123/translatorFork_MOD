@@ -38,7 +38,7 @@ class _PrepareMissingHarness:
     def __init__(self):
         self.bm = _BookWithScripts(
             {
-                1: "Narrator: ready\nDialogue: ready",
+                1: "Male: ready\nFemale: ready",
                 2: "plain text for another mode",
             }
         )

@@ -59,6 +59,14 @@ class _TranslationOptionsWidgetStub:
         }
         self.task_size_spin = _SpinStub(1500)
 
+    def get_settings(self):
+        return {
+            "use_batching": False,
+            "chunking": False,
+            "chunk_on_error": False,
+            "task_size_limit": 1500,
+        }
+
 
 class _ButtonStub:
     def __init__(self):
@@ -91,6 +99,7 @@ class _AutoFilterPipelineHarness:
     _normalize_auto_chapters = InitialSetupDialog._normalize_auto_chapters
     _make_auto_chapter_signature = InitialSetupDialog._make_auto_chapter_signature
     _compose_auto_details = InitialSetupDialog._compose_auto_details
+    _get_filter_retry_translation_options = InitialSetupDialog._get_filter_retry_translation_options
     _try_auto_filter_recovery = InitialSetupDialog._try_auto_filter_recovery
     _try_auto_filter_redirect_followup = InitialSetupDialog._try_auto_filter_redirect_followup
 
@@ -130,6 +139,7 @@ class _AutoFilterPipelineHarness:
             {
                 "clean_rebuild": bool(clean_rebuild),
                 "chapters": list(self.html_files),
+                "translation_options_override": dict(translation_options_override or {}),
             }
         )
 
@@ -245,7 +255,16 @@ class AutoFilterRedirectTests(unittest.TestCase):
         self.assertEqual(harness.html_files, ["Text/ch2.xhtml"])
         self.assertEqual(
             harness.prepared_tasks,
-            [{"clean_rebuild": True, "chapters": ["Text/ch2.xhtml"]}],
+            [{
+                "clean_rebuild": True,
+                "chapters": ["Text/ch2.xhtml"],
+                "translation_options_override": {
+                    "use_batching": False,
+                    "chunking": False,
+                    "chunk_on_error": False,
+                    "task_size_limit": 1500,
+                },
+            }],
         )
         self.assertEqual(harness._auto_restart_session_override["provider"], "deepseek")
         self.assertEqual(harness._auto_restart_session_override["model"], "deepseek-chat NonThink")
