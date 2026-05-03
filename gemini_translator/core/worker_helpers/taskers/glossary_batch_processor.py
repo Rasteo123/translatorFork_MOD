@@ -5,6 +5,8 @@ import json
 import time
 import re
 
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]')
+
 from bs4 import BeautifulSoup
 
 from .base_processor import BaseTaskProcessor
@@ -134,6 +136,8 @@ class GlossaryBatchProcessor(BaseTaskProcessor):
                 rus = str(raw_rus).replace('—', '–')
                 note = str(value.get("note", "")).replace('—', '–')
                 if not force_accept and not re.search(r'[а-яА-ЯёЁ]', rus) and not re.search(r'[а-яА-ЯёЁ]', note):
+                    continue
+                if not force_accept and _CJK_RE.search(rus):
                     continue
                 pre_validated_glossary_list.append({"original": original, "rus": rus, "note": note})
 
