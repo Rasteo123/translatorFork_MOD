@@ -1479,7 +1479,19 @@ class InitialSetupDialog(QDialog):
         self._pending_old_project_cleanup_offer = False
 
         history = self.settings_manager.load_project_history()
-        is_known_project = any(p.get('epub_path') == file_path and p.get('output_folder') == folder_path for p in history)
+
+        def same_path(left, right):
+            if not left or not right:
+                return False
+            return os.path.normcase(os.path.abspath(os.path.normpath(left))) == os.path.normcase(
+                os.path.abspath(os.path.normpath(right))
+            )
+
+        is_known_project = any(
+            same_path(p.get('epub_path'), file_path) and
+            same_path(p.get('output_folder'), folder_path)
+            for p in history
+        )
         is_folder_reused = False
 
         # Изначально считаем, что будем работать с выбранными путями
@@ -1487,7 +1499,11 @@ class InitialSetupDialog(QDialog):
         effective_file_path = file_path.replace('\\', '/')
 
         if not is_known_project:
-            is_folder_reused = any(p.get('output_folder') == folder_path and p.get('epub_path') != file_path for p in history)
+            is_folder_reused = any(
+                same_path(p.get('output_folder'), folder_path) and
+                not same_path(p.get('epub_path'), file_path)
+                for p in history
+            )
             main_text = f"Вы выбрали папку <b>'{os.path.basename(folder_path)}'</b> для нового проекта."
             if is_folder_reused:
                 main_text += "<br><br><b style='color: orange;'>Внимание:</b> Эта папка уже используется для другого проекта. Настоятельно рекомендуется создать подпапку."
@@ -1527,7 +1543,7 @@ class InitialSetupDialog(QDialog):
                     QMessageBox.critical(self, "Ошибка перемещения", f"Не удалось переместить исходный файл:\n{e}")
                     return
 
-        if not is_known_project and (is_folder_reused or pending_cleanup_offer):
+        if pending_cleanup_offer or not is_known_project:
             self._maybe_offer_old_project_chapter_cleanup(effective_folder, effective_file_path)
 
         # Добавляем в историю уже финальные, эффективные пути
@@ -1569,16 +1585,21 @@ class InitialSetupDialog(QDialog):
         """Слот с логикой "разрыва связи" при смене файла."""
         if not file_path: return
 
+        previous_file = self.selected_file
+        file_changed = (
+            not previous_file or
+            os.path.abspath(previous_file) != os.path.abspath(file_path)
+        )
         switching_to_new_source = (
-            bool(self.output_folder and self.selected_file) and
-            os.path.abspath(self.selected_file) != os.path.abspath(file_path)
+            bool(self.output_folder and previous_file) and
+            os.path.abspath(previous_file) != os.path.abspath(file_path)
         )
 
         # --- НАЧАЛО КЛЮЧЕВОГО ИСПРАВЛЕНИЯ: Атомарный сброс состояния ---
         # Если выбранный файл отличается от текущего, это означает смену контекста.
         # Мы ОБЯЗАНЫ немедленно сбросить список глав, чтобы предотвратить
         # использование списка глав от старого файла с новым файлом.
-        if self.selected_file != file_path:
+        if file_changed:
             self._pending_old_project_cleanup_offer = switching_to_new_source
             self.html_files = []
             # Немедленно обновляем UI, чтобы пользователь видел, что выбор глав сброшен
@@ -1621,7 +1642,9 @@ class InitialSetupDialog(QDialog):
         self.paths_widget.set_file_path(file_path)
 
         # Запускаем дальнейшую обработку
-        if self.output_folder:
+        if file_changed or not self.html_files:
+            self._process_selected_file()
+        elif self.output_folder:
             self._handle_project_initialization()
         else:
             self._process_selected_file()
