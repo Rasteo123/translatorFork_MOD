@@ -627,6 +627,7 @@ class UntranslatedFixerDialog(QDialog):
     Версия 6.0: Пагинация и сохранение выделения.
     """
     navigate_to_chapter_requested = pyqtSignal(dict)
+    mark_chapters_for_retry_requested = pyqtSignal(list)
 
     def __init__(self, data_list, parent=None, initial_source_filter='all'):
         super().__init__(parent)
@@ -759,11 +760,31 @@ class UntranslatedFixerDialog(QDialog):
         valid_alien_chars_count = 0
 
         for word in display_candidates:
-            if word.lower() not in self.blacklist_set:
+            word_lower = word.lower()
+            # Однословные записи blacklist: точное совпадение с кандидатом
+            # Многословные фразы: проверяем AND по haystack
+            single_blocked = any(
+                len(e.split()) == 1 and e.lower() == word_lower
+                for e in self.blacklist_set
+            )
+            phrase_blocked = any(
+                len(e.split()) > 1 and self._phrase_matches_context(e, clean_text_lower)
+                for e in self.blacklist_set
+            )
+            if not single_blocked and not phrase_blocked:
                 remaining_candidates.append(word)
 
         for word in all_candidates + symbol_candidates:
-            if word.lower() not in self.blacklist_set:
+            word_lower = word.lower()
+            single_blocked = any(
+                len(e.split()) == 1 and e.lower() == word_lower
+                for e in self.blacklist_set
+            )
+            phrase_blocked = any(
+                len(e.split()) > 1 and self._phrase_matches_context(e, clean_text_lower)
+                for e in self.blacklist_set
+            )
+            if not single_blocked and not phrase_blocked:
                 valid_alien_chars_count += len(word)
 
         total_len = stats[0]
@@ -783,6 +804,16 @@ class UntranslatedFixerDialog(QDialog):
             'remaining_candidates': remaining_candidates,
             'stats': (total_len, alien_chars, alien_ratio),
         }
+
+    @staticmethod
+    def _phrase_matches_context(phrase: str, haystack: str) -> bool:
+        """Проверяет, содержит ли контекст ВСЕ слова фразы (логика AND).
+        Для одиночных значений — обычная проверка вхождения.
+        """
+        words = phrase.split()
+        if len(words) <= 1:
+            return phrase.lower() in haystack
+        return all(w.lower() in haystack for w in words)
 
     def _sort_visible_candidates(self, candidates, term=""):
         term_key = str(term or "").strip().lower()
@@ -1154,9 +1185,15 @@ class UntranslatedFixerDialog(QDialog):
         self.ai_translate_btn = QPushButton("🤖 Перевести выбранное...")
         self.ai_translate_btn.setStyleSheet("font-weight: bold; font-size: 11pt; padding: 5px;")
         self.ai_translate_btn.clicked.connect(self._start_ai_translation)
+
+        self.btn_mark_retry = QPushButton("🔄 К переотправке (выбранное)")
+        self.btn_mark_retry.setStyleSheet("background-color: #58442e; color: white;")
+        self.btn_mark_retry.setToolTip("Пометить главы выбранных строк к повторному переводу в основном окне проверки.")
+        self.btn_mark_retry.clicked.connect(self._mark_selected_chapters_for_retry)
         
         cp_layout.addWidget(self.total_filtered_label)
         cp_layout.addWidget(self.btn_clear_selected)
+        cp_layout.addWidget(self.btn_mark_retry)
         cp_layout.addWidget(self.ai_translate_btn)
         
         layout.addWidget(control_panel)
@@ -1262,8 +1299,11 @@ class UntranslatedFixerDialog(QDialog):
             if not remaining_candidates:
                 continue
 
-            # Работает как "Поиск": требуем наличия слова в тексте.
-            if self.whitelist_set and not any(good in search_haystack for good in self.whitelist_set):
+            # Работает как "Поиск": требуем наличия всех слов фразы/слова в тексте.
+            if self.whitelist_set and not any(
+                self._phrase_matches_context(good, search_haystack)
+                for good in self.whitelist_set
+            ):
                 continue
 
             # Обновляем данные для отображения в таблице (показываем только актуальные проблемы)
@@ -1476,6 +1516,11 @@ class UntranslatedFixerDialog(QDialog):
         go_to_chapter_action.setEnabled(bool(item_data.get('internal_html_path')))
         go_to_chapter_action.triggered.connect(lambda: self._request_chapter_navigation(data_index))
 
+        mark_retry_action = menu.addAction("🔄 Пометить главу к переотправке")
+        mark_retry_action.setToolTip("Пометить эту главу к повторному переводу в основном окне проверки.")
+        mark_retry_action.setEnabled(bool(item_data.get('internal_html_path')))
+        mark_retry_action.triggered.connect(lambda: self._mark_single_chapter_for_retry(data_index))
+
         menu.addSeparator()
 
         if item_data.get('source_type') == 'user' and item_data.get('entry_id'):
@@ -1526,35 +1571,43 @@ class UntranslatedFixerDialog(QDialog):
 
         # --- Раздел White List (Требовать) ---
         if top_candidates:
-            # Заголовок теперь активная кнопка "Требовать ВСЕ"
             title_white = menu.addAction("🟢 Требовать ВСЕ")
             title_white.setToolTip("Добавить все слова ниже в список обязательных")
             title_white.triggered.connect(lambda: self._add_multiple_filter_tags(top_candidates, 'white'))
-            
+            if len(top_candidates) > 1:
+                combo_phrase = " ".join(top_candidates)
+                combo_preview = " & ".join(f'"{t}"' for t in top_candidates)
+                combo_white = menu.addAction(f"   🔗 Комбинация: {combo_preview}")
+                combo_white.setToolTip("Показывать строку только если контекст содержит ВСЕ эти слова одновременно")
+                combo_white.triggered.connect(lambda ch=False, p=combo_phrase: self._add_filter_tag(p, 'white'))
             for term in top_candidates:
-                action_text = f'   + "{term}"'
-                action = menu.addAction(action_text)
+                action = menu.addAction(f'   + "{term}"')
                 action.triggered.connect(lambda ch, t=term: self._add_filter_tag(t, 'white'))
         else:
-            dummy = menu.addAction("🟢 Требовать (нет слов)")
-            dummy.setEnabled(False)
+            dummy_w = menu.addAction("🟢 Требовать (нет слов)")
+            dummy_w.setEnabled(False)
 
         menu.addSeparator()
 
         # --- Раздел Black List (Скрыть) ---
         if top_candidates:
-            # Заголовок теперь активная кнопка "Скрыть ВСЕ"
             title_black = menu.addAction("🔴 Скрыть ВСЕ")
             title_black.setToolTip("Добавить все слова ниже в список исключений")
             title_black.triggered.connect(lambda: self._add_multiple_filter_tags(top_candidates, 'black'))
-
+            if len(top_candidates) > 1:
+                combo_phrase = " ".join(top_candidates)
+                combo_preview = " & ".join(f'"{t}"' for t in top_candidates)
+                combo_black = menu.addAction(f"   🔗 Комбинация: {combo_preview}")
+                combo_black.setToolTip("Скрывать строку только если контекст содержит ВСЕ эти слова одновременно")
+                combo_black.triggered.connect(lambda ch=False, p=combo_phrase: self._add_filter_tag(p, 'black'))
             for term in top_candidates:
-                action_text = f'   - "{term}"'
-                action = menu.addAction(action_text)
+                action = menu.addAction(f'   - "{term}"')
                 action.triggered.connect(lambda ch, t=term: self._add_filter_tag(t, 'black'))
         else:
-            dummy = menu.addAction("🔴 Скрыть (нет слов)")
-            dummy.setEnabled(False)
+            dummy_b = menu.addAction("🔴 Скрыть (нет слов)")
+            dummy_b.setEnabled(False)
+
+
 
         # Показываем меню
         menu.exec(button_widget.mapToGlobal(button_widget.rect().bottomLeft()))
@@ -1599,6 +1652,101 @@ class UntranslatedFixerDialog(QDialog):
 
         self.navigate_to_chapter_requested.emit(payload)
         self.reject()
+
+    def _mark_single_chapter_for_retry(self, data_index):
+        item_data = self.original_data[data_index]
+        internal_path = item_data.get('internal_html_path')
+        if not internal_path:
+            QMessageBox.information(
+                self,
+                "Переход недоступен",
+                "Для этой строки не удалось определить файл главы."
+            )
+            return
+
+        self.mark_chapters_for_retry_requested.emit([internal_path])
+
+        occurrences = item_data.get('occurrences', [])
+        new_occurrences = [occ for occ in occurrences if occ.get('internal_html_path') != internal_path]
+        item_data['occurrences'] = new_occurrences
+        remaining_paths = list(dict.fromkeys(occ.get('internal_html_path') for occ in new_occurrences if occ.get('internal_html_path')))
+
+        term = item_data.get('term') or item_data.get('_display_term') or os.path.basename(internal_path)
+
+        if not remaining_paths:
+            # Сразу скрываем эти строки в текущем окне
+            for item in self.original_data:
+                if item.get('internal_html_path') == internal_path:
+                    item['_deleted'] = True
+            self.apply_filters()
+            QMessageBox.information(
+                self,
+                "Глава помечена",
+                f"Глава '{os.path.basename(internal_path)}' помечена к переотправке и скрыта.\n"
+                f"Термин: {term}"
+            )
+        else:
+            item_data['internal_html_path'] = remaining_paths[0]
+            self.apply_filters()
+            QMessageBox.information(
+                self,
+                "Глава помечена",
+                f"Глава '{os.path.basename(internal_path)}' помечена к переотправке.\n\n"
+                f"Эта же недопереведённая строка найдена ещё в {len(remaining_paths)} других главах, поэтому она осталась в списке."
+            )
+
+    def _mark_selected_chapters_for_retry(self):
+        unique_paths = set()
+        for data_index in self.selected_indices:
+            if data_index < len(self.original_data):
+                path = self.original_data[data_index].get('internal_html_path')
+                if path:
+                    unique_paths.add(path)
+
+        if not unique_paths:
+            QMessageBox.warning(
+                self,
+                "Ничего не выбрано",
+                "Среди выбранных строк нет глав с определённым путём файла."
+            )
+            return
+
+        self.mark_chapters_for_retry_requested.emit(list(unique_paths))
+
+        hidden_count = 0
+        remained_count = 0
+
+        # Сразу скрываем или обновляем эти строки в текущем окне
+        for item in self.original_data:
+            if item.get('_deleted'):
+                continue
+
+            cur_path = item.get('internal_html_path')
+            if cur_path in unique_paths:
+                occurrences = item.get('occurrences', [])
+                new_occurrences = [occ for occ in occurrences if occ.get('internal_html_path') not in unique_paths]
+                item['occurrences'] = new_occurrences
+
+                remaining_paths = list(dict.fromkeys(occ.get('internal_html_path') for occ in new_occurrences if occ.get('internal_html_path')))
+
+                if not remaining_paths:
+                    item['_deleted'] = True
+                    hidden_count += 1
+                else:
+                    item['internal_html_path'] = remaining_paths[0]
+                    remained_count += 1
+
+        self.apply_filters()
+
+        msg = f"Помечено глав к переотправке: {len(unique_paths)}."
+        if remained_count > 0:
+            msg += f"\n\nНекоторые из проблем (уникальных строк: {remained_count}) встречаются в других непомеченных главах, поэтому они остались в списке."
+
+        QMessageBox.information(
+            self,
+            "Главы помечены",
+            msg
+        )
 
     def _start_context_edit(self, data_index):
         for row in range(self.table.rowCount()):
@@ -1724,7 +1872,35 @@ class UntranslatedFixerDialog(QDialog):
             
         self._update_tags_info_label()
         self.apply_filters()
-        
+
+    def _prompt_and_add_phrase(self, list_type):
+        """Открывает диалог ввода произвольной фразы (1-3 слова) и добавляет в фильтр."""
+        from PyQt6.QtWidgets import QInputDialog
+        label = "Требовать (✅)" if list_type == 'white' else "Скрыть (❌)"
+        phrase, ok = QInputDialog.getText(
+            self,
+            f"Добавить фразу в «{label}»",
+            "Введите фразу (1–3 слова):",
+        )
+        if not ok or not phrase.strip():
+            return
+        words = phrase.strip().split()
+        if len(words) > 3:
+            QMessageBox.warning(
+                self,
+                "Слишком длинная фраза",
+                "Допускается не более 3 слов. Будут использованы первые три."
+            )
+            words = words[:3]
+        phrase_key = " ".join(words).lower()
+        if list_type == 'white':
+            self.whitelist_set.add(phrase_key)
+        else:
+            self.blacklist_set.add(phrase_key)
+        self._update_tags_info_label()
+        self.apply_filters()
+
+
     def _set_whitelist_filter(self, term):
         """Устанавливает термин в поле поиска и обновляет таблицу."""
         self.whitelist_edit.setText(term)
@@ -1917,6 +2093,84 @@ class UntranslatedFixerDialog(QDialog):
 
     def should_save_immediately(self): return getattr(self, '_should_save_immediately', False)
     def get_changes(self): return self.changes
+
+    def save_filter_state(self):
+        """Сохраняет текущее состояние фильтров в словарь для кеширования."""
+        return {
+            'blacklist_set': set(self.blacklist_set),
+            'whitelist_set': set(self.whitelist_set),
+            'chk_latin': self.chk_latin.isChecked(),
+            'chk_cjk': self.chk_cjk.isChecked(),
+            'chk_greek': self.chk_greek.isChecked(),
+            'chk_other': self.chk_other.isChecked(),
+            'ratio_mode_index': self.ratio_mode_combo.currentIndex(),
+            'ratio_op': self.ratio_op.currentText(),
+            'ratio_value': self.ratio_spin.value(),
+            'len_op': self.len_op.currentText(),
+            'len_value': self.len_spin.value(),
+            'source_filter': self.source_filter_combo.currentData(),
+            'page_size': self.spin_page_size.value(),
+            'current_page': self.current_page,
+            'selected_indices': set(self.selected_indices),
+        }
+
+    def restore_filter_state(self, state, *, restore_selection=False):
+        """Восстанавливает состояние фильтров из словаря. Не вызывает apply_filters многократно.
+
+        restore_selection=True использовать только когда данные (fingerprint) не изменились.
+        """
+        if not state:
+            return
+
+        widgets_to_block = [
+            self.chk_latin, self.chk_cjk, self.chk_greek, self.chk_other,
+            self.ratio_mode_combo, self.ratio_op, self.ratio_spin,
+            self.len_op, self.len_spin, self.source_filter_combo,
+            self.spin_page_size,
+        ]
+        for w in widgets_to_block:
+            w.blockSignals(True)
+
+        self.blacklist_set = set(state.get('blacklist_set', set()))
+        self.whitelist_set = set(state.get('whitelist_set', set()))
+
+        self.chk_latin.setChecked(state.get('chk_latin', True))
+        self.chk_cjk.setChecked(state.get('chk_cjk', True))
+        self.chk_greek.setChecked(state.get('chk_greek', True))
+        self.chk_other.setChecked(state.get('chk_other', True))
+
+        self.ratio_mode_combo.setCurrentIndex(state.get('ratio_mode_index', 0))
+        self.ratio_op.setCurrentText(state.get('ratio_op', '>'))
+        self.ratio_spin.setValue(state.get('ratio_value', 0.0))
+        self.len_op.setCurrentText(state.get('len_op', '>'))
+        self.len_spin.setValue(state.get('len_value', 0))
+
+        source_index = max(0, self.source_filter_combo.findData(state.get('source_filter', 'all')))
+        self.source_filter_combo.setCurrentIndex(source_index)
+
+        self.page_size = state.get('page_size', 50)
+        self.spin_page_size.setValue(self.page_size)
+
+        for w in widgets_to_block:
+            w.blockSignals(False)
+
+        self._update_tags_info_label()
+        self.apply_filters()
+
+        if restore_selection:
+            # Восстанавливаем выделение и страницу только если данные те же
+            saved_selection = state.get('selected_indices', set())
+            valid_selection = saved_selection & set(self.filtered_indices)
+            self.selected_indices = valid_selection if valid_selection else set(self.filtered_indices)
+            saved_page = state.get('current_page', 0)
+            total_pages = max(1, (len(self.filtered_indices) + self.page_size - 1) // self.page_size)
+            self.current_page = min(saved_page, total_pages - 1)
+        else:
+            self.selected_indices = set(self.filtered_indices)
+            self.current_page = 0
+
+        self.update_table_view()
+
 
 
 # --- ДИАЛОГ ПЕРЕВОДА (ОБНОВЛЕННЫЙ v6: Dark Theme UI) ---

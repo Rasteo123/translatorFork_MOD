@@ -1084,6 +1084,11 @@ class TranslationValidatorDialog(QDialog):
         self.previous_problem_paths = set()
         self.current_detector_signature = ""
         self.current_epub_fingerprint = {}
+
+        # --- Кеш состояния помощника недоперевода ---
+        self._fixer_filter_state = None
+        self._fixer_data_fingerprint = None
+        self._fixer_stale_rows: set = set()  # строки, требующие пересчёта untranslated_words
         
         app = QtWidgets.QApplication.instance()
         self.settings_manager = app.get_settings_manager() if hasattr(app, 'settings_manager') else None
@@ -2753,7 +2758,7 @@ class TranslationValidatorDialog(QDialog):
         """Пересчитывает общее количество недопереводов по всем текущим данным и обновляет кнопку."""
         self.untranslated_found_count = 0
         for data in self.results_data.values():
-            if 'untranslated_words' in data:
+            if 'untranslated_words' in data and data.get('status') != 'retry':
                 self.untranslated_found_count += 1
 
         self.user_problem_terms_count = 0
@@ -2901,6 +2906,7 @@ class TranslationValidatorDialog(QDialog):
         self.btn_analyze.setText("⏳ Анализирую...")
         self.btn_analyze.setEnabled(False)
         self.btn_exceptions_manager.setEnabled(False)
+        self.btn_fix_untranslated.setEnabled(False)
         exceptions_set = self._get_effective_word_exceptions()
         
         config = {
@@ -3080,6 +3086,28 @@ class TranslationValidatorDialog(QDialog):
 
         term = (payload or {}).get('term') or os.path.basename(internal_path or '')
         self.lbl_status.setText(f"Переход к проблеме: {term}")
+
+    @pyqtSlot(list)
+    def mark_chapters_for_retry(self, chapter_paths):
+        """Помечает главы к переотправке по списку internal_html_path."""
+        if not chapter_paths:
+            return
+
+        marked_count = 0
+        for internal_path in chapter_paths:
+            row = self._find_result_row_by_internal_path(internal_path)
+            if row is None:
+                continue
+
+            self.results_data[row]['status'] = 'retry'
+            status_item = self.table_results.item(row, 3)
+            if status_item:
+                status_item.setText("К переотправке")
+            self.update_row_color(row, 'retry')
+            marked_count += 1
+
+        if marked_count:
+            self.lbl_status.setText(f"Помечено к переотправке: {marked_count} глав(ы).")
 
     # --- НОВЫЙ МЕТОД ---
     def show_structure_details(self, errors_dict):
@@ -3688,6 +3716,10 @@ class TranslationValidatorDialog(QDialog):
                 
                 # --- ВАЖНО: Помечаем файл как грязный ---
                 self.dirty_files.add(data['internal_html_path'])
+                # Сбрасываем устаревший список недопереводов — они актуальны после повторного анализа
+                data.pop('untranslated_words', None)
+                # Помечаем как требующие пересчёта перед следующим открытием фиксера
+                self._fixer_stale_rows.add(row)
                 
                 saved_count += 1
             except Exception as e:
@@ -3698,6 +3730,8 @@ class TranslationValidatorDialog(QDialog):
             self.lbl_status.setText(f"Сохранено файлов: {saved_count}. Требуется перепроверка.")
             # Автоматического запуска НЕТ. Только обновление кнопки.
             self._update_analyze_button_state()
+            # Данные изменились — инвалидируем кеш помощника недоперевода
+            self._fixer_data_fingerprint = None
 
         if not any(d.get('is_edited', False) for d in self.results_data.values()):
             self.btn_save_changes.setEnabled(False)
@@ -4057,6 +4091,9 @@ class TranslationValidatorDialog(QDialog):
             internal_path = result_data.get('internal_html_path')
             if target_paths and internal_path not in target_paths:
                 continue
+            # Главы, помеченные к переотправке, будут переведены заново — нет смысла их показывать
+            if result_data.get('status') == 'retry':
+                continue
             if 'untranslated_words' not in result_data:
                 continue
 
@@ -4143,6 +4180,7 @@ class TranslationValidatorDialog(QDialog):
                         'is_orphan': is_orphan_flag,
                         'row_index': row_index,
                         'soup_ref': soup,
+                        'internal_html_path': internal_path,
                     })
 
         if not grouped_data_map:
@@ -4246,6 +4284,9 @@ class TranslationValidatorDialog(QDialog):
                 )
             else:
                 result_data.pop('untranslated_words', None)
+
+        # Список слов обновился — инвалидируем кеш помощника недоперевода
+        self._fixer_data_fingerprint = None
 
     def _apply_untranslated_fixer_changes(
         self,
@@ -4582,6 +4623,14 @@ class TranslationValidatorDialog(QDialog):
                 'response_details_text': response_details_text,
             }
 
+    def _compute_fixer_data_fingerprint(self, data_list):
+        """Вычисляет легковесный фингерпринт данных помощника недоперевода."""
+        parts = [str(len(data_list))]
+        for item in data_list:
+            parts.append(item.get('internal_html_path', '') or '')
+            parts.append(item.get('term', '') or '')
+        return hashlib.md5('|'.join(parts).encode('utf-8', errors='replace')).hexdigest()
+
     def _open_untranslated_fixer(self, initial_source_filter='all'):
         try:
             system_items, soup_cache = self._collect_untranslated_fixer_payload(show_feedback=False)
@@ -4591,13 +4640,48 @@ class TranslationValidatorDialog(QDialog):
                 QMessageBox.information(self, "Все чисто", "Не найдено контекстов для исправления.")
                 return
 
+            # Быстро пересчитаем недопереводы для строк, отредактированных вручную
+            stale = list(self._fixer_stale_rows)
+            # Добавляем строки с is_edited, если они ещё не в stale
+            stale_set = set(stale)
+            for row_idx, rd in self.results_data.items():
+                if rd.get('is_edited') and row_idx not in stale_set:
+                    stale.append(row_idx)
+            if stale:
+                self._recalculate_untranslated_words_for_rows(stale)
+                self._fixer_stale_rows.clear()
+                # Повторно собираем данные с обновлёнными словами
+                system_items, soup_cache = self._collect_untranslated_fixer_payload(show_feedback=False)
+                data_for_dialog = system_items + user_items
+
+            # Вычисить fingerprint для определения, изменились ли данные
+            new_fp = self._compute_fixer_data_fingerprint(data_for_dialog)
+
+            # Если есть сохраненное состояние фильтров — используем его
+            effective_source_filter = initial_source_filter
+            saved_state = self._fixer_filter_state
+            if saved_state and self._fixer_data_fingerprint == new_fp:
+                effective_source_filter = saved_state.get('source_filter', initial_source_filter)
+
             dialog = UntranslatedFixerDialog(
                 data_for_dialog,
                 self,
-                initial_source_filter=initial_source_filter
+                initial_source_filter=effective_source_filter
             )
             dialog.navigate_to_chapter_requested.connect(self.navigate_to_problem_chapter)
+            dialog.mark_chapters_for_retry_requested.connect(self.mark_chapters_for_retry)
+
+            # Восстанавливаем фильтры из кеша
+            if saved_state:
+                data_unchanged = (self._fixer_data_fingerprint == new_fp)
+                dialog.restore_filter_state(saved_state, restore_selection=data_unchanged)
+
+            self._fixer_data_fingerprint = new_fp
             dialog_result = dialog.exec()
+
+            # Сохраняем состояние фильтров при любом закрытии
+            self._fixer_filter_state = dialog.save_filter_state()
+
             glossary_updated = dialog.has_glossary_updates()
 
             if dialog_result != QDialog.DialogCode.Accepted:
@@ -4616,6 +4700,8 @@ class TranslationValidatorDialog(QDialog):
                     save_immediately=dialog.should_save_immediately(),
                     show_feedback=True,
                 )
+                # Данные изменились — инвалидируем fingerprint
+                self._fixer_data_fingerprint = None
 
             if glossary_updated:
                 self._recalculate_untranslated_words_for_rows(list(self.results_data.keys()))
