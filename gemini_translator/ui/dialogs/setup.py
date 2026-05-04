@@ -2737,14 +2737,15 @@ class InitialSetupDialog(QDialog):
 
         replacer = None
         if process_with_glossary:
-            full_glossary_data = {
-                entry['original']: {
-                    'rus': entry.get('rus') or entry.get('translation'),
-                    'note': entry.get('note')
+            full_glossary_data = {}
+            for entry in glossary_list:
+                original = str(entry.get('original') or "").strip()
+                if not original:
+                    continue
+                full_glossary_data[original] = {
+                    'rus': str((entry.get('rus') or entry.get('translation')) or ""),
+                    'note': str(entry.get('note') or "")
                 }
-                for entry in glossary_list
-                if entry.get('original')
-            }
             if full_glossary_data:
                 replacer = GlossaryReplacer(full_glossary_data)
 
@@ -3747,10 +3748,15 @@ class InitialSetupDialog(QDialog):
 
         glossary_sample_list = current_glossary_list[:BENCHMARK_GLOSSARY_SIZE]
         # Для теста нам нужен полный формат словаря
-        glossary_sample_dict = {
-            entry.get('original', ''): {'rus': entry.get('rus', ''), 'note': entry.get('note', '')}
-            for entry in glossary_sample_list if entry.get('original')
-        }
+        glossary_sample_dict = {}
+        for entry in glossary_sample_list:
+            original = str(entry.get('original') or "").strip()
+            if not original:
+                continue
+            glossary_sample_dict[original] = {
+                'rus': str(entry.get('rus') or ""),
+                'note': str(entry.get('note') or "")
+            }
 
         text_sample = ""
         if self.html_files and self.selected_file:
@@ -5534,14 +5540,15 @@ class InitialSetupDialog(QDialog):
         provider_id = self.key_management_widget.get_selected_provider()
 
         glossary_list = self.glossary_widget.get_glossary()
-        full_glossary_data = {
-            entry['original']: {
-                'rus': entry.get('rus') or entry.get('translation'),
-                'note': entry.get('note')
+        full_glossary_data = {}
+        for entry in glossary_list:
+            original = str(entry.get('original') or "").strip()
+            if not original:
+                continue
+            full_glossary_data[original] = {
+                'rus': str((entry.get('rus') or entry.get('translation')) or ""),
+                'note': str(entry.get('note') or "")
             }
-            for entry in glossary_list
-            if entry.get('original')
-        }
 
         model_settings = self.model_settings_widget.get_settings()
         translation_options = self.translation_options_widget.get_settings()

@@ -41,6 +41,10 @@ UNORDERED_WORDS_THRESHOLD = 98     # Уровень 3: Разрешаем пер
 CHAR_SIMILARITY_THRESHOLD = 96     # Уровень 4: Разрешаем опечатки/схожие слова
 FUZZY_SEARCH_THRESHOLD = 94        # Уровень 5: Включаем "тяжелый" fuzzy-поиск
 
+def _glossary_text(value):
+    return "" if value is None else str(value).strip()
+
+
 class LanguageDetector:
     """Определяет язык текста по символам"""
     
@@ -848,12 +852,16 @@ class GlossaryLogic:
         trans_to_originals_map = defaultdict(list) # Для обратного поиска
         unique_translations = [] # Для генератора кандидатов по переводам
         
+        valid_glossary_list = []
         seen_trans = set()
 
         for e in glossary_list:
-            orig = e.get('original', '').strip()
-            trans = e.get('rus', '').strip()
+            if not isinstance(e, dict):
+                continue
+            orig = _glossary_text(e.get('original'))
+            trans = _glossary_text(e.get('rus'))
             if not orig: continue
+            valid_glossary_list.append({**e, 'original': orig, 'rus': trans})
             
             # Очистка оригинала (для CJK убираем пробелы, для EN оставляем)
             clean_orig = re.sub(r'\s+', '', orig) if LanguageDetector.is_cjk_text(orig) else orig
@@ -883,7 +891,7 @@ class GlossaryLogic:
         # --- Шаг 2: Генерация кандидатов (Двухканальная) ---
         
         # Канал А: Кандидаты по Оригиналам
-        candidates_orig = self._generate_candidate_pairs(glossary_list)
+        candidates_orig = self._generate_candidate_pairs(valid_glossary_list)
         
         # Канал Б: Кандидаты по Переводам
         # Генерируем пары похожих переводов
@@ -1115,26 +1123,27 @@ class GlossaryLogic:
     def find_direct_conflicts(self, glossary_list):
         term_map = defaultdict(list)
         for entry in glossary_list:
-            original = entry.get('original', '').strip()
+            original = _glossary_text(entry.get('original'))
             if original: term_map[original].append(entry)
         direct_conflicts = {}
         for term, entries in term_map.items():
-            if len(set((e.get('rus', ''), e.get('note', '')) for e in entries)) > 1:
-                direct_conflicts[term] = [{'rus': t, 'note': n} for t, n in set((e.get('rus', ''), e.get('note', '')) for e in entries)]
+            normalized_entries = set((_glossary_text(e.get('rus')), _glossary_text(e.get('note'))) for e in entries)
+            if len(normalized_entries) > 1:
+                direct_conflicts[term] = [{'rus': t, 'note': n} for t, n in normalized_entries]
         return {}, direct_conflicts
 
     def find_reverse_issues(self, glossary_list):
         issues = defaultdict(lambda: {'complete': [], 'orphans': []})
         for entry in glossary_list:
-            original = entry.get('original', '').strip()
-            rus = entry.get('rus', '').strip()
+            original = _glossary_text(entry.get('original'))
+            rus = _glossary_text(entry.get('rus'))
             if not rus: continue
             if original: issues[rus]['complete'].append(entry)
-            elif entry.get('note', '').strip(): issues[rus]['orphans'].append(entry)
+            elif _glossary_text(entry.get('note')): issues[rus]['orphans'].append(entry)
         return {t: d for t, d in issues.items() if len(d['complete']) > 1 or (d['complete'] and d['orphans'])}
     
     def find_overlap_groups(self, glossary_list):
-        terms_set = {e.get('original', '').strip() for e in glossary_list if e.get('original', '').strip()}
+        terms_set = {_glossary_text(e.get('original')) for e in glossary_list if _glossary_text(e.get('original'))}
         groups, inverted = defaultdict(list), defaultdict(list)
         terms = sorted(list(terms_set), key=len)
         for i in range(len(terms)):
@@ -1292,7 +1301,7 @@ class GlossaryLogic:
         # для которых конфликты еще не найдены на предыдущих этапах.
         entries_to_check = [
             e for e in glossary_list 
-            if e.get('original', '').strip() and e.get('original', '').strip() not in existing_conflicts_set
+            if _glossary_text(e.get('original')) and _glossary_text(e.get('original')) not in existing_conflicts_set
         ]
     
         # --- Шаг 2: Генерация кандидатов с помощью универсального метода ---
@@ -1307,8 +1316,8 @@ class GlossaryLogic:
         # Создаем карту переводов для быстрого доступа в цикле.
         # Мы используем исходный glossary_list, чтобы иметь доступ ко всем переводам.
         term_data = {
-            e['original'].strip(): {'rus': e.get('rus', '').strip()}
-            for e in glossary_list if e.get('original', '').strip()
+            _glossary_text(e.get('original')): {'rus': _glossary_text(e.get('rus'))}
+            for e in glossary_list if _glossary_text(e.get('original'))
         }
         
         analysis_results = defaultdict(dict)
@@ -1456,10 +1465,10 @@ class GlossaryLogic:
             existing_conflicts_set = set()
 
         # 1. Фильтруем и готовим данные
-        glossary_map = {e.get('original'): e for e in glossary_list}
+        glossary_map = {_glossary_text(e.get('original')): e for e in glossary_list if _glossary_text(e.get('original'))}
         clean_glossary_list = [
             e for e in glossary_list 
-            if e.get('original', '').strip() and e.get('original').strip() not in existing_conflicts_set
+            if _glossary_text(e.get('original')) and _glossary_text(e.get('original')) not in existing_conflicts_set
         ]
         
         if not clean_glossary_list:

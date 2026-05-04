@@ -40,10 +40,17 @@ def sorted_glossary_entries(entries: list[dict]) -> list[dict]:
     )
 
 
+def normalize_glossary_field(value) -> str:
+    return "" if value is None else str(value)
+
+
 def glossary_snapshot(entries) -> list[dict]:
     raw_list = []
     if isinstance(entries, dict):
-        raw_list = [{"original": key, **value} for key, value in entries.items()]
+        raw_list = [
+            {"original": key, **(value if isinstance(value, dict) else {"rus": value})}
+            for key, value in entries.items()
+        ]
     elif isinstance(entries, list):
         raw_list = entries
 
@@ -389,13 +396,18 @@ class GlossaryWidget(QWidget):
         # --- Нормализация данных (rus vs translation + timestamp) ---
         raw_list = []
         if isinstance(glossary_data, dict):
-            raw_list = [{"original": k, **v} for k, v in glossary_data.items()]
+            raw_list = [
+                {"original": k, **(v if isinstance(v, dict) else {"rus": v})}
+                for k, v in glossary_data.items()
+            ]
         elif isinstance(glossary_data, list):
             raw_list = glossary_data
             
         current_now = time.time()
 
         for entry in raw_list:
+            if not isinstance(entry, dict):
+                continue
             clean_entry = entry.copy()
             
             # Фолбэк: если нет 'rus', но есть 'translation', используем его
@@ -406,6 +418,11 @@ class GlossaryWidget(QWidget):
             if 'rus' not in clean_entry: clean_entry['rus'] = ""
             if 'note' not in clean_entry: clean_entry['note'] = ""
             if 'original' not in clean_entry: clean_entry['original'] = ""
+            clean_entry['original'] = normalize_glossary_field(clean_entry.get('original'))
+            clean_entry['rus'] = normalize_glossary_field(clean_entry.get('rus'))
+            clean_entry['note'] = normalize_glossary_field(clean_entry.get('note'))
+            if 'translation' in clean_entry:
+                clean_entry['translation'] = normalize_glossary_field(clean_entry.get('translation'))
             
             # ТАЙМСТАМП: Сохраняем старый или создаем новый (для импорта из старых версий)
             if 'timestamp' not in clean_entry:
