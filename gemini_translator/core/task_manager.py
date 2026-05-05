@@ -692,19 +692,29 @@ class ChapterQueueManager(QObject):
         self._safe_request_ui_update()
     
     def replace_chunks_with_chapter(self, chunk_task_ids: list, epub_path: str, original_chapter_path: str):
-        if not chunk_task_ids: return
+        if not chunk_task_ids: return False
+        replaced = False
         with self._get_write_conn() as conn:
             placeholders = ','.join('?' for _ in chunk_task_ids)
-            conn.execute(f"DELETE FROM tasks WHERE task_id IN ({placeholders})", chunk_task_ids)
-            new_task_id = str(uuid.uuid4())
-            new_payload = ('epub', epub_path, original_chapter_path)
-            cursor = conn.execute("SELECT MAX(sequence) FROM tasks WHERE status = 'completed'")
-            max_seq_row = cursor.fetchone()
-            max_seq = max_seq_row[0] if max_seq_row else None
-            new_seq = 0 if max_seq is None else max_seq + 1
-            conn.execute("INSERT INTO tasks (task_id, payload, status, sequence) VALUES (?, ?, ?, ?)", (new_task_id, json.dumps(new_payload, default=tuple_serializer), 'completed', new_seq))
+            cursor = conn.execute(f"SELECT COUNT(*) FROM tasks WHERE task_id IN ({placeholders})", chunk_task_ids)
+            task_count = cursor.fetchone()[0]
+            if task_count == len(chunk_task_ids):
+                conn.execute(f"DELETE FROM chunk_results WHERE task_id IN ({placeholders})", chunk_task_ids)
+                conn.execute(f"DELETE FROM tasks WHERE task_id IN ({placeholders})", chunk_task_ids)
+                new_task_id = str(uuid.uuid4())
+                new_payload = ('epub', epub_path, original_chapter_path)
+                cursor = conn.execute("SELECT MAX(sequence) FROM tasks WHERE status = 'completed'")
+                max_seq_row = cursor.fetchone()
+                max_seq = max_seq_row[0] if max_seq_row else None
+                new_seq = 0 if max_seq is None else max_seq + 1
+                conn.execute("INSERT INTO tasks (task_id, payload, status, sequence) VALUES (?, ?, ?, ?)", (new_task_id, json.dumps(new_payload, default=tuple_serializer), 'completed', new_seq))
+                replaced = True
+        if not replaced:
+            self._log(f"[TASK MANAGER] Сборка чанков для '{os.path.basename(original_chapter_path)}' пропущена: комплект уже обработан другим сборщиком.")
+            return False
         self._log(f"[TASK MANAGER] {len(chunk_task_ids)} чанков для '{os.path.basename(original_chapter_path)}' успешно собраны и заменены одной задачей.")
         self._safe_request_ui_update()
+        return True
 
     def task_failed_permanently(self, worker_id: str, task_info: tuple):
         """Помечает задачу как 'failed' атомарно и логирует результат после."""

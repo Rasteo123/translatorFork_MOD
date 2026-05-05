@@ -21,8 +21,7 @@ class ChunkAssembler(QObject):
         self.bus = QtWidgets.QApplication.instance().event_bus
         self.bus.event_posted.connect(self.on_event)
         
-        if settings:
-            self.settings = settings
+        self.settings = settings or {}
         
         self.output_folder = output_folder
         self.project_manager = project_manager
@@ -100,10 +99,69 @@ class ChunkAssembler(QObject):
         prefix, _, suffix = process_body_tag(original_html, return_parts=True, body_content_only=False)
         return prefix, suffix
 
+    def _resolve_wrapper(self, first_payload: list, original_chapter_path: str):
+        if len(first_payload) >= 8:
+            prefix = first_payload[6]
+            suffix = first_payload[7]
+            if isinstance(prefix, str) and isinstance(suffix, str):
+                return prefix, suffix
+
+        epub_candidates = []
+        if len(first_payload) > 1:
+            epub_candidates.append(first_payload[1])
+        settings_epub_path = self.settings.get('file_path')
+        if settings_epub_path and settings_epub_path not in epub_candidates:
+            epub_candidates.append(settings_epub_path)
+
+        last_error = None
+        for epub_path in epub_candidates:
+            try:
+                return self._build_wrapper_from_source(epub_path, original_chapter_path)
+            except Exception as exc:
+                last_error = exc
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Не удалось определить HTML-обертку для '{original_chapter_path}'.")
+
+    def _requeue_chunks_missing_results(self, conn, task_ids: list, result_ids: set, original_chapter_path: str) -> bool:
+        missing_ids = [task_id for task_id in task_ids if task_id not in result_ids]
+        if not missing_ids:
+            return False
+
+        placeholders = ','.join('?' for _ in missing_ids)
+        cursor = conn.execute(
+            f"SELECT task_id FROM tasks WHERE task_id IN ({placeholders}) AND status = 'completed'",
+            missing_ids,
+        )
+        recoverable_ids = [row['task_id'] for row in cursor.fetchall()]
+        if not recoverable_ids:
+            return False
+
+        recoverable_placeholders = ','.join('?' for _ in recoverable_ids)
+        conn.execute(
+            f"""
+            UPDATE tasks
+            SET status = 'pending',
+                priority = 1,
+                worker_id = NULL
+            WHERE task_id IN ({recoverable_placeholders})
+            """,
+            recoverable_ids,
+        )
+        self._post_event('log_message', {
+            'message': (
+                f"[ASSEMBLER_RECOVERY] Для '{os.path.basename(original_chapter_path)}' "
+                f"не найдено результатов чанков: {len(recoverable_ids)}. "
+                "Они возвращены в очередь для повторного перевода."
+            )
+        })
+        return True
+
     def _assemble_chapter_from_db(self, task_ids: list, original_chapter_path: str):
         """
-        Атомарно извлекает результаты чанков из БД, удаляет их, а затем собирает главу.
-        Версия 3.0: Использует ОДНУ транзакцию для всех операций с БД.
+        Извлекает результаты чанков из БД и собирает главу.
+        Результаты удаляются только после успешной записи итогового файла.
         """
         app = QtWidgets.QApplication.instance()
         if not hasattr(app, 'task_manager'): return
@@ -118,14 +176,22 @@ class ChunkAssembler(QObject):
                 results = cursor.fetchall()
 
                 if len(results) != len(task_ids):
-                    # Если результатов не хватает, ничего не делаем. Транзакция просто завершится.
-                    print(f"[ASSEMBLER_RACE_CONDITION] Сборка для '{os.path.basename(original_chapter_path)}' отменена: другой поток уже забрал эти чанки.")
+                    result_ids = {row['task_id'] for row in results}
+                    recovered = self._requeue_chunks_missing_results(
+                        conn,
+                        task_ids,
+                        result_ids,
+                        original_chapter_path,
+                    )
+                    if recovered:
+                        app.task_manager._safe_request_ui_update()
+                    else:
+                        # Если результатов не хватает, ничего не делаем. Транзакция просто завершится.
+                        print(f"[ASSEMBLER_RACE_CONDITION] Сборка для '{os.path.basename(original_chapter_path)}' отменена: другой поток уже забрал эти чанки.")
                     return
 
-                # 2. Если все на месте, удаляем их, чтобы никто больше не смог их забрать
-                conn.execute(f"DELETE FROM chunk_results WHERE task_id IN ({placeholders})", task_ids)
-
-                # 3. Получаем все необходимые payload'ы в этой же транзакции
+                # 2. Получаем все необходимые payload'ы в этой же транзакции.
+                # Результаты чанков удаляются только после успешной записи финального файла.
                 cursor = conn.execute(f"SELECT task_id, payload FROM tasks WHERE task_id IN ({placeholders})", task_ids)
                 chunk_infos_rows = cursor.fetchall()
                 if not chunk_infos_rows:
@@ -138,7 +204,7 @@ class ChunkAssembler(QObject):
             
             first_payload = chunk_infos[0]['payload']
             epub_path, total_chunks = first_payload[1], first_payload[5]
-            prefix, suffix = self._build_wrapper_from_source(epub_path, original_chapter_path)
+            prefix, suffix = self._resolve_wrapper(first_payload, original_chapter_path)
             
             self._post_event('log_message', {'message': f"[ASSEMBLER] Комплект из {total_chunks} чанков для '{os.path.basename(original_chapter_path)}' захвачен для сборки…"})
 
@@ -169,9 +235,11 @@ class ChunkAssembler(QObject):
                 relative_path = os.path.relpath(final_path, self.output_folder)
                 self.project_manager.register_translation(original_chapter_path, file_suffix, relative_path)
 
-            app.task_manager.replace_chunks_with_chapter(
+            replaced = app.task_manager.replace_chunks_with_chapter(
                 chunk_task_ids=task_ids, epub_path=epub_path, original_chapter_path=original_chapter_path
             )
+            if not replaced:
+                return
             
             self._post_event('log_message', {'message': f"[ASSEMBLER] ✅ Глава '{os.path.basename(original_chapter_path)}' успешно собрана из комплекта."})
             self._post_event('assembly_finished', {'original_chapter_path': original_chapter_path, 'chunk_count': total_chunks})
