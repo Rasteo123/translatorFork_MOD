@@ -84,9 +84,15 @@ _WORD_EXCEPTIONS_FILE = get_resource_path("config/default_word_exceptions.txt")
 _INTERNAL_PROMPTS_FILE = get_resource_path("config/internal_prompts.json")
 
 _BASE_GLOSSARY_FILES = {
+    "naruto": "config/base_glossaries/naruto.json",
+    "warhammer": "config/base_glossaries/warhammer.json",
+    "worm": "config/base_glossaries/worm.json",
     "xianxia": "config/base_glossaries/xianxia.json",
 }
 _BASE_GLOSSARY_DISPLAY_NAMES = {
+    "naruto": "Фэндом: Наруто / Naruto",
+    "warhammer": "Фандом: Вархаммер / Warhammer",
+    "worm": "Фандом: Червь / Worm",
     "xianxia": "Базовый глоссарий сянься",
 }
 
