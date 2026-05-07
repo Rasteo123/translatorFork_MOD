@@ -19,7 +19,8 @@ class PresetWidget(QWidget):
     def __init__(self, parent=None, preset_name="Пресет", default_prompt_func=None,
              load_presets_func=None, save_presets_func=None,
              get_last_text_func=None, get_last_preset_func=None,
-             save_last_preset_func=None, show_default_button=True):
+             save_last_preset_func=None, show_default_button=True,
+             builtin_presets_func=None):
         
         super().__init__(parent)
         app = QtWidgets.QApplication.instance()
@@ -33,11 +34,13 @@ class PresetWidget(QWidget):
         self.show_default_button = show_default_button
         self.load_presets = load_presets_func or self.settings_manager.load_named_prompts
         self.save_presets = save_presets_func or self.settings_manager.save_named_prompts
+        self.load_builtin_presets = builtin_presets_func or (lambda: {})
         self.get_last_text = get_last_text_func or self.settings_manager.get_custom_prompt
         self.get_last_preset = get_last_preset_func or self.settings_manager.get_last_prompt_preset_name
         self.save_last_preset = save_last_preset_func
 
         self.loaded_preset_name = None
+        self.loaded_preset_source = None
         self.original_preset_text = None
         self.is_preset_modified = False
         self._initial_load_done = False 
@@ -100,16 +103,25 @@ class PresetWidget(QWidget):
     def _load_prompts_into_combo(self):
         self.prompt_combo.blockSignals(True)
         self.prompt_combo.clear()
+        builtin_prompts = self.load_builtin_presets() or {}
         prompts = self.load_presets()
         
         self.prompt_combo.addItem(f"[Новый {self.preset_name}]", userData=None)
+
+        for name, text in builtin_prompts.items():
+            self.prompt_combo.addItem(name, userData=text)
         
         for name in sorted(prompts.keys()):
+            if name in builtin_prompts:
+                continue
             self.prompt_combo.addItem(name, userData=prompts[name])
             
         self.prompt_combo.setCurrentIndex(0)
         self._update_button_states()
         self.prompt_combo.blockSignals(False)
+
+    def _is_new_prompt_selected(self):
+        return self.prompt_combo.currentIndex() == 0
         
     def _on_prompt_selected(self, name):
         self.prompt_edit.blockSignals(True)
@@ -119,14 +131,21 @@ class PresetWidget(QWidget):
             index = self.prompt_combo.findText(f"{self.loaded_preset_name}*")
             if index != -1: self.prompt_combo.setItemText(index, self.loaded_preset_name)
 
-        if name == f"[Новый {self.preset_name}]" or not name:
-            self.loaded_preset_name, self.original_preset_text = None, None
+        if self._is_new_prompt_selected():
+            self.loaded_preset_name, self.loaded_preset_source, self.original_preset_text = None, None, None
             self.prompt_edit.clear()
         else:
+            builtin_prompts = self.load_builtin_presets() or {}
             prompts = self.load_presets()
             clean_name = name.replace('*', '')
-            if clean_name in prompts:
+            if clean_name in builtin_prompts:
                 self.loaded_preset_name = clean_name
+                self.loaded_preset_source = "builtin"
+                self.original_preset_text = builtin_prompts[clean_name]
+                self.prompt_edit.setPlainText(self.original_preset_text)
+            elif clean_name in prompts:
+                self.loaded_preset_name = clean_name
+                self.loaded_preset_source = "user"
                 self.original_preset_text = prompts[clean_name]
                 self.prompt_edit.setPlainText(self.original_preset_text)
         
@@ -179,6 +198,10 @@ class PresetWidget(QWidget):
     
         # Дальнейшая логика остается без изменений
         prompts = self.load_presets()
+        builtin_prompts = self.load_builtin_presets() or {}
+        if name in builtin_prompts:
+            QMessageBox.warning(self, "Имя уже существует", f"Пресет с именем '{name}' уже существует. Используйте другое имя.")
+            return
         if name in prompts:
             QMessageBox.warning(self, "Имя уже существует", f"Пресет с именем '{name}' уже существует. Используйте другое имя или 'Перезаписать'.")
             return
@@ -187,6 +210,7 @@ class PresetWidget(QWidget):
         if self.save_presets(prompts):
             # 1. Устанавливаем новый пресет как текущий и сбрасываем флаги
             self.loaded_preset_name = name
+            self.loaded_preset_source = "user"
             self.original_preset_text = prompt_text
             self.is_preset_modified = False
             # 2. Перезагружаем комбобокс и выбираем новый пресет
@@ -198,6 +222,8 @@ class PresetWidget(QWidget):
 
     def _overwrite_prompt(self):
         if not self.loaded_preset_name: return
+        if self.loaded_preset_source == "builtin":
+            return
         prompt_text = self.get_prompt()
         if not prompt_text:
             QMessageBox.warning(self, f"{self.preset_name} пуст", f"Нельзя перезаписать пресет пустым текстом.")
@@ -233,6 +259,8 @@ class PresetWidget(QWidget):
 
     def _delete_prompt(self):
         if not self.loaded_preset_name: return
+        if self.loaded_preset_source == "builtin":
+            return
 
         # --- НАЧАЛО ИЗМЕНЕНИЯ ---
         msg_box = QMessageBox(self)
@@ -252,22 +280,27 @@ class PresetWidget(QWidget):
                 if self.save_presets(prompts):
                     self.prompt_edit.clear()
                     self.loaded_preset_name = None
+                    self.loaded_preset_source = None
                     self._load_prompts_into_combo()
                 else:
                     QMessageBox.warning(self, "Ошибка", "Не удалось сохранить файл с пресетами.")
 
     def _update_button_states(self):
         is_preset_loaded = self.loaded_preset_name is not None
-        self.overwrite_btn.setEnabled(is_preset_loaded and self.is_preset_modified)
-        self.delete_btn.setEnabled(is_preset_loaded)
+        is_user_preset = self.loaded_preset_source == "user"
+        self.overwrite_btn.setEnabled(is_user_preset and self.is_preset_modified)
+        self.delete_btn.setEnabled(is_user_preset)
         self.revert_btn.setEnabled(is_preset_loaded and self.is_preset_modified)
 
         self.prompt_combo.blockSignals(True)
+        new_prompt_index = 0
+        if self.prompt_combo.count() > new_prompt_index:
+            self.prompt_combo.setItemText(new_prompt_index, f"[Новый {self.preset_name}]")
         if is_preset_loaded:
             index = self.prompt_combo.findText(self.loaded_preset_name)
             if index == -1:
                 index = self.prompt_combo.findText(f"{self.loaded_preset_name}*")
-            if index != -1:
+            if index != -1 and index != new_prompt_index:
                 new_text = f"{self.loaded_preset_name}*" if self.is_preset_modified else self.loaded_preset_name
                 self.prompt_combo.setItemText(index, new_text)
         self.prompt_combo.blockSignals(False)
@@ -310,7 +343,7 @@ class PresetWidget(QWidget):
         current_text = self.prompt_combo.currentText()
         
         # 2. Если это заглушка "[Новый …]" или пустая строка, то пресета нет
-        if current_text == f"[Новый {self.preset_name}]" or not current_text:
+        if self._is_new_prompt_selected() or not current_text:
             return None
             
         # 3. Убираем звездочку, если она есть, чтобы вернуть "чистое" имя

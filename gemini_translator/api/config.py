@@ -74,6 +74,7 @@ def get_resource_path(relative_path: str) -> Path:
 
 _PROVIDERS_FILE = get_resource_path("config/api_providers.json")
 _PROMPT_FILE = get_resource_path("config/default_prompt.txt")
+_BASIC_TRANSLATION_PROMPT_FILE = get_resource_path("config/default_basic_translation_prompt.txt")
 _SEQUENTIAL_PROMPT_FILE = get_resource_path("config/default_sequential_prompt.txt")
 _GLOSSARY_PROMPT_FILE = get_resource_path("config/default_glossary_prompt.txt")
 _GENRE_GLOSSARY_PROMPT_FILE = get_resource_path("config/default_genre_promt.txt")
@@ -109,6 +110,15 @@ _DEFAULT_API_PROVIDERS_CONFIG = {
     }
 }
 _DEFAULT_PROMPT_TEXT = """**I. РОЛЬ И ГЛАВНАЯ ЦЕЛЬ** (встроенный промпт) …"""
+_DEFAULT_BASIC_TRANSLATION_PROMPT_TEXT = """Локализуй следующий Source Fragment на русский язык. Строго сохраняй HTML-теги, HTML-комментарии, атрибуты, числа и плейсхолдеры. Используй глоссарий для имён, титулов и терминов. Верни только финальный русский HTML-код.
+
+<glossary>
+{glossary}
+</glossary>
+
+<source_text>
+{text}
+</source_text>"""
 _DEFAULT_SEQUENTIAL_PROMPT_TEXT = """# SYSTEM PROTOCOL: SEQUENTIAL RUSSIAN LITERARY ADAPTATION
 
 You are a professional literary translator into Russian.
@@ -189,6 +199,15 @@ def _load_default_prompt():
         except Exception:
             return _DEFAULT_PROMPT_TEXT
     return _DEFAULT_PROMPT_TEXT
+
+def _load_default_basic_translation_prompt():
+    if _BASIC_TRANSLATION_PROMPT_FILE.exists():
+        try:
+            with open(_BASIC_TRANSLATION_PROMPT_FILE, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception:
+            return _DEFAULT_BASIC_TRANSLATION_PROMPT_TEXT
+    return _DEFAULT_BASIC_TRANSLATION_PROMPT_TEXT
 
 def _load_default_sequential_prompt():
     if _SEQUENTIAL_PROMPT_FILE.exists():
@@ -988,11 +1007,12 @@ def _refresh_dynamic_provider_models(provider_id: str, force: bool = False) -> d
 
 # --- ЭТАП 3: ГЛАВНАЯ ФУНКЦИЯ-ИНИЦИАЛИЗАТОР ---
 def initialize_configs():
-    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_SEQUENTIAL_PROMPT, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS, _DYNAMIC_PROVIDER_MODELS, _DYNAMIC_PROVIDER_MODELS_TS
+    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_BASIC_TRANSLATION_PROMPT, _DEFAULT_SEQUENTIAL_PROMPT, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS, _DYNAMIC_PROVIDER_MODELS, _DYNAMIC_PROVIDER_MODELS_TS
     
     print("[CONFIG INFO] Централизованная инициализация конфигураций…")
     _API_PROVIDERS = _load_providers_config()
     _DEFAULT_PROMPT = _load_default_prompt()
+    _DEFAULT_BASIC_TRANSLATION_PROMPT = _load_default_basic_translation_prompt()
     _DEFAULT_SEQUENTIAL_PROMPT = _load_default_sequential_prompt()
     _DEFAULT_GLOSSARY_PROMPT = _load_default_glossary_prompt()
     _DEFAULT_WORD_EXCEPTIONS = _load_default_word_exceptions()
@@ -1033,6 +1053,14 @@ def api_providers():
 def default_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_PROMPT
+def default_basic_translation_prompt():
+    _ensure_configs_initialized()
+    return _DEFAULT_BASIC_TRANSLATION_PROMPT
+def builtin_translation_prompt_variants():
+    _ensure_configs_initialized()
+    return {
+        "Базовый перевод": _DEFAULT_BASIC_TRANSLATION_PROMPT,
+    }
 def default_sequential_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_SEQUENTIAL_PROMPT

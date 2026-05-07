@@ -375,7 +375,8 @@ class InitialSetupDialog(QDialog):
             save_presets_func=self.settings_manager.save_named_prompts,
             get_last_text_func=self.settings_manager.get_custom_prompt,
             get_last_preset_func=self.settings_manager.get_last_prompt_preset_name,
-            save_last_preset_func=self.settings_manager.save_last_prompt_preset_name
+            save_last_preset_func=self.settings_manager.save_last_prompt_preset_name,
+            builtin_presets_func=api_config.builtin_translation_prompt_variants
         )
         self.preset_widget.load_last_session_state()
 
@@ -1072,7 +1073,8 @@ class InitialSetupDialog(QDialog):
             save_presets_func=self.settings_manager.save_named_prompts,
             get_last_text_func=self.settings_manager.get_custom_prompt,
             get_last_preset_func=self.settings_manager.get_last_prompt_preset_name,
-            save_last_preset_func=self.settings_manager.save_last_prompt_preset_name
+            save_last_preset_func=self.settings_manager.save_last_prompt_preset_name,
+            builtin_presets_func=api_config.builtin_translation_prompt_variants
         )
         self.preset_widget.load_last_session_state()
         # 3. Добавляем его как вкладку
