@@ -413,6 +413,33 @@ class TranslationOptionsWidget(QGroupBox):
             else ""
         )
 
+        if self.batch_checkbox.isChecked() and self.chunking_checkbox.isChecked():
+            chunk_tasks = 0
+            open_batch_sizes = []
+            for file_name in self.html_files:
+                size = self.chapter_compositions.get(file_name, {}).get("total_size", 0)
+                if size > current_target_size:
+                    chunk_tasks += math.ceil(size / current_target_size) if size > 0 else 1
+                    continue
+                for index, batch_size in enumerate(open_batch_sizes):
+                    if batch_size + size <= current_target_size:
+                        open_batch_sizes[index] = batch_size + size
+                        break
+                else:
+                    open_batch_sizes.append(size)
+            total_tasks = len(open_batch_sizes) + chunk_tasks
+            sequential_prefix = (
+                "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
+                if sequential_enabled
+                else ""
+            )
+            self.info_label.setText(
+                f"\u0411\u0443\u0434\u0435\u0442 \u0441\u043e\u0437\u0434\u0430\u043d\u043e ~{total_tasks} "
+                f"{sequential_prefix}\u0437\u0430\u0434\u0430\u0447 "
+                f"(\u043f\u0430\u043a\u0435\u0442\u044b + \u0447\u0430\u043d\u043a\u0438){sequential_suffix}."
+            )
+            return
+
         if self.chunking_checkbox.isChecked():
             total_tasks = sum(
                 math.ceil(comp["total_size"] / current_target_size)
@@ -478,15 +505,9 @@ class TranslationOptionsWidget(QGroupBox):
         self.sequential_splits_spin.blockSignals(True)
 
         if sender == self.batch_checkbox and is_batch:
-            self.chunking_checkbox.setChecked(False)
             self.chunk_on_error_checkbox.setChecked(False)
-        elif sender == self.chunking_checkbox and is_chunk:
-            self.batch_checkbox.setChecked(False)
         elif sender == self.chunk_on_error_checkbox and self.chunk_on_error_checkbox.isChecked():
             self.batch_checkbox.setChecked(False)
-
-        if self.batch_checkbox.isChecked():
-            self.chunking_checkbox.setChecked(False)
 
         self.batch_checkbox.blockSignals(False)
         self.chunking_checkbox.blockSignals(False)

@@ -520,6 +520,9 @@ class TaskPreparer:
         Готовит ПЕЙЛОАДЫ для пакетной обработки.
         Автоматически разжалует пакеты из 1 главы в обычные задачи 'epub'.
         """
+        if not self.sequential_translation:
+            return self._prepare_non_sequential_batch_tasks(chapter_list)
+
         final_payloads = []
         current_batch_chapters, current_batch_size = [], 0
 
@@ -540,7 +543,10 @@ class TaskPreparer:
                     _flush_current_batch()
 
                 # Слишком большая глава всегда идет отдельно как 'epub'
-                final_payloads.append(('epub', self.epub_path, chapter_file))
+                if self.use_chunking:
+                    final_payloads.extend(self._prepare_chunk_payloads(chapter_file))
+                else:
+                    final_payloads.append(('epub', self.epub_path, chapter_file))
                 current_batch_chapters, current_batch_size = [], 0
                 continue
 
@@ -559,6 +565,74 @@ class TaskPreparer:
             _flush_current_batch()
 
         return final_payloads
+
+    def _prepare_non_sequential_batch_tasks(self, chapter_list):
+        final_items = []
+        open_batches = []
+
+        def _batch_payload(chapters):
+            if len(chapters) == 1:
+                return ('epub', self.epub_path, chapters[0])
+            return ('epub_batch', self.epub_path, tuple(chapters))
+
+        for chapter_index, chapter_file in enumerate(chapter_list):
+            input_size = self.real_chapter_sizes.get(chapter_file, 0)
+            if input_size > self.task_input_size_limit:
+                if self.use_chunking:
+                    for chunk_index, payload in enumerate(self._prepare_chunk_payloads(chapter_file)):
+                        final_items.append((chapter_index, chunk_index, payload))
+                else:
+                    final_items.append((chapter_index, 0, ('epub', self.epub_path, chapter_file)))
+                continue
+
+            for batch in open_batches:
+                if batch["size"] + input_size <= self.task_input_size_limit:
+                    batch["chapters"].append(chapter_file)
+                    batch["size"] += input_size
+                    break
+            else:
+                open_batches.append({
+                    "first_index": chapter_index,
+                    "chapters": [chapter_file],
+                    "size": input_size,
+                })
+
+        for batch in open_batches:
+            final_items.append((
+                batch["first_index"],
+                0,
+                _batch_payload(batch["chapters"]),
+            ))
+
+        final_items.sort(key=lambda item: (item[0], item[1]))
+        return [payload for _, _, payload in final_items]
+
+    def _prepare_chunk_payloads(self, chapter_file):
+        from ..utils.text import split_text_into_chunks
+        from ..api import config as api_config
+
+        try:
+            with open(self.epub_path, 'rb') as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
+                content = epub_zip.read(chapter_file).decode("utf-8", "ignore")
+
+            prefix, body_content, suffix = "", content, ""
+            content_lower = content.lower()
+            start_body_tag_pos, end_body_tag_pos = content_lower.find('<body'), content_lower.rfind('</body>')
+            if start_body_tag_pos != -1 and end_body_tag_pos != -1:
+                start_body_content_pos = content_lower.find('>', start_body_tag_pos) + 1
+                prefix = content[:start_body_content_pos]
+                body_content = content[start_body_content_pos:end_body_tag_pos]
+                suffix = content[end_body_tag_pos:]
+
+            chunks = split_text_into_chunks(body_content, self.task_input_size_limit,
+                                            api_config.chunk_search_window(), api_config.min_chunk_size())
+            return [
+                ('epub_chunk', self.epub_path, chapter_file, chunk_content, i, len(chunks), prefix, suffix)
+                for i, chunk_content in enumerate(chunks)
+            ]
+        except Exception as e:
+            print(f"[ERROR] Critical error while chunking chapter {chapter_file}: {e}")
+            return [('epub', self.epub_path, chapter_file)]
 
     def _prepare_individual_and_chunked_tasks(self, chapter_list):
         """Готовит ПЕЙЛОАДЫ для индивидуальных или разделенных задач."""

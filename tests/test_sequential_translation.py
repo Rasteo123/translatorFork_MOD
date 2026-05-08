@@ -57,6 +57,67 @@ class SequentialTranslationTests(unittest.TestCase):
 
         self.assertEqual(tasks, [("epub_batch", "book.epub", ("Text/ch1.xhtml", "Text/ch2.xhtml"))])
 
+    def test_task_preparer_batches_small_chapters_across_large_chapter(self):
+        settings = {
+            "file_path": "book.epub",
+            "use_batching": True,
+            "chunking": False,
+            "sequential_translation": False,
+            "task_size_limit": 1000,
+        }
+        sizes = {
+            "Text/ch1.xhtml": 800,
+            "Text/ch2.xhtml": 300,
+            "Text/ch3.xhtml": 1500,
+            "Text/ch4.xhtml": 300,
+            "Text/ch10.xhtml": 300,
+        }
+        preparer = TaskPreparer(settings, sizes)
+
+        tasks = preparer.prepare_tasks([
+            "Text/ch1.xhtml",
+            "Text/ch2.xhtml",
+            "Text/ch3.xhtml",
+            "Text/ch4.xhtml",
+            "Text/ch10.xhtml",
+        ])
+
+        self.assertEqual(tasks, [
+            ("epub", "book.epub", "Text/ch1.xhtml"),
+            ("epub_batch", "book.epub", ("Text/ch2.xhtml", "Text/ch4.xhtml", "Text/ch10.xhtml")),
+            ("epub", "book.epub", "Text/ch3.xhtml"),
+        ])
+
+    def test_task_preparer_chunks_large_chapter_in_batch_mode_when_enabled(self):
+        with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as epub_file:
+            epub_path = epub_file.name
+        self.addCleanup(lambda: os.path.exists(epub_path) and os.remove(epub_path))
+        long_body = "<html><body>" + ("one two three. " * 800) + "</body></html>"
+        with zipfile.ZipFile(epub_path, "w") as epub_zip:
+            epub_zip.writestr("Text/ch2.xhtml", "<html><body><p>Two</p></body></html>")
+            epub_zip.writestr("Text/ch3.xhtml", long_body)
+            epub_zip.writestr("Text/ch4.xhtml", "<html><body><p>Four</p></body></html>")
+
+        settings = {
+            "file_path": epub_path,
+            "use_batching": True,
+            "chunking": True,
+            "sequential_translation": False,
+            "task_size_limit": 800,
+        }
+        preparer = TaskPreparer(settings, {
+            "Text/ch2.xhtml": 300,
+            "Text/ch3.xhtml": len(long_body),
+            "Text/ch4.xhtml": 300,
+        })
+
+        tasks = preparer.prepare_tasks(["Text/ch2.xhtml", "Text/ch3.xhtml", "Text/ch4.xhtml"])
+
+        self.assertEqual(tasks[0], ("epub_batch", epub_path, ("Text/ch2.xhtml", "Text/ch4.xhtml")))
+        self.assertGreater(len(tasks), 2)
+        self.assertTrue(all(task[0] == "epub_chunk" for task in tasks[1:]))
+        self.assertTrue(all(task[2] == "Text/ch3.xhtml" for task in tasks[1:]))
+
     def test_task_preparer_preserves_chunking_in_sequential_mode(self):
         with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as epub_file:
             epub_path = epub_file.name

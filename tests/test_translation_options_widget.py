@@ -114,6 +114,18 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
         self.assertFalse(settings["use_batching"])
         self.assertTrue(settings["chunking"])
 
+    def test_batch_and_chunking_can_be_enabled_together(self):
+        widget = self._create_widget()
+        widget.html_files = ["Text/ch1.xhtml", "Text/ch2.xhtml"]
+        widget._update_batching_availability()
+
+        widget.batch_checkbox.setChecked(True)
+        widget.chunking_checkbox.setChecked(True)
+
+        settings = widget.get_settings()
+        self.assertTrue(settings["use_batching"])
+        self.assertTrue(settings["chunking"])
+
 
 if __name__ == "__main__":
     unittest.main()
