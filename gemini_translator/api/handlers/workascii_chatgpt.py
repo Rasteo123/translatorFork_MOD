@@ -65,7 +65,10 @@ class WorkAsciiChatGptApiHandler(BaseApiHandler):
             "gemini_translator/scripts/chatgpt_workascii_bridge.cjs"
         )
         self.playwright_package_root = api_config.find_playwright_package_root(resolved_root)
-        self.playwright_browsers_path = api_config.find_playwright_browsers_path(resolved_root)
+        self.playwright_browsers_path = api_config.find_playwright_browsers_path(
+            resolved_root,
+            self.playwright_package_root,
+        )
         self.execution_cwd = resolved_root or api_config.default_workascii_runtime_root()
         self.workspace_name = str(getattr(self.worker, "workascii_workspace_name", "") or "").strip()
         template_dir = str(getattr(self.worker, "workascii_profile_template_dir", "") or "").strip()

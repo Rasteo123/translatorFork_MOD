@@ -330,6 +330,173 @@ print(json.dumps(payload, ensure_ascii=False))
         self.assertEqual(payload["returncode"], 0, payload)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows-specific bridge regression")
+    def test_bridge_cleans_stale_chrome_profile_state_before_launch(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        controller = f"""
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, {str(repo_root)!r})
+from gemini_translator.api import config as api_config
+
+repo_root = Path({str(repo_root)!r})
+bridge_script = repo_root / "gemini_translator" / "scripts" / "chatgpt_workascii_bridge.cjs"
+node_path = api_config.find_node_executable(repo_root)
+if not node_path or not Path(node_path).exists():
+    print(json.dumps({{"skip": "Bundled node runtime is not available"}}, ensure_ascii=False))
+    raise SystemExit(0)
+
+mock_playwright_index = r'''
+const createPage = () => {{
+  const locatorFor = (selector) => ({{
+    count: async () => String(selector).includes("prompt-textarea") ? 1 : (selector === "body" ? 1 : 0),
+    first() {{ return this; }},
+    last() {{ return this; }},
+    filter() {{ return this; }},
+    locator() {{ return this; }},
+    isVisible: async () => String(selector).includes("prompt-textarea"),
+    innerText: async () => selector === "body" ? "ChatGPT" : "",
+    getAttribute: async () => null,
+    isEnabled: async () => true,
+    click: async () => {{}},
+    hover: async () => {{}},
+    scrollIntoViewIfNeeded: async () => {{}}
+  }});
+  return {{
+    locator: (selector) => locatorFor(selector),
+    getByRole: () => locatorFor("__missing__"),
+    goto: async () => {{}},
+    waitForTimeout: async () => {{}},
+    url: () => "https://chatgpt.com/",
+    content: async () => "<html><body>ok</body></html>",
+    evaluate: async () => false,
+    bringToFront: async () => {{}},
+    keyboard: {{ press: async () => {{}}, insertText: async () => {{}} }},
+    context: () => ({{ grantPermissions: async () => {{}} }})
+  }};
+}};
+module.exports = {{
+  chromium: {{
+    launchPersistentContext: async () => {{
+      const page = createPage();
+      return {{
+        grantPermissions: async () => {{}},
+        pages: () => [page],
+        newPage: async () => page,
+        close: async () => {{}}
+      }};
+    }}
+  }}
+}};
+'''
+
+payload = {{}}
+with tempfile.TemporaryDirectory() as tmpdir:
+    tmp_path = Path(tmpdir)
+    mock_root = tmp_path / "mock_playwright"
+    mock_root.mkdir()
+    (mock_root / "package.json").write_text(json.dumps({{"name": "playwright", "main": "index.js"}}), encoding="utf-8")
+    (mock_root / "index.js").write_text(mock_playwright_index, encoding="utf-8")
+
+    profile_dir = tmp_path / "profile"
+    default_dir = profile_dir / "Default"
+    default_dir.mkdir(parents=True)
+    stale_files = [
+        profile_dir / "SingletonCookie",
+        profile_dir / "SingletonLock",
+        profile_dir / "SingletonSocket",
+        profile_dir / "lockfile",
+        default_dir / "LockFile",
+        default_dir / "LOCK",
+        default_dir / "Current Session",
+        default_dir / "Current Tabs",
+        default_dir / "Last Session",
+        default_dir / "Last Tabs",
+    ]
+    stale_dirs = [
+        default_dir / "Sessions",
+        default_dir / "Tabs",
+    ]
+    for target in stale_files:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("stale", encoding="utf-8")
+    for target in stale_dirs:
+        target.mkdir(parents=True)
+        (target / "stale.bin").write_text("stale", encoding="utf-8")
+    (default_dir / "Preferences").write_text(
+        json.dumps({{"profile": {{"exit_type": "Crashed", "exited_cleanly": False}}, "kept": True}}),
+        encoding="utf-8",
+    )
+
+    process = subprocess.Popen(
+        [str(node_path), str(bridge_script)],
+        cwd=str(repo_root),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        init_message = {{
+            "type": "init",
+            "config": {{
+                "workascii_root": str(tmp_path),
+                "profile_dir": str(profile_dir),
+                "playwright_package_root": str(mock_root),
+                "browsers_path": "",
+                "workspace_name": "",
+                "workspace_index": 1,
+                "headless": False,
+                "timeout_sec": 60,
+            }},
+        }}
+        process.stdin.write(json.dumps(init_message, ensure_ascii=False) + "\\n")
+        process.stdin.flush()
+        init_line = process.stdout.readline().strip()
+
+        process.stdin.write('{{"type":"shutdown"}}\\n')
+        process.stdin.flush()
+        shutdown_line = process.stdout.readline().strip()
+        process.wait(timeout=10)
+
+        payload = {{
+            "init": json.loads(init_line),
+            "shutdown": json.loads(shutdown_line),
+            "returncode": process.returncode,
+            "stale_exists": {{str(path.relative_to(profile_dir)): path.exists() for path in [*stale_files, *stale_dirs]}},
+            "preferences": json.loads((default_dir / "Preferences").read_text(encoding="utf-8")),
+        }}
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+
+print(json.dumps(payload, ensure_ascii=False))
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", controller],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertTrue(completed.stdout.strip(), completed.stderr)
+        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+        if payload.get("skip"):
+            self.skipTest(payload["skip"])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(payload["init"].get("ok"), payload)
+        self.assertTrue(payload["shutdown"].get("ok"), payload)
+        self.assertEqual(payload["returncode"], 0, payload)
+        self.assertFalse(any(payload["stale_exists"].values()), payload)
+        self.assertEqual(payload["preferences"]["profile"]["exit_type"], "Normal")
+        self.assertTrue(payload["preferences"]["profile"]["exited_cleanly"])
+        self.assertTrue(payload["preferences"]["kept"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-specific bridge regression")
     def test_bridge_uses_distinct_pages_for_parallel_translate_commands(self):
         repo_root = Path(__file__).resolve().parents[1]
         controller = f"""
@@ -1080,7 +1247,7 @@ const locatorFor = (selector) => {{
       if (isBody) {{
         return state.uploadFailed
           ? "ChatGPT\\n\\u041d\\u0435 \\u0443\\u0434\\u0430\\u043b\\u043e\\u0441\\u044c \\u0437\\u0430\\u0433\\u0440\\u0443\\u0437\\u0438\\u0442\\u044c \\u0444\\u0430\\u0439\\u043b \\u043d\\u0430 \\u0441\\u0430\\u0439\\u0442 files.oaiusercontent.com."
-          : "ChatGPT";
+          : "ChatGPT\\n\\u0412 \\u0442\\u0435\\u043a\\u0441\\u0442\\u0435 \\u0433\\u043b\\u0430\\u0432\\u044b \\u0435\\u0441\\u0442\\u044c \\u0441\\u043b\\u043e\\u0432\\u043e \\u043b\\u0438\\u043c\\u0438\\u0442.";
       }}
       if (isAssistant) return state.response || "";
       if (isPrompt) return state.prompt;
@@ -1525,6 +1692,7 @@ print(json.dumps(payload, ensure_ascii=False))
 
             with patch.object(api_config, "get_executable_dir", return_value=runtime_root), \
                  patch.object(api_config, "get_internal_resource_dir", return_value=None), \
+                 patch.object(api_config, "get_dev_project_root", return_value=None), \
                  patch.object(api_config, "_python_playwright_driver_dir", return_value=None), \
                  patch.object(api_config.shutil, "which", return_value=str(external_node)), \
                  patch.dict(
@@ -1534,6 +1702,40 @@ print(json.dumps(payload, ensure_ascii=False))
                     ):
                 self.assertEqual(api_config.find_node_executable(), node_path)
                 self.assertEqual(api_config.find_playwright_browsers_path(), browsers_path)
+
+    def test_find_playwright_browsers_path_skips_incomplete_bundled_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_root = Path(tmpdir) / "runtime"
+            package_root = runtime_root / "playwright_runtime" / "package"
+            bundled_browsers = runtime_root / "playwright_runtime" / "ms-playwright"
+            localappdata = Path(tmpdir) / "localappdata"
+            fallback_browsers = localappdata / "ms-playwright"
+
+            package_root.mkdir(parents=True)
+            bundled_browsers.mkdir(parents=True)
+            fallback_browsers.mkdir(parents=True)
+            (package_root / "package.json").write_text("{}", encoding="utf-8")
+            (package_root / "browsers.json").write_text(
+                json.dumps(
+                    {
+                        "browsers": [
+                            {"name": "chromium", "revision": "1208"},
+                            {"name": "chromium-headless-shell", "revision": "1208"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (bundled_browsers / "chromium-1217").mkdir()
+            (fallback_browsers / "chromium-1208").mkdir()
+            (fallback_browsers / "chromium_headless_shell-1208").mkdir()
+
+            with patch.object(api_config, "get_executable_dir", return_value=runtime_root), \
+                 patch.object(api_config, "get_internal_resource_dir", return_value=None), \
+                 patch.object(api_config, "get_dev_project_root", return_value=None), \
+                 patch.object(api_config, "_python_playwright_driver_dir", return_value=None), \
+                 patch.dict(api_config.os.environ, {"LOCALAPPDATA": str(localappdata)}, clear=True):
+                self.assertEqual(api_config.find_playwright_browsers_path(), fallback_browsers)
 
     def test_runtime_helpers_fall_back_to_dev_project_runtime_when_legacy_root_has_no_runtime(self):
         with tempfile.TemporaryDirectory() as tmpdir:

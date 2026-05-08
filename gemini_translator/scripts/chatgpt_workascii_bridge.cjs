@@ -15,6 +15,26 @@ const CHATGPT_CONTINUE_WITH_GOOGLE_PATTERN =
   /Continue with Google|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c (?:\u0441|\u0447\u0435\u0440\u0435\u0437) Google|Sign in with Google/i;
 const CHATGPT_CONTINUE_GENERATION_PATTERN =
   /Continue generating|Continue writing|Continue response|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u0435|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044e|\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u043e\u0442\u0432\u0435\u0442/i;
+const CHATGPT_SYSTEM_NOTICE_SELECTOR = [
+  "[role='alert']",
+  "[role='status']",
+  "[role='dialog']",
+  "[aria-live]:not([aria-live='off'])",
+  "[data-testid*='toast' i]",
+  "[data-testid*='snackbar' i]",
+  "[data-testid*='banner' i]",
+  "[data-testid*='notice' i]",
+  "[data-testid*='notification' i]",
+  "[data-testid*='error' i]",
+  "[class*='toast' i]",
+  "[class*='snackbar' i]",
+  "[class*='banner' i]",
+  "[class*='notice' i]",
+  "[class*='notification' i]",
+  "[class*='error' i]"
+].join(", ");
+const CHATGPT_RATE_LIMIT_NOTICE_PATTERN =
+  /(?:too many messages|rate[-\s]?limit(?:ed)?|(?:you(?:'|\u2019)?ve|you have)\s+(?:reached|hit)\s+(?:our|your|the|a)?[\s\S]{0,80}limit|(?:message|usage|conversation|gpt)[-\s]?limit|\u0441\u043b\u0438\u0448\u043a\u043e\u043c\s+\u043c\u043d\u043e\u0433\u043e\s+\u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0439|(?:\u0432\u044b\s+)?\u0434\u043e\u0441\u0442\u0438\u0433\u043b\u0438[\s\S]{0,80}\u043b\u0438\u043c\u0438\u0442|(?:\u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442|\u043f\u0440\u0435\u0432\u044b\u0448\u0435\u043d|\u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043d)[\s\S]{0,120}\u043b\u0438\u043c\u0438\u0442|\u043b\u0438\u043c\u0438\u0442[\s\S]{0,120}(?:\u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442|\u043f\u0440\u0435\u0432\u044b\u0448\u0435\u043d|\u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043d))/i;
 const SHARED_SUBMIT_COOLDOWN_MS = 3000;
 const MANUAL_CHALLENGE_NOTICE_MS = 15000;
 const PROMPT_MARKERS = [
@@ -64,9 +84,43 @@ async function cleanupProfileLocks(profileDir) {
     "SingletonLock",
     "SingletonSocket",
     "lockfile",
-    path.join("Default", "LockFile")
+    path.join("Default", "LockFile"),
+    path.join("Default", "LOCK"),
+    path.join("Default", "Current Session"),
+    path.join("Default", "Current Tabs"),
+    path.join("Default", "Last Session"),
+    path.join("Default", "Last Tabs"),
+    path.join("Default", "Sessions"),
+    path.join("Default", "Tabs")
   ];
   await Promise.all(transient.map((relativePath) => rmQuiet(path.join(profileDir, relativePath))));
+  await markChromeProfileCleanExit(profileDir);
+}
+
+async function markChromeProfileCleanExit(profileDir) {
+  const preferencesPath = path.join(profileDir, "Default", "Preferences");
+  try {
+    const raw = await fs.readFile(preferencesPath, "utf8");
+    const preferences = JSON.parse(raw);
+    let changed = false;
+
+    if (preferences?.profile) {
+      if (preferences.profile.exit_type && preferences.profile.exit_type !== "Normal") {
+        preferences.profile.exit_type = "Normal";
+        changed = true;
+      }
+      if (preferences.profile.exited_cleanly === false) {
+        preferences.profile.exited_cleanly = true;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await fs.writeFile(preferencesPath, JSON.stringify(preferences), "utf8");
+    }
+  } catch {
+    // Preferences is optional and can be absent or partially written after a crash.
+  }
 }
 
 async function grantClipboardPermissions(context) {
@@ -1070,7 +1124,40 @@ async function detectBlockedState(page) {
       interactive: false
     };
   }
+  const rateLimitState = await detectRateLimitNotice(page);
+  if (rateLimitState) {
+    return rateLimitState;
+  }
   return null;
+}
+
+async function visibleSystemNoticeText(page) {
+  const notices = page.locator(CHATGPT_SYSTEM_NOTICE_SELECTOR);
+  const count = Math.min(await notices.count().catch(() => 0), 40);
+  const texts = [];
+  for (let index = 0; index < count; index += 1) {
+    const notice = notices.nth(index);
+    if (!(await notice.isVisible().catch(() => false))) {
+      continue;
+    }
+    const text = String(await notice.innerText().catch(() => "") || "").trim();
+    if (text) {
+      texts.push(text);
+    }
+  }
+  return texts.join("\n");
+}
+
+async function detectRateLimitNotice(page) {
+  const noticeText = await visibleSystemNoticeText(page);
+  if (!noticeText || !CHATGPT_RATE_LIMIT_NOTICE_PATTERN.test(noticeText)) {
+    return null;
+  }
+  return {
+    code: "rate_limit",
+    message: "ChatGPT temporarily rate-limited the session.",
+    interactive: false
+  };
 }
 
 function canWaitForInteractiveChallenge(config) {
@@ -2325,13 +2412,6 @@ async function waitForResponse(page, timeoutMs, responseGuard = null, submittedP
         continue;
       }
       throw codeError(blockedState.code, blockedState.message);
-    }
-
-    const bodyText = await page.locator("body").innerText().catch(() => "");
-    if (/too many messages|rate limit|you've reached our limit|лимит/i.test(bodyText)) {
-      const error = new Error("ChatGPT temporarily rate-limited the session.");
-      error.code = "rate_limit";
-      throw error;
     }
 
     const generating = await isVisible(stopButton(page));

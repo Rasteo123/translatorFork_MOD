@@ -1246,11 +1246,64 @@ def find_playwright_package_root(workascii_root: str | Path | None = None) -> Pa
             return candidate
     return None
 
-def find_playwright_browsers_path(workascii_root: str | Path | None = None) -> Path | None:
+def _playwright_required_browser_cache_dirs(package_root: Path | None) -> list[str]:
+    if not package_root:
+        return []
+
+    browsers_json = package_root / "browsers.json"
+    if not browsers_json.exists():
+        return []
+
+    try:
+        with open(browsers_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    cache_dir_names = {
+        "chromium-headless-shell": "chromium_headless_shell",
+    }
+    required_names = {"chromium", "chromium-headless-shell"}
+    required_dirs = []
+    for browser in data.get("browsers", []):
+        if not isinstance(browser, dict):
+            continue
+        browser_name = browser.get("name")
+        revision = browser.get("revision")
+        if browser_name not in required_names or not revision:
+            continue
+        cache_name = cache_dir_names.get(browser_name, browser_name)
+        required_dirs.append(f"{cache_name}-{revision}")
+    return required_dirs
+
+def _playwright_browser_cache_matches_package(candidate: Path, package_root: Path | None) -> bool:
+    required_dirs = _playwright_required_browser_cache_dirs(package_root)
+    if not required_dirs:
+        return True
+    return all((candidate / required_dir).is_dir() for required_dir in required_dirs)
+
+def _python_playwright_package_root() -> Path | None:
+    driver_dir = _python_playwright_driver_dir()
+    if not driver_dir:
+        return None
+    package_root = driver_dir / "package"
+    if package_root.exists() and package_root.is_dir() and (package_root / "package.json").exists():
+        return package_root
+    return None
+
+def find_playwright_browsers_path(
+    workascii_root: str | Path | None = None,
+    package_root: str | Path | None = None,
+) -> Path | None:
     root = Path(workascii_root) if workascii_root else None
     executable_dir = get_executable_dir()
     internal_dir = get_internal_resource_dir()
     dev_root = get_dev_project_root()
+    validation_package_root = (
+        Path(package_root)
+        if package_root
+        else _python_playwright_package_root() or find_playwright_package_root(workascii_root)
+    )
     env_root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
     localappdata = os.environ.get("LOCALAPPDATA")
     try:
@@ -1270,7 +1323,11 @@ def find_playwright_browsers_path(workascii_root: str | Path | None = None) -> P
         (home_dir / "Library" / "Caches" / "ms-playwright") if home_dir else None,
     ]
     for candidate in _deduplicate_paths(candidates):
-        if candidate.exists() and candidate.is_dir():
+        if (
+            candidate.exists()
+            and candidate.is_dir()
+            and _playwright_browser_cache_matches_package(candidate, validation_package_root)
+        ):
             return candidate
     return None
 

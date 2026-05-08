@@ -564,7 +564,10 @@ class ModelSettingsWidget(QGroupBox):
         profile_dir = api_config.default_workascii_profile_dir(runtime_root)
         node_path = api_config.find_node_executable(runtime_root)
         playwright_package_root = api_config.find_playwright_package_root(runtime_root)
-        playwright_browsers_path = api_config.find_playwright_browsers_path(runtime_root)
+        playwright_browsers_path = api_config.find_playwright_browsers_path(
+            runtime_root,
+            playwright_package_root,
+        )
         launcher_script = api_config.get_resource_path(
             "gemini_translator/scripts/chatgpt_profile_launcher.cjs"
         )
