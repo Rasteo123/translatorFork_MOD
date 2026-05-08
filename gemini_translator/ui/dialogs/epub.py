@@ -89,9 +89,9 @@ def get_default_deep_cleanup_tag_rules():
         'i': ('keep', True),
         'u': ('keep', True),
         's': ('keep', True),
-        'a': ('keep', True),
+        'a': ('unwrap', True),
         'img': ('keep', True),
-        'svg': ('keep', True),
+        'svg': ('remove', False),
         'br': ('keep', True),
         'hr': ('keep', True),
         'ul': ('keep', True),
@@ -114,6 +114,13 @@ def get_default_deep_cleanup_tag_rules():
 DEEP_CLEANUP_SETTINGS_ORG = "gemini_translator"
 DEEP_CLEANUP_SETTINGS_APP = "gemini_translator"
 DEEP_CLEANUP_SETTINGS_GROUP = "epub_deep_cleanup"
+DEEP_CLEANUP_SETTINGS_PROFILE_VERSION = 2
+DEEP_CLEANUP_RECOMMENDED_TAG_OVERRIDES = {
+    'b': ('keep', True),
+    'em': ('keep', True),
+    'a': ('unwrap', True),
+    'svg': ('remove', False),
+}
 
 
 def _get_deep_cleanup_qsettings():
@@ -153,11 +160,12 @@ def load_deep_cleanup_settings():
     settings = _get_deep_cleanup_qsettings()
     settings.beginGroup(DEEP_CLEANUP_SETTINGS_GROUP)
     raw_tag_rules = settings.value('tag_rules_json', '', str)
+    profile_version = int(settings.value('profile_version', 0) or 0)
     settings_data = {
         'remove_css': settings.value('remove_css', True, bool),
-        'remove_nav': settings.value('remove_nav', True, bool),
-        'remove_fonts': settings.value('remove_fonts', False, bool),
-        'apply_css_styles': settings.value('apply_css_styles', False, bool),
+        'remove_nav': settings.value('remove_nav', False, bool),
+        'remove_fonts': settings.value('remove_fonts', True, bool),
+        'apply_css_styles': settings.value('apply_css_styles', True, bool),
         'tag_rules': default_rules,
     }
     settings.endGroup()
@@ -167,6 +175,16 @@ def load_deep_cleanup_settings():
             settings_data['tag_rules'] = normalize_deep_cleanup_tag_rules(json.loads(raw_tag_rules))
         except Exception:
             settings_data['tag_rules'] = default_rules
+
+    if profile_version < DEEP_CLEANUP_SETTINGS_PROFILE_VERSION:
+        settings_data.update({
+            'remove_nav': False,
+            'remove_fonts': True,
+            'apply_css_styles': True,
+        })
+        migrated_rules = dict(settings_data['tag_rules'])
+        migrated_rules.update(DEEP_CLEANUP_RECOMMENDED_TAG_OVERRIDES)
+        settings_data['tag_rules'] = normalize_deep_cleanup_tag_rules(migrated_rules)
     return settings_data
 
 
@@ -175,9 +193,10 @@ def save_deep_cleanup_settings(settings_data):
     settings = _get_deep_cleanup_qsettings()
     settings.beginGroup(DEEP_CLEANUP_SETTINGS_GROUP)
     settings.setValue('remove_css', bool(settings_data.get('remove_css', True)))
-    settings.setValue('remove_nav', bool(settings_data.get('remove_nav', True)))
-    settings.setValue('remove_fonts', bool(settings_data.get('remove_fonts', False)))
-    settings.setValue('apply_css_styles', bool(settings_data.get('apply_css_styles', False)))
+    settings.setValue('remove_nav', bool(settings_data.get('remove_nav', False)))
+    settings.setValue('remove_fonts', bool(settings_data.get('remove_fonts', True)))
+    settings.setValue('apply_css_styles', bool(settings_data.get('apply_css_styles', True)))
+    settings.setValue('profile_version', DEEP_CLEANUP_SETTINGS_PROFILE_VERSION)
     settings.setValue(
         'tag_rules_json',
         json.dumps(normalized_rules, ensure_ascii=False)
@@ -668,10 +687,7 @@ class EpubDeepCssAnalyzer:
             return
 
         for content in contents:
-            if isinstance(content, NavigableString):
-                new_tag.append(str(content))
-            else:
-                new_tag.append(content.extract())
+            new_tag.append(content.extract())
         element.append(new_tag)
 
 
@@ -910,7 +926,9 @@ class EpubDeepCleanupThread(QThread):
         super().__init__(parent)
         self.virtual_epub_path = virtual_epub_path
         self.options = options or {}
-        self.tag_rules = self.options.get('tag_rules') or get_default_deep_cleanup_tag_rules()
+        self.tag_rules = normalize_deep_cleanup_tag_rules(
+            self.options.get('tag_rules') or get_default_deep_cleanup_tag_rules()
+        )
         self.css_analyzer = EpubDeepCssAnalyzer()
         self.css_styles = {}
         self.removed_css_files = set()
@@ -1025,8 +1043,9 @@ class EpubDeepCleanupThread(QThread):
         if self.options.get('apply_css_styles') and self.css_styles:
             self._apply_css_to_html(soup)
 
-        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
-            comment.extract()
+        for text_node in soup.find_all(string=True):
+            if isinstance(text_node, Comment):
+                text_node.extract()
 
         removable_tags = ['script']
         if self.options.get('remove_css'):
@@ -1094,7 +1113,7 @@ class EpubDeepCleanupThread(QThread):
                 continue
 
             tag_name = tag.name.lower()
-            if tag_name == 'svg' or tag.find_parent('svg'):
+            if tag_name != 'svg' and tag.find_parent('svg'):
                 continue
 
             if tag_name not in self.tag_rules:
@@ -4270,9 +4289,9 @@ class EpubDeepCleanupOptionsDialog(QDialog):
         base_rules = current_tag_rules or merged_settings.get('tag_rules') or get_default_deep_cleanup_tag_rules()
         self._settings_state = {
             'remove_css': bool(merged_settings.get('remove_css', True)),
-            'remove_nav': bool(merged_settings.get('remove_nav', True)),
-            'remove_fonts': bool(merged_settings.get('remove_fonts', False)),
-            'apply_css_styles': bool(merged_settings.get('apply_css_styles', False)),
+            'remove_nav': bool(merged_settings.get('remove_nav', False)),
+            'remove_fonts': bool(merged_settings.get('remove_fonts', True)),
+            'apply_css_styles': bool(merged_settings.get('apply_css_styles', True)),
         }
         self._tag_rules = dict(normalize_deep_cleanup_tag_rules(base_rules))
         self._setup_ui()
