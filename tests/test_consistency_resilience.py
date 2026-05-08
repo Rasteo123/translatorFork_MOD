@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from gemini_translator.api.errors import RateLimitExceededError
+from gemini_translator.api.errors import NetworkError, RateLimitExceededError, TemporaryRateLimitError
 from gemini_translator.core.consistency_engine import ConsistencyEngine
 from gemini_translator.ui.dialogs.consistency_checker import ConsistencyValidatorDialog
 
@@ -225,6 +225,113 @@ class ConsistencyKeyRetryTests(unittest.TestCase):
         self.assertTrue(settings.exhausted)
         self.assertEqual(engine.all_problems, [])
         self.assertTrue(any("Повтор анализа" in entry for entry in logs))
+
+    def test_analyze_chapters_retries_network_error_same_chunk(self):
+        settings = _RetrySettingsStub()
+        engine = ConsistencyEngine(settings)
+        calls = []
+        sleeps = []
+        logs = []
+
+        def fake_call_api(prompt, config, api_key):
+            calls.append(api_key)
+            if len(calls) == 1:
+                raise NetworkError("Сервер Gemini перегружен (503).", delay_seconds=0)
+            return (
+                '{"problems":[],"glossary_update":{"characters":[],"terms":[]},'
+                '"context_summary":{"processed_chapters":["chapter_01.xhtml"]}}'
+            )
+
+        engine._call_api = fake_call_api
+        engine._sleep_for_retry = lambda delay: sleeps.append(delay)
+        engine.log_message.connect(logs.append)
+
+        active_keys = ["good-key-123456"]
+        engine.analyze_chapters(
+            [{"name": "chapter_01.xhtml", "content": "Text", "path": "chapter_01.xhtml"}],
+            {
+                "chunk_size": 1,
+                "provider": "gemini",
+                "model": "gemini-2.0-flash-exp",
+                "transient_retry_limit": 2,
+            },
+            active_keys,
+        )
+
+        self.assertEqual(calls, ["good-key-123456", "good-key-123456"])
+        self.assertEqual(active_keys, ["good-key-123456"])
+        self.assertEqual(sleeps, [0])
+        self.assertEqual(engine.glossary_session.processed_chapters, ["chapter_01.xhtml"])
+        self.assertTrue(any("Чанк возвращён в работу" in entry for entry in logs))
+
+    def test_analyze_chapters_retries_temporary_limit_without_discarding_key(self):
+        settings = _RetrySettingsStub()
+        engine = ConsistencyEngine(settings)
+        calls = []
+        sleeps = []
+
+        def fake_call_api(prompt, config, api_key):
+            calls.append(api_key)
+            if len(calls) == 1:
+                raise TemporaryRateLimitError("Временный лимит запросов (429).", delay_seconds=0)
+            return (
+                '{"problems":[],"glossary_update":{"characters":[],"terms":[]},'
+                '"context_summary":{"processed_chapters":["chapter_01.xhtml"]}}'
+            )
+
+        engine._call_api = fake_call_api
+        engine._sleep_for_retry = lambda delay: sleeps.append(delay)
+
+        active_keys = ["good-key-123456"]
+        engine.analyze_chapters(
+            [{"name": "chapter_01.xhtml", "content": "Text", "path": "chapter_01.xhtml"}],
+            {
+                "chunk_size": 1,
+                "provider": "gemini",
+                "model": "gemini-2.0-flash-exp",
+                "transient_retry_limit": 2,
+            },
+            active_keys,
+        )
+
+        self.assertEqual(calls, ["good-key-123456", "good-key-123456"])
+        self.assertEqual(active_keys, ["good-key-123456"])
+        self.assertEqual(sleeps, [0])
+        self.assertFalse(settings.exhausted)
+
+    def test_analyze_chapters_stops_instead_of_skipping_after_transient_retry_limit(self):
+        settings = _RetrySettingsStub()
+        engine = ConsistencyEngine(settings)
+        calls = []
+        errors = []
+
+        def fake_call_api(prompt, config, api_key):
+            calls.append(prompt)
+            raise NetworkError("Сервер Gemini перегружен (503).", delay_seconds=0)
+
+        engine._call_api = fake_call_api
+        engine._sleep_for_retry = lambda delay: None
+        engine.error_occurred.connect(errors.append)
+
+        active_keys = ["good-key-123456"]
+        engine.analyze_chapters(
+            [
+                {"name": "chapter_01.xhtml", "content": "Text 1", "path": "chapter_01.xhtml"},
+                {"name": "chapter_02.xhtml", "content": "Text 2", "path": "chapter_02.xhtml"},
+            ],
+            {
+                "chunk_size": 1,
+                "provider": "gemini",
+                "model": "gemini-2.0-flash-exp",
+                "transient_retry_limit": 1,
+            },
+            active_keys,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(engine.is_cancelled)
+        self.assertEqual(engine.glossary_session.processed_chapters, [])
+        self.assertTrue(any("Чанк не будет пропущен" in entry for entry in errors))
 
 
 class ConsistencyDialogErrorHandlingTests(unittest.TestCase):

@@ -1096,7 +1096,7 @@ class ConsistencyValidatorDialog(QDialog):
     def update_progress(self, current, total):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
-        self._log(f"  Чанк {current}/{total} обработан")
+        self._log(f"  Чанк {current}/{total} в работе")
 
     @pyqtSlot(dict)
     def on_chunk_done(self, result):

@@ -11,12 +11,13 @@ import json
 import logging
 import re
 import threading
+import time
 from copy import deepcopy
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from ..api.errors import RateLimitExceededError, TemporaryRateLimitError
+from ..api.errors import NetworkError, RateLimitExceededError, TemporaryRateLimitError
 from ..api.factory import get_api_handler_class
 from ..api import config as api_config
 from ..utils.text import repair_json_string
@@ -609,7 +610,7 @@ class ConsistencyEngine(QObject):
                     self._emit_log_message(
                         f"[Glossary] Чанк {i + 1}/{total_chunks}: {self._format_chunk_label(chunk)}"
                     )
-                    response_text = self._call_api_with_key_retry(
+                    response_text = self._call_api_with_transient_chunk_retry(
                         prompt,
                         config,
                         active_keys,
@@ -646,7 +647,7 @@ class ConsistencyEngine(QObject):
                     error_text = self._sanitize_exception_message(e)
                     logger.error(f"Error collecting glossary for chunk {i + 1}: {error_text}")
                     self.error_occurred.emit(f"Ошибка сбора глоссария (чанк {i + 1}): {error_text}")
-                    if not active_keys:
+                    if self.is_cancelled or not active_keys:
                         self.is_cancelled = True
                         break
             
@@ -670,7 +671,7 @@ class ConsistencyEngine(QObject):
                 self._emit_log_message(
                     f"[Analysis] Чанк {i + 1}/{total_chunks}: {self._format_chunk_label(chunk)}"
                 )
-                response_text = self._call_api_with_key_retry(
+                response_text = self._call_api_with_transient_chunk_retry(
                     prompt,
                     config,
                     active_keys,
@@ -716,7 +717,7 @@ class ConsistencyEngine(QObject):
                 error_text = self._sanitize_exception_message(e)
                 logger.error(f"Error analyzing chunk {i + 1}: {error_text}")
                 self.error_occurred.emit(f"Ошибка анализа чанка {i + 1}: {error_text}")
-                if not active_keys:
+                if self.is_cancelled or not active_keys:
                     self.is_cancelled = True
                     break
 
@@ -737,9 +738,6 @@ class ConsistencyEngine(QObject):
     def _is_key_retryable_error(self, exc: Exception) -> bool:
         text = str(exc or "")
         lowered = text.lower()
-
-        if isinstance(exc, TemporaryRateLimitError):
-            return True
 
         permanent_markers = (
             "suspended",
@@ -775,6 +773,55 @@ class ConsistencyEngine(QObject):
             return True
 
         return False
+
+    def _is_transient_chunk_retryable_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (NetworkError, TemporaryRateLimitError)):
+            return True
+
+        lowered = str(exc or "").lower()
+        transient_markers = (
+            "503",
+            "overload",
+            "overloaded",
+            "server busy",
+            "temporarily unavailable",
+            "timeout",
+            "timed out",
+            "перегруж",
+            "временн",
+            "таймаут",
+        )
+        return any(marker in lowered for marker in transient_markers)
+
+    @staticmethod
+    def _transient_chunk_retry_limit(config: Dict[str, Any]) -> int:
+        raw_value = config.get(
+            "transient_retry_limit",
+            config.get("max_transient_retries", 0),
+        )
+        try:
+            return max(0, int(raw_value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _retry_delay_seconds(exc: Exception, attempt: int) -> float:
+        raw_delay = getattr(exc, "delay_seconds", None)
+        if raw_delay is None:
+            raw_delay = min(60, 10 * max(1, attempt))
+        try:
+            delay = float(raw_delay)
+        except (TypeError, ValueError):
+            delay = 30.0
+        return max(0.0, delay)
+
+    def _sleep_for_retry(self, delay_seconds: float) -> None:
+        deadline = time.monotonic() + max(0.0, float(delay_seconds or 0))
+        while not self.is_cancelled:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.5, remaining))
 
     def _mark_key_unavailable_for_current_model(self, api_key: str, config: Dict[str, Any]) -> None:
         if not api_key:
@@ -852,6 +899,48 @@ class ConsistencyEngine(QObject):
             ) from last_error
 
         raise ValueError("Нет доступных ключей для анализа")
+
+    def _call_api_with_transient_chunk_retry(
+        self,
+        prompt: str,
+        config: Dict[str, Any],
+        active_keys: List[str],
+        *,
+        retry_label: str,
+    ) -> str:
+        transient_failures = 0
+        retry_limit = self._transient_chunk_retry_limit(config)
+
+        while not self.is_cancelled:
+            try:
+                return self._call_api_with_key_retry(
+                    prompt,
+                    config,
+                    active_keys,
+                    retry_label=retry_label,
+                )
+            except Exception as exc:
+                if not self._is_transient_chunk_retryable_error(exc):
+                    raise
+
+                transient_failures += 1
+                if retry_limit and transient_failures > retry_limit:
+                    self.is_cancelled = True
+                    raise RuntimeError(
+                        f"Временная ошибка не ушла после {retry_limit} повторов. "
+                        f"Чанк не будет пропущен; анализ остановлен. "
+                        f"Последняя ошибка: {self._sanitize_exception_message(exc)}"
+                    ) from exc
+
+                delay_seconds = self._retry_delay_seconds(exc, transient_failures)
+                limit_text = f"/{retry_limit}" if retry_limit else ""
+                self._emit_log_message(
+                    f"↻ Временная ошибка {retry_label}: {self._sanitize_exception_message(exc)}. "
+                    f"Чанк возвращён в работу, повтор {transient_failures}{limit_text} через {delay_seconds:g} сек."
+                )
+                self._sleep_for_retry(delay_seconds)
+
+        raise ValueError("Анализ остановлен")
 
     def _split_into_chunks(self, chapters: List[Dict[str, Any]], chunk_size: int) -> List[List[Dict[str, Any]]]:
         """Разбивает список глав на группы (чанки)."""
