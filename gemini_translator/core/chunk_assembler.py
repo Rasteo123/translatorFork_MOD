@@ -96,8 +96,36 @@ class ChunkAssembler(QObject):
     def _build_wrapper_from_source(self, epub_path: str, original_chapter_path: str):
         with open(epub_path, "rb") as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
             original_html = epub_zip.read(original_chapter_path).decode("utf-8", "ignore")
-        prefix, _, suffix = process_body_tag(original_html, return_parts=True, body_content_only=False)
+        prefix, _, suffix = process_body_tag(original_html, return_parts=True, body_content_only=True)
         return prefix, suffix
+
+    def _source_candidates_from_virtual_path(self, epub_path: str):
+        if not isinstance(epub_path, str) or not epub_path.startswith("mem://"):
+            return []
+
+        internal_path = epub_path[len("mem://"):].lstrip("/")
+        if not internal_path:
+            return []
+
+        candidates = []
+        drive_match = re.match(r"^([A-Za-z])_drive(?:/|$)(.*)$", internal_path)
+        if drive_match:
+            drive, tail = drive_match.groups()
+            drive_path = f"{drive}:/{tail}" if tail else f"{drive}:/"
+            candidates.append(drive_path.replace("/", os.sep))
+
+        candidates.append("/" + internal_path)
+        candidates.append(internal_path.replace("/", os.sep))
+        return candidates
+
+    def _add_epub_candidate(self, candidates: list, seen: set, epub_path):
+        if not epub_path:
+            return
+        epub_path = str(epub_path)
+        for candidate in (epub_path, *self._source_candidates_from_virtual_path(epub_path)):
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
 
     def _resolve_wrapper(self, first_payload: list, original_chapter_path: str):
         if len(first_payload) >= 8:
@@ -107,11 +135,11 @@ class ChunkAssembler(QObject):
                 return prefix, suffix
 
         epub_candidates = []
+        seen_candidates = set()
         if len(first_payload) > 1:
-            epub_candidates.append(first_payload[1])
-        settings_epub_path = self.settings.get('file_path')
-        if settings_epub_path and settings_epub_path not in epub_candidates:
-            epub_candidates.append(settings_epub_path)
+            self._add_epub_candidate(epub_candidates, seen_candidates, first_payload[1])
+        for settings_key in ('file_path', 'source_file_path', 'original_epub_path'):
+            self._add_epub_candidate(epub_candidates, seen_candidates, self.settings.get(settings_key))
 
         last_error = None
         for epub_path in epub_candidates:

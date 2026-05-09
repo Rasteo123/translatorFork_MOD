@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -68,6 +69,12 @@ class ChunkAssemblerTests(unittest.TestCase):
             row = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         return row["status"] if row else None
 
+    def _virtual_path_for_real_file(self, real_path):
+        normalized_path = os.path.abspath(real_path).replace(":", "_drive").replace("\\", "/")
+        if normalized_path.startswith("/"):
+            normalized_path = normalized_path[1:]
+        return "mem://" + normalized_path
+
     def test_assembles_from_chunk_payload_wrapper_when_mem_epub_is_missing(self):
         with tempfile.TemporaryDirectory() as output_folder:
             project_manager = _ProjectManagerStub(output_folder)
@@ -106,6 +113,49 @@ class ChunkAssemblerTests(unittest.TestCase):
                 project_manager.registrations,
                 [(chapter_path, "_translated.html", os.path.join("Text", "ch_translated.html"))],
             )
+
+    def test_assembles_legacy_chunk_payload_from_real_path_when_mem_epub_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_folder = os.path.join(temp_dir, "out")
+            os.makedirs(output_folder)
+            epub_path = os.path.join(temp_dir, "book.epub")
+            chapter_path = "Text/ch.xhtml"
+            with zipfile.ZipFile(epub_path, "w") as epub_zip:
+                epub_zip.writestr(
+                    chapter_path,
+                    '<html><body class="chapter"><p>source 1</p><p>source 2</p></body></html>',
+                )
+
+            project_manager = _ProjectManagerStub(output_folder)
+            assembler = ChunkAssembler(
+                output_folder,
+                project_manager,
+                settings={"use_prettify": False},
+            )
+            virtual_epub_path = self._virtual_path_for_real_file(epub_path)
+
+            self._insert_completed_chunk(
+                "chunk-1",
+                ("epub_chunk", virtual_epub_path, chapter_path, "<p>source 1</p>", 0, 2),
+                "<body><p>translated 1</p></body>",
+            )
+            self._insert_completed_chunk(
+                "chunk-2",
+                ("epub_chunk", virtual_epub_path, chapter_path, "<p>source 2</p>", 1, 2),
+                "<body><p>translated 2</p></body>",
+            )
+
+            assembler._assemble_chapter_from_db(["chunk-1", "chunk-2"], chapter_path)
+
+            output_path = os.path.join(output_folder, "Text", "ch_translated.html")
+            self.assertTrue(os.path.exists(output_path))
+            with open(output_path, "r", encoding="utf-8") as handle:
+                assembled_html = handle.read()
+            self.assertEqual(
+                assembled_html,
+                '<html><body class="chapter"><p>translated 1</p><p>translated 2</p></body></html>',
+            )
+            self.assertEqual(self._chunk_result_count(), 0)
 
     def test_failed_assembly_keeps_chunk_results_for_retry(self):
         with tempfile.TemporaryDirectory() as output_folder:
