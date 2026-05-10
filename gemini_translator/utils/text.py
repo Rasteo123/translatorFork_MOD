@@ -2498,8 +2498,119 @@ def coerce_translated_body_block(original_html: str, translated_html: str) -> st
 
     normalized_lower = normalized.lower()
     if re.search(r'<body\b', normalized_lower) and re.search(r'</body>', normalized_lower):
-        return process_body_tag(normalized, return_parts=False, body_content_only=False)
-    return normalized
+        normalized = process_body_tag(normalized, return_parts=False, body_content_only=False)
+    return repair_missing_paragraph_tags(original_html, normalized)
+
+
+def _paragraph_tag_count(html_content: str) -> int:
+    if not isinstance(html_content, str):
+        return 0
+    return len(re.findall(r'<p(?:\s|>)', html_content, flags=re.IGNORECASE))
+
+
+def _split_root_text_paragraphs(text: str) -> list[str]:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.strip():
+        return []
+
+    if "\n" in normalized:
+        parts = [part.strip() for part in re.split(r'\n\s*\n+', normalized) if part.strip()]
+        if len(parts) == 1:
+            line_parts = [line.strip() for line in normalized.split("\n") if line.strip()]
+            if len(line_parts) > 1:
+                return line_parts
+        return parts
+
+    return [normalized.strip()]
+
+
+def _wrap_body_root_text_as_paragraphs(html_content: str) -> tuple[str, bool]:
+    soup = BeautifulSoup(html_content, 'html.parser')
+    body = soup.body
+    if not body:
+        return html_content, False
+
+    ignored_nodes = (Comment, Declaration, ProcessingInstruction)
+    new_children = []
+    buffer = []
+    changed = False
+
+    def flush_buffer():
+        nonlocal buffer, changed
+        if not buffer:
+            return
+        paragraph = soup.new_tag('p')
+        for item in buffer:
+            paragraph.append(item)
+        new_children.append(paragraph)
+        buffer = []
+        changed = True
+
+    for child in list(body.contents):
+        if isinstance(child, ignored_nodes):
+            flush_buffer()
+            new_children.append(child.extract())
+            continue
+
+        if isinstance(child, NavigableString):
+            parts = _split_root_text_paragraphs(str(child))
+            child.extract()
+            if not parts:
+                continue
+            for index, part in enumerate(parts):
+                if buffer:
+                    buffer.append(NavigableString(" "))
+                buffer.append(NavigableString(part))
+                if len(parts) > 1 or index < len(parts) - 1:
+                    flush_buffer()
+            changed = True
+            continue
+
+        child_name = getattr(child, 'name', None)
+        if child_name == 'br':
+            child.extract()
+            flush_buffer()
+            changed = True
+            continue
+
+        if child_name in INLINE_BODY_START_TAGS and child.get_text(" ", strip=True):
+            if buffer:
+                buffer.append(NavigableString(" "))
+            buffer.append(child.extract())
+            changed = True
+            continue
+
+        flush_buffer()
+        new_children.append(child.extract())
+
+    flush_buffer()
+
+    if not changed:
+        return html_content, False
+
+    body.clear()
+    body.extend(new_children)
+    return str(soup), True
+
+
+def repair_missing_paragraph_tags(original_html: str, translated_html: str) -> str:
+    """
+    Wrap translated root-level body text into <p> tags when the source used
+    paragraphs and the model flattened them into plain text.
+    """
+    if not isinstance(original_html, str) or not isinstance(translated_html, str):
+        return translated_html
+
+    original_p_count = _paragraph_tag_count(original_html)
+    translated_p_count = _paragraph_tag_count(translated_html)
+    if original_p_count <= 0 or translated_p_count >= original_p_count:
+        return translated_html
+
+    repaired_html, repaired = _wrap_body_root_text_as_paragraphs(translated_html)
+    if not repaired:
+        return translated_html
+
+    return repaired_html
 
 
 def _create_structural_fingerprint(soup):
@@ -2766,11 +2877,26 @@ def validate_html_structure(original_html, translated_html):
                 # Обновляем текущий баланс, чтобы пройти финальную проверку ниже
                 p_balance_trans = 0
 
+        paragraph_repaired_html = repair_missing_paragraph_tags(original_html, final_translated_html)
+        if paragraph_repaired_html != final_translated_html:
+            final_translated_html = paragraph_repaired_html
+            soup_trans = BeautifulSoup(final_translated_html, 'html.parser')
+            trans_lower = final_translated_html.lower().strip()
+            trans_p_open = len(re.findall(p_open_pat, trans_lower))
+            trans_p_close = len(re.findall(p_close_pat, trans_lower))
+            p_balance_trans = trans_p_open - trans_p_close
+
         # Финальная проверка баланса (после попытки лечения или если лечение не применялось)
         if p_balance_orig != p_balance_trans:
             return False, f"Нарушен баланс тегов <p> (в оригинале {p_balance_orig}, в переводе {p_balance_trans}). Возможно, потерян закрывающий тег.", final_translated_html
 
         # ПРОВЕРКА 2.3: Сравнение "отпечатков" структуры
+        if orig_p_open > 0 and trans_p_open < orig_p_open:
+            return False, (
+                f"Потеряны теги <p>: в оригинале {orig_p_open}, "
+                f"в переводе {trans_p_open}."
+            ), final_translated_html
+
         orig_leading_text = _find_leading_visible_text_before_expected_block(soup_orig_raw)
         trans_leading_text = _find_leading_visible_text_before_expected_block(soup_trans)
         if not orig_leading_text and trans_leading_text:

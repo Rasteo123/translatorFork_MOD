@@ -12,7 +12,7 @@ from gemini_translator.utils.text import (
     is_content_effectively_empty,
     clean_html_content,
     validate_html_structure,
-    normalize_translated_body_wrapper,
+    coerce_translated_body_block,
 )
 
 
@@ -40,7 +40,7 @@ class EpubChunkProcessor(BaseTaskProcessor):
         return partial_text + new_text, 0
 
     def _normalize_body_wrapper(self, original_html: str, translated_html: str):
-        return normalize_translated_body_wrapper(original_html, translated_html)
+        return coerce_translated_body_block(original_html, translated_html)
 
     async def _execute_json_chunk_pipeline(self, task_info, chapter_path, content_to_translate_for_api, log_prefix, use_stream, chunk_index, total_chunks, is_retry):
         document_model = build_html_document_model(content_to_translate_for_api, document_id=chapter_path)

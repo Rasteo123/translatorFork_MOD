@@ -489,6 +489,11 @@ class StructureErrorsDialog(QDialog):
             open_p, close_p = errors['unbalanced_p']
             tag_html += format_line("Теги &lt;p&gt; (Откр/Закр)", "Сбалансировано", f"{open_p} / {close_p}")
 
+        if 'missing_p_tags' in errors:
+            has_tag_errors = True
+            orig_p, trans_p = errors['missing_p_tags']
+            tag_html += format_line("Теги &lt;p&gt; (кол-во)", orig_p, trans_p)
+
         for h in sorted(errors.get('headings', {}).keys()):
             orig_h, trans_h = errors['headings'][h]
             if orig_h != trans_h:
@@ -664,12 +669,16 @@ class ValidationThread(QThread):
             fundamental_tag_results[display_name] = (orig_found, trans_found)
             if orig_found != trans_found: has_fundamental_error = True
         
-        p_open_count = clean_trans_content.count('<p')
-        p_close_count = clean_trans_content.count('</p>')
+        p_open_pattern = re.compile(r'<p(?:\s|>)', re.IGNORECASE)
+        orig_p_count = len(p_open_pattern.findall(original_content))
+        p_open_count = len(p_open_pattern.findall(translated_content))
+        p_close_count = len(re.findall(r'</p>', translated_content, flags=re.IGNORECASE))
         
         # Сохраняем сырые данные о структуре
         if has_fundamental_error: structural_errors['fundamental_tags'] = fundamental_tag_results
         if p_open_count != p_close_count: structural_errors['unbalanced_p'] = (p_open_count, p_close_count)
+        if orig_p_count > 0 and p_open_count < orig_p_count:
+            structural_errors['missing_p_tags'] = (orig_p_count, p_open_count)
 
         # --- НАЧАЛО БЛОКА TRY (Восстановлено) ---
         try:
