@@ -14,7 +14,8 @@ from gemini_translator.utils.epub_json import (
 from gemini_translator.utils.batch_markers import find_boundary_markers
 from gemini_translator.utils.text import (
     prettify_html,
-    clean_html_content
+    clean_html_content,
+    coerce_translated_body_block,
 )
 
 class ResponseParser:
@@ -255,6 +256,7 @@ class ResponseParser:
                     # 3. [ГЛАВНЫЙ ФИКС] Создаем "эталон" для валидации
                     #    Это версия ОРИГИНАЛА, но с плейсхолдерами - точная копия того, что ушло в AI.
                     original_with_placeholders = self.prompt_builder._replace_media_with_placeholders(original_body)
+                    raw_body_from_ai = coerce_translated_body_block(original_with_placeholders, raw_body_from_ai)
 
                     # 4. ВАЛИДИРУЕМ "яблоки с яблоками"
                     if self.validator_func:
@@ -272,6 +274,7 @@ class ResponseParser:
                     
                     # 5. Только ПОСЛЕ успеха восстанавливаем медиа
                     restored_body_str = self._restore_media_from_placeholders(raw_body_from_ai, original_content)
+                    restored_body_str = coerce_translated_body_block(original_body, restored_body_str)
                     
                     # 6. Собираем финальный файл
                     final_html = ""
@@ -307,6 +310,7 @@ class ResponseParser:
         """
         
         # 1. Собираем финальный HTML для записи в файл
+        translated_body_content = coerce_translated_body_block(original_full_content, translated_body_content)
         final_html_to_write = prefix_html + translated_body_content + suffix_html
         use_prettify = getattr(self.worker, "use_prettify", False)
         if use_prettify:

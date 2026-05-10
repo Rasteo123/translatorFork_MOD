@@ -2442,11 +2442,64 @@ def normalize_translated_body_wrapper(original_html: str, translated_html: str) 
     open_body_match = re.search(r'<body\b[^>]*>', original_html, re.IGNORECASE)
     open_body_tag = open_body_match.group(0) if open_body_match else "<body>"
 
-    inner_html = translated_html.strip()
-    inner_html = re.sub(r'^\s*<body\b[^>]*>\s*', '', inner_html, flags=re.IGNORECASE)
-    inner_html = re.sub(r'\s*</body>\s*$', '', inner_html, flags=re.IGNORECASE)
+    inner_html = _strip_document_shell_for_body_repair(translated_html)
 
     return f"{open_body_tag}{inner_html}</body>"
+
+
+def _strip_document_shell_for_body_repair(html_content: str) -> str:
+    """Remove XHTML document chrome when the model returned content outside body."""
+    fragment = (html_content or "").strip()
+
+    body_match = re.search(r'<body\b[^>]*>', fragment, re.IGNORECASE)
+    if body_match:
+        fragment = fragment[body_match.end():]
+    else:
+        fragment = re.sub(r'^\s*<\?xml[^>]*\?>\s*', '', fragment, flags=re.IGNORECASE)
+        fragment = re.sub(r'^\s*<!DOCTYPE[\s\S]*?>\s*', '', fragment, flags=re.IGNORECASE)
+
+        html_match = re.search(r'<html\b[^>]*>', fragment, re.IGNORECASE)
+        if html_match:
+            fragment = fragment[html_match.end():]
+
+        fragment = re.sub(r'^\s*<head\b[\s\S]*?</head>\s*', '', fragment, flags=re.IGNORECASE)
+        stray_head_end = re.search(r'</head\s*>\s*', fragment, re.IGNORECASE)
+        if stray_head_end:
+            before_head_end = fragment[:stray_head_end.start()]
+            has_body_content_before_head = re.search(
+                r'<(?:h[1-6]|p|div|section|article|blockquote|ul|ol|table|figure)\b',
+                before_head_end,
+                re.IGNORECASE,
+            )
+            if not has_body_content_before_head:
+                fragment = fragment[stray_head_end.end():]
+
+    for _ in range(2):
+        fragment = re.sub(r'\s*</(?:body|html)>\s*$', '', fragment, flags=re.IGNORECASE)
+
+    fragment = re.sub(r'^\s*<body\b[^>]*>\s*', '', fragment, flags=re.IGNORECASE)
+    fragment = re.sub(r'\s*</body>\s*$', '', fragment, flags=re.IGNORECASE)
+    return fragment.strip()
+
+
+def coerce_translated_body_block(original_html: str, translated_html: str) -> str:
+    """
+    Return only the translated <body>...</body> block when the source had one.
+    This is a final save guard for model responses that leak full XHTML shells
+    or omit one/both body tags.
+    """
+    normalized = normalize_translated_body_wrapper(original_html, translated_html)
+    if not isinstance(normalized, str) or not isinstance(original_html, str):
+        return normalized
+
+    original_lower = original_html.lower()
+    if '<body' not in original_lower or '</body>' not in original_lower:
+        return normalized
+
+    normalized_lower = normalized.lower()
+    if re.search(r'<body\b', normalized_lower) and re.search(r'</body>', normalized_lower):
+        return process_body_tag(normalized, return_parts=False, body_content_only=False)
+    return normalized
 
 
 def _create_structural_fingerprint(soup):

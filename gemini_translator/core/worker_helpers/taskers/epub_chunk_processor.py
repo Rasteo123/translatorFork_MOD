@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import re
 
 from .base_processor import BaseTaskProcessor
 from gemini_translator.api.errors import ValidationFailedError, PartialGenerationError
@@ -9,7 +8,12 @@ from gemini_translator.utils.epub_json import (
     build_html_document_model,
     estimate_translation_noise,
 )
-from gemini_translator.utils.text import is_content_effectively_empty, clean_html_content, validate_html_structure
+from gemini_translator.utils.text import (
+    is_content_effectively_empty,
+    clean_html_content,
+    validate_html_structure,
+    normalize_translated_body_wrapper,
+)
 
 
 class EpubChunkProcessor(BaseTaskProcessor):
@@ -36,28 +40,7 @@ class EpubChunkProcessor(BaseTaskProcessor):
         return partial_text + new_text, 0
 
     def _normalize_body_wrapper(self, original_html: str, translated_html: str):
-        if not translated_html:
-            return translated_html
-
-        orig_lower = original_html.lower()
-        if '<body' not in orig_lower or '</body>' not in orig_lower:
-            return translated_html
-
-        trans_lower = translated_html.lower()
-        trans_has_body_start = '<body' in trans_lower
-        trans_has_body_end = '</body>' in trans_lower
-
-        if trans_has_body_start and trans_has_body_end:
-            return translated_html
-
-        open_body_match = re.search(r'<body\b[^>]*>', original_html, re.IGNORECASE)
-        open_body_tag = open_body_match.group(0) if open_body_match else "<body>"
-
-        inner_html = translated_html
-        inner_html = re.sub(r'^\s*<body\b[^>]*>\s*', '', inner_html, flags=re.IGNORECASE)
-        inner_html = re.sub(r'\s*</body>\s*$', '', inner_html, flags=re.IGNORECASE)
-
-        return f"{open_body_tag}{inner_html}</body>"
+        return normalize_translated_body_wrapper(original_html, translated_html)
 
     async def _execute_json_chunk_pipeline(self, task_info, chapter_path, content_to_translate_for_api, log_prefix, use_stream, chunk_index, total_chunks, is_retry):
         document_model = build_html_document_model(content_to_translate_for_api, document_id=chapter_path)
