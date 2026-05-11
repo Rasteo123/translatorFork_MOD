@@ -288,6 +288,44 @@
       }
     }
    },
+  "nvidia": {
+    "display_name": "NVIDIA NIM API",
+    "provider": "nvidia",
+    "handler_class": "NvidiaApiHandler",
+    "base_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+    "base_timeout": 1200,
+    "is_async": true,
+    "needs_warmup": true,
+    "visible": true,
+    "file_suffix": "_translated_nvidia.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "Llama 3.3 70B Instruct": {
+        "id": "meta/llama-3.3-70b-instruct",
+        "rpm": 10,
+        "tpm": 100000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_window": 128000,
+        "min_thinking_budget": false
+      },
+      "Llama 3.1 405B Instruct": {
+        "id": "meta/llama-3.1-405b-instruct",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 2,
+        "max_output_tokens": 8192,
+        "context_window": 128000,
+        "min_thinking_budget": false
+      }
+    }
+  },
   "perplexytiApiMOD": {
     "display_name": "Perplexity API MOD",
     "handler_class": "OpenRouterApiHandler",
