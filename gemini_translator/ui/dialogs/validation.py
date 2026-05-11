@@ -20,7 +20,7 @@ from ...utils.validation_cache import (
     is_snapshot_compatible,
     restore_result_data,
 )
-from ...utils.text import is_well_formed_xml
+from ...utils.text import find_unwrapped_body_text_snippets, is_well_formed_xml
 from ...utils.project_migrator import ProjectMigrator
 from ...utils.translation_versions import (
     select_target_translation_version,
@@ -489,10 +489,11 @@ class StructureErrorsDialog(QDialog):
             open_p, close_p = errors['unbalanced_p']
             tag_html += format_line("Теги &lt;p&gt; (Откр/Закр)", "Сбалансировано", f"{open_p} / {close_p}")
 
-        if 'missing_p_tags' in errors:
+        if 'body_root_text' in errors:
             has_tag_errors = True
-            orig_p, trans_p = errors['missing_p_tags']
-            tag_html += format_line("Теги &lt;p&gt; (кол-во)", orig_p, trans_p)
+            snippets = errors['body_root_text']
+            preview = "; ".join(snippets) if isinstance(snippets, list) else str(snippets)
+            tag_html += format_line("Текст напрямую в &lt;body&gt;", "Нет", preview)
 
         for h in sorted(errors.get('headings', {}).keys()):
             orig_h, trans_h = errors['headings'][h]
@@ -677,8 +678,10 @@ class ValidationThread(QThread):
         # Сохраняем сырые данные о структуре
         if has_fundamental_error: structural_errors['fundamental_tags'] = fundamental_tag_results
         if p_open_count != p_close_count: structural_errors['unbalanced_p'] = (p_open_count, p_close_count)
-        if orig_p_count > 0 and p_open_count < orig_p_count:
-            structural_errors['missing_p_tags'] = (orig_p_count, p_open_count)
+        if orig_p_count > 0:
+            root_text_snippets = find_unwrapped_body_text_snippets(translated_content)
+            if root_text_snippets:
+                structural_errors['body_root_text'] = root_text_snippets
 
         # --- НАЧАЛО БЛОКА TRY (Восстановлено) ---
         try:

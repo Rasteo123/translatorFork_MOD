@@ -2508,6 +2508,37 @@ def _paragraph_tag_count(html_content: str) -> int:
     return len(re.findall(r'<p(?:\s|>)', html_content, flags=re.IGNORECASE))
 
 
+def find_unwrapped_body_text_snippets(html_content: str, limit: int = 3) -> list[str]:
+    """Return visible direct text/inline content in <body> that is not inside a block tag."""
+    if not isinstance(html_content, str) or not html_content.strip():
+        return []
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+    body = soup.body
+    if not body:
+        return []
+
+    snippets = []
+    ignored_nodes = (Comment, Declaration, ProcessingInstruction)
+    for child in body.contents:
+        if isinstance(child, ignored_nodes):
+            continue
+
+        text = ""
+        if isinstance(child, NavigableString):
+            text = str(child)
+        elif getattr(child, 'name', None) in INLINE_BODY_START_TAGS:
+            text = child.get_text(" ", strip=True)
+
+        text = re.sub(r'\s+', ' ', text).strip()
+        if text:
+            snippets.append(text[:120])
+            if len(snippets) >= limit:
+                break
+
+    return snippets
+
+
 def _split_root_text_paragraphs(text: str) -> list[str]:
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     if not normalized.strip():
@@ -2602,9 +2633,19 @@ def repair_missing_paragraph_tags(original_html: str, translated_html: str) -> s
         return translated_html
 
     original_p_count = _paragraph_tag_count(original_html)
-    translated_p_count = _paragraph_tag_count(translated_html)
-    if original_p_count <= 0 or translated_p_count >= original_p_count:
+    if original_p_count <= 0:
         return translated_html
+
+    original_soup = BeautifulSoup(original_html, 'html.parser')
+    translated_soup = BeautifulSoup(translated_html, 'html.parser')
+    if (
+        not _find_leading_visible_text_before_expected_block(original_soup)
+        and _find_leading_visible_text_before_expected_block(translated_soup)
+    ):
+        translated_html, _ = _repair_leading_visible_text_before_expected_block(
+            original_soup,
+            translated_html,
+        )
 
     repaired_html, repaired = _wrap_body_root_text_as_paragraphs(translated_html)
     if not repaired:
@@ -2891,12 +2932,6 @@ def validate_html_structure(original_html, translated_html):
             return False, f"Нарушен баланс тегов <p> (в оригинале {p_balance_orig}, в переводе {p_balance_trans}). Возможно, потерян закрывающий тег.", final_translated_html
 
         # ПРОВЕРКА 2.3: Сравнение "отпечатков" структуры
-        if orig_p_open > 0 and trans_p_open < orig_p_open:
-            return False, (
-                f"Потеряны теги <p>: в оригинале {orig_p_open}, "
-                f"в переводе {trans_p_open}."
-            ), final_translated_html
-
         orig_leading_text = _find_leading_visible_text_before_expected_block(soup_orig_raw)
         trans_leading_text = _find_leading_visible_text_before_expected_block(soup_trans)
         if not orig_leading_text and trans_leading_text:
