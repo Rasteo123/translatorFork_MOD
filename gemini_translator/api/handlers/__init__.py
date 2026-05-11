@@ -9,6 +9,7 @@ if __name__ != "__main__":
     from .gemini import GeminiApiHandler
     from .huggingface import HuggingFaceApiHandler
     from .deepseek import DeepseekApiHandler
+    from .nvidia import NvidiaApiHandler
     from .local import LocalApiHandler
     from .openrouter import OpenRouterApiHandler
     from .workascii_chatgpt import WorkAsciiChatGptApiHandler
@@ -19,6 +20,7 @@ if __name__ != "__main__":
         "GeminiApiHandler",
         "HuggingFaceApiHandler",
         "DeepseekApiHandler",
+        "NvidiaApiHandler",
         "LocalApiHandler",
         "OpenRouterApiHandler",
         "WorkAsciiChatGptApiHandler"
