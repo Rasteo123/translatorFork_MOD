@@ -17,6 +17,7 @@ class StatusBarWidget(QtWidgets.QWidget):
         self.filtered_count = 0
         self.error_count = 0
         self.total_tasks = 0
+        self._uses_topic_subscription = False
 
         self._init_ui()
 
@@ -30,7 +31,12 @@ class StatusBarWidget(QtWidgets.QWidget):
         if not self.engine and hasattr(app, "engine"):
             self.engine = app.engine
 
-        if self.bus:
+        if self.bus and hasattr(self.bus, "subscribe"):
+            self.bus.subscribe("session_started", self._on_session_started)
+            self.bus.subscribe("session_finished", self._on_session_finished)
+            self.bus.subscribe("task_state_changed", self._on_task_state_changed)
+            self._uses_topic_subscription = True
+        elif self.bus and hasattr(self.bus, "event_posted"):
             self.bus.event_posted.connect(self.on_event)
         else:
             print("[StatusBarWidget WARN] Шина событий не предоставлена. Статус-бар не будет обновляться.")
@@ -213,7 +219,12 @@ class StatusBarWidget(QtWidgets.QWidget):
         """Отписываемся от шины при закрытии/уничтожении виджета."""
         if self.bus:
             try:
-                self.bus.event_posted.disconnect(self.on_event)
-            except (TypeError, RuntimeError):
+                if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
+                    self.bus.unsubscribe("session_started", self._on_session_started)
+                    self.bus.unsubscribe("session_finished", self._on_session_finished)
+                    self.bus.unsubscribe("task_state_changed", self._on_task_state_changed)
+                elif hasattr(self.bus, "event_posted"):
+                    self.bus.event_posted.disconnect(self.on_event)
+            except (TypeError, RuntimeError, ValueError):
                 pass
         super().closeEvent(event)
