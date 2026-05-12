@@ -152,10 +152,13 @@ class HybridPath:
         # --- НАЧАЛО ИЗМЕНЕНИЙ ---
         # 1. Проверяем, является ли запрашиваемый 'name' атрибутом, а не функцией,
         #    в оригинальном модуле os.path.
-        original_attr = getattr(_original["os_path"], name, None)
-        if original_attr is not None and not callable(original_attr):
-            # Если это атрибут (как 'sep', 'altsep'), просто возвращаем его значение.
-            return original_attr
+        if hasattr(_original["os_path"], name):
+            original_attr = getattr(_original["os_path"], name)
+            if not callable(original_attr):
+                # Если это атрибут (как 'sep', 'altsep'), просто возвращаем его значение.
+                # Важно: hasattr нужен, потому что getattr(..., None) вернет None, 
+                # и мы не отличим отсутствие атрибута от атрибута со значением None (как altsep на Mac).
+                return original_attr
         # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
         # Если это не атрибут, то считаем, что это вызов функции, и возвращаем обертку.
