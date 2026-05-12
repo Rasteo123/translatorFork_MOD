@@ -1,11 +1,14 @@
 import threading
 import asyncio
 import aiohttp
+import os
 import re
+import ssl
 import contextvars
 import time
 import sys
 from collections import Counter
+import certifi
 from PyQt6.QtWidgets import QApplication
 from ..utils.async_helpers import run_sync
 from ..utils.debug_logger import create_operation_trace
@@ -16,6 +19,21 @@ from .errors import (
 
 _thread_local = threading.local()
 _current_debug_trace = contextvars.ContextVar("current_debug_trace", default=None)
+
+
+def _get_ssl_context_signature():
+    ssl_cert_file = os.environ.get("SSL_CERT_FILE") or None
+    ssl_cert_dir = os.environ.get("SSL_CERT_DIR") or None
+    if ssl_cert_file or ssl_cert_dir:
+        return ("env", ssl_cert_file, ssl_cert_dir)
+    return ("certifi", certifi.where(), None)
+
+
+def _create_ssl_context():
+    source, cafile, _capath = _get_ssl_context_signature()
+    if source == "env":
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=cafile)
 
 try:
     import requests
@@ -85,12 +103,18 @@ class BaseApiHandler:
     async def _get_or_create_session_internal(self, api_timeout=600):
         """[Внутренний] Лениво создает сессию."""
         desired_proxy_signature = self._get_proxy_signature()
+        desired_ssl_context_signature = _get_ssl_context_signature()
         existing_session = getattr(_thread_local, "session", None)
         existing_proxy_signature = getattr(_thread_local, "session_proxy_signature", None)
         existing_timeout = getattr(_thread_local, "session_timeout", None)
+        existing_ssl_context_signature = getattr(_thread_local, "session_ssl_context_signature", None)
 
         if existing_session and not existing_session.closed:
-            if existing_proxy_signature == desired_proxy_signature and existing_timeout == api_timeout:
+            if (
+                existing_proxy_signature == desired_proxy_signature
+                and existing_timeout == api_timeout
+                and existing_ssl_context_signature == desired_ssl_context_signature
+            ):
                 return existing_session
 
             await existing_session.close()
@@ -99,7 +123,10 @@ class BaseApiHandler:
                 delattr(_thread_local, "session_proxy_signature")
             if hasattr(_thread_local, "session_timeout"):
                 delattr(_thread_local, "session_timeout")
+            if hasattr(_thread_local, "session_ssl_context_signature"):
+                delattr(_thread_local, "session_ssl_context_signature")
         
+        ssl_context = _create_ssl_context()
         connector = None
         if self.proxy_settings and self.proxy_settings.get('enabled'):
             try:
@@ -112,9 +139,12 @@ class BaseApiHandler:
                 if host and port:
                     auth = f"{user}:{pwd}@" if user and pwd else ""
                     url = f"{p_type}://{auth}{host}:{port}"
-                    connector = ProxyConnector.from_url(url, rdns=True)
+                    connector = ProxyConnector.from_url(url, rdns=True, ssl=ssl_context)
             except Exception as e:
                 print(f"[API ERROR] Не удалось создать прокси-коннектор: {e}")
+
+        if connector is None:
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
 
         timeout = aiohttp.ClientTimeout(total=api_timeout)
         _thread_local.session = aiohttp.ClientSession(
@@ -124,6 +154,7 @@ class BaseApiHandler:
         )
         _thread_local.session_proxy_signature = desired_proxy_signature
         _thread_local.session_timeout = api_timeout
+        _thread_local.session_ssl_context_signature = desired_ssl_context_signature
         return _thread_local.session
 
     async def _close_thread_session_internal(self):
@@ -137,6 +168,8 @@ class BaseApiHandler:
             delattr(_thread_local, "session_proxy_signature")
         if hasattr(_thread_local, "session_timeout"):
             delattr(_thread_local, "session_timeout")
+        if hasattr(_thread_local, "session_ssl_context_signature"):
+            delattr(_thread_local, "session_ssl_context_signature")
 
     def _create_debug_trace(self, log_prefix):
         if not getattr(self.worker, "debug_logging_enabled", False):
@@ -261,6 +294,8 @@ class BaseApiHandler:
             delattr(_thread_local, "session_proxy_signature")
         if hasattr(_thread_local, "session_timeout"):
             delattr(_thread_local, "session_timeout")
+        if hasattr(_thread_local, "session_ssl_context_signature"):
+            delattr(_thread_local, "session_ssl_context_signature")
     
     
     

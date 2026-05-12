@@ -141,6 +141,7 @@ call :build_app_base "ПОЛНОСТЬЮ ПОРТАТИВНАЯ"
 --icon="gemini_translator\GT.ico" ^
 --noconfirm ^
 --collect-data="PyQt6" ^
+--collect-data="certifi" ^
 --collect-data="docx" ^
 --collect-data="emoji" ^
 --collect-data="jieba" ^
@@ -188,6 +189,7 @@ call :build_app_base "ГИБРИДНАЯ"
 --icon="gemini_translator\GT.ico" ^
 --noconfirm ^
 --collect-data="PyQt6" ^
+--collect-data="certifi" ^
 --collect-data="docx" ^
 --collect-data="emoji" ^
 --collect-data="jieba" ^
@@ -256,6 +258,7 @@ call :build_app_base "ПРОДВИНУТАЯ"
 --icon="gemini_translator\GT.ico" ^
 --noconfirm ^
 --collect-data="PyQt6" ^
+--collect-data="certifi" ^
 --collect-data="docx" ^
 --collect-data="emoji" ^
 --collect-data="jieba" ^
