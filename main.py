@@ -869,6 +869,9 @@ class EventBus(QtCore.QObject):
         event_posted = QtCore.pyqtSignal(dict)
 
     event_posted = QtCore.pyqtSignal(dict)
+    _subscribe_requested = QtCore.pyqtSignal(str, object, object, object)
+    _unsubscribe_requested = QtCore.pyqtSignal(str, object, object, object)
+    _unsubscribe_all_requested = QtCore.pyqtSignal(object, object, object)
     # Новые атрибуты и методы для "шины с инерцией"
     # Сигнал, который передает ключ измененных данных
     data_changed = QtCore.pyqtSignal(str)
@@ -880,9 +883,18 @@ class EventBus(QtCore.QObject):
         self._topic_subscribers = {}
         self._topic_lock = self.threading.Lock()
         self.event_posted.connect(self._dispatch_to_topics)
+        self._subscribe_requested.connect(self._subscribe_in_bus_thread)
+        self._unsubscribe_requested.connect(self._unsubscribe_in_bus_thread)
+        self._unsubscribe_all_requested.connect(self._unsubscribe_all_in_bus_thread)
 
     def subscribe(self, event_name: str, callback):
         """Подписывает callback только на конкретный тип события."""
+        if QtCore.QThread.currentThread() == self.thread():
+            self._subscribe_impl(event_name, callback)
+            return
+        self._run_in_bus_thread(self._subscribe_requested, event_name, callback)
+
+    def _subscribe_impl(self, event_name: str, callback):
         with self._topic_lock:
             subscribers = self._topic_subscribers.setdefault(event_name, [])
             if any(item[0] == callback for item in subscribers):
@@ -891,8 +903,22 @@ class EventBus(QtCore.QObject):
             emitter.event_posted.connect(callback)
             subscribers.append((callback, emitter))
 
+    @QtCore.pyqtSlot(str, object, object, object)
+    def _subscribe_in_bus_thread(self, event_name: str, callback, done, errors):
+        self._complete_thread_hop(
+            done,
+            errors,
+            lambda: self._subscribe_impl(event_name, callback),
+        )
+
     def unsubscribe(self, event_name: str, callback):
         """Убирает callback из конкретной topic-подписки."""
+        if QtCore.QThread.currentThread() == self.thread():
+            self._unsubscribe_impl(event_name, callback)
+            return
+        self._run_in_bus_thread(self._unsubscribe_requested, event_name, callback)
+
+    def _unsubscribe_impl(self, event_name: str, callback):
         with self._topic_lock:
             subscribers = self._topic_subscribers.get(event_name)
             if not subscribers:
@@ -911,8 +937,22 @@ class EventBus(QtCore.QObject):
             if not subscribers:
                 self._topic_subscribers.pop(event_name, None)
 
+    @QtCore.pyqtSlot(str, object, object, object)
+    def _unsubscribe_in_bus_thread(self, event_name: str, callback, done, errors):
+        self._complete_thread_hop(
+            done,
+            errors,
+            lambda: self._unsubscribe_impl(event_name, callback),
+        )
+
     def unsubscribe_all(self, callback):
         """Убирает callback из всех topic-подписок."""
+        if QtCore.QThread.currentThread() == self.thread():
+            self._unsubscribe_all_impl(callback)
+            return
+        self._run_in_bus_thread(self._unsubscribe_all_requested, callback)
+
+    def _unsubscribe_all_impl(self, callback):
         with self._topic_lock:
             empty_topics = []
             for event_name, subscribers in self._topic_subscribers.items():
@@ -931,6 +971,31 @@ class EventBus(QtCore.QObject):
                     empty_topics.append(event_name)
             for event_name in empty_topics:
                 self._topic_subscribers.pop(event_name, None)
+
+    @QtCore.pyqtSlot(object, object, object)
+    def _unsubscribe_all_in_bus_thread(self, callback, done, errors):
+        self._complete_thread_hop(
+            done,
+            errors,
+            lambda: self._unsubscribe_all_impl(callback),
+        )
+
+    def _run_in_bus_thread(self, signal, *args):
+        done = self.threading.Event()
+        errors = []
+        signal.emit(*args, done, errors)
+        if not done.wait(timeout=5):
+            raise RuntimeError("Timed out while updating EventBus topic subscription.")
+        if errors:
+            raise errors[0]
+
+    def _complete_thread_hop(self, done, errors, operation):
+        try:
+            operation()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            done.set()
 
     def _dispatch_to_topics(self, event: dict):
         event_name = event.get('event') if isinstance(event, dict) else None
