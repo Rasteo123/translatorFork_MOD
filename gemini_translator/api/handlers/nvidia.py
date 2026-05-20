@@ -90,7 +90,96 @@ class NvidiaApiHandler(BaseApiHandler):
         cleaned = self._normalize_content(text)
         if self.worker.model_config.get("strip_reasoning_tags"):
             cleaned = re.sub(r"<think>.*?</think>\s*", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+            cleaned = re.sub(
+                r"<\|channel\>thought\s*.*?<channel\|>\s*",
+                "",
+                cleaned,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
         return cleaned.strip()
+
+    def _model_config(self):
+        return self.worker.model_config if isinstance(self.worker.model_config, dict) else {}
+
+    def _apply_sampling_defaults(self, payload):
+        model_config = self._model_config()
+        for key in ("top_p", "top_k", "min_p", "presence_penalty"):
+            if key in model_config and model_config[key] is not None:
+                payload[key] = model_config[key]
+
+    def _resolve_deepseek_reasoning_effort(self):
+        model_config = self._model_config()
+        effort = (
+            getattr(self.worker, "thinking_level", None)
+            or model_config.get("default_reasoning_effort")
+            or model_config.get("min_thinking_budget")
+            or "high"
+        )
+        effort = str(effort).strip().lower()
+        return "max" if effort in {"max", "xhigh"} else "high"
+
+    def _apply_deepseek_options(self, payload):
+        model_config = self._model_config()
+        configured_mode = str(model_config.get("deepseek_thinking") or "").strip().lower()
+        has_thinking_config = "thinkingLevel" in model_config or "min_thinking_budget" in model_config
+        supports_thinking = (
+            configured_mode in {"enabled", "disabled"}
+            or model_config.get("thinkingLevel") is not None
+            or (has_thinking_config and model_config.get("min_thinking_budget") is not False)
+        )
+        if not supports_thinking:
+            return
+
+        if configured_mode in {"enabled", "disabled"}:
+            thinking_enabled = configured_mode == "enabled"
+        else:
+            thinking_enabled = bool(getattr(self.worker, "thinking_enabled", False))
+
+        payload["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
+        if not thinking_enabled:
+            return
+
+        payload["reasoning_effort"] = self._resolve_deepseek_reasoning_effort()
+        payload.pop("temperature", None)
+
+    def _apply_qwen_options(self, payload):
+        model_config = self._model_config()
+        thinking_enabled = bool(getattr(self.worker, "thinking_enabled", False))
+        payload.setdefault("chat_template_kwargs", {})["enable_thinking"] = thinking_enabled
+
+        if thinking_enabled:
+            thinking_top_p = model_config.get("thinking_top_p")
+            if thinking_top_p is not None:
+                payload["top_p"] = thinking_top_p
+
+            if not getattr(self.worker, "temperature_override_enabled", True):
+                thinking_temperature = model_config.get("default_thinking_temperature")
+                if thinking_temperature is not None:
+                    payload["temperature"] = thinking_temperature
+
+    def _apply_gemma_options(self, payload):
+        if not bool(getattr(self.worker, "thinking_enabled", False)):
+            return
+
+        messages = payload.setdefault("messages", [])
+        if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+            content = self._normalize_content(messages[0].get("content"))
+            if not content.startswith("<|think|>"):
+                messages[0]["content"] = f"<|think|>\n{content}" if content else "<|think|>"
+            return
+
+        messages.insert(0, {"role": "system", "content": "<|think|>"})
+
+    def _apply_nvidia_model_options(self, payload):
+        self._apply_sampling_defaults(payload)
+
+        reasoning_mode = str(self._model_config().get("nvidia_reasoning") or "").strip().lower()
+        if reasoning_mode == "deepseek":
+            self._apply_deepseek_options(payload)
+        elif reasoning_mode == "qwen":
+            self._apply_qwen_options(payload)
+        elif reasoning_mode == "gemma":
+            self._apply_gemma_options(payload)
 
     def _extract_text_from_result(self, result, allow_incomplete=False):
         candidates = [result]
@@ -305,6 +394,7 @@ class NvidiaApiHandler(BaseApiHandler):
             "temperature": self.worker.temperature,
             "stream": use_stream,
         }
+        self._apply_nvidia_model_options(payload)
 
         if max_output_tokens:
             payload["max_tokens"] = max_output_tokens
