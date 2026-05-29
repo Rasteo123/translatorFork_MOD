@@ -182,6 +182,24 @@ class TranslationEngine(QObject):
         except (TypeError, RuntimeError, ValueError):
             pass
 
+    def _cleanup_chunk_assembler(self):
+        assembler = self.chunk_assembler
+        self.chunk_assembler = None
+        if not assembler:
+            return
+
+        cleanup = getattr(assembler, "cleanup", None)
+        try:
+            if callable(cleanup):
+                cleanup()
+        except RuntimeError:
+            pass
+
+        try:
+            assembler.deleteLater()
+        except RuntimeError:
+            pass
+
     @pyqtSlot(dict)
     def on_event(self, event: dict):
         try:
@@ -620,7 +638,7 @@ class TranslationEngine(QObject):
         self.last_warning_times.clear()
         self.api_key_manager = None
         self.project_manager = None
-        self.chunk_assembler = None
+        self._cleanup_chunk_assembler()
         
         self._post_event('log_message', {'message': f"▶▶▶ Начало новой сессии: {self.session_id[:8]}"})
         
@@ -1125,6 +1143,7 @@ class TranslationEngine(QObject):
     def cleanup(self):
         self._stop_timers()
         self._disconnect_from_bus()
+        self._cleanup_chunk_assembler()
 
         self.is_cancelled = True # Финальный флаг для всех
         self._terminate_all_workers()

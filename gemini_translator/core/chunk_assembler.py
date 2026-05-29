@@ -24,11 +24,10 @@ class ChunkAssembler(QObject):
             'chunk_task_completed',
             'task_state_changed',
         )
-        if hasattr(self.bus, "subscribe"):
-            for topic in self._event_topics:
-                self.bus.subscribe(topic, self.on_event)
-        else:
-            self.bus.event_posted.connect(self.on_event)
+        self._uses_topic_subscription = False
+        self._bus_connected = False
+        self._is_cleaned_up = False
+        self._connect_to_bus()
         
         self.settings = settings or {}
         
@@ -38,16 +37,57 @@ class ChunkAssembler(QObject):
         # self.assembly_bay и self.lock больше не нужны
         self.session_id = None
         self._pending_chapter_paths = set()
+        self._assembly_inflight_lock = threading.Lock()
+        self._assembly_sets_in_progress = set()
         self._recovery_scan_done = False
         self._assembly_timer = QtCore.QTimer(self)
         self._assembly_timer.setSingleShot(True)
         self._assembly_timer.setInterval(350)
         self._assembly_timer.timeout.connect(self._run_scheduled_assembly_check)
 
+    def _connect_to_bus(self):
+        if hasattr(self.bus, "subscribe"):
+            for topic in self._event_topics:
+                self.bus.subscribe(topic, self.on_event)
+            self._uses_topic_subscription = True
+        else:
+            self.bus.event_posted.connect(self.on_event)
+        self._bus_connected = True
+
+    def _disconnect_from_bus(self):
+        if not self._bus_connected:
+            return
+
+        try:
+            if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
+                for topic in self._event_topics:
+                    self.bus.unsubscribe(topic, self.on_event)
+            elif hasattr(self.bus, "event_posted"):
+                self.bus.event_posted.disconnect(self.on_event)
+        except (TypeError, RuntimeError, ValueError):
+            pass
+        finally:
+            self._bus_connected = False
+            self._uses_topic_subscription = False
+
+    def cleanup(self):
+        self._is_cleaned_up = True
+        self._assembly_timer.stop()
+        self._pending_chapter_paths.clear()
+        with self._assembly_inflight_lock:
+            self._assembly_sets_in_progress.clear()
+        self._disconnect_from_bus()
+
+    def deleteLater(self):
+        self.cleanup()
+        super().deleteLater()
 
     @pyqtSlot(dict)
     def on_event(self, event: dict):
         """Принимает события из общей шины."""
+        if self._is_cleaned_up:
+            return
+
         event_name = event.get('event')
         if self.session_id is None and event.get('session_id'):
             self.session_id = event.get('session_id')
@@ -104,6 +144,36 @@ class ChunkAssembler(QObject):
             self.bus.emit_event(event)
         else:
             self.bus.event_posted.emit(event)
+
+    def _assembly_key(self, task_ids: list) -> tuple:
+        return tuple(sorted(str(task_id) for task_id in task_ids))
+
+    def _queue_assembly(self, task_ids: list, chapter_path: str) -> bool:
+        if self._is_cleaned_up:
+            return False
+
+        assembly_key = self._assembly_key(task_ids)
+        with self._assembly_inflight_lock:
+            if assembly_key in self._assembly_sets_in_progress:
+                return False
+            self._assembly_sets_in_progress.add(assembly_key)
+
+        QtCore.QTimer.singleShot(
+            0,
+            lambda ids=task_ids, path=chapter_path: self._run_queued_assembly(ids, path)
+        )
+        return True
+
+    def _run_queued_assembly(self, task_ids: list, chapter_path: str):
+        if self._is_cleaned_up:
+            self._clear_assembly_inflight(task_ids)
+            return
+        self._assemble_chapter_from_db(task_ids, chapter_path)
+
+    def _clear_assembly_inflight(self, task_ids: list):
+        assembly_key = self._assembly_key(task_ids)
+        with self._assembly_inflight_lock:
+            self._assembly_sets_in_progress.discard(assembly_key)
 
     def _build_wrapper_from_source(self, epub_path: str, original_chapter_path: str):
         with open(epub_path, "rb") as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
@@ -204,7 +274,9 @@ class ChunkAssembler(QObject):
         Результаты удаляются только после успешной записи итогового файла.
         """
         app = QtWidgets.QApplication.instance()
-        if not hasattr(app, 'task_manager'): return
+        if not hasattr(app, 'task_manager'):
+            self._clear_assembly_inflight(task_ids)
+            return
 
         try:
             placeholders = ','.join('?' for _ in task_ids)
@@ -286,6 +358,8 @@ class ChunkAssembler(QObject):
 
         except Exception as e:
             self._post_event('log_message', {'message': f"[ASSEMBLER_ERROR] КРИТИЧЕСКАЯ ОШИБКА при сборке главы '{os.path.basename(original_chapter_path)}': {e}"})
+        finally:
+            self._clear_assembly_inflight(task_ids)
 
     def run_final_assembly_check(self, chapter_paths: list[str] | None = None):
         """
@@ -339,4 +413,4 @@ class ChunkAssembler(QObject):
                 
                 # Просто запускаем сборку, передавая ей ID задач и путь.
                 # Атомарная операция внутри _assemble_chapter_from_db предотвратит двойную сборку.
-                QtCore.QTimer.singleShot(0, lambda ids=task_ids_for_assembly, path=chapter_path: self._assemble_chapter_from_db(ids, path))
+                self._queue_assembly(task_ids_for_assembly, chapter_path)

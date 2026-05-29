@@ -18,6 +18,22 @@ class _DummyBus(QtCore.QObject):
     event_posted = QtCore.pyqtSignal(dict)
 
 
+class _TopicBus:
+    def __init__(self):
+        self.subscriptions = {}
+
+    def subscribe(self, event_name, callback):
+        self.subscriptions.setdefault(event_name, []).append(callback)
+
+    def unsubscribe(self, event_name, callback):
+        callbacks = self.subscriptions.get(event_name, [])
+        if callback in callbacks:
+            callbacks.remove(callback)
+
+    def subscriber_count(self):
+        return sum(len(callbacks) for callbacks in self.subscriptions.values())
+
+
 class _ProjectManagerStub:
     def __init__(self, project_folder):
         self.project_folder = project_folder
@@ -195,6 +211,61 @@ class ChunkAssemblerTests(unittest.TestCase):
             assembler._assemble_chapter_from_db(["chunk-1"], chapter_path)
 
             self.assertEqual(self._task_status("chunk-1"), "pending")
+
+    def test_repeated_scans_do_not_queue_duplicate_assemblies(self):
+        with tempfile.TemporaryDirectory() as output_folder:
+            assembler = ChunkAssembler(
+                output_folder,
+                _ProjectManagerStub(output_folder),
+                settings={"use_prettify": False},
+            )
+            chapter_path = "Text/ch.xhtml"
+            prefix = '<html><body class="chapter">'
+            suffix = "</body></html>"
+            self._insert_completed_chunk(
+                "chunk-1",
+                ("epub_chunk", "mem://missing.epub", chapter_path, "<p>source 1</p>", 0, 2, prefix, suffix),
+                "<body><p>translated 1</p></body>",
+            )
+            self._insert_completed_chunk(
+                "chunk-2",
+                ("epub_chunk", "mem://missing.epub", chapter_path, "<p>source 2</p>", 1, 2, prefix, suffix),
+                "<body><p>translated 2</p></body>",
+            )
+
+            queued_assemblies = []
+            assembler._assemble_chapter_from_db = (
+                lambda task_ids, original_path: queued_assemblies.append((tuple(task_ids), original_path))
+            )
+
+            assembler.run_final_assembly_check()
+            assembler.run_final_assembly_check()
+            self.app.processEvents()
+
+            self.assertEqual(
+                queued_assemblies,
+                [(("chunk-1", "chunk-2"), chapter_path)],
+            )
+
+    def test_cleanup_unsubscribes_topic_bus_callbacks(self):
+        original_bus = self.app.event_bus
+        topic_bus = _TopicBus()
+        self.app.event_bus = topic_bus
+        self.addCleanup(setattr, self.app, "event_bus", original_bus)
+
+        with tempfile.TemporaryDirectory() as output_folder:
+            assembler = ChunkAssembler(
+                output_folder,
+                _ProjectManagerStub(output_folder),
+                settings={"use_prettify": False},
+            )
+
+            self.assertEqual(topic_bus.subscriber_count(), len(assembler._event_topics))
+
+            assembler.cleanup()
+            assembler.cleanup()
+
+            self.assertEqual(topic_bus.subscriber_count(), 0)
 
 
 if __name__ == "__main__":
