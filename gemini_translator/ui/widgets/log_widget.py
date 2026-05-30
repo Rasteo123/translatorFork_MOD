@@ -59,8 +59,8 @@ MAX_LOG_BLOCKS = 1200
 MAX_STORED_DETAILS = 200
 MAX_DETAIL_TEXT_CHARS = 16000
 MAX_PENDING_LOG_MESSAGES = 2000
-MAX_LOG_FLUSH_BATCH_SIZE = 150
-LOG_FLUSH_INTERVAL_MS = 50
+MAX_LOG_FLUSH_BATCH_SIZE = 300
+LOG_FLUSH_INTERVAL_MS = 250
 
 
 class LogWidget(QWidget):
@@ -137,6 +137,9 @@ class LogWidget(QWidget):
 
     def _schedule_log_flush(self, delay_ms: int = LOG_FLUSH_INTERVAL_MS):
         if self._log_flush_timer.isActive():
+            return
+        # Hidden QTabWidget pages still receive log events; rendering them wastes CPU.
+        if not self.isVisible():
             return
         self._log_flush_timer.start(max(0, int(delay_ms)))
 
@@ -280,6 +283,15 @@ class LogWidget(QWidget):
         self._details_map.clear()
         self._pending_log_data.clear()
         self._log_flush_timer.stop()
+
+    def hideEvent(self, event):
+        self._log_flush_timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._pending_log_data:
+            self._schedule_log_flush(LOG_FLUSH_INTERVAL_MS)
 
     def _trim_details_map(self):
         while len(self._details_map) > MAX_STORED_DETAILS:

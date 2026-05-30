@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtGui, QtWidgets
 
 from gemini_translator.ui.widgets.log_widget import (
     LOG_FLUSH_INTERVAL_MS,
@@ -67,6 +67,29 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertEqual(scheduled_delays, [LOG_FLUSH_INTERVAL_MS])
         finally:
             widget.deleteLater()
+
+    def test_hidden_widget_defers_flush_timer_until_shown(self):
+        widget = LogWidget(event_bus=None)
+        try:
+            self.assertFalse(widget.isVisible())
+
+            widget.append_message({"message": "[INFO] hidden"})
+
+            self.assertEqual(len(widget._pending_log_data), 1)
+            self.assertFalse(widget._log_flush_timer.isActive())
+
+            scheduled_delays = []
+            widget._schedule_log_flush = scheduled_delays.append
+
+            widget.showEvent(QtGui.QShowEvent())
+
+            self.assertEqual(scheduled_delays, [LOG_FLUSH_INTERVAL_MS])
+        finally:
+            widget._log_flush_timer.stop()
+            widget.deleteLater()
+
+    def test_normal_flush_interval_is_throttled_for_text_layout(self):
+        self.assertGreaterEqual(LOG_FLUSH_INTERVAL_MS, 200)
 
 
 if __name__ == "__main__":
