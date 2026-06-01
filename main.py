@@ -889,18 +889,23 @@ class EventBus(QtCore.QObject):
 
     def subscribe(self, event_name: str, callback):
         """Подписывает callback только на конкретный тип события."""
-        if QtCore.QThread.currentThread() == self.thread():
-            self._subscribe_impl(event_name, callback)
-            return
-        self._run_in_bus_thread(self._subscribe_requested, event_name, callback)
+        self._subscribe_impl(event_name, callback)
 
     def _subscribe_impl(self, event_name: str, callback):
         with self._topic_lock:
             subscribers = self._topic_subscribers.setdefault(event_name, [])
             if any(item[0] == callback for item in subscribers):
                 return
-            emitter = self._TopicEmitter(self)
-            emitter.event_posted.connect(callback)
+            emitter = self._TopicEmitter()
+            if emitter.thread() != self.thread():
+                emitter.moveToThread(self.thread())
+            receiver = getattr(callback, "__self__", None)
+            connection_type = (
+                QtCore.Qt.ConnectionType.AutoConnection
+                if isinstance(receiver, QtCore.QObject)
+                else QtCore.Qt.ConnectionType.DirectConnection
+            )
+            emitter.event_posted.connect(callback, connection_type)
             subscribers.append((callback, emitter))
 
     @QtCore.pyqtSlot(str, object, object, object)
@@ -913,10 +918,7 @@ class EventBus(QtCore.QObject):
 
     def unsubscribe(self, event_name: str, callback):
         """Убирает callback из конкретной topic-подписки."""
-        if QtCore.QThread.currentThread() == self.thread():
-            self._unsubscribe_impl(event_name, callback)
-            return
-        self._run_in_bus_thread(self._unsubscribe_requested, event_name, callback)
+        self._unsubscribe_impl(event_name, callback)
 
     def _unsubscribe_impl(self, event_name: str, callback):
         with self._topic_lock:
@@ -947,10 +949,7 @@ class EventBus(QtCore.QObject):
 
     def unsubscribe_all(self, callback):
         """Убирает callback из всех topic-подписок."""
-        if QtCore.QThread.currentThread() == self.thread():
-            self._unsubscribe_all_impl(callback)
-            return
-        self._run_in_bus_thread(self._unsubscribe_all_requested, callback)
+        self._unsubscribe_all_impl(callback)
 
     def _unsubscribe_all_impl(self, callback):
         with self._topic_lock:

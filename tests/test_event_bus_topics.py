@@ -101,6 +101,35 @@ class EventBusTopicTests(unittest.TestCase):
 
         self.assertEqual(topic_events, [event])
 
+    def test_subscribe_from_foreign_thread_does_not_require_gui_event_pump(self):
+        bus = EventBus()
+        topic_events = []
+        errors = []
+
+        def subscribe_from_thread():
+            try:
+                bus.subscribe("log_message", topic_events.append)
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=subscribe_from_thread)
+        try:
+            thread.start()
+            thread.join(timeout=0.2)
+            self.assertFalse(thread.is_alive())
+        finally:
+            deadline = time.monotonic() + 2
+            while thread.is_alive() and time.monotonic() < deadline:
+                self.app.processEvents()
+                thread.join(timeout=0.01)
+
+        self.assertEqual(errors, [])
+
+        event = {"event": "log_message", "data": {"message": "hello"}}
+        bus.emit_event(event)
+
+        self.assertEqual(topic_events, [event])
+
 
 if __name__ == "__main__":
     unittest.main()
