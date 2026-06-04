@@ -58,7 +58,30 @@ New state:
 - `self._dirty_task_ids: set[str] = set()`
 - `self._structural_dirty: bool = True` (initial = True so the first cache build is always full)
 - `self._dirty_state_lock = threading.Lock()` — narrow, non-reentrant, dedicated to dirty-set+flag snapshot/reset. **Separate from the existing `_chancellor_lock` (PatientLock/RLock)** to avoid deadlock with DB-path acquires.
-- `self._sort_keys: dict[str, tuple[int, int]] = {}` — per-task `(priority, sequence)`. **Status group is derived from the cache entry's `status` field at sort time** via a `STATUS_GROUP_ORDER` constant (mirroring the SQL `CASE status WHEN 'in_progress' THEN 1 WHEN 'pending' THEN 2 WHEN 'held' THEN 3 WHEN 'completed' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END`). The Python sort key for merge is `(STATUS_GROUP_ORDER.get(status, 6), -priority, sequence)` — three components, exactly matching the SQL `ORDER BY` at line 1253. Storing only `(priority, sequence)` is correct because the cache entry already carries `status`.
+- `self._sort_keys: dict[str, tuple[int, int]] = {}` — per-task `(priority, sequence)`, keyed by **stringified task_id** (see UUID-vs-str note below).
+- **Status group is derived from the cache entry's `status` field at sort time** via a `STATUS_GROUP_ORDER` constant. The cache stores **UI statuses** (line 1282 maps `completed → success` and `failed → error` before append), so the constant must include both DB names and their UI aliases:
+
+  ```python
+  STATUS_GROUP_ORDER = {
+      'in_progress': 1,
+      'pending':     2,
+      'held':        3,
+      'completed':   4,  # DB value, present transiently in partial path before mapping
+      'success':     4,  # UI alias (line 1282)
+      'failed':      5,  # DB value
+      'error':       5,  # UI alias (line 1282)
+  }
+  # default: 6
+  ```
+
+  Python sort key: `(STATUS_GROUP_ORDER.get(status, 6), -priority, sequence)`. Three components, matching the SQL `ORDER BY` at line 1253 *after accounting for the UI status mapping*.
+
+- **UUID-vs-str discipline.** The DB column is `task_id` (string), but the cache entry stores `uuid.UUID(task_id_str)` as the first element of its inner tuple (line 1283). For consistent set membership and payload serialization:
+  - `self._dirty_task_ids: set[str]` stores **stringified** task ids. Every `notify_task_dirty(task_id)` does `str(task_id)` internally before `add()`, accepting either `str` or `UUID`.
+  - `self._sort_keys` keyed by `str` for the same reason.
+  - Event payload `changed_ids: list[str] | None` — `list` for consistency with `full_state: list` and for cheap iteration/serialization.
+  - On the UI side, `_on_task_state_changed` normalizes once: `self._pending_changed_ids = set(changed_ids) if changed_ids is not None else None`.
+  - `_selective_update` compares `str(item[0][0]) in changed_ids` for each row (task id pulled out of the tuple is a `UUID`; cast to `str` per comparison — O(rows) string casts is cheap vs the work being skipped).
 
 New public methods (thread-safe, callable from worker threads):
 - `notify_task_dirty(task_id: str)`: under lock, `self._dirty_task_ids.add(task_id)`; release lock; **emit `self._ui_update_requested`** (existing `pyqtSignal` at line 92, queued to main thread).
@@ -95,12 +118,12 @@ Backward-compatibility:
 
 **`gemini_translator/ui/widgets/task_management_widget.py`**
 
-- `_on_task_state_changed` (225): pull `changed_ids` from `event_data['data']`, stash on `self._pending_changed_ids` (new attr, default `None`). `_do_redraw` reads and clears it, passes through to `update_list`.
+- `_on_task_state_changed` (225): pull `changed_ids` from `event_data['data']` (`list[str] | None`); normalize via `self._pending_changed_ids = set(changed_ids) if changed_ids is not None else None` (new attr, default `None`). `_do_redraw` reads and clears it, passes through to `update_list`.
 
 **`gemini_translator/ui/widgets/chapter_list_widget.py`**
 
 - `update_list(tasks_data, changed_ids=None)`: signature gains `changed_ids`. Existing structural-match branch (608) forwards it to `_selective_update`. The `_surgical_update` / `_full_redraw` branches ignore it (those paths inherently rewrite everything).
-- `_selective_update(tasks_data, changed_ids=None)`: when `changed_ids is not None`, iterate `enumerate(tasks_data)` and call `_update_row_status` only for rows whose `task_id` is in the set. Row order is guaranteed equal on this branch (the caller checked `current_task_ids == new_task_ids`).
+- `_selective_update(tasks_data, changed_ids=None)`: when `changed_ids is not None` (a `set[str]` at this point, normalized by `_on_task_state_changed`), iterate `enumerate(tasks_data)` and call `_update_row_status` only when `str(task_tuple_with_uuid[0]) in changed_ids`. Row order is guaranteed equal on this branch (the caller checked `current_task_ids == new_task_ids` at line 608 — UUID equality, fine).
 
 ### Callsite audit (part of phase 2 implementation)
 
@@ -133,6 +156,8 @@ The audit table is committed in the same PR as the phase-2 code changes; uncerta
 | `_dirty_state_lock` deadlock with `_chancellor_lock` | low | separate `threading.Lock`; scope is snapshot + reset only; never held across worker call, signal emit, or `_chancellor_lock` acquire |
 | Dirty ids lost on worker failure | low | `_on_cache_updated` restores `self._in_flight_snapshot` ids to `_dirty_task_ids` and sets `_structural_dirty=True` on any non-success result |
 | Stale `_pending_changed_ids` after filter change | low | dedicated `_on_filter_changed` handler clears it before `redraw_ui()` |
+| Type mismatch (UUID vs str) in `changed_ids` lookup | medium (silent failure mode) | explicit `set[str]` discipline + `str(task_id)` cast at every boundary; regression test `test_selective_update_matches_uuid_via_str_cast` |
+| `STATUS_GROUP_ORDER` missing UI-status aliases | medium | constant defines both DB names (`completed`, `failed`) and UI aliases (`success`, `error`) mapped to same group; test exercises both |
 | Partial SQL slower than full for tiny caches | low | `PARTIAL_REFRESH_THRESHOLD = 0.5` short-circuits |
 | Test environment quirks with QTimer / threading.Lock | medium | reuse patterns from `tests/test_session_timer_coalescing.py`, per `translator-test-env-deps` memory |
 
@@ -155,7 +180,7 @@ New test files, style matches `tests/test_rpm_limiter.py` / `tests/test_worker_e
 - `test_first_run_is_full_fetch` — initial `_structural_dirty=True` forces full.
 - `test_notify_task_dirty_runs_partial_query` — single dirty id → SELECT uses IN clause with that id only.
 - `test_notify_structural_overrides_dirty_set` — both flags set → full path wins.
-- `test_partial_merge_resorts_cache_to_match_sql_order` — merge + Python sort (3-component key incl. status group) matches full-fetch order.
+- `test_partial_merge_resorts_cache_to_match_sql_order` — merge + Python sort (3-component key incl. status group) matches full-fetch order. **Covers both `completed/success` and `failed/error` aliases** by mixing tasks with each status in the test fixture.
 - `test_changed_ids_excludes_unchanged_entries` — dirty id whose row data did not change is absent from emitted `changed_ids`.
 - `test_dirty_during_worker_triggers_followup` — re-entry retry covers the silent-drop bug.
 - `test_missing_id_in_partial_returns_needs_structural_retry` — worker returns the flag, does not mutate state (edge case 2).
@@ -166,6 +191,8 @@ New test files, style matches `tests/test_rpm_limiter.py` / `tests/test_worker_e
 
 **Phase 2 — extend `tests/test_chapter_list_widget_diff.py`:**
 - `test_selective_update_with_changed_ids_skips_other_rows`.
+- `test_selective_update_matches_uuid_via_str_cast` — `changed_ids` is `set[str]`, row task ids are `uuid.UUID`; verify the `str(task_id)` cast actually matches (regression guard against the UUID-vs-str type mismatch).
+- `test_changed_ids_payload_is_list_of_str` — TaskManager unit assertion that emitted `data['changed_ids']` is `list[str]`, not `set` and not `list[UUID]`.
 
 **Manual verification:** macOS Activity Monitor on `main.py` during a real active session with realistic file (RPS near limit). Three measurements: baseline (current `main`), phase 1, phase 2. If phase 1 already lands the win, phase 2 is reconsidered before merge.
 
