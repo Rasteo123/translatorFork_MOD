@@ -21,6 +21,29 @@ class _DummyBus(QtCore.QObject):
     event_posted = QtCore.pyqtSignal(dict)
 
 
+class _RecordingBus(QtCore.QObject):
+    """Шина с topic-подписками для проверки энергоэффективной фильтрации событий."""
+
+    event_posted = QtCore.pyqtSignal(dict)
+
+    def __init__(self):
+        super().__init__()
+        self.subscriptions = {}
+
+    def subscribe(self, event_name, callback):
+        self.subscriptions.setdefault(event_name, []).append(callback)
+
+    def unsubscribe(self, event_name, callback):
+        callbacks = self.subscriptions.get(event_name, [])
+        if callback in callbacks:
+            callbacks.remove(callback)
+
+    def emit_topic(self, event_name, data=None):
+        event = {"event": event_name, "data": data or {}}
+        for callback in list(self.subscriptions.get(event_name, [])):
+            callback(event)
+
+
 class _WidgetSettingsStub:
     def __init__(self, config_dir):
         self.config_dir = config_dir
@@ -69,6 +92,26 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         widget = ModelSettingsWidget(settings_manager=settings)
         self.addCleanup(widget.close)
         return widget
+
+    def _create_widget_with_bus(self, bus):
+        old_bus = self.app.event_bus
+        self.app.event_bus = bus
+        self.addCleanup(lambda: setattr(self.app, "event_bus", old_bus))
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        settings = _WidgetSettingsStub(temp_dir.name)
+        self.app.get_settings_manager = lambda settings=settings: settings
+        widget = ModelSettingsWidget(settings_manager=settings)
+        self.addCleanup(widget.close)
+        return widget
+
+    def test_subscribes_only_to_provider_changed_topic(self):
+        bus = _RecordingBus()
+        self._create_widget_with_bus(bus)
+
+        self.assertIn("provider_changed", bus.subscriptions)
+        # Энергоэффективность: виджет не должен будиться на частые чужие события.
+        self.assertNotIn("log_message", bus.subscriptions)
 
     def test_workascii_section_hides_technical_fields_and_shows_auth_buttons(self):
         widget = self._create_widget()
