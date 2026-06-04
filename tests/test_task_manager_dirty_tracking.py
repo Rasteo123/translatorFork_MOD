@@ -78,6 +78,16 @@ class NotifyApiTests(unittest.TestCase):
         self.assertEqual(tm._update_timer.start_calls, 0,
                          "QTimer.start() must not be called from notify_* - they may run on worker threads")
 
+    def test_safe_request_ui_update_routes_to_structural(self):
+        """Backward compat: all ~25 unmigrated callsites of _safe_request_ui_update
+        must now set _structural_dirty, so worst case = today's full-fetch behaviour."""
+        tm = self._make_stub()
+        from gemini_translator.core.task_manager import ChapterQueueManager
+        tm._safe_request_ui_update = types.MethodType(ChapterQueueManager._safe_request_ui_update, tm)
+        tm._safe_request_ui_update()
+        self.assertTrue(tm._structural_dirty)
+        self.assertEqual(tm._ui_update_requested.emit_calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

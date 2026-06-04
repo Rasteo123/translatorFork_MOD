@@ -1257,11 +1257,9 @@ class ChapterQueueManager(QObject):
         self._ui_update_requested.emit()
 
     def _safe_request_ui_update(self):
-        """
-        Безопасный метод для запроса обновления UI из ЛЮБОГО потока.
-        Он просто испускает сигнал.
-        """
-        self._ui_update_requested.emit()
+        """Backward-compat alias for notify_structural_change. Every unmigrated
+        callsite routes here, so worst case = today's full-fetch behaviour."""
+        self.notify_structural_change()
     
     def _trigger_cache_update(self):
         """Этот метод вызывается таймером и запускает фоновое обновление."""
