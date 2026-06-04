@@ -7,7 +7,7 @@ import functools
 from concurrent.futures import Future, ThreadPoolExecutor
 import threading
 
-def run_sync(func, *args, forget: bool = False, timeout: float = None, **kwargs) -> any:
+def run_sync(func, *args, forget: bool = False, timeout: float = None, executor=None, **kwargs) -> any:
     """
     Универсальная утилита для запуска синхронной, блокирующей функции 
     в фоновом потоке из асинхронного контекста.
@@ -52,8 +52,8 @@ def run_sync(func, *args, forget: bool = False, timeout: float = None, **kwargs)
                 "run_sync() can only be awaited inside a running asyncio event loop."
             )
         
-        # Запускаем в экзекуторе по умолчанию, получаем объект Future
-        future = loop.run_in_executor(None, context_bound_call)
+        # Запускаем в указанном экзекуторе (executor=None → дефолтный экзекутор loop)
+        future = loop.run_in_executor(executor, context_bound_call)
         
         # Асинхронно ждем завершения future с таймаутом.
         # asyncio.wait_for само обработает TimeoutError.
