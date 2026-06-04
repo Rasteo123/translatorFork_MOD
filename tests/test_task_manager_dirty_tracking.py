@@ -148,5 +148,87 @@ class TriggerCacheUpdateTests(unittest.TestCase):
         self.assertEqual(tm._started_workers, [])
 
 
+class BackgroundFetchTests(unittest.TestCase):
+    def _make_stub_with_db(self):
+        """Build a minimal stub with a real in-memory SQLite. Bind the methods
+        under test via types.MethodType (per test-env-deps memory)."""
+        import sqlite3
+        import json
+        from gemini_translator.core.task_manager import ChapterQueueManager
+
+        tm = types.SimpleNamespace(
+            _ui_state_list_cache=[],
+            _sort_keys={},
+        )
+
+        # In-memory SQLite with the schema and seed rows.
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE tasks (task_id TEXT PRIMARY KEY, payload TEXT, status TEXT,
+                                priority INTEGER, sequence INTEGER);
+            CREATE TABLE task_errors (task_id TEXT, error_type TEXT, timestamp REAL);
+        """)
+        # 3 tasks across status groups, mixed priorities.
+        conn.execute("INSERT INTO tasks VALUES (?, ?, ?, ?, ?)",
+                     ("00000000-0000-0000-0000-000000000001",
+                      json.dumps(["epub", "/tmp/a.epub", "/tmp/a.html"]),
+                      "in_progress", 10, 1))
+        conn.execute("INSERT INTO tasks VALUES (?, ?, ?, ?, ?)",
+                     ("00000000-0000-0000-0000-000000000002",
+                      json.dumps(["epub", "/tmp/b.epub", "/tmp/b.html"]),
+                      "completed", 5, 2))
+        conn.execute("INSERT INTO tasks VALUES (?, ?, ?, ?, ?)",
+                     ("00000000-0000-0000-0000-000000000003",
+                      json.dumps(["epub", "/tmp/c.epub", "/tmp/c.html"]),
+                      "failed", 5, 3))
+        conn.commit()
+
+        # Stub _get_read_only_conn to return a context manager wrapping our conn.
+        class _ConnCtx:
+            def __enter__(self_inner): return conn
+            def __exit__(self_inner, *a): return False
+        tm._get_read_only_conn = lambda: _ConnCtx()
+        tm._payload_for_ui = lambda p: p  # identity (no-op for tests)
+
+        # Bind the methods under test
+        tm._get_ui_state_list_background = types.MethodType(
+            ChapterQueueManager._get_ui_state_list_background, tm
+        )
+        tm._fetch_full_ui_state = types.MethodType(
+            ChapterQueueManager._fetch_full_ui_state, tm
+        )
+        tm._fetch_error_histories = types.MethodType(
+            ChapterQueueManager._fetch_error_histories, tm
+        )
+        tm._build_ui_entry = types.MethodType(
+            ChapterQueueManager._build_ui_entry, tm
+        )
+        return tm
+
+    def test_full_path_returns_list_with_ui_aliased_statuses(self):
+        tm = self._make_stub_with_db()
+        snapshot = {"ids": (), "structural": True}
+        result = tm._get_ui_state_list_background(snapshot)
+        self.assertIn("entries", result)
+        self.assertEqual(result["mode"], "full")
+        entries = result["entries"]
+        # 3 tasks, ordered: in_progress (1), success (4 from completed), error (5 from failed)
+        self.assertEqual(len(entries), 3)
+        statuses = [entry[1] for entry in entries]
+        self.assertEqual(statuses, ["in_progress", "success", "error"])
+
+    def test_full_path_populates_sort_keys(self):
+        tm = self._make_stub_with_db()
+        snapshot = {"ids": (), "structural": True}
+        result = tm._get_ui_state_list_background(snapshot)
+        self.assertIn("sort_keys", result)
+        sk = result["sort_keys"]
+        self.assertEqual(len(sk), 3)
+        self.assertEqual(sk["00000000-0000-0000-0000-000000000001"], (10, 1))
+        self.assertEqual(sk["00000000-0000-0000-0000-000000000002"], (5, 2))
+        self.assertEqual(sk["00000000-0000-0000-0000-000000000003"], (5, 3))
+
+
 if __name__ == "__main__":
     unittest.main()

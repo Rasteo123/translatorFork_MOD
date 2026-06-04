@@ -1296,50 +1296,74 @@ class ChapterQueueManager(QObject):
         self._is_updating_cache = False
         self._cache_update_worker = None
     
-    def _get_ui_state_list_background(self):
+    def _get_ui_state_list_background(self, snapshot):
+        """Runs in worker thread. Returns a result dict — never mutates
+        main-thread-owned state directly. Main thread (in _on_cache_updated)
+        assigns the result into self._ui_state_list_cache / _sort_keys.
+
+        Result shape (success):
+          full:    {"mode": "full",    "entries": [...], "sort_keys": {...}}
+          partial: {"mode": "partial", "entries": [...], "sort_keys_delta": {...}}
+        Result shape (failure / escalation):
+          {"mode": "structural_retry"} or {"mode": "error", "error": "..."}
         """
-        Этот метод выполняется в отдельном потоке!
-        Он атомарно читает данные из in-memory клона.
-        """
-        ui_state_list = []
-        # Получаем соединение с клоном, которое будет жить только внутри этого метода
-        with self._get_read_only_conn() as conn:
-            try:
-                # Все операции чтения теперь происходят внутри одной транзакции на клоне
-                cursor = conn.execute("""
-                    SELECT task_id, payload, status FROM tasks
-                    ORDER BY CASE status WHEN 'in_progress' THEN 1 WHEN 'pending' THEN 2 WHEN 'held' THEN 3 WHEN 'completed' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END, priority DESC, sequence ASC
-                """)
-                all_rows = cursor.fetchall()
-                
-                failed_task_ids = [row['task_id'] for row in all_rows if row['status'] == 'failed']
-                error_histories = {}
-                if failed_task_ids:
-                    placeholders = ','.join('?' for _ in failed_task_ids)
-                    error_cursor = conn.execute(
-                        f"SELECT task_id, error_type, COUNT(*) as count FROM task_errors WHERE task_id IN ({placeholders}) GROUP BY task_id, error_type",
-                        failed_task_ids
-                    )
-                    for row in error_cursor:
-                        task_id = row['task_id']
-                        if task_id not in error_histories:
-                            error_histories[task_id] = {'total_count': 0, 'errors': {}}
-                        error_histories[task_id]['errors'][row['error_type']] = row['count']
-                        error_histories[task_id]['total_count'] += row['count']
-    
-            except Exception as e:
-                print(f"[CRITICAL DB WORKER] Ошибка в _get_ui_state_list_background: {e}")
-                return None
-        # Обработка данных происходит уже после закрытия соединения с клоном
+        cache = self._ui_state_list_cache
+        is_structural = snapshot["structural"] or not cache
+        # Threshold short-circuit and partial path land in Task 11 — for now
+        # any non-structural call still goes through the full path.
+
+        try:
+            with self._get_read_only_conn() as conn:
+                if is_structural or True:  # Task 11 will replace `or True` with the partial dispatch
+                    return self._fetch_full_ui_state(conn)
+                # placeholder for partial path
+        except Exception as e:
+            print(f"[CRITICAL DB WORKER] Ошибка в _get_ui_state_list_background: {e}")
+            return {"mode": "error", "error": repr(e)}
+
+    def _fetch_full_ui_state(self, conn):
+        cursor = conn.execute("""
+            SELECT task_id, payload, status, priority, sequence FROM tasks
+            ORDER BY CASE status WHEN 'in_progress' THEN 1 WHEN 'pending' THEN 2 WHEN 'held' THEN 3 WHEN 'completed' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END, priority DESC, sequence ASC
+        """)
+        all_rows = cursor.fetchall()
+        failed_task_ids = [row['task_id'] for row in all_rows if row['status'] == 'failed']
+        error_histories = self._fetch_error_histories(conn, failed_task_ids)
+        entries = []
+        sort_keys = {}
         for row in all_rows:
-            task_id_str, payload_json, status = row['task_id'], row['payload'], row['status']
-            payload = json.loads(payload_json, object_hook=tuple_deserializer)
-            payload = self._payload_for_ui(payload)
-            ui_status = {'completed': 'success', 'failed': 'error'}.get(status, status)
-            task_tuple_for_ui = (uuid.UUID(task_id_str), payload)
-            details = error_histories.get(task_id_str, {})
-            ui_state_list.append((task_tuple_for_ui, ui_status, details))
-        return ui_state_list
+            entry, sort_key = self._build_ui_entry(row, error_histories)
+            entries.append(entry)
+            sort_keys[row['task_id']] = sort_key
+        return {"mode": "full", "entries": entries, "sort_keys": sort_keys}
+
+    def _fetch_error_histories(self, conn, failed_task_ids):
+        error_histories = {}
+        if not failed_task_ids:
+            return error_histories
+        placeholders = ','.join('?' for _ in failed_task_ids)
+        error_cursor = conn.execute(
+            f"SELECT task_id, error_type, COUNT(*) as count FROM task_errors WHERE task_id IN ({placeholders}) GROUP BY task_id, error_type",
+            failed_task_ids
+        )
+        for row in error_cursor:
+            tid = row['task_id']
+            if tid not in error_histories:
+                error_histories[tid] = {'total_count': 0, 'errors': {}}
+            error_histories[tid]['errors'][row['error_type']] = row['count']
+            error_histories[tid]['total_count'] += row['count']
+        return error_histories
+
+    def _build_ui_entry(self, row, error_histories):
+        """Returns ((task_tuple_for_ui, ui_status, details), (priority, sequence))."""
+        import json
+        task_id_str = row['task_id']
+        payload = json.loads(row['payload'], object_hook=tuple_deserializer)
+        payload = self._payload_for_ui(payload)
+        ui_status = {'completed': 'success', 'failed': 'error'}.get(row['status'], row['status'])
+        task_tuple_for_ui = (uuid.UUID(task_id_str), payload)
+        details = error_histories.get(task_id_str, {})
+        return ((task_tuple_for_ui, ui_status, details), (row['priority'], row['sequence']))
     
     def get_all_tasks_for_rebuild(self) -> list[tuple]:
         """
