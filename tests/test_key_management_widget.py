@@ -3,13 +3,36 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from gemini_translator.api import config as api_config
 from gemini_translator.ui.widgets.key_management_widget import (
     AdaptiveControlsWidget,
     KeyManagementWidget,
 )
+
+
+class _RecordingBus(QtCore.QObject):
+    """Шина с topic-подписками для проверки энергоэффективной фильтрации событий."""
+
+    event_posted = QtCore.pyqtSignal(dict)
+
+    def __init__(self):
+        super().__init__()
+        self.subscriptions = {}
+
+    def subscribe(self, event_name, callback):
+        self.subscriptions.setdefault(event_name, []).append(callback)
+
+    def unsubscribe(self, event_name, callback):
+        callbacks = self.subscriptions.get(event_name, [])
+        if callback in callbacks:
+            callbacks.remove(callback)
+
+    def emit_topic(self, event_name, data=None):
+        event = {"event": event_name, "data": data or {}}
+        for callback in list(self.subscriptions.get(event_name, [])):
+            callback(event)
 
 
 class _KeySettingsStub:
@@ -79,6 +102,38 @@ class KeyManagementWidgetProviderModeTests(unittest.TestCase):
 
     def setUp(self):
         api_config.initialize_configs()
+
+    def test_subscribes_only_to_relevant_topics(self):
+        bus = _RecordingBus()
+        old_bus = getattr(self.app, "event_bus", None)
+        self.app.event_bus = bus
+        try:
+            widget = KeyManagementWidget(_KeySettingsStub())
+            self.addCleanup(widget.close)
+
+            for topic in (
+                "key_statuses_updated",
+                "model_changed",
+                "session_started",
+                "request_count_updated",
+                "fatal_error",
+            ):
+                self.assertIn(topic, bus.subscriptions)
+            # Энергоэффективность: не будимся на самое частое широковещательное событие.
+            self.assertNotIn("log_message", bus.subscriptions)
+
+            # Функционал сохраняется: целевое событие по-прежнему обрабатывается.
+            bus.emit_topic(
+                "session_started",
+                {"settings": {"model_config": {"id": "m-42"}}},
+            )
+            self.assertEqual(widget.current_model_id, "m-42")
+        finally:
+            if old_bus is None:
+                if hasattr(self.app, "event_bus"):
+                    delattr(self.app, "event_bus")
+            else:
+                self.app.event_bus = old_bus
 
     def test_local_provider_uses_virtual_session_without_api_key(self):
         widget = KeyManagementWidget(_KeySettingsStub())
