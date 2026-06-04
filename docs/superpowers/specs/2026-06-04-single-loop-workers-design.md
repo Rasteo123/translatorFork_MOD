@@ -105,6 +105,11 @@ offload (see §Synchronous handler offload for sizing/rationale).
   `loop.set_default_executor(self.default_executor)` so aiohttp's `getaddrinfo`
   and bare `run_in_executor(None, …)` use the small DNS pool (see P2a/P3). The
   dedicated sync-handler pool is passed explicitly to `run_sync`.
+  **Windows loop class:** the loop must be a `ProactorEventLoop` on Windows
+  (mirror `get_worker_loop` `base.py:55`); WorkAscii uses
+  `asyncio.create_subprocess_exec` (`workascii_chatgpt.py:249`), which fails on a
+  `SelectorEventLoop` (proven by `test_workascii_runtime.py:47`). Regression test
+  required. *(Moot if subprocess handlers are scoped out — see open question.)*
 - `loop` — explicit accessor for the runtime loop, used to bind per-worker
   sessions and to schedule work. Deliberately separate from `get_worker_loop()`
   so the consistency engine is not affected (see P1b).
@@ -139,6 +144,14 @@ e.g. `gemini.py:30`) or an explicit `await handler.async_setup()` the worker
 coroutine awaits before its main loop. Trivial non-loop setup (assigning
 `api_key`, URLs) stays synchronous.
 
+**`run_async()` sequence must preserve warmup.** Today the pre-loop warmup runs
+as `loop.run_until_complete(self._perform_warmup())` (`worker.py:415`) and 7
+providers set `needs_warmup: true`. The refactor must keep it: the coroutine does
+(1) sync metadata setup → (2) `await` async session setup → (3) `await
+self._perform_warmup()` when `needs_warmup` → (4) `await
+self._async_processing_loop()` → (5) the `finally` teardown (see Cancellation).
+Warmup failure exits the worker cleanly (no main loop), as today.
+
 ### Per-key session ownership (the footprint guarantee)
 
 Today `base.py:_get_or_create_session_internal` caches the session in
@@ -146,9 +159,16 @@ Today `base.py:_get_or_create_session_internal` caches the session in
 per key. On a single thread that would collapse to **one shared session for all
 keys**, violating the constraint.
 
-Change: each `UniversalWorker` owns its **own** `ClientSession` + `TCPConnector`
-(its own proxy + SSL context), created when its coroutine starts and closed in a
-`finally`. The handler uses the worker's session rather than a thread-local one.
+Change: ownership moves to the **handler/context**, not literally to
+`UniversalWorker`. Each handler instance owns its **own** `ClientSession` +
+`TCPConnector` (its own proxy + SSL context) as an instance attribute, created
+lazily on first use and closed via its cleanup hook. Because there is one handler
+per worker (per key), this is per-key in the worker path — but the same handler
+also runs **without** a `UniversalWorker` in other callers: the benchmark runner
+(`runner.py:329` — builds `handler_class(_BenchmarkWorker)`, `setup_client`,
+drives `execute_api_call`, then `_close_thread_session_internal`) and the
+consistency engine. Phrasing ownership as handler-owned keeps all three paths
+working. The session is no longer cached in `_thread_local`.
 
 The session is created inside an `async` context and bound to
 `asyncio.get_running_loop()` (not `get_worker_loop()`). This kills two birds:
@@ -214,9 +234,14 @@ closed. So the contract becomes explicit:
 - **`run_async()` owns its children.** It wraps the main loop so that on
   `CancelledError` (or any exit) a `finally` **cancels every task in
   `active_tasks`, `await`s them with `gather(return_exceptions=True)`, then
-  closes the worker's own session** (`await`, not `run_until_complete` —
-  `worker.py:437` currently uses the latter, which can't run on the shared loop).
-  No child task outlives its parent or its session.
+  `await`s the handler's cleanup hook** `_close_thread_session_internal()`
+  (`await`, not `run_until_complete` — `worker.py:437` currently uses the latter,
+  which can't run on the shared loop). That hook is **generic**, not just an
+  aiohttp close: the HTTP base closes the `ClientSession` (`base.py:160`), but
+  `browser` closes the Playwright browser (`browser.py:244`) and `workascii`
+  terminates its Node bridge subprocess (`workascii_chatgpt.py:552`). So
+  cancellation must tear those down too — no child task, browser, or subprocess
+  outlives its worker. Test covers WorkAscii/browser resource teardown on cancel.
 - Single worker hard stop: existing flags (`is_cancelled` / `is_shutting_down` +
   `wake_event.set()` via `notify()`) **plus** `task.cancel()` on the outer task;
   the `finally` above guarantees clean child teardown.
@@ -279,6 +304,19 @@ unchanged.
   chunked responses concurrently complete within an expected bound — guards
   against head-of-line blocking from synchronous per-chunk parsing on the shared
   loop.
+- **Warmup preserved (P2a)**: a `needs_warmup` worker awaits `_perform_warmup()`
+  before its main loop; warmup failure exits the worker without entering the
+  loop.
+- **Generic cleanup on cancel (P1a)**: cancelling a worker tears down its
+  handler's non-aiohttp resources too — assert the (faked) browser/subprocess
+  cleanup hook is awaited.
+- **Windows subprocess loop (P1b)**: on Windows the runtime loop is a
+  `ProactorEventLoop` so `create_subprocess_exec` works (regression vs. the
+  current `test_workascii_runtime` expectation). *(Only if subprocess handlers
+  stay in scope.)*
+- **Non-worker session callers (P2b)**: benchmark runner + proxy path build a
+  handler without a `UniversalWorker`, drive a call, and close the session — the
+  handler-owned session lifecycle still works.
 
 ## Known touch points (handle in the plan)
 
