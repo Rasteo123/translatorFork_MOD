@@ -109,6 +109,46 @@ class DiffGateTests(unittest.TestCase):
 
         self.assertEqual(task_item.set_foreground_calls, 1, "task-cell foreground must update even if status-cell matches")
 
+    def test_populate_row_skips_tooltip_when_same(self):
+        from PyQt6.QtWidgets import QTableWidget
+        widget = self._make_widget()
+        widget.table = QTableWidget(1, 3)
+
+        # _populate_row reads app.engine.session_id; stub so the attribute exists
+        # and short-circuits to the "no_session" branch.
+        app = QtWidgets.QApplication.instance()
+        prev_engine = getattr(app, "engine", "__missing__")
+        app.engine = None
+        if prev_engine == "__missing__":
+            self.addCleanup(lambda: delattr(app, "engine"))
+        else:
+            self.addCleanup(lambda: setattr(app, "engine", prev_engine))
+
+        # First populate creates the items.
+        task_payload = ("epub", "/tmp/x.epub", "/tmp/ch.html")
+        task_data = (("uuid-1", task_payload), "in_progress", {})
+        widget._populate_row(0, task_data)
+
+        task_item = widget.table.item(0, 0)
+        original_tooltip = task_item.toolTip()
+
+        # Wrap setToolTip / setData to count.
+        tooltip_calls = []
+        data_calls = []
+        orig_set_tooltip = task_item.setToolTip
+        orig_set_data = task_item.setData
+        task_item.setToolTip = lambda v: (tooltip_calls.append(v), orig_set_tooltip(v))[1]
+        task_item.setData = lambda role, v: (data_calls.append((role, v)), orig_set_data(role, v))[1]
+
+        # Same data again → expect zero setToolTip and zero setData calls.
+        widget._populate_row(0, task_data, update_only=True)
+
+        self.assertEqual(tooltip_calls, [], "tooltip setter should be skipped when value unchanged")
+        # setData(UserRole+1, status) still allowed even if equal — we only gate the heavy ones.
+        # But UserRole (the task tuple) must be skipped:
+        userrole_calls = [c for c in data_calls if c[0] == QtCore.Qt.ItemDataRole.UserRole]
+        self.assertEqual(userrole_calls, [], "UserRole setData should be skipped when value unchanged")
+
 
 if __name__ == "__main__":
     unittest.main()

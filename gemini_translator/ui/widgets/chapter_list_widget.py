@@ -723,12 +723,15 @@ class ChapterListWidget(QWidget):
         if not item_task: # Создаем, только если не существует
             item_task = QTableWidgetItem(display_text)
             self.table.setItem(row, 0, item_task)
-        elif item_task.text() != display_text: # Обновляем, только если текст изменился
+        elif item_task.text() != display_text:
             item_task.setText(display_text)
-        
-        item_task.setToolTip(tooltip_text)
-        item_task.setData(QtCore.Qt.ItemDataRole.UserRole, task_tuple_for_ui_role)
-        item_task.setData(Qt.ItemDataRole.UserRole + 1, status)
+
+        if item_task.toolTip() != tooltip_text:
+            item_task.setToolTip(tooltip_text)
+        if item_task.data(QtCore.Qt.ItemDataRole.UserRole) != task_tuple_for_ui_role:
+            item_task.setData(QtCore.Qt.ItemDataRole.UserRole, task_tuple_for_ui_role)
+        if item_task.data(Qt.ItemDataRole.UserRole + 1) != status:
+            item_task.setData(Qt.ItemDataRole.UserRole + 1, status)
 
         # --- ОБНОВЛЕНИЕ/СОЗДАНИЕ ЯЧЕЙКИ СТАТУСА (СТОЛБЕЦ 1) ---
         status_item = self.table.item(row, 1)
