@@ -44,8 +44,23 @@ connection pool. Google rate-limits / flags keys on the *requests* (key, source
 IP, rate, concurrent connections), never on client-side threads. Because of the
 GIL the current N threads already do not run Python in parallel — the real
 concurrency is the async network I/O — so N coroutines on one loop produce the
-same network concurrency and the same per-key timing. We must not become
-burstier and must not share TCP connections across keys.
+same network concurrency. We must not become burstier and must not share TCP
+connections across keys.
+
+Precise guarantee (avoid over-claiming "same timing"): what is preserved is the
+**per-key request-rate ceiling and connection footprint** — set by the per-key
+RPM limiter, the per-key brigade cap, and the per-key session. The limiter is
+time-based, so any client-side delay can only **space requests further apart,
+never make them burstier** — the provider-safety property holds in one
+direction. What can shift is *response-processing latency*: handlers do
+synchronous CPU work inside their coroutine (JSON decode + buffer accumulation in
+the Gemini stream parser, `gemini.py:166`). On a single shared loop such a
+section runs without yielding, briefly blocking *all* keys (head-of-line
+blocking), whereas the threaded model let the GIL interleave every few ms. For
+small chunks this is microseconds; for large streamed responses it could add
+latency. Mitigations: keep per-chunk work small / add `await asyncio.sleep(0)`
+yield points if a hot parser proves heavy; and a **multi-key streaming
+regression/perf test** guards throughput (see Testing).
 
 This is preserved by keeping, per key:
 1. the per-key RPM limiter (already per-worker = per-key);
@@ -60,10 +75,22 @@ This is preserved by keeping, per key:
   threads, doesn't remove threads).
 - **No feature flag**: full replacement of the per-thread model. Rollback via
   git/branch.
-- **Provider scope**: HTTP-API providers (gemini, deepseek, nvidia, openrouter,
-  huggingface) run as coroutines on the shared loop. Synchronous / subprocess
-  handlers (Perplexity `curl_cffi`, Playwright ChatGPT-Web/WorkAscii) run via
-  `run_in_executor` so they never block the loop.
+- **Provider scope**: classification is by the handler's `is_async` flag
+  (`config/api_providers.json`), not by guesswork. **All `is_async: true`
+  handlers run as coroutines on the shared loop** — this includes the
+  Playwright-based browser / WorkAscii ChatGPT-Web handlers, which are
+  async-native (`await async_playwright().start()`,
+  `await asyncio.create_subprocess_exec(...)`) and already dispatch through
+  `_async_executor` (`base.py:310`). **Only `is_async: false` handlers** (today:
+  `local` Ollama/LM Studio) use the executor path
+  (`_sync_executor_wrapper` → `run_sync`). The Perplexity *server* (`curl_cffi`,
+  its own process via `server_manager`) is not a worker handler and is out of
+  scope.
+
+  > Correction vs. the scope question asked during brainstorming: Playwright
+  > ChatGPT-Web/WorkAscii were wrongly called "sync/subprocess" there. They are
+  > async-native and stay on the shared loop. The decision ("sync → executor,
+  > async → loop") is unchanged; only the example was wrong.
 
 ## Architecture
 
@@ -73,7 +100,13 @@ A single background thread running one `asyncio` loop (`run_forever`), plus one
 **bounded** `ThreadPoolExecutor` used only to offload synchronous handler work
 (not one thread per key).
 
-- `start()` — spin up the thread + loop.
+- `start()` — spin up the thread + loop, and call
+  `loop.set_default_executor(self.executor)` so `run_in_executor(None, …)` (used
+  by `run_sync`, and by aiohttp's `getaddrinfo`) routes through the bounded
+  executor rather than a fresh default one (see P2a).
+- `loop` — explicit accessor for the runtime loop, used to bind per-worker
+  sessions and to schedule work. Deliberately separate from `get_worker_loop()`
+  so the consistency engine is not affected (see P1b).
 - `spawn(coro) -> concurrent.futures.Future` — schedule a coroutine on the loop
   from the GUI/engine thread via `run_coroutine_threadsafe`.
 - `stop()` — cancel outstanding tasks, stop the loop, join the thread, shut down
@@ -94,8 +127,16 @@ splits into:
   bound to the shared loop. `notify()` already does
   `loop.call_soon_threadsafe(wake_event.set)` — carries over verbatim.
 
-Fast synchronous setup currently in `run()` (e.g. `setup_client`) runs inline if
-trivial, otherwise via `run_in_executor`.
+**Setup must become async.** Today `setup_client()` (e.g. `gemini.py:26`) calls
+`_proactive_session_init()`, which does `loop.run_until_complete(...)`
+(`base.py:83`). That only works because, in the current model, setup runs in the
+worker's own thread *before* its loop starts. On the already-running shared loop
+`run_until_complete` raises `RuntimeError: loop already running`. Fix: drop the
+proactive sync init; session creation becomes async — either lazy on the first
+`await self._get_or_create_session_internal()` (which `call_api` already does,
+e.g. `gemini.py:30`) or an explicit `await handler.async_setup()` the worker
+coroutine awaits before its main loop. Trivial non-loop setup (assigning
+`api_key`, URLs) stays synchronous.
 
 ### Per-key session ownership (the footprint guarantee)
 
@@ -108,17 +149,31 @@ Change: each `UniversalWorker` owns its **own** `ClientSession` + `TCPConnector`
 (its own proxy + SSL context), created when its coroutine starts and closed in a
 `finally`. The handler uses the worker's session rather than a thread-local one.
 
+The session is created inside an `async` context and bound to
+`asyncio.get_running_loop()` (not `get_worker_loop()`). This kills two birds:
+creation is naturally async (no `run_until_complete`, see Worker §) and the
+session binds to whatever loop is actually running it — the shared runtime loop
+for workers, or the consistency engine's own loop in its context — so there is
+no cross-loop binding and no need to globally repurpose `get_worker_loop()`.
+
 Result: one connector pool per key → TCP connections per key are isolated
 exactly as today. The RPM limiter is already per-worker/per-key; the brigade cap
 is unchanged. Network footprint per key is byte-for-byte and tick-for-tick the
 same.
 
-### Sync / subprocess handler offload
+### Synchronous handler offload (`is_async: false`)
 
-Perplexity (`curl_cffi`, sync) and Playwright handlers wrap blocking calls in
-`await loop.run_in_executor(runtime.executor, fn, …)`. The loop stays
-responsive; offload threads scale with the number of concurrent sync calls (few),
-not with the number of keys.
+Only `is_async: false` handlers (today: `local` Ollama/LM Studio) are
+synchronous. They already route through `_sync_executor_wrapper` → `run_sync`
+(`base.py:386`), which offloads to a thread so the loop stays responsive. Offload
+threads scale with concurrent sync calls (few), not with the number of keys.
+
+**Executor wiring (must be explicit):** `run_sync` calls
+`loop.run_in_executor(None, …)` (`async_helpers.py:55`) — i.e. the loop's
+*default* executor, not the runtime's executor by name. So the runtime must call
+`loop.set_default_executor(runtime.executor)` to make the bound executor actually
+take effect (this also routes aiohttp's `getaddrinfo` offloads through it). A
+test pins this (`run_in_executor(None, …)` runs on the runtime executor).
 
 ### Cancellation & graceful shutdown
 
@@ -165,15 +220,35 @@ unchanged.
 - Regression: runtime with 2–3 fake workers (fake handler returning canned text,
   no network) — all tasks processed, per-key RPM pacing respected, events
   emitted, clean shutdown.
+- **Async setup (P1a)**: worker setup creates its session without
+  `run_until_complete` on the running loop (would raise) — assert setup succeeds
+  while the shared loop is running.
+- **Default executor (P2a)**: after runtime start, `run_in_executor(None, …)`
+  (the path `run_sync` uses) runs on the runtime's bounded executor, not a fresh
+  default one — assert via thread identity / pool size.
+- **Consistency-engine isolation (P1b)**: with the runtime loop running,
+  `consistency_engine._run_handler_awaitable()` still works (its temp-loop path
+  is not broken by the shared loop) — assert no cross-loop error.
+- **Multi-key streaming perf/regression (P2c)**: N fake workers streaming
+  chunked responses concurrently complete within an expected bound — guards
+  against head-of-line blocking from synchronous per-chunk parsing on the shared
+  loop.
 
 ## Known touch points (handle in the plan)
 
-- `consistency_engine.py` also calls `get_worker_loop()` and in places creates a
-  `new_event_loop()` — verify it does not conflict with the shared loop.
-- `base.py` `_thread_local` session caching moves to per-worker ownership.
-  `get_worker_loop()` is repurposed to return the shared runtime loop, so
-  existing callers (handlers, `consistency_engine`, `base.py`) transparently use
-  it instead of creating per-thread loops.
+- **Do NOT globally repurpose `get_worker_loop()`.**
+  `consistency_engine._run_handler_awaitable()` (`consistency_engine.py:1450`)
+  calls `get_worker_loop()` and, if that loop is already running, spins a
+  **temporary** loop to run the awaitable. If `get_worker_loop()` returned the
+  shared runtime loop, the consistency engine would run handler coroutines /
+  sessions bound to the runtime loop on a *different* temp loop → cross-loop
+  errors. So the worker runtime exposes its loop via an **explicit** handle
+  (e.g. `runtime.loop`); workers run on it directly (their
+  `asyncio.get_running_loop()` is the runtime loop). `get_worker_loop()` and the
+  consistency engine keep their current behavior, untouched.
+- `base.py` `_thread_local` **session** caching moves to per-worker ownership
+  (sessions bound to `asyncio.get_running_loop()`, per §Per-key session). The
+  `_thread_local.loop` machinery is no longer used to drive workers.
 - `TaskDBWorker` (2 QThreads for the DB) is **out of scope** — not worker loops.
 
 ## Out of scope
