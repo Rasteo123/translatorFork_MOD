@@ -181,10 +181,23 @@ class TaskManagementWidget(QWidget):
         self._redraw_timer.start()
 
 
+    def _apply_active_session_redraw_tuning(self, active: bool):
+        """During an active translation session, slow the redraw debounce
+        from 35 ms (PreciseTimer) to 150 ms (CoarseTimer). The list updates
+        are not user-driven during a session, so the slack is invisible to
+        the user but lets macOS coalesce Qt timer wake-ups."""
+        if active:
+            self._redraw_timer.setInterval(150)
+            self._redraw_timer.setTimerType(QtCore.Qt.TimerType.CoarseTimer)
+        else:
+            self._redraw_timer.setInterval(35)
+            self._redraw_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
+
     def set_session_mode(self, is_session_active):
         """
         Переключает доступность кнопок управления списком.
         """
+        self._apply_active_session_redraw_tuning(is_session_active)
         self._is_session_active = is_session_active # <--- ЗАПОМИНАЕМ СОСТОЯНИЕ
         
         # --- Кнопки, которые меняют структуру задач (блокируются) ---
