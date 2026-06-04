@@ -202,12 +202,29 @@ does not delay a concurrent DNS-path offload.
 
 ### Cancellation & graceful shutdown
 
-- Single worker: existing flag mechanism (`is_cancelled` / `is_shutting_down` +
-  `wake_event.set()` via `notify()`) is kept; hard stop also cancels the asyncio
-  Task (`task.cancel()`).
-- Session end: cancel all worker tasks → `gather(return_exceptions=True)` → each
-  worker closes its own session in `finally` → `runtime.stop()` (stop loop, join
-  thread, shut down executor).
+A worker spawns **child tasks** per chunk via `asyncio.create_task(...)`
+(`worker.py:501`) into `active_tasks`. Today orphans are swept because each
+worker owns its loop and the `finally` does `loop.close()` (`worker.py:438`). On
+the **shared** loop that no longer holds: the loop is not closed per worker, and
+cancelling the outer `run_async` task raises `CancelledError` inside the while
+loop — *past* the step-5 `gather` (`worker.py:521`) — so child tasks would be
+orphaned on the shared loop and could finish an API call after the session is
+closed. So the contract becomes explicit:
+
+- **`run_async()` owns its children.** It wraps the main loop so that on
+  `CancelledError` (or any exit) a `finally` **cancels every task in
+  `active_tasks`, `await`s them with `gather(return_exceptions=True)`, then
+  closes the worker's own session** (`await`, not `run_until_complete` —
+  `worker.py:437` currently uses the latter, which can't run on the shared loop).
+  No child task outlives its parent or its session.
+- Single worker hard stop: existing flags (`is_cancelled` / `is_shutting_down` +
+  `wake_event.set()` via `notify()`) **plus** `task.cancel()` on the outer task;
+  the `finally` above guarantees clean child teardown.
+- Session end: cancel all outer worker tasks → `gather(return_exceptions=True)`
+  (each drains its own children + closes its session) → `runtime.stop()` (stop
+  loop, join thread, shut down both executors).
+- Test: cancelling the outer worker task cancels its in-flight child API task and
+  leaves **no pending tasks** on the loop, and the session is closed exactly once.
 
 ### GUI events (unchanged)
 
@@ -292,11 +309,19 @@ unchanged.
 
 ## Success criteria / expectations
 
-~20 threads → ~2–3; a large drop in idle wake-ups → a meaningful reduction in
-macOS Energy Impact during translation. Not zero: the GUI loop + active network
-streaming + parsing still use CPU and wake-ups. Expectation: drop out of the
-"significant energy" list at moderate concurrency, and — critically — **no
-change in per-key request behavior**, so no new risk of provider key blocking.
+**Worker threads no longer scale with the number of API keys.** Instead of one
+thread + one event loop per key, the worker-side thread count is bounded and
+roughly constant: 1 runtime loop thread + a small DNS/default pool (~4) + the
+sync-handler pool (~0–2). (The Qt/Cocoa infra threads and the 2 `TaskDBWorker`
+threads are out of scope and unchanged.) Idle wake-ups drop materially because
+the per-key event loops — each waking independently on its stream — collapse onto
+one loop.
+
+This should yield a meaningful reduction in macOS Energy Impact during
+translation — not zero (the GUI loop + active network streaming + parsing still
+use CPU and wake-ups), but enough to drop out of the "significant energy" list at
+moderate concurrency. Critically: **no change in per-key request behavior**, so
+no new risk of provider key blocking.
 
 ## Rollback
 
