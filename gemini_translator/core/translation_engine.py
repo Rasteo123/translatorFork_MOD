@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COM
 from ..api import config as api_config
 from ..core.task_manager import ChapterQueueManager
 from ..core.worker import UniversalWorker
+from ..core.async_worker_runtime import AsyncWorkerRuntime
 from ..utils.project_manager import TranslationProjectManager
 from ..utils.helpers import check_value 
 from ..api.managers import ApiKeyManager
@@ -145,7 +146,8 @@ class TranslationEngine(QObject):
         self.session_monitor_timer = None
         
         # Пул потоков и карта для отслеживания задач
-        self.executor = None 
+        self.executor = None
+        self.runtime = None  # AsyncWorkerRuntime: общий loop для HTTP/in-process воркеров
         self.active_workers_map = {} # Теперь хранит {worker_id: future}
 
         # Для дебага утечек памяти
@@ -657,7 +659,9 @@ class TranslationEngine(QObject):
             return
         max_pool_size = len(total_session_keys)
         self.executor = ThreadPoolExecutor(max_workers=max_pool_size, thread_name_prefix='WorkerThread')
-        
+        self.runtime = AsyncWorkerRuntime()
+        self.runtime.start()
+
         # --- Блок инициализации сессии (с изменениями) ---
         
         # 0. Загружаем настройки прокси
@@ -824,6 +828,18 @@ class TranslationEngine(QObject):
             self._post_event('log_message', {'message': "[RAMP-UP] Доступные ключи закончились."})
 
 
+    def _spawn_worker(self, provider_config, worker):
+        """Routes a worker to its execution substrate. Subprocess handlers
+        (Browser/WorkAscii) keep the legacy per-thread executor; everything else
+        runs as a coroutine on the shared AsyncWorkerRuntime. Both return a
+        concurrent.futures.Future, so active_workers_map / _on_worker_finished
+        bookkeeping is identical."""
+        if api_config.uses_legacy_worker_thread(provider_config):
+            return self.executor.submit(worker.run)
+        # Give the runtime worker access to the dedicated sync-handler pool.
+        worker.sync_executor = self.runtime.sync_executor
+        return self.runtime.spawn(worker.run_async())
+
     def _launch_worker(self, api_key: str):
         current_worker_id = self.keys_map.get(api_key)
         
@@ -862,7 +878,7 @@ class TranslationEngine(QObject):
         
         worker = UniversalWorker(**worker_params)
 
-        future = self.executor.submit(worker.run)
+        future = self._spawn_worker(worker.provider_config, worker)
         self.active_workers_map[uuid_worker] = future
         
         # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: Теперь колбэк ИСПУСКАЕТ СИГНАЛ ---
@@ -998,22 +1014,31 @@ class TranslationEngine(QObject):
         return False
 
     def _terminate_all_workers(self):
-        if not self.executor:
+        if not self.executor and not self.runtime:
             return
-            
+
         self._post_event('log_message', {'message': "[MANAGER] Остановка пула потоков… Ожидание завершения активных задач..."})
-        
+
+        # Сначала останавливаем общий runtime: отменяем корутины-воркеры НА loop
+        # (concurrent.futures.Future.cancel() не отменяет уже бегущую корутину),
+        # затем глушим сам loop/потоки/пулы.
+        if self.runtime is not None:
+            self.runtime.stop_workers()
+            self.runtime.stop()
+            self.runtime = None
+
         # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: wait=True ---
         # Теперь этот вызов будет БЛОКИРУЮЩИМ. Он не вернет управление,
         # пока все запущенные задачи не завершатся (успешно или с ошибкой).
         # Это безопасно, так как TranslationEngine работает в своем собственном потоке (QThread)
         # и не заморозит графический интерфейс.
-        try:
-            self.executor.shutdown(wait=True, cancel_futures=True)
-        except TypeError:
-            # Fallback для версий Python < 3.9, где нет cancel_futures
-            self.executor.shutdown(wait=True)
-        self.executor = None
+        if self.executor is not None:
+            try:
+                self.executor.shutdown(wait=True, cancel_futures=True)
+            except TypeError:
+                # Fallback для версий Python < 3.9, где нет cancel_futures
+                self.executor.shutdown(wait=True)
+            self.executor = None
         self.active_workers_map.clear()
         self._post_event('log_message', {'message': "[MANAGER] Пул потоков полностью остановлен."})
         self.bus.pop_data("current_active_session", None)
@@ -1113,6 +1138,9 @@ class TranslationEngine(QObject):
         if self.session_monitor_timer is None:
             self.session_monitor_timer = QtCore.QTimer(self)
             self.session_monitor_timer.timeout.connect(self._check_if_session_finished)
+            # Проверка завершения сессии раз в ~5.5с не требует точности —
+            # VeryCoarseTimer позволяет ОС объединять её пробуждения (экономия энергии).
+            self.session_monitor_timer.setTimerType(QtCore.Qt.TimerType.VeryCoarseTimer)
 
         self.session_monitor_timer.start(self.MONITOR_INTERVAL_MS)
         self.ramp_up_timer.start(self.RAMP_UP_INTERVAL_MS)

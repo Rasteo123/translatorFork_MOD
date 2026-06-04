@@ -377,7 +377,8 @@ class BaseApiHandler:
             self.call_api,
             prompt, log_prefix, allow_incomplete, use_stream, debug, max_output_tokens,
             forget=False,
-            timeout=api_timeout
+            timeout=api_timeout,
+            executor=getattr(self.worker, "sync_executor", None),
         )
         
         checker_task = asyncio.create_task(self._cancellation_checker())
