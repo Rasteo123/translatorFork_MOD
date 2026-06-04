@@ -1238,6 +1238,24 @@ class ChapterQueueManager(QObject):
         """
         self._update_timer.start()
     
+    def notify_task_dirty(self, task_id):
+        """Mark a single task as dirty. Thread-safe: callable from worker threads.
+        Does NOT start the redraw timer — that happens in the main-thread slot
+        connected to _ui_update_requested. QTimer is owned by the main (Qt GUI)
+        thread; starting it from a worker thread is undefined behaviour."""
+        task_id_str = str(task_id)
+        with self._dirty_state_lock:
+            self._dirty_task_ids.add(task_id_str)
+        self._ui_update_requested.emit()
+
+    def notify_structural_change(self):
+        """Mark the cache as needing a full refresh (add/remove/reorder/import).
+        Thread-safe: callable from worker threads. Same thread-hop discipline
+        as notify_task_dirty."""
+        with self._dirty_state_lock:
+            self._structural_dirty = True
+        self._ui_update_requested.emit()
+
     def _safe_request_ui_update(self):
         """
         Безопасный метод для запроса обновления UI из ЛЮБОГО потока.
