@@ -45,8 +45,12 @@ class ModelSettingsWidget(QGroupBox):
         if not hasattr(app, 'event_bus'):
             raise RuntimeError("EventBus не найден.")
         self.bus = app.event_bus
-        self.bus.event_posted.connect(self.on_event)
-        
+        self._uses_topic_subscription = False
+        self._uses_broadcast_subscription = False
+        # Виджету интересна только смена провайдера; не будимся на чужие события.
+        self._event_topics = ('provider_changed',)
+        self._connect_to_bus()
+
         self.system_instruction_editor_dialog = SystemInstructionEditorDialog(self.settings_manager, self)
         # --- Принудительно загружаем состояние при создании ---
         # Это "пробуждает" дочерний PresetWidget и заставляет его считать
@@ -801,7 +805,30 @@ class ModelSettingsWidget(QGroupBox):
             provider_id = event.get('data', {}).get('provider_id')
             if provider_id:
                 self.set_available_models(provider_id)
-    
+
+    def _connect_to_bus(self):
+        if hasattr(self.bus, "subscribe"):
+            for topic in self._event_topics:
+                self.bus.subscribe(topic, self.on_event)
+            self._uses_topic_subscription = True
+        elif hasattr(self.bus, "event_posted"):
+            self.bus.event_posted.connect(self.on_event)
+            self._uses_broadcast_subscription = True
+
+    def _disconnect_from_bus(self):
+        try:
+            if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
+                for topic in self._event_topics:
+                    self.bus.unsubscribe(topic, self.on_event)
+            elif self._uses_broadcast_subscription and hasattr(self.bus, "event_posted"):
+                self.bus.event_posted.disconnect(self.on_event)
+        except (TypeError, RuntimeError, ValueError):
+            pass
+
+    def closeEvent(self, event):
+        self._disconnect_from_bus()
+        super().closeEvent(event)
+
     @pyqtSlot()
     def _emit_settings_changed(self):
         """Просто испускает сигнал об изменении настроек."""

@@ -125,10 +125,21 @@ class KeyManagementWidget(QWidget):
             self.current_active_keys_by_provider[provider_id] = set(
                 current_active_keys)
 
+        self._uses_topic_subscription = False
+        self._uses_broadcast_subscription = False
+        # Подписываемся только на события, которые реально обрабатываем,
+        # чтобы не будить виджет на каждый широковещательный лог во время перевода.
+        self._event_topics = (
+            'key_statuses_updated',
+            'model_changed',
+            'session_started',
+            'request_count_updated',
+            'fatal_error',
+        )
         app = QtWidgets.QApplication.instance()
         if app and hasattr(app, 'event_bus'):
             self.bus = app.event_bus
-            self.bus.event_posted.connect(self.on_event)
+            self._connect_to_bus()
         else:
             class DummySignal:
                 def emit(self, *args, **kwargs): pass
@@ -140,6 +151,29 @@ class KeyManagementWidget(QWidget):
 
         self.init_ui()
         self._load_and_refresh_keys()
+
+    def _connect_to_bus(self):
+        if hasattr(self.bus, "subscribe"):
+            for topic in self._event_topics:
+                self.bus.subscribe(topic, self.on_event)
+            self._uses_topic_subscription = True
+        elif hasattr(self.bus, "event_posted"):
+            self.bus.event_posted.connect(self.on_event)
+            self._uses_broadcast_subscription = True
+
+    def _disconnect_from_bus(self):
+        try:
+            if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
+                for topic in self._event_topics:
+                    self.bus.unsubscribe(topic, self.on_event)
+            elif self._uses_broadcast_subscription and hasattr(self.bus, "event_posted"):
+                self.bus.event_posted.disconnect(self.on_event)
+        except (TypeError, RuntimeError, ValueError):
+            pass
+
+    def closeEvent(self, event):
+        self._disconnect_from_bus()
+        super().closeEvent(event)
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
