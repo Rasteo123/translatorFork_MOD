@@ -299,5 +299,75 @@ class BackgroundFetchTests(unittest.TestCase):
                          "Partial merge + Python sort must produce the same order as full SQL ORDER BY")
 
 
+class OnCacheUpdatedTests(unittest.TestCase):
+    def _make_stub(self):
+        tm = types.SimpleNamespace(
+            _ui_state_list_cache=[],
+            _sort_keys={},
+            _dirty_state_lock=Lock(),
+            _dirty_task_ids=set(),
+            _structural_dirty=False,
+            _is_updating_cache=True,
+            _cache_update_worker=None,
+            _in_flight_snapshot={"ids": ("a", "b"), "structural": False},
+            _update_timer=_TimerStub(),
+            _posted_events=[],
+        )
+        tm._post_event = lambda name, data: tm._posted_events.append((name, data))
+        from gemini_translator.core.task_manager import ChapterQueueManager
+        tm._on_cache_updated = types.MethodType(ChapterQueueManager._on_cache_updated, tm)
+        tm._recover_failed_worker = types.MethodType(ChapterQueueManager._recover_failed_worker, tm)
+        tm._restart_timer_if_dirty = types.MethodType(ChapterQueueManager._restart_timer_if_dirty, tm)
+        return tm
+
+    def _make_worker(self, result):
+        return types.SimpleNamespace(result=result)
+
+    def test_full_success_replaces_cache_and_emits_none_changed_ids(self):
+        tm = self._make_stub()
+        tm._ui_state_list_cache = [("old",)]
+        tm._sort_keys = {"old": (0, 0)}
+        new_entries = [(("uuid-x", ("epub",)), "in_progress", {})]
+        new_sort_keys = {"x": (10, 1)}
+        worker = self._make_worker({"mode": "full", "entries": new_entries, "sort_keys": new_sort_keys})
+
+        tm._on_cache_updated(worker)
+
+        self.assertEqual(tm._ui_state_list_cache, new_entries)
+        self.assertEqual(tm._sort_keys, new_sort_keys)
+        self.assertEqual(len(tm._posted_events), 1)
+        name, data = tm._posted_events[0]
+        self.assertEqual(name, "task_state_changed")
+        self.assertIsNone(data["changed_ids"])
+        self.assertEqual(data["full_state"], new_entries)
+        self.assertFalse(tm._is_updating_cache)
+        self.assertIsNone(tm._in_flight_snapshot)
+
+    def test_partial_success_emits_changed_ids_excluding_unchanged(self):
+        tm = self._make_stub()
+        import uuid
+        a, b = uuid.UUID("00000000-0000-0000-0000-00000000000a"), uuid.UUID("00000000-0000-0000-0000-00000000000b")
+        # Old cache: a=pending, b=in_progress.
+        old_entries = [((a, ("epub",)), "pending", {}), ((b, ("epub",)), "in_progress", {})]
+        tm._ui_state_list_cache = old_entries
+        tm._sort_keys = {str(a): (0, 1), str(b): (0, 2)}
+        tm._in_flight_snapshot = {"ids": (str(a), str(b)), "structural": False}
+
+        # New entries from partial fetch: a unchanged, b → success.
+        new_entries = [((a, ("epub",)), "pending", {}), ((b, ("epub",)), "success", {})]
+        sort_keys_delta = {str(a): (0, 1), str(b): (0, 2)}
+        worker = self._make_worker({"mode": "partial", "entries": new_entries,
+                                    "sort_keys_delta": sort_keys_delta})
+
+        tm._on_cache_updated(worker)
+
+        self.assertEqual(tm._ui_state_list_cache, new_entries)
+        name, data = tm._posted_events[0]
+        self.assertEqual(set(data["changed_ids"]), {str(b)},
+                         "Only b actually changed; a's entry equals the old one and is excluded")
+        self.assertIsInstance(data["changed_ids"], list,
+                              "Payload must carry list[str], not set")
+
+
 if __name__ == "__main__":
     unittest.main()

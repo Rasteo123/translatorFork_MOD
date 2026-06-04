@@ -1287,14 +1287,78 @@ class ChapterQueueManager(QObject):
         return self._ui_state_list_cache
 
     def _on_cache_updated(self, worker):
-        """Слот, который вызывается по завершении фонового обновления кэша."""
-        if hasattr(worker, 'result') and worker.result is not None:
-            new_state = worker.result
-            if new_state != self._ui_state_list_cache:
-                self._ui_state_list_cache = new_state
-                self._post_event('task_state_changed', {'full_state': self._ui_state_list_cache})
+        """Runs in the main (Qt GUI) thread (via worker.finished signal).
+        Handles three success modes (full, partial) and the structural_retry /
+        error escalation paths. Never raises — failures are recovered by
+        restoring the in-flight snapshot's ids and forcing a structural refresh."""
+        result = getattr(worker, 'result', None)
+        snapshot = self._in_flight_snapshot
+
+        if result is None or not isinstance(result, dict) or result.get("mode") in ("error", None):
+            self._recover_failed_worker(snapshot, result)
+            self._is_updating_cache = False
+            self._cache_update_worker = None
+            self._in_flight_snapshot = None
+            return
+
+        mode = result["mode"]
+        if mode == "structural_retry":
+            self._recover_failed_worker(snapshot, result)
+            self._is_updating_cache = False
+            self._cache_update_worker = None
+            self._in_flight_snapshot = None
+            return
+
+        prev_cache_by_id = {str(e[0][0]): e for e in self._ui_state_list_cache}
+        if mode == "full":
+            self._ui_state_list_cache = result["entries"]
+            self._sort_keys = result["sort_keys"]
+            changed_ids = None
+        elif mode == "partial":
+            new_entries = result["entries"]
+            new_by_id = {str(e[0][0]): e for e in new_entries}
+            self._ui_state_list_cache = new_entries
+            self._sort_keys.update(result["sort_keys_delta"])
+            changed = []
+            for tid in (snapshot["ids"] if snapshot else ()):
+                if new_by_id.get(tid) != prev_cache_by_id.get(tid):
+                    changed.append(tid)
+            changed_ids = changed
+        else:
+            # Unknown mode — treat as failure.
+            self._recover_failed_worker(snapshot, result)
+            self._is_updating_cache = False
+            self._cache_update_worker = None
+            self._in_flight_snapshot = None
+            return
+
+        self._post_event('task_state_changed', {
+            'full_state': self._ui_state_list_cache,
+            'changed_ids': changed_ids,
+        })
+
         self._is_updating_cache = False
         self._cache_update_worker = None
+        self._in_flight_snapshot = None
+        self._restart_timer_if_dirty()
+
+    def _recover_failed_worker(self, snapshot, result):
+        """Worker returned None / error / structural_retry. Put the snapshot's
+        ids back into the dirty set and force a structural refresh next pass."""
+        with self._dirty_state_lock:
+            self._structural_dirty = True
+            if snapshot:
+                for tid in snapshot["ids"]:
+                    self._dirty_task_ids.add(tid)
+        self._update_timer.start()
+
+    def _restart_timer_if_dirty(self):
+        """If notifications accumulated during the worker run, schedule another pass.
+        Also fixes the latent silent-drop bug at the _is_updating_cache guard."""
+        with self._dirty_state_lock:
+            needs_followup = bool(self._dirty_task_ids) or self._structural_dirty
+        if needs_followup:
+            self._update_timer.start()
     
     def _get_ui_state_list_background(self, snapshot):
         """Runs in worker thread. Returns a result dict — never mutates
