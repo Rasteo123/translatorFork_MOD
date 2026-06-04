@@ -76,12 +76,21 @@ class BaseApiHandler:
         self.worker = worker
         self.is_async_native = self.worker.provider_config.get("is_async", False)
         self.proxy_settings = None
+        # Per-handler aiohttp session ownership (bound to the running loop on
+        # first use). Replaces the old thread-local session so workers can share
+        # one event loop while keeping one connector pool per key.
+        self._session = None
+        self._session_proxy_signature = None
+        self._session_timeout = None
+        self._session_ssl_context_signature = None
 
     def _proactive_session_init(self):
-        api_timeout = self.worker.provider_config.get("base_timeout", 600)
-        loop = get_worker_loop()
-        loop.run_until_complete(self._get_or_create_session_internal(api_timeout))
-        
+        # No-op: the session is created lazily and asynchronously on first
+        # `await self._get_or_create_session_internal()` (e.g. in call_api).
+        # The old run_until_complete here cannot run on an already-running shared
+        # loop. Kept as a method so existing setup_client callers stay valid.
+        return
+
     def setup_client(self, client_override=None, proxy_settings=None):
         """Базовая настройка."""
         self.proxy_settings = proxy_settings
@@ -100,34 +109,8 @@ class BaseApiHandler:
             str(self.proxy_settings.get('pass') or ''),
         )
 
-    async def _get_or_create_session_internal(self, api_timeout=600):
-        """[Внутренний] Лениво создает сессию."""
-        desired_proxy_signature = self._get_proxy_signature()
-        desired_ssl_context_signature = _get_ssl_context_signature()
-        existing_session = getattr(_thread_local, "session", None)
-        existing_proxy_signature = getattr(_thread_local, "session_proxy_signature", None)
-        existing_timeout = getattr(_thread_local, "session_timeout", None)
-        existing_ssl_context_signature = getattr(_thread_local, "session_ssl_context_signature", None)
-
-        if existing_session and not existing_session.closed:
-            if (
-                existing_proxy_signature == desired_proxy_signature
-                and existing_timeout == api_timeout
-                and existing_ssl_context_signature == desired_ssl_context_signature
-            ):
-                return existing_session
-
-            await existing_session.close()
-            delattr(_thread_local, "session")
-            if hasattr(_thread_local, "session_proxy_signature"):
-                delattr(_thread_local, "session_proxy_signature")
-            if hasattr(_thread_local, "session_timeout"):
-                delattr(_thread_local, "session_timeout")
-            if hasattr(_thread_local, "session_ssl_context_signature"):
-                delattr(_thread_local, "session_ssl_context_signature")
-        
-        ssl_context = _create_ssl_context()
-        connector = None
+    def _build_connector(self, ssl_context):
+        """Builds this handler's aiohttp connector (proxy-aware)."""
         if self.proxy_settings and self.proxy_settings.get('enabled'):
             try:
                 host = self.proxy_settings.get('host')
@@ -135,41 +118,51 @@ class BaseApiHandler:
                 p_type = self.proxy_settings.get('type', 'SOCKS5').lower()
                 user = self.proxy_settings.get('user')
                 pwd = self.proxy_settings.get('pass')
-                
+
                 if host and port:
                     auth = f"{user}:{pwd}@" if user and pwd else ""
                     url = f"{p_type}://{auth}{host}:{port}"
-                    connector = ProxyConnector.from_url(url, rdns=True, ssl=ssl_context)
+                    return ProxyConnector.from_url(url, rdns=True, ssl=ssl_context)
             except Exception as e:
                 print(f"[API ERROR] Не удалось создать прокси-коннектор: {e}")
+        return aiohttp.TCPConnector(ssl=ssl_context)
 
-        if connector is None:
-            connector = aiohttp.TCPConnector(ssl=ssl_context)
+    async def _get_or_create_session_internal(self, api_timeout=600):
+        """[Внутренний] Лениво создает per-handler сессию, привязанную к текущему
+        running loop (для воркеров — общий runtime-loop; для consistency engine /
+        benchmark — их собственный loop)."""
+        desired_proxy_signature = self._get_proxy_signature()
+        desired_ssl_context_signature = _get_ssl_context_signature()
 
+        if self._session is not None and not self._session.closed:
+            if (
+                self._session_proxy_signature == desired_proxy_signature
+                and self._session_timeout == api_timeout
+                and self._session_ssl_context_signature == desired_ssl_context_signature
+            ):
+                return self._session
+            await self._session.close()
+            self._session = None
+
+        ssl_context = _create_ssl_context()
+        connector = self._build_connector(ssl_context)
         timeout = aiohttp.ClientTimeout(total=api_timeout)
-        _thread_local.session = aiohttp.ClientSession(
-            loop=get_worker_loop(),
-            timeout=timeout,
-            connector=connector 
-        )
-        _thread_local.session_proxy_signature = desired_proxy_signature
-        _thread_local.session_timeout = api_timeout
-        _thread_local.session_ssl_context_signature = desired_ssl_context_signature
-        return _thread_local.session
+        # No explicit loop=: ClientSession binds to asyncio.get_running_loop(),
+        # so the session and its connector always share the loop running this call.
+        self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        self._session_proxy_signature = desired_proxy_signature
+        self._session_timeout = api_timeout
+        self._session_ssl_context_signature = desired_ssl_context_signature
+        return self._session
 
     async def _close_thread_session_internal(self):
-        """[Внутренний] Закрывает сессию для текущего потока."""
-        if hasattr(_thread_local, "session"):
-            session = getattr(_thread_local, "session")
-            if session and not session.closed:
-                await session.close()
-            delattr(_thread_local, "session")
-        if hasattr(_thread_local, "session_proxy_signature"):
-            delattr(_thread_local, "session_proxy_signature")
-        if hasattr(_thread_local, "session_timeout"):
-            delattr(_thread_local, "session_timeout")
-        if hasattr(_thread_local, "session_ssl_context_signature"):
-            delattr(_thread_local, "session_ssl_context_signature")
+        """[Внутренний] Закрывает per-handler сессию."""
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
+        self._session_proxy_signature = None
+        self._session_timeout = None
+        self._session_ssl_context_signature = None
 
     def _create_debug_trace(self, log_prefix):
         if not getattr(self.worker, "debug_logging_enabled", False):
@@ -273,29 +266,22 @@ class BaseApiHandler:
     
     def _force_session_reset(self):
         """
-        [Внутренний] Принудительно удаляет сессию из thread_local.
-        Используется при критических ошибках соединения (ServerDisconnected и т.д.),
-        чтобы следующий запрос гарантированно создал чистое подключение.
+        [Внутренний] Сбрасывает per-handler сессию при критических ошибках
+        соединения (ServerDisconnected и т.д.), чтобы следующий запрос создал
+        чистое подключение. Sync, fire-and-forget: всегда вызывается из активного
+        API-вызова на running loop; на teardown сессию закроет
+        _close_thread_session_internal (см. контракт в run_async).
         """
-        if hasattr(_thread_local, "session"):
-            session = getattr(_thread_local, "session")
-            # Пытаемся закрыть корректно, но не блокируемся, если это невозможно синхронно
-            if session and not session.closed:
-                try:
-                    # Создаем задачу на закрытие в текущем лупе, не дожидаясь её
-                    loop = get_worker_loop()
-                    if loop.is_running():
-                        loop.create_task(session.close())
-                except Exception:
-                    pass # Игнорируем ошибки закрытия, так как мы все равно удаляем ссылку
-            
-            delattr(_thread_local, "session")
-        if hasattr(_thread_local, "session_proxy_signature"):
-            delattr(_thread_local, "session_proxy_signature")
-        if hasattr(_thread_local, "session_timeout"):
-            delattr(_thread_local, "session_timeout")
-        if hasattr(_thread_local, "session_ssl_context_signature"):
-            delattr(_thread_local, "session_ssl_context_signature")
+        session = self._session
+        self._session = None
+        self._session_proxy_signature = None
+        self._session_timeout = None
+        self._session_ssl_context_signature = None
+        if session is not None and not session.closed:
+            try:
+                asyncio.get_running_loop().create_task(session.close())
+            except RuntimeError:
+                pass  # нет running loop — ссылку уже сбросили
     
     
     
@@ -391,7 +377,8 @@ class BaseApiHandler:
             self.call_api,
             prompt, log_prefix, allow_incomplete, use_stream, debug, max_output_tokens,
             forget=False,
-            timeout=api_timeout
+            timeout=api_timeout,
+            executor=getattr(self.worker, "sync_executor", None),
         )
         
         checker_task = asyncio.create_task(self._cancellation_checker())

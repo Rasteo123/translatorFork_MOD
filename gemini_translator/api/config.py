@@ -1446,3 +1446,19 @@ def chunk_search_window(): return 500
 def min_chunk_size(): return 500
 def min_forced_chunk_size(): return 250
 def chunk_html_source(): return True
+
+
+# Subprocess-spawning handler classes (Playwright browser, Node bridge).
+_SUBPROCESS_HANDLER_CLASSES = {"BrowserApiHandler", "WorkAsciiChatGptApiHandler"}
+
+
+def uses_legacy_worker_thread(provider_config: dict) -> bool:
+    """Subprocess-spawning handlers keep the per-thread worker model; everything
+    else runs on the shared AsyncWorkerRuntime. The explicit flag is the override;
+    the handler-class set is a safety net so a future Browser/WorkAscii provider
+    that forgets the flag is still routed to the legacy path."""
+    if not provider_config:
+        return False
+    if provider_config.get("worker_runtime") == "thread":
+        return True
+    return provider_config.get("handler_class") in _SUBPROCESS_HANDLER_CLASSES

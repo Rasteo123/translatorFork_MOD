@@ -383,6 +383,46 @@ class UniversalWorker(QObject):
 
         return False
             
+    def _setup_sync(self):
+        """Синхронная настройка хендлера (метаданные + setup_client).
+        Поднимает RuntimeError при провале — паритет с прежним поведением run()."""
+        client = self.client_map[self.api_key]
+        if not self.api_handler_instance.setup_client(
+            client_override=client,
+            proxy_settings=self.proxy_settings,
+        ):
+            raise RuntimeError("Настройка API хендлера провалилась.")
+
+    async def run_async(self):
+        """Корутина воркера для общего AsyncWorkerRuntime (HTTP/in-process).
+        Делает sync-настройку, warmup, основной цикл; в finally — отмена
+        дочерних задач + закрытие сессии + cancel()-контракт (паритет с run())."""
+        self._worker_loop = asyncio.get_running_loop()
+        self._wake_event = asyncio.Event()
+        try:
+            self._setup_sync()
+            if self.provider_config.get('needs_warmup', False) and getattr(self, 'use_warmup', False):
+                self._post_event('log_message', {'message': f"⏳ [WARMUP] Запуск ритуала-приветствия для ключа …{self.api_key[-4:]}…"})
+                if not await self._perform_warmup():
+                    return
+            await self._async_processing_loop()
+        finally:
+            pending = list(getattr(self, "active_tasks", None) or [])
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            try:
+                await self.api_handler_instance._close_thread_session_internal()
+            except Exception:
+                pass
+            # Паритет с legacy run() teardown: чистим ссылки и выполняем
+            # cancel()-контракт (отписка от EventBus + rescue задач + cancelled).
+            # Общий loop НЕ закрываем — им владеет runtime.
+            self._worker_loop = None
+            self._wake_event = None
+            self.cancel()
+
     def run(self):
         """
         Основной метод воркера. Управляет event loop'ом, проактивно создает
@@ -401,13 +441,7 @@ class UniversalWorker(QObject):
             print(f"[WORKER LIFECYCLE] Поток {threading.get_native_id()} НАЧАЛ РАБОТУ для воркера …{self.worker_id[-4:]}…")
             
             # 2. Синхронная настройка
-            client = self.client_map[self.api_key]
-            # Передаем словарь настроек в хендлер
-            if not self.api_handler_instance.setup_client(
-                client_override=client, 
-                proxy_settings=self.proxy_settings
-            ):
-                raise RuntimeError("Настройка API хендлера провалилась.")
+            self._setup_sync()
 
             # 4. Прогрев (если нужен)
             if self.provider_config.get('needs_warmup', False) and getattr(self, 'use_warmup', False):
@@ -461,6 +495,9 @@ class UniversalWorker(QObject):
         """
         concurrency_limit = self.brigade_size if self.brigade_size != sys.maxsize else 1000
         active_tasks = set()
+        # Expose the in-flight child tasks so run_async's finalizer can cancel +
+        # drain them on the shared loop (same set object, mutated in place below).
+        self.active_tasks = active_tasks
 
 
         while not self.is_cancelled:
@@ -486,12 +523,14 @@ class UniversalWorker(QObject):
             if not self.check_session():
                 break
             # --- ШАГ 2: "Посадка" - добавляем новые задачи, пока есть место и работа ---
+            rpm_limited = False
             while len(active_tasks) < concurrency_limit:
                 if self.is_shutting_down or not self.task_manager.has_pending_tasks():
                     break # Выходим, если увольняемся или нет работы
                 if not self.check_session():
                     break
                 if not self.rpm_limiter.can_proceed():
+                    rpm_limited = True
                     break # Выходим, если уперлись в RPM
 
                 task_info = self.task_manager.get_next_task(self.worker_id)
@@ -510,7 +549,10 @@ class UniversalWorker(QObject):
                 break
 
             # --- ШАГ 4: Засыпаем до реального события, а не крутим polling. ---
-            await self._wait_for_next_cycle(active_tasks)
+            await self._wait_for_next_cycle(
+                active_tasks,
+                timeout=self._compute_idle_timeout(rpm_limited),
+            )
         
         if not self.check_session():
             # Обнаружена смена сессии. Этот воркер — "зомби".
@@ -525,6 +567,19 @@ class UniversalWorker(QObject):
                 # FIX: Проверяем и на asyncio.CancelledError
                 if isinstance(result, Exception) and not isinstance(result, (GracefulShutdownInterrupt, CancelledError, SuccessSignal, asyncio.CancelledError)):
                     self._post_event('log_message', {'message': f"[ERROR] Ошибка в фоновой задаче при завершении: {result}"})
+
+    def _compute_idle_timeout(self, rpm_limited: bool) -> float:
+        """Таймаут засыпания основного цикла.
+
+        Когда воркер уперся в RPM-лимит и простаивает, нет смысла будиться
+        каждые WORKER_IDLE_WAKE_TIMEOUT_SECONDS — спим ровно до момента, когда
+        лимит позволит следующий запрос. Любое изменение состояния (отмена,
+        стоп, новые задачи) всё равно будит цикл через notify()."""
+        if rpm_limited:
+            rpm_wait = self.rpm_limiter.seconds_until_next_allowed()
+            if rpm_wait > 0:
+                return rpm_wait
+        return WORKER_IDLE_WAKE_TIMEOUT_SECONDS
 
     async def _wait_for_next_cycle(self, active_tasks, timeout=WORKER_IDLE_WAKE_TIMEOUT_SECONDS):
         wake_event = getattr(self, '_wake_event', None)
