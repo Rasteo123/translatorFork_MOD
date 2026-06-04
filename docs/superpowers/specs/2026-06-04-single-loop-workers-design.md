@@ -86,8 +86,10 @@ This is preserved by keeping, per key:
 
   Rationale: the energy problem is the *per-key thread/loop explosion*, which
   comes from running many HTTP keys; you never run many concurrent browsers, so
-  the subprocess handlers contribute ~1–2 threads, not the explosion. Excluding
-  them removes the Windows `ProactorEventLoop` requirement and the
+  the subprocess handlers' thread use is bounded by their normal config / max
+  instances (you do not run many concurrent browsers), not by the per-key HTTP
+  fan-out, so they are not the source of the explosion. Excluding them removes
+  the Windows `ProactorEventLoop` requirement and the
   subprocess-teardown-on-shared-loop complexity for no loss of energy benefit.
 
   > This supersedes the earlier "all `is_async: true` on the loop" decision:
@@ -96,14 +98,34 @@ This is preserved by keeping, per key:
   > (`curl_cffi`, its own process via `server_manager`) was never a worker
   > handler and remains out of scope.
 
-- **Dispatch rule:** `TranslationEngine` routes each worker by handler type. A
-  small, explicit predicate marks the subprocess handlers (e.g. a
-  `runtime: "thread"` flag in `config/api_providers.json` for `browser` /
-  `workascii_chatgpt`, or a handler-class check). Subprocess handlers →
-  legacy `executor.submit(worker.run)` (today's path, unchanged); everything
-  else → `runtime.spawn(worker.run_async())`. A session mixing both kinds runs a
-  shared loop *and* a (small) legacy pool — acceptable, since the legacy pool is
-  bounded by the count of subprocess-handler keys (typically 1).
+- **Dispatch rule (mechanical, single predicate).** Routing must NOT be
+  scattered `provider_id ==` checks. Add one predicate —
+  `uses_legacy_worker_thread(provider_config) -> bool` — backed by an explicit
+  `config/api_providers.json` flag (e.g. `"worker_runtime": "thread"` on
+  `browser` / `workascii_chatgpt`), defaulting to `False`. `_launch_worker`
+  (`translation_engine.py:865`) branches on it: `True` →
+  `executor.submit(worker.run)` (today's path, unchanged); `False` →
+  `runtime.spawn(worker.run_async())`. A session mixing both runs a shared loop
+  *and* a small legacy pool (bounded by subprocess-handler key count, typically
+  ≤1). Test: `workascii_chatgpt`/`browser` route to `executor.submit`, HTTP
+  providers route to `runtime.spawn`.
+
+- **Unified worker bookkeeping (no fork).** Both `executor.submit(...)` and
+  `runtime.spawn(...)` (via `run_coroutine_threadsafe`) return the **same type**,
+  `concurrent.futures.Future`. So `active_workers_map` (`:149`, `{worker_id:
+  future}`) and `_on_worker_finished(worker_id, future)` (`:876`) stay uniform —
+  key release, `keys_map` cleanup, task rescue, and replacement launch work
+  identically for both worker kinds, no branching in the bookkeeping. A
+  regression test exercises the finish/replace cycle for one HTTP worker and one
+  legacy worker through the same code path.
+
+- **Mixed-model shutdown (both lifecycles).** Session teardown must stop *both*:
+  `runtime.stop_workers()` cancels the asyncio worker tasks **on the loop**
+  (a `concurrent.futures.Future.cancel()` does not reliably cancel an
+  already-running coroutine — cancellation must be scheduled on the loop), and
+  `legacy_executor.shutdown(...)` drains the per-thread workers; then
+  `runtime.stop()`. Test: a session with one HTTP worker + one legacy worker
+  closes both cleanly, leaving no pending tasks and no live threads.
 
 ## Architecture
 
