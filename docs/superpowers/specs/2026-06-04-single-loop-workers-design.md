@@ -96,21 +96,22 @@ This is preserved by keeping, per key:
 
 ### New component: `AsyncWorkerRuntime`
 
-A single background thread running one `asyncio` loop (`run_forever`), plus one
-**bounded** `ThreadPoolExecutor` used only to offload synchronous handler work
-(not one thread per key).
+A single background thread running one `asyncio` loop (`run_forever`), plus two
+**bounded** `ThreadPoolExecutor`s (not one per key): a small **default** pool for
+DNS/misc offload and a **dedicated** pool for `is_async: false` sync-handler
+offload (see §Synchronous handler offload for sizing/rationale).
 
 - `start()` — spin up the thread + loop, and call
-  `loop.set_default_executor(self.executor)` so `run_in_executor(None, …)` (used
-  by `run_sync`, and by aiohttp's `getaddrinfo`) routes through the bounded
-  executor rather than a fresh default one (see P2a).
+  `loop.set_default_executor(self.default_executor)` so aiohttp's `getaddrinfo`
+  and bare `run_in_executor(None, …)` use the small DNS pool (see P2a/P3). The
+  dedicated sync-handler pool is passed explicitly to `run_sync`.
 - `loop` — explicit accessor for the runtime loop, used to bind per-worker
   sessions and to schedule work. Deliberately separate from `get_worker_loop()`
   so the consistency engine is not affected (see P1b).
 - `spawn(coro) -> concurrent.futures.Future` — schedule a coroutine on the loop
   from the GUI/engine thread via `run_coroutine_threadsafe`.
 - `stop()` — cancel outstanding tasks, stop the loop, join the thread, shut down
-  the executor.
+  both executors.
 
 `TranslationEngine` owns the runtime: creates it on session start, stops it on
 session end. It replaces the per-key `ThreadPoolExecutor`.
@@ -158,8 +159,18 @@ no cross-loop binding and no need to globally repurpose `get_worker_loop()`.
 
 Result: one connector pool per key → TCP connections per key are isolated
 exactly as today. The RPM limiter is already per-worker/per-key; the brigade cap
-is unchanged. Network footprint per key is byte-for-byte and tick-for-tick the
-same.
+is unchanged. Per key, the request-rate ceiling and connection pools are
+preserved; client-side latency may shift but cannot create bursts (see the
+constraint section).
+
+**Session reset on network error must move per-worker too.** Today
+`_force_session_reset()` (`base.py:274`) deletes `_thread_local.session` on
+aiohttp/`NetworkError` (`base.py:445`) so the next request rebuilds a clean
+connection — this is the recovery path for `ServerDisconnected` &c. With
+per-worker sessions there is no thread-local to reset, and resetting must target
+**only the current worker's** session (close its connector, clear its handle);
+the worker's next request lazily recreates it. The reset must not touch any other
+worker's session.
 
 ### Synchronous handler offload (`is_async: false`)
 
@@ -168,12 +179,26 @@ synchronous. They already route through `_sync_executor_wrapper` → `run_sync`
 (`base.py:386`), which offloads to a thread so the loop stays responsive. Offload
 threads scale with concurrent sync calls (few), not with the number of keys.
 
-**Executor wiring (must be explicit):** `run_sync` calls
-`loop.run_in_executor(None, …)` (`async_helpers.py:55`) — i.e. the loop's
-*default* executor, not the runtime's executor by name. So the runtime must call
-`loop.set_default_executor(runtime.executor)` to make the bound executor actually
-take effect (this also routes aiohttp's `getaddrinfo` offloads through it). A
-test pins this (`run_in_executor(None, …)` runs on the runtime executor).
+**Executor wiring — two bounded pools (must be explicit).** `run_sync` calls
+`loop.run_in_executor(None, …)` (`async_helpers.py:55`), i.e. the *default*
+executor. The genuinely-blocking sync handler (`local.py:83`, Ollama/LM Studio)
+can run for many seconds; aiohttp's `getaddrinfo` (DNS) also offloads to an
+executor and is short + latency-sensitive. Putting both in one small pool lets a
+long `local` call starve DNS for every other key; one big pool re-bloats threads
+and undoes the energy goal. So:
+
+- **Default executor** (DNS / misc): small, fixed, bounded — e.g. 4 threads —
+  set via `loop.set_default_executor(...)`. DNS is infrequent after warm-up
+  (keep-alive reuse), so this stays tiny.
+- **Dedicated sync-handler executor**: used only for `is_async: false` offload.
+  `run_sync` gains an explicit `executor` argument and `_sync_executor_wrapper`
+  passes this pool; size it to the count of concurrent `is_async: false` workers
+  (usually 0–2). A long `local` call therefore cannot block DNS.
+
+Net thread count stays ≈ `1 (loop) + ~4 (DNS) + few (sync handlers)` instead of
+per-key. Tests pin: (a) `run_in_executor(None, …)` lands on the default pool;
+(b) sync-handler offload lands on the dedicated pool; (c) a long fake sync call
+does not delay a concurrent DNS-path offload.
 
 ### Cancellation & graceful shutdown
 
@@ -223,9 +248,13 @@ unchanged.
 - **Async setup (P1a)**: worker setup creates its session without
   `run_until_complete` on the running loop (would raise) — assert setup succeeds
   while the shared loop is running.
-- **Default executor (P2a)**: after runtime start, `run_in_executor(None, …)`
-  (the path `run_sync` uses) runs on the runtime's bounded executor, not a fresh
-  default one — assert via thread identity / pool size.
+- **Executor split (P2a/P3)**: `run_in_executor(None, …)` lands on the small
+  default (DNS) pool; sync-handler offload lands on the dedicated pool; a long
+  fake sync call does not delay a concurrent default-pool offload (no DNS
+  starvation) — assert via thread identity / pool size / timing.
+- **Per-worker session reset on network error (P1)**: an aiohttp/`NetworkError`
+  closes and clears **only** the current worker's session/connector and the next
+  request recreates it; other workers' sessions are untouched.
 - **Consistency-engine isolation (P1b)**: with the runtime loop running,
   `consistency_engine._run_handler_awaitable()` still works (its temp-loop path
   is not broken by the shared loop) — assert no cross-loop error.
@@ -249,6 +278,10 @@ unchanged.
 - `base.py` `_thread_local` **session** caching moves to per-worker ownership
   (sessions bound to `asyncio.get_running_loop()`, per §Per-key session). The
   `_thread_local.loop` machinery is no longer used to drive workers.
+- `_force_session_reset()` (`base.py:274`), called on aiohttp/`NetworkError`
+  (`base.py:445`), must reset the **current worker's** session instead of
+  `_thread_local.session` (per §Per-key session). This is the recovery path for
+  `ServerDisconnected`; it must close + clear only that worker's connector.
 - `TaskDBWorker` (2 QThreads for the DB) is **out of scope** — not worker loops.
 
 ## Out of scope
