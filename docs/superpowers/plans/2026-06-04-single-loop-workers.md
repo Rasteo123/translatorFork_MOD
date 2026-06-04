@@ -4,7 +4,7 @@
 
 **Goal:** Run the per-key HTTP/in-process translation workers as coroutines on one shared asyncio event loop instead of one OS thread + one event loop per API key, cutting idle wake-ups (the macOS Energy Impact driver) without changing per-key network behavior.
 
-**Architecture:** A new `AsyncWorkerRuntime` owns one background thread running one asyncio loop plus two bounded thread pools (small DNS/default pool + dedicated sync-handler pool). `TranslationEngine` routes each worker by a mechanical predicate: subprocess-spawning handlers (`browser`, `workascii_chatgpt`) keep today's `ThreadPoolExecutor.submit(worker.run)` path; everything else runs via `runtime.spawn(worker.run_async())`. Both paths return `concurrent.futures.Future`, so `active_workers_map` / `_on_worker_finished` bookkeeping is unchanged. aiohttp sessions move from thread-local to per-handler ownership bound to the running loop.
+**Architecture:** A new `AsyncWorkerRuntime` owns one background thread running one asyncio loop plus two bounded thread pools (small DNS/default pool + dedicated sync-handler pool). `TranslationEngine` routes each worker by a mechanical predicate: subprocess-spawning handlers (providers `web_chatgpt_free`, `web_perplexity`, `workascii_chatgpt`) keep today's `ThreadPoolExecutor.submit(worker.run)` path; everything else runs via `runtime.spawn(worker.run_async())`. Both paths return `concurrent.futures.Future`, so `active_workers_map` / `_on_worker_finished` bookkeeping is unchanged. aiohttp sessions move from thread-local to per-handler ownership bound to the running loop.
 
 **Tech Stack:** Python 3.11/3.12, asyncio, aiohttp, PyQt6, pytest (`QT_QPA_PLATFORM=offscreen`).
 
@@ -22,7 +22,7 @@
 - **Modify** `gemini_translator/utils/async_helpers.py` — `run_sync` gains an explicit `executor` argument.
 - **Modify** `gemini_translator/api/base.py` — per-handler session ownership (drop `_thread_local.session`), async session creation bound to `get_running_loop()`, drop the sync `_proactive_session_init` `run_until_complete`, per-handler `_force_session_reset`.
 - **Modify** `gemini_translator/api/handlers/*` — only where a handler relied on the thread-local session (verify; HTTP handlers use `_get_or_create_session_internal`, so most need no change).
-- **Modify** `config/api_providers.json` — add `"worker_runtime": "thread"` to `browser` and `workascii_chatgpt`.
+- **Modify** `config/api_providers.json` — add `"worker_runtime": "thread"` to the subprocess providers `web_chatgpt_free`, `web_perplexity`, `workascii_chatgpt` (there is no `browser` key).
 - **Modify** `gemini_translator/api/config.py` — `uses_legacy_worker_thread(provider_config)` predicate (single source of truth).
 - **Modify** `gemini_translator/core/worker.py` — `run()` → `async def run_async()` coroutine (sync metadata setup → await session → await warmup → await `_async_processing_loop` → `finally` cancels children + awaits cleanup hook). Keep legacy `run()` for subprocess handlers.
 - **Modify** `gemini_translator/core/translation_engine.py` — own an `AsyncWorkerRuntime`; branch in `_launch_worker` (`:865`); mixed-model shutdown.
@@ -199,7 +199,7 @@ class AsyncWorkerRuntime:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_async_worker_runtime.py -q`
-Expected: PASS (3 passed).
+Expected: PASS (4 passed).
 
 - [ ] **Step 5: Commit**
 
@@ -273,7 +273,7 @@ git commit -m "feat(async): run_sync accepts explicit executor (default unchange
 ## Task 3: Dispatch predicate + config flag
 
 **Files:**
-- Modify: `config/api_providers.json` (add flag to `browser`, `workascii_chatgpt`)
+- Modify: `config/api_providers.json` (add flag to `web_chatgpt_free`, `web_perplexity`, `workascii_chatgpt`)
 - Modify: `gemini_translator/api/config.py` (add `uses_legacy_worker_thread`)
 - Test: `tests/test_worker_dispatch.py` (create)
 
@@ -351,7 +351,7 @@ In `config/api_providers.json`, add `"worker_runtime": "thread",` (next to their
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_worker_dispatch.py::LegacyWorkerPredicateTests -q`
-Expected: PASS (2 passed).
+Expected: PASS (3 passed).
 
 - [ ] **Step 6: Commit**
 
@@ -458,8 +458,17 @@ def _force_session_reset(self):
         try:
             asyncio.get_running_loop().create_task(session.close())
         except RuntimeError:
-            pass                          # no running loop (e.g. teardown) — drop it
+            pass                          # no running loop — see contract note below
 ```
+
+**Contract:** `_force_session_reset` is only ever invoked from inside an active
+API call on the running loop (`execute_api_call:319`, `_process_exception_and_counters:454`),
+so the running-loop branch is the real path and closes the session. The
+`RuntimeError` branch is purely defensive — there is no running loop only at
+process teardown, where the worker's `run_async` `finally` already closes the
+session via `await ..._close_thread_session_internal()`. So no session is leaked:
+either the scheduled `close()` runs, or the teardown hook closes it. (Document this
+in a comment; do not add a second close path.)
 
 6. Update the base `_close_thread_session_internal` to close `self._session` (subprocess-handler overrides in `browser.py`/`workascii_chatgpt.py` are out of scope — leave them).
 7. **No call-site change** for the reset: both `execute_api_call:319` and
@@ -521,12 +530,15 @@ class WorkerRunAsyncTests(unittest.IsolatedAsyncioTestCase):
         async def fake_cleanup():
             closed["session"] = True
 
+        teardown = {"cancel_called": False}
+
         worker = types.SimpleNamespace(
             provider_config={"needs_warmup": False},   # real attr the code reads
             use_warmup=False,
             active_tasks=set(),
             _setup_sync=lambda: None,                  # success = no raise
             _perform_warmup=lambda: asyncio.sleep(0),
+            cancel=lambda: teardown.__setitem__("cancel_called", True),
             api_handler_instance=types.SimpleNamespace(
                 _close_thread_session_internal=fake_cleanup,
             ),
@@ -547,6 +559,10 @@ class WorkerRunAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(child_cancelled["hit"], "child task must be cancelled")
         self.assertTrue(closed["session"], "session cleanup hook must run")
+        self.assertTrue(teardown["cancel_called"],
+                        "cancel() must run for EventBus unsubscribe + rescue parity")
+        self.assertIsNone(worker._worker_loop)
+        self.assertIsNone(worker._wake_event)
 ```
 
 *(Note: `run_async` reads `self.active_tasks` set by `_async_processing_loop`; keep that attribute name consistent with the implementation in Step 3.)*
@@ -581,6 +597,13 @@ async def run_async(self):
             await self.api_handler_instance._close_thread_session_internal()
         except Exception:
             pass
+        # Parity with legacy run() teardown (worker.py:433-442): clear loop refs
+        # and run the full cancel() contract — EventBus unsubscribe (avoids leaking
+        # subscriptions), cancelled state, and task rescue. We do NOT close the
+        # shared loop (it is owned by the runtime, not the worker).
+        self._worker_loop = None
+        self._wake_event = None
+        self.cancel()
 ```
 
 Extract the existing synchronous metadata setup currently inside `run()` (assigning `api_key`, building URLs) plus the `setup_client` call into `_setup_sync(self)`, **preserving the current failure semantics** — `run()` today raises `RuntimeError("Настройка API хендлера провалилась.")` when `setup_client()` returns falsy (`worker.py:406`), so `_setup_sync` must `raise` the same way (not return a bool that the caller ignores):
@@ -674,7 +697,12 @@ def _spawn_worker(self, provider_config, worker):
 ```
 
 Replace `future = self.executor.submit(worker.run)` (`:865`) with
-`future = self._spawn_worker(self.worker.provider_config, worker)` (use the provider config available where the worker is built). Keep `self.active_workers_map[uuid_worker] = future` and the existing `future.add_done_callback(...)` / `_on_worker_finished` wiring unchanged — both branches return `concurrent.futures.Future`.
+`future = self._spawn_worker(worker.provider_config, worker)`. Use the **local**
+`worker` (the `UniversalWorker` just built at `:863`) — the engine has no
+`self.worker`, and `UniversalWorker` exposes `self.provider_config`
+(`worker.py:234`). Keep `self.active_workers_map[uuid_worker] = future` and the
+existing `future.add_done_callback(...)` / `_on_worker_finished` wiring unchanged
+— both branches return `concurrent.futures.Future`.
 
 - [ ] **Step 4: Create + own the runtime; mixed shutdown**
 
@@ -775,8 +803,8 @@ git add -A && git commit -m "chore: single-loop worker migration complete"
 
 ## Self-Review (author checklist — completed)
 
-- **Spec coverage:** runtime (T1), executor split/run_sync (T1–T2), dispatch predicate+flag (T3), per-handler session + reset (T4), run_async + warmup + child teardown (T5), engine routing + mixed shutdown (T6), unified bookkeeping (T6 — both return `concurrent.futures.Future`), multi-key streaming + footprint (T7), live verify (T8). Subprocess handlers (browser/workascii) deliberately untouched (legacy path).
+- **Spec coverage:** runtime (T1), executor split/run_sync (T1–T2), dispatch predicate+flag (T3), per-handler session + reset (T4), run_async + warmup + child teardown (T5), engine routing + mixed shutdown (T6), unified bookkeeping (T6 — both return `concurrent.futures.Future`), multi-key streaming + footprint (T7), live verify (T8). Subprocess handlers (`web_chatgpt_free`, `web_perplexity`, `workascii_chatgpt`) deliberately untouched (legacy path).
 - **Per-key footprint constraint:** unchanged — per-key RPM limiter and per-handler (=per-key) session preserved; no shared connector; ramp-up pacing kept (engine still launches gradually).
 - **Placeholders:** none — every code/test step has concrete content.
-- **Type consistency:** `run_async`, `_spawn_worker`, `uses_legacy_worker_thread`, `_force_session_reset` (async), `active_tasks`, `self._session`, `AsyncWorkerRuntime.{start,spawn,stop,loop,default_executor,sync_executor}` used consistently across tasks.
+- **Type consistency:** `run_async`, `_spawn_worker`, `uses_legacy_worker_thread`, `_force_session_reset` (sync, fire-and-forget), `active_tasks`, `self._session`, `AsyncWorkerRuntime.{start,spawn,stop,stop_workers,loop,default_executor,sync_executor}` used consistently across tasks.
 - **Open implementation note:** in T5/T6 the worker needs `self.provider_config`/`needs_warmup` available where dispatch happens; verify exact attribute access in `_launch_worker` against current code when implementing.
