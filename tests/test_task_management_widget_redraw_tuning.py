@@ -55,6 +55,26 @@ class RedrawTuningTests(unittest.TestCase):
         self.assertTrue(widget._redraw_timer.isActive(),
                         "Redraw must be scheduled after filter change")
 
+    def test_on_task_state_changed_normalizes_changed_ids_to_set(self):
+        widget = self._make_widget()
+        widget._on_task_state_changed({
+            "event": "task_state_changed",
+            "data": {
+                "full_state": [(("u", ("epub",)), "pending", {})],
+                "changed_ids": ["abc", "def"],
+            },
+        })
+        self.assertEqual(widget._pending_changed_ids, {"abc", "def"})
+        self.assertEqual(widget._pending_ui_state, [(("u", ("epub",)), "pending", {})])
+
+    def test_on_task_state_changed_passes_none_for_full_refresh(self):
+        widget = self._make_widget()
+        widget._on_task_state_changed({
+            "event": "task_state_changed",
+            "data": {"full_state": [], "changed_ids": None},
+        })
+        self.assertIsNone(widget._pending_changed_ids)
+
 
 if __name__ == "__main__":
     unittest.main()
