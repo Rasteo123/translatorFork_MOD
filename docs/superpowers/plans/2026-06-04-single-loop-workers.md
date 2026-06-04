@@ -76,6 +76,29 @@ class AsyncWorkerRuntimeTests(unittest.TestCase):
         rt.stop()
         rt.stop()  # must not raise
         self.assertFalse(rt._thread.is_alive())
+
+    def test_stop_workers_cancels_running_tasks(self):
+        import time
+        rt = AsyncWorkerRuntime()
+        rt.start()
+        try:
+            cancelled = {"hit": False}
+
+            async def long_task():
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    cancelled["hit"] = True
+                    raise
+
+            rt.spawn(long_task())
+            deadline = time.time() + 2
+            while not rt._tasks and time.time() < deadline:
+                time.sleep(0.01)
+            rt.stop_workers()
+            self.assertTrue(cancelled["hit"])
+        finally:
+            rt.stop()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -109,6 +132,7 @@ class AsyncWorkerRuntime:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = False
+        self._tasks: set[asyncio.Task] = set()  # mutated only on the loop thread
 
     def start(self):
         if self._thread is not None:
@@ -130,13 +154,40 @@ class AsyncWorkerRuntime:
             self.loop.close()
 
     def spawn(self, coro) -> Future:
-        """Schedule a coroutine on the loop from another thread."""
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+        """Schedule a coroutine on the loop from another thread; track its task."""
+        return asyncio.run_coroutine_threadsafe(self._tracked(coro), self.loop)
+
+    async def _tracked(self, coro):
+        task = asyncio.current_task()
+        self._tasks.add(task)
+        try:
+            return await coro
+        finally:
+            self._tasks.discard(task)
+
+    async def _cancel_all(self):
+        tasks = [t for t in self._tasks if t is not asyncio.current_task()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def stop_workers(self, timeout: float = 10):
+        """Cancel + drain all spawned worker tasks ON the loop (a
+        concurrent.futures.Future.cancel() cannot stop a running coroutine)."""
+        if self.loop is None or not self.loop.is_running():
+            return
+        fut = asyncio.run_coroutine_threadsafe(self._cancel_all(), self.loop)
+        try:
+            fut.result(timeout=timeout)
+        except Exception:
+            pass
 
     def stop(self):
         if self._stopped:
             return
         self._stopped = True
+        self.stop_workers()                      # drain tasks before stopping loop
         if self.loop is not None and self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
         if self._thread is not None:
@@ -244,6 +295,23 @@ class LegacyWorkerPredicateTests(unittest.TestCase):
     def test_http_handlers_use_runtime(self):
         self.assertFalse(api_config.uses_legacy_worker_thread({"is_async": True}))
         self.assertFalse(api_config.uses_legacy_worker_thread({}))
+
+    def test_real_config_routing(self):
+        import json
+        import pathlib
+        cfg = json.loads(
+            (pathlib.Path(__file__).resolve().parents[1]
+             / "config" / "api_providers.json").read_text()
+        )
+        providers = {k: v for k, v in cfg.items()
+                     if isinstance(v, dict) and "handler_class" in v}
+        for pid in ("workascii_chatgpt", "web_chatgpt_free", "web_perplexity"):
+            self.assertIn(pid, providers, f"{pid} missing from config")
+            self.assertTrue(api_config.uses_legacy_worker_thread(providers[pid]), pid)
+        # At least one HTTP provider must route to the runtime (not legacy).
+        http = [k for k, v in providers.items()
+                if not api_config.uses_legacy_worker_thread(v)]
+        self.assertTrue(http, "expected >=1 runtime (HTTP) provider")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -256,15 +324,29 @@ Expected: FAIL — `AttributeError: module ... has no attribute 'uses_legacy_wor
 In `gemini_translator/api/config.py`:
 
 ```python
+# Subprocess-spawning handler classes (Playwright browser, Node bridge).
+_SUBPROCESS_HANDLER_CLASSES = {"BrowserApiHandler", "WorkAsciiChatGptApiHandler"}
+
 def uses_legacy_worker_thread(provider_config: dict) -> bool:
-    """Subprocess-spawning handlers (browser, workascii_chatgpt) keep the
-    per-thread worker model; everything else runs on the shared AsyncWorkerRuntime."""
-    return bool(provider_config) and provider_config.get("worker_runtime") == "thread"
+    """Subprocess-spawning handlers keep the per-thread worker model; everything
+    else runs on the shared AsyncWorkerRuntime. The explicit flag is the override;
+    the handler-class set is a safety net so a future Browser/WorkAscii provider
+    that forgets the flag is still routed to the legacy path."""
+    if not provider_config:
+        return False
+    if provider_config.get("worker_runtime") == "thread":
+        return True
+    return provider_config.get("handler_class") in _SUBPROCESS_HANDLER_CLASSES
 ```
 
-- [ ] **Step 4: Add the config flag**
+- [ ] **Step 4: Add the config flag to the real subprocess providers**
 
-In `config/api_providers.json`, add `"worker_runtime": "thread",` to the `browser` and `workascii_chatgpt` provider objects (next to their existing `"is_async": true`).
+In `config/api_providers.json`, add `"worker_runtime": "thread",` (next to their existing `"is_async": true`) to the three subprocess providers — there is **no** `browser` key; the real keys are:
+- `workascii_chatgpt` (`WorkAsciiChatGptApiHandler`, Node bridge)
+- `web_chatgpt_free` (`BrowserApiHandler`, Playwright)
+- `web_perplexity` (`BrowserApiHandler`, Playwright)
+
+(The handler-class safety net in the predicate also covers these, but the explicit flag documents intent.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -319,7 +401,7 @@ class HandlerSessionOwnershipTests(unittest.IsolatedAsyncioTestCase):
         h1, h2 = _make_handler(), _make_handler()
         s1 = await h1._get_or_create_session_internal()
         s2 = await h2._get_or_create_session_internal()
-        await h1._force_session_reset()
+        h1._force_session_reset()                      # sync, fire-and-forget close
         s1_new = await h1._get_or_create_session_internal()
         s2_same = await h2._get_or_create_session_internal()
         self.assertIsNot(s1_new, s1)   # h1 rebuilt
@@ -362,20 +444,27 @@ async def _get_or_create_session_internal(self, api_timeout=600):
 
 3. Extract the connector-building block (currently lines ~131–147) into `_build_connector(self, ssl_context)` and call it above (DRY).
 4. Make `_proactive_session_init` a no-op (or delete it and its call at `gemini.py:26`) — session is created lazily by `call_api`'s existing `await self._get_or_create_session_internal()`. Keep `setup_client` synchronous and free of `run_until_complete`.
-5. Rewrite `_force_session_reset` as async, operating on `self._session`:
+5. Keep `_force_session_reset` **synchronous** (do NOT make it async). It is
+   called from both an async method (`execute_api_call:319`) and a **sync** one
+   (`_process_exception_and_counters:454`), so it cannot use `await`. Implement
+   it as fire-and-forget: clear the handle synchronously and schedule the close
+   on the running loop. Both call sites stay plain `self._force_session_reset()`:
 
 ```python
-async def _force_session_reset(self):
-    if self._session is not None and not self._session.closed:
+def _force_session_reset(self):
+    session = self._session
+    self._session = None                  # next request rebuilds a clean session
+    if session is not None and not session.closed:
         try:
-            await self._session.close()
-        except Exception:
-            pass
-    self._session = None
+            asyncio.get_running_loop().create_task(session.close())
+        except RuntimeError:
+            pass                          # no running loop (e.g. teardown) — drop it
 ```
 
 6. Update the base `_close_thread_session_internal` to close `self._session` (subprocess-handler overrides in `browser.py`/`workascii_chatgpt.py` are out of scope — leave them).
-7. Update the network-error reset call site (`base.py:445` region) from sync `_force_session_reset()` to `await self._force_session_reset()`.
+7. **No call-site change** for the reset: both `execute_api_call:319` and
+   `_process_exception_and_counters:454` keep calling `self._force_session_reset()`
+   synchronously. (`_process_exception_and_counters` stays sync — no restructure.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -429,24 +518,26 @@ class WorkerRunAsyncTests(unittest.IsolatedAsyncioTestCase):
                 child_cancelled["hit"] = True
                 raise
 
-        async def fake_processing_loop(self):
-            self.active_tasks = {asyncio.create_task(fake_child())}
-            await child_started.wait()
-            await asyncio.sleep(60)  # park until cancelled
-
         async def fake_cleanup():
             closed["session"] = True
 
         worker = types.SimpleNamespace(
+            provider_config={"needs_warmup": False},   # real attr the code reads
+            use_warmup=False,
             active_tasks=set(),
-            needs_warmup=False,
-            _async_processing_loop=types.MethodType(fake_processing_loop, None),
+            _setup_sync=lambda: None,                  # success = no raise
+            _perform_warmup=lambda: asyncio.sleep(0),
             api_handler_instance=types.SimpleNamespace(
                 _close_thread_session_internal=fake_cleanup,
             ),
-            _perform_warmup=lambda: asyncio.sleep(0),
-            _setup_sync=lambda: True,
         )
+
+        async def fake_processing_loop():
+            worker.active_tasks = {asyncio.create_task(fake_child())}
+            await child_started.wait()
+            await asyncio.sleep(60)                     # park until cancelled
+
+        worker._async_processing_loop = fake_processing_loop
 
         task = asyncio.create_task(UniversalWorker.run_async(worker))
         await asyncio.wait_for(child_started.wait(), timeout=2)
@@ -458,7 +549,7 @@ class WorkerRunAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(closed["session"], "session cleanup hook must run")
 ```
 
-*(Note: `run_async` is written so it reads `self.active_tasks` set by `_async_processing_loop`; keep that attribute name consistent with the implementation in Step 3.)*
+*(Note: `run_async` reads `self.active_tasks` set by `_async_processing_loop`; keep that attribute name consistent with the implementation in Step 3.)*
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -473,11 +564,11 @@ In `gemini_translator/core/worker.py`, make `active_tasks` an instance attribute
 async def run_async(self):
     self._worker_loop = asyncio.get_running_loop()
     self._wake_event = asyncio.Event()
-    self._setup_sync()                       # sync metadata only (api_key, urls)
     try:
-        if getattr(self, "needs_warmup", False):
-            ok = await self._perform_warmup()
-            if not ok:
+        self._setup_sync()                   # raises RuntimeError on setup failure
+        # Mirror the real warmup gate (worker.py:413):
+        if self.provider_config.get('needs_warmup', False) and getattr(self, 'use_warmup', False):
+            if not await self._perform_warmup():
                 return                        # warmup failed → exit cleanly
         await self._async_processing_loop()
     finally:
@@ -492,7 +583,19 @@ async def run_async(self):
             pass
 ```
 
-Extract the existing synchronous metadata setup currently inside `run()` (assigning `api_key`, building URLs, `setup_client`) into `_setup_sync(self)`. Keep the legacy `run()` (used by subprocess handlers) intact, refactored to call `_setup_sync()` then `loop.run_until_complete(self._async_processing_loop())` as today.
+Extract the existing synchronous metadata setup currently inside `run()` (assigning `api_key`, building URLs) plus the `setup_client` call into `_setup_sync(self)`, **preserving the current failure semantics** — `run()` today raises `RuntimeError("Настройка API хендлера провалилась.")` when `setup_client()` returns falsy (`worker.py:406`), so `_setup_sync` must `raise` the same way (not return a bool that the caller ignores):
+
+```python
+def _setup_sync(self):
+    # ... assign api_key / model_id / urls as today ...
+    client = self.client_map[self.api_key]
+    if not self.api_handler_instance.setup_client(
+        client_override=client, proxy_settings=self.proxy_settings
+    ):
+        raise RuntimeError("Настройка API хендлера провалилась.")
+```
+
+Keep the legacy `run()` (used by subprocess handlers) intact, refactored to call `_setup_sync()` then the existing `loop.run_until_complete(...)` warmup + `_async_processing_loop()` exactly as today (`worker.py:413-419`). `_async_processing_loop` must store its in-flight tasks on `self.active_tasks` (replace the local `active_tasks = set()` at `worker.py:463`) so both `run_async`'s finalizer and the legacy path see them.
 
 - [ ] **Step 4: Run test to verify it passes**
 
