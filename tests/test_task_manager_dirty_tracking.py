@@ -419,5 +419,54 @@ class OnCacheUpdatedTests(unittest.TestCase):
                                 "Timer must restart because new dirty ids accumulated during the worker run")
 
 
+class ThreadHopTests(unittest.TestCase):
+    """Verifies QTimer is only started from the main thread."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6 import QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_notify_task_dirty_from_worker_thread_does_not_touch_timer(self):
+        import threading
+        from PyQt6 import QtCore
+
+        tm = types.SimpleNamespace(
+            _dirty_state_lock=Lock(),
+            _dirty_task_ids=set(),
+            _structural_dirty=False,
+        )
+        timer = QtCore.QTimer()
+        timer.setSingleShot(True)
+        tm._update_timer = timer
+
+        emit_recorder = {"calls": 0}
+        class _Signal:
+            def emit(self_inner):
+                emit_recorder["calls"] += 1
+        tm._ui_update_requested = _Signal()
+
+        from gemini_translator.core.task_manager import ChapterQueueManager
+        tm.notify_task_dirty = types.MethodType(ChapterQueueManager.notify_task_dirty, tm)
+
+        def worker():
+            tm.notify_task_dirty("from-worker")
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=2.0)
+        self.assertFalse(t.is_alive(), "worker thread should complete quickly")
+
+        # Dirty set was updated under lock — safe across threads.
+        self.assertEqual(tm._dirty_task_ids, {"from-worker"})
+        # Signal was emitted — main thread will pick this up via queued connection.
+        self.assertEqual(emit_recorder["calls"], 1)
+        # Critically: QTimer.start() was NOT called from the worker thread.
+        self.assertFalse(timer.isActive(),
+                         "QTimer must not be started directly from worker thread")
+
+
 if __name__ == "__main__":
     unittest.main()
