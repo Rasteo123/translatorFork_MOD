@@ -1,6 +1,7 @@
 ﻿# ======================================== Файл: .\gemini_translator\core\task_manager.py (ФИНАЛЬНАЯ ВЕРСИЯ) ========================================
 
 import threading
+from threading import Lock
 
 try:
     import os_patch
@@ -75,6 +76,24 @@ def tuple_deserializer(dct):
     if '__tuple__' in dct: return tuple(dct['items'])
     return dct
 
+
+# Mirrors the SQL CASE in _get_ui_state_list_background. Cache entries store
+# *UI* statuses (line ~1282 maps completed -> success, failed -> error), so
+# the constant carries both DB names and their UI aliases pointing at the
+# same group number. Sort key: (STATUS_GROUP_ORDER.get(status, 6), -priority, sequence).
+STATUS_GROUP_ORDER = {
+    'in_progress': 1,
+    'pending':     2,
+    'held':        3,
+    'completed':   4,
+    'success':     4,  # UI alias for completed
+    'failed':      5,
+    'error':       5,  # UI alias for failed
+}
+
+PARTIAL_REFRESH_THRESHOLD = 0.5  # if len(dirty_ids) > threshold * len(cache), use full path
+
+
 class ChapterQueueManager(QObject):
     """
     Менеджер очереди задач на базе In-Memory SQLite.
@@ -117,7 +136,17 @@ class ChapterQueueManager(QObject):
         self._ui_state_list_cache = []
         self._is_updating_cache = False
         self._cache_update_worker = None
-        
+
+        # Dirty-tracking state for active-session energy reduction.
+        # _dirty_state_lock guards _dirty_task_ids and _structural_dirty only.
+        # It is a plain threading.Lock (NOT the _chancellor_lock RLock) to keep
+        # the scope minimal and avoid deadlock with DB-path acquires.
+        self._dirty_state_lock = Lock()
+        self._dirty_task_ids: set[str] = set()
+        self._structural_dirty: bool = True  # first run is always full
+        self._sort_keys: dict[str, tuple[int, int]] = {}  # task_id_str -> (priority, sequence)
+        self._in_flight_snapshot = None  # holds the snapshot passed to the active worker, for failure recovery
+
         # Воркер для фоновой очистки при завершении сессии
         self._cleanup_worker = None
         # Особый воркер для глоссария, чтобы не блокировать основной поток
