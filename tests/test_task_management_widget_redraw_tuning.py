@@ -40,6 +40,21 @@ class RedrawTuningTests(unittest.TestCase):
             QtCore.Qt.TimerType.PreciseTimer,
         )
 
+    def test_on_filter_changed_clears_pending_changed_ids(self):
+        widget = self._make_widget()
+        # Simulate a partial event arriving just before the user changes the filter.
+        widget._pending_changed_ids = {"some-uuid"}
+        widget._pending_ui_state = [("dummy",)]
+
+        widget._on_filter_changed("Все")
+
+        self.assertIsNone(widget._pending_changed_ids,
+                          "Filter change must force a full redraw, not a stale partial one")
+        self.assertIsNone(widget._pending_ui_state,
+                          "Pending UI state must be cleared so _do_redraw refetches fresh")
+        self.assertTrue(widget._redraw_timer.isActive(),
+                        "Redraw must be scheduled after filter change")
+
 
 if __name__ == "__main__":
     unittest.main()
