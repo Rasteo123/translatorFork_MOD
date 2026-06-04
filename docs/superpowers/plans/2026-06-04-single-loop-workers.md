@@ -20,7 +20,7 @@
 - **Create** `tests/test_async_worker_runtime.py` — runtime lifecycle/executor/cancel tests.
 - **Create** `tests/test_worker_dispatch.py` — dispatch-routing + shutdown + finish/replace tests.
 - **Modify** `gemini_translator/utils/async_helpers.py` — `run_sync` gains an explicit `executor` argument.
-- **Modify** `gemini_translator/api/base.py` — per-handler session ownership (drop `_thread_local.session`), async session creation bound to `get_running_loop()`, drop the sync `_proactive_session_init` `run_until_complete`, per-handler `_force_session_reset`.
+- **Modify** `gemini_translator/api/base.py` — per-handler session ownership (drop `_thread_local.session`), async session creation bound to `get_running_loop()`, drop the sync `_proactive_session_init` `run_until_complete`, per-handler `_force_session_reset`, and `_sync_executor_wrapper` passing the worker's `sync_executor` to `run_sync`.
 - **Modify** `gemini_translator/api/handlers/*` — only where a handler relied on the thread-local session (verify; HTTP handlers use `_get_or_create_session_internal`, so most need no change).
 - **Modify** `config/api_providers.json` — add `"worker_runtime": "thread"` to the subprocess providers `web_chatgpt_free`, `web_perplexity`, `workascii_chatgpt` (there is no `browser` key).
 - **Modify** `gemini_translator/api/config.py` — `uses_legacy_worker_thread(provider_config)` predicate (single source of truth).
@@ -642,7 +642,8 @@ git commit -m "feat(worker): run_async coroutine with warmup + child-task teardo
 ## Task 6: Engine integration — runtime + dispatch + shutdown
 
 **Files:**
-- Modify: `gemini_translator/core/translation_engine.py` (`_start_session`/`__init__` for runtime; `_launch_worker:865`; shutdown path)
+- Modify: `gemini_translator/core/translation_engine.py` — `__init__:148` (add `self.runtime = None`), `apply_and_start_session` (create runtime near `:659`), `_launch_worker:865` (dispatch), `_terminate_all_workers:1000` (stop runtime)
+- Modify: `gemini_translator/api/base.py:390` (`_sync_executor_wrapper` passes the worker's `sync_executor` to `run_sync`)
 - Test: append to `tests/test_worker_dispatch.py`
 
 - [ ] **Step 1: Write the failing test (routing + mixed shutdown)**
@@ -676,6 +677,57 @@ class DispatchRoutingTests(unittest.TestCase):
         fut = eng._spawn_worker({"is_async": True}, worker=MagicMock())
         eng.runtime.spawn.assert_called_once()
         eng.executor.submit.assert_not_called()
+
+    def test_runtime_worker_gets_sync_executor(self):
+        eng = self._engine()
+        eng.runtime.sync_executor = object()
+        worker = MagicMock()
+        eng._spawn_worker({"is_async": True}, worker=worker)
+        self.assertIs(worker.sync_executor, eng.runtime.sync_executor)
+
+
+class MixedShutdownTests(unittest.TestCase):
+    def test_terminate_stops_runtime_then_executor_and_clears_map(self):
+        eng = TranslationEngine.__new__(TranslationEngine)
+        eng.executor = MagicMock()
+        eng.runtime = MagicMock()
+        eng.active_workers_map = {"w1": MagicMock()}
+        eng.bus = MagicMock()
+        eng._post_event = lambda *a, **k: None
+        eng._terminate_all_workers()
+        eng.runtime.stop.assert_called_once()
+        eng.executor.shutdown.assert_called()
+        self.assertEqual(eng.active_workers_map, {})
+
+
+class WorkerFinishBookkeepingTests(unittest.TestCase):
+    """_on_worker_finished must release the key + drop the worker uniformly,
+    regardless of whether the future came from runtime.spawn or executor.submit
+    (both are concurrent.futures.Future)."""
+
+    def _engine(self):
+        eng = TranslationEngine.__new__(TranslationEngine)
+        eng.task_manager = MagicMock()
+        eng.api_key_manager = MagicMock()
+        eng.active_workers_map = {}
+        eng.keys_map = {}
+        eng.shutting_down_workers = set()
+        eng._post_event = lambda *a, **k: None
+        eng._try_launch_replacement = lambda: False
+        eng._check_if_session_finished = lambda: None
+        return eng
+
+    def test_finish_releases_key_and_removes_worker(self):
+        from concurrent.futures import Future
+        eng = self._engine()
+        fut = Future()
+        fut.set_result(None)                 # same type either dispatch path returns
+        eng.active_workers_map["w1"] = fut
+        eng.keys_map["w1"] = "KEY1"
+        eng.keys_map["KEY1"] = "w1"
+        eng._on_worker_finished("w1", fut)
+        self.assertNotIn("w1", eng.active_workers_map)
+        eng.api_key_manager.release_key.assert_called_with("KEY1")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -693,6 +745,9 @@ from gemini_translator.api.config import uses_legacy_worker_thread
 def _spawn_worker(self, provider_config, worker):
     if uses_legacy_worker_thread(provider_config):
         return self.executor.submit(worker.run)          # legacy per-thread
+    # Give the runtime worker access to the dedicated sync-handler pool so its
+    # handler's _sync_executor_wrapper offloads there (not the DNS/default pool).
+    worker.sync_executor = self.runtime.sync_executor
     return self.runtime.spawn(worker.run_async())         # shared loop
 ```
 
@@ -704,20 +759,57 @@ Replace `future = self.executor.submit(worker.run)` (`:865`) with
 existing `future.add_done_callback(...)` / `_on_worker_finished` wiring unchanged
 — both branches return `concurrent.futures.Future`.
 
-- [ ] **Step 4: Create + own the runtime; mixed shutdown**
+- [ ] **Step 4: Wire the sync-handler executor into the handler path**
 
-In `_start_session` (where `self.executor = ThreadPoolExecutor(...)` is created, `:659`), also create `self.runtime = AsyncWorkerRuntime(); self.runtime.start()`. In the session-teardown path (the method that iterates `self.active_workers_map` to stop workers), after cancelling/awaiting workers, call `self.runtime.stop()` and `self.executor.shutdown(wait=False)`. Import `AsyncWorkerRuntime` at top.
+In `gemini_translator/api/base.py`, update `_sync_executor_wrapper` (`:390`) so the
+`run_sync` call uses the worker's dedicated pool (set by `_spawn_worker` above);
+legacy/subprocess workers have no `sync_executor`, so `getattr(...)` → `None`
+keeps today's default-executor behavior:
 
-- [ ] **Step 5: Run tests to verify they pass**
+```python
+api_coro = run_sync(
+    self.call_api,
+    prompt, log_prefix, allow_incomplete, use_stream, debug, max_output_tokens,
+    forget=False,
+    timeout=api_timeout,
+    executor=getattr(self.worker, "sync_executor", None),
+)
+```
+
+- [ ] **Step 5: Create + own the runtime; mixed-model shutdown (exact methods)**
+
+1. `__init__` (`:148`, next to `self.executor = None`): add `self.runtime = None`.
+2. Import at top: `from gemini_translator.core.async_worker_runtime import AsyncWorkerRuntime`.
+3. `apply_and_start_session` (`:597`): right after `self.executor = ThreadPoolExecutor(...)` (`:659`), add
+   `self.runtime = AsyncWorkerRuntime(); self.runtime.start()`.
+4. `_terminate_all_workers` (`:1000`): the current guard is `if not self.executor: return` and the body shuts the executor + clears the map. Change the guard to `if not self.executor and not self.runtime: return`, and **before** clearing the map stop the runtime first, then the executor:
+
+```python
+if self.runtime is not None:
+    self.runtime.stop_workers()   # cancel coroutine workers on the loop
+    self.runtime.stop()           # stop loop, join thread, shut both pools
+    self.runtime = None
+if self.executor is not None:
+    try:
+        self.executor.shutdown(wait=True, cancel_futures=True)
+    except TypeError:
+        self.executor.shutdown(wait=True)
+    self.executor = None
+self.active_workers_map.clear()
+```
+
+   Keep the existing `bus.pop_data("current_active_session", None)` and log lines. Verify no other teardown path (`_end_session`, cleanup, early exits) leaves the runtime running — if any path nulls `self.executor` without calling `_terminate_all_workers`, route it through this method.
+
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_worker_dispatch.py -q`
-Expected: PASS.
+Expected: PASS (routing, sync-executor wiring, mixed shutdown, finish/replace).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add gemini_translator/core/translation_engine.py tests/test_worker_dispatch.py
-git commit -m "feat(engine): route workers via runtime/legacy dispatch; mixed-model shutdown"
+git add gemini_translator/core/translation_engine.py gemini_translator/api/base.py tests/test_worker_dispatch.py
+git commit -m "feat(engine): runtime/legacy dispatch + sync-executor wiring + mixed shutdown"
 ```
 
 ---
