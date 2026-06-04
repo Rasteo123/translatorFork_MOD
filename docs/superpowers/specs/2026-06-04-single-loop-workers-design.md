@@ -75,22 +75,35 @@ This is preserved by keeping, per key:
   threads, doesn't remove threads).
 - **No feature flag**: full replacement of the per-thread model. Rollback via
   git/branch.
-- **Provider scope**: classification is by the handler's `is_async` flag
-  (`config/api_providers.json`), not by guesswork. **All `is_async: true`
-  handlers run as coroutines on the shared loop** — this includes the
-  Playwright-based browser / WorkAscii ChatGPT-Web handlers, which are
-  async-native (`await async_playwright().start()`,
-  `await asyncio.create_subprocess_exec(...)`) and already dispatch through
-  `_async_executor` (`base.py:310`). **Only `is_async: false` handlers** (today:
-  `local` Ollama/LM Studio) use the executor path
-  (`_sync_executor_wrapper` → `run_sync`). The Perplexity *server* (`curl_cffi`,
-  its own process via `server_manager`) is not a worker handler and is out of
-  scope.
+- **Provider scope (narrowed):** the shared loop hosts the **HTTP / in-process**
+  handlers — `is_async: true` HTTP handlers (gemini, deepseek, nvidia,
+  openrouter, huggingface) as coroutines, and `is_async: false` in-process
+  handlers (`local` Ollama/LM Studio) via the executor path
+  (`_sync_executor_wrapper` → `run_sync`). The **subprocess-spawning** handlers —
+  `browser` (Playwright, `browser.py`) and `workascii_chatgpt` (Node bridge via
+  `create_subprocess_exec`, `workascii_chatgpt.py:249`) — are **excluded** and
+  stay on the current per-thread model.
 
-  > Correction vs. the scope question asked during brainstorming: Playwright
-  > ChatGPT-Web/WorkAscii were wrongly called "sync/subprocess" there. They are
-  > async-native and stay on the shared loop. The decision ("sync → executor,
-  > async → loop") is unchanged; only the example was wrong.
+  Rationale: the energy problem is the *per-key thread/loop explosion*, which
+  comes from running many HTTP keys; you never run many concurrent browsers, so
+  the subprocess handlers contribute ~1–2 threads, not the explosion. Excluding
+  them removes the Windows `ProactorEventLoop` requirement and the
+  subprocess-teardown-on-shared-loop complexity for no loss of energy benefit.
+
+  > This supersedes the earlier "all `is_async: true` on the loop" decision:
+  > async-native is necessary but not sufficient — subprocess handlers are
+  > carved out by an explicit dispatch rule (below). The Perplexity *server*
+  > (`curl_cffi`, its own process via `server_manager`) was never a worker
+  > handler and remains out of scope.
+
+- **Dispatch rule:** `TranslationEngine` routes each worker by handler type. A
+  small, explicit predicate marks the subprocess handlers (e.g. a
+  `runtime: "thread"` flag in `config/api_providers.json` for `browser` /
+  `workascii_chatgpt`, or a handler-class check). Subprocess handlers →
+  legacy `executor.submit(worker.run)` (today's path, unchanged); everything
+  else → `runtime.spawn(worker.run_async())`. A session mixing both kinds runs a
+  shared loop *and* a (small) legacy pool — acceptable, since the legacy pool is
+  bounded by the count of subprocess-handler keys (typically 1).
 
 ## Architecture
 
@@ -105,11 +118,10 @@ offload (see §Synchronous handler offload for sizing/rationale).
   `loop.set_default_executor(self.default_executor)` so aiohttp's `getaddrinfo`
   and bare `run_in_executor(None, …)` use the small DNS pool (see P2a/P3). The
   dedicated sync-handler pool is passed explicitly to `run_sync`.
-  **Windows loop class:** the loop must be a `ProactorEventLoop` on Windows
-  (mirror `get_worker_loop` `base.py:55`); WorkAscii uses
-  `asyncio.create_subprocess_exec` (`workascii_chatgpt.py:249`), which fails on a
-  `SelectorEventLoop` (proven by `test_workascii_runtime.py:47`). Regression test
-  required. *(Moot if subprocess handlers are scoped out — see open question.)*
+  **Windows loop class:** with subprocess handlers scoped out, the shared loop
+  never calls `create_subprocess_exec`, so no `ProactorEventLoop` is required —
+  a default loop is fine. (The subprocess handlers keep their own
+  `get_worker_loop()` Proactor loop in the unchanged legacy path.)
 - `loop` — explicit accessor for the runtime loop, used to bind per-worker
   sessions and to schedule work. Deliberately separate from `get_worker_loop()`
   so the consistency engine is not affected (see P1b).
@@ -236,12 +248,12 @@ closed. So the contract becomes explicit:
   `active_tasks`, `await`s them with `gather(return_exceptions=True)`, then
   `await`s the handler's cleanup hook** `_close_thread_session_internal()`
   (`await`, not `run_until_complete` — `worker.py:437` currently uses the latter,
-  which can't run on the shared loop). That hook is **generic**, not just an
-  aiohttp close: the HTTP base closes the `ClientSession` (`base.py:160`), but
-  `browser` closes the Playwright browser (`browser.py:244`) and `workascii`
-  terminates its Node bridge subprocess (`workascii_chatgpt.py:552`). So
-  cancellation must tear those down too — no child task, browser, or subprocess
-  outlives its worker. Test covers WorkAscii/browser resource teardown on cancel.
+  which can't run on the shared loop). For the in-scope handlers this hook closes
+  the `ClientSession` (`base.py:160`); the in-process `local` handler holds no
+  network resource. (The subprocess handlers' richer teardown — Playwright
+  `browser.py:244`, WorkAscii subprocess `workascii_chatgpt.py:552` — stays in
+  the unchanged legacy path and is not the shared loop's concern.) No child task
+  outlives its parent or its session.
 - Single worker hard stop: existing flags (`is_cancelled` / `is_shutting_down` +
   `wake_event.set()` via `notify()`) **plus** `task.cancel()` on the outer task;
   the `finally` above guarantees clean child teardown.
@@ -307,13 +319,13 @@ unchanged.
 - **Warmup preserved (P2a)**: a `needs_warmup` worker awaits `_perform_warmup()`
   before its main loop; warmup failure exits the worker without entering the
   loop.
-- **Generic cleanup on cancel (P1a)**: cancelling a worker tears down its
-  handler's non-aiohttp resources too — assert the (faked) browser/subprocess
-  cleanup hook is awaited.
-- **Windows subprocess loop (P1b)**: on Windows the runtime loop is a
-  `ProactorEventLoop` so `create_subprocess_exec` works (regression vs. the
-  current `test_workascii_runtime` expectation). *(Only if subprocess handlers
-  stay in scope.)*
+- **Cleanup hook on cancel (P1a)**: cancelling a worker `await`s
+  `_close_thread_session_internal()` (HTTP session closed exactly once); not just
+  letting the session leak.
+- **Dispatch routing**: a subprocess-handler provider routes to the legacy
+  `executor.submit(worker.run)` path; an HTTP/in-process provider routes to
+  `runtime.spawn(worker.run_async())`. Guards the scope boundary so subprocess
+  handlers are never accidentally put on the shared loop.
 - **Non-worker session callers (P2b)**: benchmark runner + proxy path build a
   handler without a `UniversalWorker`, drive a call, and close the session — the
   handler-owned session lifecycle still works.
@@ -341,6 +353,9 @@ unchanged.
 
 ## Out of scope
 
+- Migrating the **subprocess-spawning handlers** (`browser` Playwright,
+  `workascii_chatgpt` Node bridge) — they stay on the current per-thread model
+  (keeps their own Proactor loop + teardown; no shared-loop changes).
 - Sharing one connector across keys (would change footprint — rejected).
 - Reworking the worker abstraction (Approach B).
 - Touching the TaskDBWorker DB threads or the Qt/Cocoa infrastructure threads.
