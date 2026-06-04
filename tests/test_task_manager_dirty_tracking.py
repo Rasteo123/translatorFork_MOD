@@ -368,6 +368,56 @@ class OnCacheUpdatedTests(unittest.TestCase):
         self.assertIsInstance(data["changed_ids"], list,
                               "Payload must carry list[str], not set")
 
+    def test_structural_retry_restores_snapshot_and_sets_structural(self):
+        tm = self._make_stub()
+        tm._in_flight_snapshot = {"ids": ("a", "b"), "structural": False}
+        worker = self._make_worker({"mode": "structural_retry"})
+
+        tm._on_cache_updated(worker)
+
+        # Snapshot ids back in the dirty set
+        self.assertEqual(tm._dirty_task_ids, {"a", "b"})
+        self.assertTrue(tm._structural_dirty)
+        # Timer was kicked
+        self.assertGreaterEqual(tm._update_timer.start_calls, 1)
+        # No event emitted (the data was not refreshed)
+        self.assertEqual(tm._posted_events, [])
+        # Snapshot cleared
+        self.assertIsNone(tm._in_flight_snapshot)
+        self.assertFalse(tm._is_updating_cache)
+
+    def test_worker_returns_none_recovers(self):
+        tm = self._make_stub()
+        tm._in_flight_snapshot = {"ids": ("a",), "structural": False}
+        worker = self._make_worker(None)
+        tm._on_cache_updated(worker)
+        self.assertEqual(tm._dirty_task_ids, {"a"})
+        self.assertTrue(tm._structural_dirty)
+        self.assertGreaterEqual(tm._update_timer.start_calls, 1)
+
+    def test_worker_returns_error_dict_recovers(self):
+        tm = self._make_stub()
+        tm._in_flight_snapshot = {"ids": ("a",), "structural": False}
+        worker = self._make_worker({"mode": "error", "error": "boom"})
+        tm._on_cache_updated(worker)
+        self.assertEqual(tm._dirty_task_ids, {"a"})
+        self.assertTrue(tm._structural_dirty)
+
+    def test_followup_timer_starts_when_dirty_accumulated_during_worker(self):
+        """Silent-drop bug fix: notifications arriving while _is_updating_cache=True
+        are buffered in the dirty set. After _on_cache_updated, the timer is
+        restarted so the next batch runs."""
+        tm = self._make_stub()
+        # Simulate: while the worker ran, two more dirty notifications arrived.
+        tm._dirty_task_ids = {"new-1", "new-2"}
+        tm._in_flight_snapshot = {"ids": ("a",), "structural": False}
+        new_entries = [(("uuid-a", ("epub",)), "in_progress", {})]
+        worker = self._make_worker({"mode": "partial", "entries": new_entries,
+                                    "sort_keys_delta": {"a": (0, 0)}})
+        tm._on_cache_updated(worker)
+        self.assertGreaterEqual(tm._update_timer.start_calls, 1,
+                                "Timer must restart because new dirty ids accumulated during the worker run")
+
 
 if __name__ == "__main__":
     unittest.main()
