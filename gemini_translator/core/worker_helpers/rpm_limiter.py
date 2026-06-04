@@ -13,6 +13,7 @@ class RPMLimiter:
             self.can_proceed = lambda: True
             self.reset = lambda: None
             self.update_last_request_time = lambda: None
+            self.seconds_until_next_allowed = lambda: 0.0
             return
         
 
@@ -30,6 +31,16 @@ class RPMLimiter:
                 self.last_request_time = now
                 return True
             return False
+
+    def seconds_until_next_allowed(self) -> float:
+        """Сколько секунд осталось до следующего разрешённого запроса.
+
+        Возвращает 0.0, если запрос можно сделать прямо сейчас. Позволяет
+        воркеру спать ровно до момента снятия RPM-лимита, а не будиться
+        периодически вхолостую."""
+        with self.lock:
+            remaining = self.interval - (time.time() - self.last_request_time)
+            return remaining if remaining > 0 else 0.0
 
     # --- НАЧАЛО НОВЫХ МЕТОДОВ ---
     def reset(self):

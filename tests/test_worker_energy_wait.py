@@ -3,7 +3,39 @@ import time
 import types
 import unittest
 
-from gemini_translator.core.worker import UniversalWorker
+from gemini_translator.core.worker import (
+    UniversalWorker,
+    WORKER_IDLE_WAKE_TIMEOUT_SECONDS,
+)
+
+
+class WorkerIdleTimeoutTests(unittest.TestCase):
+    def _worker_with_rpm_wait(self, rpm_wait):
+        return types.SimpleNamespace(
+            rpm_limiter=types.SimpleNamespace(
+                seconds_until_next_allowed=lambda: rpm_wait
+            )
+        )
+
+    def test_idle_timeout_uses_exact_rpm_wait_when_limited(self):
+        # При упоре в RPM спим ровно до следующего разрешённого запроса,
+        # а не будимся каждые 2 секунды впустую.
+        worker = self._worker_with_rpm_wait(0.4)
+        self.assertEqual(UniversalWorker._compute_idle_timeout(worker, True), 0.4)
+
+    def test_idle_timeout_default_when_not_rpm_limited(self):
+        worker = self._worker_with_rpm_wait(0.4)
+        self.assertEqual(
+            UniversalWorker._compute_idle_timeout(worker, False),
+            WORKER_IDLE_WAKE_TIMEOUT_SECONDS,
+        )
+
+    def test_idle_timeout_default_when_rpm_wait_nonpositive(self):
+        worker = self._worker_with_rpm_wait(0.0)
+        self.assertEqual(
+            UniversalWorker._compute_idle_timeout(worker, True),
+            WORKER_IDLE_WAKE_TIMEOUT_SECONDS,
+        )
 
 
 class WorkerEnergyWaitTests(unittest.IsolatedAsyncioTestCase):
