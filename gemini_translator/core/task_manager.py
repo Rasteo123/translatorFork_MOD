@@ -1309,14 +1309,16 @@ class ChapterQueueManager(QObject):
         """
         cache = self._ui_state_list_cache
         is_structural = snapshot["structural"] or not cache
-        # Threshold short-circuit and partial path land in Task 11 — for now
-        # any non-structural call still goes through the full path.
+        if not is_structural:
+            # Threshold: if dirty set is too big, partial isn't worth it.
+            if len(snapshot["ids"]) > PARTIAL_REFRESH_THRESHOLD * max(len(cache), 1):
+                is_structural = True
 
         try:
             with self._get_read_only_conn() as conn:
-                if is_structural or True:  # Task 11 will replace `or True` with the partial dispatch
+                if is_structural:
                     return self._fetch_full_ui_state(conn)
-                # placeholder for partial path
+                return self._fetch_partial_ui_state(conn, snapshot["ids"])
         except Exception as e:
             print(f"[CRITICAL DB WORKER] Ошибка в _get_ui_state_list_background: {e}")
             return {"mode": "error", "error": repr(e)}
@@ -1364,7 +1366,52 @@ class ChapterQueueManager(QObject):
         task_tuple_for_ui = (uuid.UUID(task_id_str), payload)
         details = error_histories.get(task_id_str, {})
         return ((task_tuple_for_ui, ui_status, details), (row['priority'], row['sequence']))
-    
+
+    def _fetch_partial_ui_state(self, conn, dirty_ids):
+        if not dirty_ids:
+            return {"mode": "partial", "entries": list(self._ui_state_list_cache),
+                    "sort_keys_delta": {}}
+
+        placeholders = ','.join('?' for _ in dirty_ids)
+        cursor = conn.execute(
+            f"""SELECT task_id, payload, status, priority, sequence FROM tasks
+                WHERE task_id IN ({placeholders})""",
+            tuple(dirty_ids),
+        )
+        rows = cursor.fetchall()
+        fetched_ids = {row['task_id'] for row in rows}
+        missing = set(dirty_ids) - fetched_ids
+        if missing:
+            # Row was deleted outside dirty-tracking path; escalate to full refresh.
+            return {"mode": "structural_retry"}
+
+        failed_in_partial = [row['task_id'] for row in rows if row['status'] == 'failed']
+        error_histories = self._fetch_error_histories(conn, failed_in_partial)
+
+        new_by_id = {}
+        sort_keys_delta = {}
+        for row in rows:
+            entry, sort_key = self._build_ui_entry(row, error_histories)
+            new_by_id[row['task_id']] = entry
+            sort_keys_delta[row['task_id']] = sort_key
+
+        # Merge: keep existing entries, replace dirty ones.
+        merged_by_id = {str(e[0][0]): e for e in self._ui_state_list_cache}
+        merged_by_id.update(new_by_id)
+
+        # Effective sort_keys = cache keys overlaid with delta.
+        effective_sort_keys = dict(self._sort_keys)
+        effective_sort_keys.update(sort_keys_delta)
+
+        def _sort_key(entry):
+            tid = str(entry[0][0])
+            status = entry[1]
+            prio, seq = effective_sort_keys.get(tid, (0, 0))
+            return (STATUS_GROUP_ORDER.get(status, 6), -prio, seq)
+
+        entries = sorted(merged_by_id.values(), key=_sort_key)
+        return {"mode": "partial", "entries": entries, "sort_keys_delta": sort_keys_delta}
+
     def get_all_tasks_for_rebuild(self) -> list[tuple]:
         """
         Возвращает АБСОЛЮТНО ВСЕ задачи из базы, независимо от их статуса,

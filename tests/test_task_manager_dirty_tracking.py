@@ -204,6 +204,9 @@ class BackgroundFetchTests(unittest.TestCase):
         tm._build_ui_entry = types.MethodType(
             ChapterQueueManager._build_ui_entry, tm
         )
+        tm._fetch_partial_ui_state = types.MethodType(
+            ChapterQueueManager._fetch_partial_ui_state, tm
+        )
         return tm
 
     def test_full_path_returns_list_with_ui_aliased_statuses(self):
@@ -228,6 +231,72 @@ class BackgroundFetchTests(unittest.TestCase):
         self.assertEqual(sk["00000000-0000-0000-0000-000000000001"], (10, 1))
         self.assertEqual(sk["00000000-0000-0000-0000-000000000002"], (5, 2))
         self.assertEqual(sk["00000000-0000-0000-0000-000000000003"], (5, 3))
+
+    def test_partial_path_refetches_only_requested_ids(self):
+        tm = self._make_stub_with_db()
+        # Seed cache from a prior full fetch.
+        full = tm._get_ui_state_list_background({"ids": (), "structural": True})
+        tm._ui_state_list_cache = full["entries"]
+        tm._sort_keys = full["sort_keys"]
+        # Mutate the DB: change task 2 from completed -> in_progress.
+        with tm._get_read_only_conn() as conn:
+            conn.execute("UPDATE tasks SET status = 'in_progress' WHERE task_id = ?",
+                         ("00000000-0000-0000-0000-000000000002",))
+            conn.commit()
+
+        snapshot = {"ids": ("00000000-0000-0000-0000-000000000002",), "structural": False}
+        result = tm._get_ui_state_list_background(snapshot)
+
+        self.assertEqual(result["mode"], "partial")
+        # Task 2 in the merged list should now have ui_status 'in_progress'.
+        entries_by_id = {str(e[0][0]): e for e in result["entries"]}
+        self.assertEqual(entries_by_id["00000000-0000-0000-0000-000000000002"][1], "in_progress")
+        # Group 1 (in_progress) entries come before group 5 (error).
+        statuses = [(str(e[0][0]), e[1]) for e in result["entries"]]
+        in_progress_ids = [tid for tid, s in statuses if s == "in_progress"]
+        # task 1 priority 10, task 2 priority 5 → task 1 first.
+        self.assertEqual(in_progress_ids,
+                         ["00000000-0000-0000-0000-000000000001",
+                          "00000000-0000-0000-0000-000000000002"])
+
+    def test_partial_path_returns_structural_retry_when_id_missing(self):
+        tm = self._make_stub_with_db()
+        full = tm._get_ui_state_list_background({"ids": (), "structural": True})
+        tm._ui_state_list_cache = full["entries"]
+        tm._sort_keys = full["sort_keys"]
+        # Delete a row outside the dirty-tracking path.
+        with tm._get_read_only_conn() as conn:
+            conn.execute("DELETE FROM tasks WHERE task_id = ?",
+                         ("00000000-0000-0000-0000-000000000002",))
+            conn.commit()
+
+        snapshot = {"ids": ("00000000-0000-0000-0000-000000000002",), "structural": False}
+        result = tm._get_ui_state_list_background(snapshot)
+
+        self.assertEqual(result["mode"], "structural_retry")
+
+    def test_partial_path_resort_matches_full_path_for_aliased_statuses(self):
+        """Cover both completed/success and failed/error aliases."""
+        tm = self._make_stub_with_db()
+        full = tm._get_ui_state_list_background({"ids": (), "structural": True})
+        tm._ui_state_list_cache = full["entries"]
+        tm._sort_keys = full["sort_keys"]
+        # Toggle task 3 (failed/error) -> completed/success.
+        with tm._get_read_only_conn() as conn:
+            conn.execute("UPDATE tasks SET status = 'completed' WHERE task_id = ?",
+                         ("00000000-0000-0000-0000-000000000003",))
+            conn.commit()
+
+        partial = tm._get_ui_state_list_background({
+            "ids": ("00000000-0000-0000-0000-000000000003",),
+            "structural": False,
+        })
+        # Fresh full fetch from the same db for comparison.
+        full2 = tm._get_ui_state_list_background({"ids": (), "structural": True})
+        partial_order = [str(e[0][0]) for e in partial["entries"]]
+        full_order = [str(e[0][0]) for e in full2["entries"]]
+        self.assertEqual(partial_order, full_order,
+                         "Partial merge + Python sort must produce the same order as full SQL ORDER BY")
 
 
 if __name__ == "__main__":
