@@ -89,5 +89,64 @@ class NotifyApiTests(unittest.TestCase):
         self.assertEqual(tm._ui_update_requested.emit_calls, 1)
 
 
+class TriggerCacheUpdateTests(unittest.TestCase):
+    def _make_stub(self):
+        tm = types.SimpleNamespace(
+            _dirty_state_lock=Lock(),
+            _dirty_task_ids={"a", "b"},
+            _structural_dirty=False,
+            _is_updating_cache=False,
+            _cache_update_worker=None,
+            _in_flight_snapshot=None,
+            _started_workers=[],
+        )
+
+        class _FakeWorker:
+            def __init__(self, fn, *args, **kwargs):
+                self.fn = fn; self.args = args; self.kwargs = kwargs
+                self.finished = types.SimpleNamespace(connect=lambda cb: None)
+            def start(self):
+                tm._started_workers.append(self)
+        tm._FakeWorker = _FakeWorker
+        return tm
+
+    def test_trigger_cache_update_snapshots_and_clears_state(self):
+        from gemini_translator.core import task_manager as tm_mod
+        tm = self._make_stub()
+        # Monkeypatch TaskDBWorker in the module to our fake.
+        original = tm_mod.TaskDBWorker
+        tm_mod.TaskDBWorker = tm._FakeWorker
+        try:
+            from gemini_translator.core.task_manager import ChapterQueueManager
+            tm._get_ui_state_list_background = lambda snapshot: None
+            tm._on_cache_updated = lambda worker: None  # stub the worker.finished callback
+            tm._trigger_cache_update = types.MethodType(ChapterQueueManager._trigger_cache_update, tm)
+            tm._trigger_cache_update()
+        finally:
+            tm_mod.TaskDBWorker = original
+
+        # State reset
+        self.assertEqual(tm._dirty_task_ids, set())
+        self.assertFalse(tm._structural_dirty)
+        # Snapshot stored for failure recovery
+        self.assertIsNotNone(tm._in_flight_snapshot)
+        self.assertEqual(set(tm._in_flight_snapshot["ids"]), {"a", "b"})
+        self.assertFalse(tm._in_flight_snapshot["structural"])
+        # Worker started, with snapshot passed as arg
+        self.assertEqual(len(tm._started_workers), 1)
+        self.assertTrue(tm._is_updating_cache)
+
+    def test_trigger_cache_update_returns_early_if_worker_already_running(self):
+        tm = self._make_stub()
+        tm._is_updating_cache = True
+        from gemini_translator.core.task_manager import ChapterQueueManager
+        tm._trigger_cache_update = types.MethodType(ChapterQueueManager._trigger_cache_update, tm)
+        tm._trigger_cache_update()
+        # State NOT reset because we did not snapshot
+        self.assertEqual(tm._dirty_task_ids, {"a", "b"})
+        self.assertIsNone(tm._in_flight_snapshot)
+        self.assertEqual(tm._started_workers, [])
+
+
 if __name__ == "__main__":
     unittest.main()

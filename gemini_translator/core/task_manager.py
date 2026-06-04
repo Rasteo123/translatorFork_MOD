@@ -1262,11 +1262,22 @@ class ChapterQueueManager(QObject):
         self.notify_structural_change()
     
     def _trigger_cache_update(self):
-        """Этот метод вызывается таймером и запускает фоновое обновление."""
+        """Runs in the main (Qt GUI) thread (debounced by _update_timer).
+        Snapshots the dirty state under lock, resets it, and hands the snapshot
+        to the worker. _in_flight_snapshot keeps the snapshot retrievable so
+        _on_cache_updated can restore the dirty ids on worker failure."""
         if self._is_updating_cache:
             return
+        with self._dirty_state_lock:
+            snapshot = {
+                "ids": tuple(self._dirty_task_ids),
+                "structural": self._structural_dirty,
+            }
+            self._dirty_task_ids.clear()
+            self._structural_dirty = False
+        self._in_flight_snapshot = snapshot
         self._is_updating_cache = True
-        worker = TaskDBWorker(self._get_ui_state_list_background)
+        worker = TaskDBWorker(self._get_ui_state_list_background, snapshot)
         worker.finished.connect(lambda: self._on_cache_updated(worker))
         self._cache_update_worker = worker
         worker.start()
