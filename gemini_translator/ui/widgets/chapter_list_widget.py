@@ -723,12 +723,15 @@ class ChapterListWidget(QWidget):
         if not item_task: # Создаем, только если не существует
             item_task = QTableWidgetItem(display_text)
             self.table.setItem(row, 0, item_task)
-        elif item_task.text() != display_text: # Обновляем, только если текст изменился
+        elif item_task.text() != display_text:
             item_task.setText(display_text)
-        
-        item_task.setToolTip(tooltip_text)
-        item_task.setData(QtCore.Qt.ItemDataRole.UserRole, task_tuple_for_ui_role)
-        item_task.setData(Qt.ItemDataRole.UserRole + 1, status)
+
+        if item_task.toolTip() != tooltip_text:
+            item_task.setToolTip(tooltip_text)
+        if item_task.data(QtCore.Qt.ItemDataRole.UserRole) != task_tuple_for_ui_role:
+            item_task.setData(QtCore.Qt.ItemDataRole.UserRole, task_tuple_for_ui_role)
+        if item_task.data(Qt.ItemDataRole.UserRole + 1) != status:
+            item_task.setData(Qt.ItemDataRole.UserRole + 1, status)
 
         # --- ОБНОВЛЕНИЕ/СОЗДАНИЕ ЯЧЕЙКИ СТАТУСА (СТОЛБЕЦ 1) ---
         status_item = self.table.item(row, 1)
@@ -886,20 +889,31 @@ class ChapterListWidget(QWidget):
         # 1. Получаем payload, чтобы передать его в "мозг"
         task_tuple = item_task.data(QtCore.Qt.ItemDataRole.UserRole)
         task_payload = task_tuple[1] if task_tuple and len(task_tuple) > 1 else None
-        
+
         # 2. Обращаемся к "мозгу" за инструкциями
         display_text, color_hex = self._get_status_display_info(status, details, task_payload)
-        
-        # 3. Просто выполняем инструкции
-        status_item.setText(display_text)
-        
+
         error_tooltip = ""
         if status.startswith('error'):
             error_counts = details.get('errors', {})
             error_lines = [f"- {err_type}: {count} раз" for err_type, count in error_counts.items()]
             error_tooltip = "\n\nИстория ошибок:\n" + "\n".join(error_lines)
-        
-        status_item.setToolTip(f"Статус: {display_text}{error_tooltip}")
+        new_tooltip = f"Статус: {display_text}{error_tooltip}"
+
+        # 3. Diff gate — skip if text+colour+tooltip all match current.
+        current_color = status_item.foreground().color().name().lower()
+        task_color = item_task.foreground().color().name().lower()
+        target_color = color_hex.lower()
+        if (
+            status_item.text() == display_text
+            and current_color == target_color
+            and task_color == target_color
+            and status_item.toolTip() == new_tooltip
+        ):
+            return
+
+        status_item.setText(display_text)
+        status_item.setToolTip(new_tooltip)
         brush = QtGui.QBrush(QtGui.QColor(color_hex))
         item_task.setForeground(brush)
         status_item.setForeground(brush)

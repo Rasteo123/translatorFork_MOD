@@ -46,6 +46,7 @@ class TaskManagementWidget(QWidget):
         super().__init__(parent)
         self._is_session_active = False # <--- НОВАЯ СТРОКА
         self._pending_ui_state = None
+        self._pending_changed_ids = None  # set[str] | None — partial-event filter from TaskManager
         self._uses_topic_subscription = False
         self.bus = None
         self._redraw_timer = QtCore.QTimer(self)
@@ -84,7 +85,7 @@ class TaskManagementWidget(QWidget):
         self.category_filter_combo = QComboBox()
         self.category_filter_combo.addItems(self.ERROR_FILTERS.keys())
         self.category_filter_combo.setToolTip("Фильтр задач по типу возникшей ошибки (история ошибок)")
-        self.category_filter_combo.currentTextChanged.connect(self.redraw_ui)
+        self.category_filter_combo.currentTextChanged.connect(self._on_filter_changed)
         self.category_filter_combo.setMinimumWidth(150)
         action_panel_layout.addWidget(self.category_filter_combo)
         
@@ -172,6 +173,15 @@ class TaskManagementWidget(QWidget):
         if visible and not self._is_session_active:
             self.retry_filtered_btn.setEnabled(True)
         
+    def _on_filter_changed(self, _text):
+        """Filter combobox changed — drop any pending partial update and force a
+        fresh full redraw. Otherwise a partial task_state_changed pending from
+        before the filter change would touch only its rows in a freshly filtered
+        list, leaving the filtered view inconsistent."""
+        self._pending_changed_ids = None
+        self._pending_ui_state = None
+        self.redraw_ui()
+
     def redraw_ui(self):
         """
         С НЕБОЛЬШОЙ ЗАДЕРЖКОЙ запрашивает актуальный список состояния
@@ -181,10 +191,23 @@ class TaskManagementWidget(QWidget):
         self._redraw_timer.start()
 
 
+    def _apply_active_session_redraw_tuning(self, active: bool):
+        """During an active translation session, slow the redraw debounce
+        from 35 ms (PreciseTimer) to 150 ms (CoarseTimer). The list updates
+        are not user-driven during a session, so the slack is invisible to
+        the user but lets macOS coalesce Qt timer wake-ups."""
+        if active:
+            self._redraw_timer.setInterval(150)
+            self._redraw_timer.setTimerType(QtCore.Qt.TimerType.CoarseTimer)
+        else:
+            self._redraw_timer.setInterval(35)
+            self._redraw_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
+
     def set_session_mode(self, is_session_active):
         """
         Переключает доступность кнопок управления списком.
         """
+        self._apply_active_session_redraw_tuning(is_session_active)
         self._is_session_active = is_session_active # <--- ЗАПОМИНАЕМ СОСТОЯНИЕ
         
         # --- Кнопки, которые меняют структуру задач (блокируются) ---
