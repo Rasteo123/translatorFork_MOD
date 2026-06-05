@@ -150,5 +150,72 @@ class DiffGateTests(unittest.TestCase):
         self.assertEqual(userrole_calls, [], "UserRole setData should be skipped when value unchanged")
 
 
+import uuid
+
+
+class SelectiveUpdateChangedIdsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def _make_widget_with_rows(self, n=3):
+        from PyQt6.QtWidgets import QTableWidget
+        widget = ChapterListWidget()
+        self.addCleanup(widget.deleteLater)
+        widget.table = QTableWidget(0, 3)
+
+        # _populate_row (called inside _full_redraw) reads app.engine.session_id;
+        # stub so the attribute exists and short-circuits to the "no_session" branch.
+        app = QtWidgets.QApplication.instance()
+        prev_engine = getattr(app, "engine", "__missing__")
+        app.engine = None
+        if prev_engine == "__missing__":
+            self.addCleanup(lambda: delattr(app, "engine"))
+        else:
+            self.addCleanup(lambda: setattr(app, "engine", prev_engine))
+
+        tasks = []
+        for i in range(n):
+            tid = uuid.UUID(int=i + 1)
+            payload = ("epub", f"/tmp/{i}.epub", f"/tmp/{i}.html")
+            tasks.append(((tid, payload), "pending", {}))
+        widget._full_redraw(tasks)
+        return widget, tasks
+
+    def test_selective_update_with_changed_ids_skips_other_rows(self):
+        widget, tasks = self._make_widget_with_rows(3)
+        update_calls = []
+        orig = widget._update_row_status
+        widget._update_row_status = lambda row, status, details={}: update_calls.append(row) or orig(row, status, details)
+
+        only_middle = {str(tasks[1][0][0])}
+        widget._selective_update(tasks, changed_ids=only_middle)
+
+        self.assertEqual(update_calls, [1],
+                         "_selective_update must touch only the row whose task_id is in changed_ids")
+
+    def test_selective_update_matches_uuid_via_str_cast(self):
+        """Regression guard: row task ids are uuid.UUID, changed_ids is set[str]."""
+        widget, tasks = self._make_widget_with_rows(2)
+        update_calls = []
+        orig = widget._update_row_status
+        widget._update_row_status = lambda row, status, details={}: update_calls.append(row) or orig(row, status, details)
+
+        changed = {str(tasks[0][0][0])}  # plain str; row id is UUID
+        widget._selective_update(tasks, changed_ids=changed)
+
+        self.assertEqual(update_calls, [0], "str(row UUID) must match the set[str] entry")
+
+    def test_selective_update_with_none_changed_ids_updates_all_rows(self):
+        widget, tasks = self._make_widget_with_rows(3)
+        update_calls = []
+        orig = widget._update_row_status
+        widget._update_row_status = lambda row, status, details={}: update_calls.append(row) or orig(row, status, details)
+
+        widget._selective_update(tasks, changed_ids=None)
+
+        self.assertEqual(update_calls, [0, 1, 2], "None means update every row (backward compat)")
+
+
 if __name__ == "__main__":
     unittest.main()

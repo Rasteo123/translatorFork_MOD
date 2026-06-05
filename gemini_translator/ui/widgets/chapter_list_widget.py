@@ -584,10 +584,15 @@ class ChapterListWidget(QWidget):
     # Публичные методы (API виджета)
     # ----------------------------------------------------
 
-    def update_list(self, tasks_data):
+    def update_list(self, tasks_data, changed_ids=None):
         """
         "Умная" перерисовка с усиленной блокировкой сигналов для предотвращения
         артефактов выделения при быстрых операциях.
+
+        changed_ids: set[str] | None — если задан, на структурно совпадающей
+        ветке (`current_task_ids == new_task_ids`) обновляются только те
+        строки, чьи task_id (приведённые к str) входят в множество. None
+        означает «обновить всё» (обратная совместимость).
         """
         # Шаг 1: Запоминаем текущее выделение до начала всех операций.
         tasks_data = self._normalize_tasks_data(tasks_data)
@@ -606,7 +611,7 @@ class ChapterListWidget(QWidget):
             current_task_ids = [self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)[0] 
                                 for row in range(self.table.rowCount()) if self.table.item(row, 0)]
             if current_task_ids == new_task_ids:
-                self._selective_update(tasks_data)
+                self._selective_update(tasks_data, changed_ids=changed_ids)
             else:
                 old_count = len(current_task_ids)
                 new_count = len(new_task_ids)
@@ -769,10 +774,17 @@ class ChapterListWidget(QWidget):
         self.table.blockSignals(False)
 
 
-    def _selective_update(self, tasks_data):
-        """Выполняет точечное обновление статусов в существующей таблице."""
+    def _selective_update(self, tasks_data, changed_ids=None):
+        """Выполняет точечное обновление статусов в существующей таблице.
+
+        changed_ids: set[str] | None — если задан, обновляются только строки,
+        чей task_id (приведённый к str) входит в множество. None означает
+        обновить каждую строку (обратная совместимость).
+        """
         self.table.blockSignals(True)
         for i, (task_tuple_with_uuid, status, details) in enumerate(tasks_data):
+            if changed_ids is not None and str(task_tuple_with_uuid[0]) not in changed_ids:
+                continue
             self._update_row_status(i, status, details)
         self.table.blockSignals(False)
     

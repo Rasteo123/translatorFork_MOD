@@ -246,9 +246,27 @@ class TaskManagementWidget(QWidget):
             self._log_ui_error("on_event", e)
 
     def _on_task_state_changed(self, event_data: dict):
-        full_state = event_data.get('data', {}).get('full_state')
+        data = event_data.get('data', {})
+        full_state = data.get('full_state')
         if isinstance(full_state, list):
             self._pending_ui_state = full_state
+
+        changed_ids = data.get('changed_ids')
+        new_set = None if changed_ids is None else set(changed_ids)
+
+        # Coalesce changed_ids across events that land within one debounce window.
+        # The single-shot _redraw_timer is INACTIVE only on a clean slate (no
+        # pending redraw); ACTIVE means we are mid-window and must merge rather
+        # than overwrite. None means "full redraw" and is sticky within a window:
+        # a full refresh must never be downgraded to a partial, and a partial must
+        # never clobber a pending full.
+        if not self._redraw_timer.isActive():
+            self._pending_changed_ids = new_set
+        elif new_set is None or self._pending_changed_ids is None:
+            self._pending_changed_ids = None
+        else:
+            self._pending_changed_ids |= new_set
+
         self.redraw_ui()
 
     def _on_session_finished(self, _event_data: dict):
@@ -280,9 +298,14 @@ class TaskManagementWidget(QWidget):
                         errors_map = details.get('errors', {})
                         if filter_key in errors_map:
                             filtered_list.append(item)
+                    # When a filter is applied, changed_ids may point at rows excluded
+                    # from filtered_list; safer to force a full update on this branch.
                     self.chapter_list_widget.update_list(filtered_list)
+                    self._pending_changed_ids = None
                 else:
-                    self.chapter_list_widget.update_list(ui_state_list)
+                    # NOTE: interim two-arg call — Task 16 extends update_list signature.
+                    self.chapter_list_widget.update_list(ui_state_list, self._pending_changed_ids)
+                    self._pending_changed_ids = None
 
                 self.check_and_update_retry_button_visibility()
         except Exception as e:

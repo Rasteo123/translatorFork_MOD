@@ -535,7 +535,7 @@ class ChapterQueueManager(QObject):
 
     def promote_held_task(self, task_id: uuid.UUID, new_payload: tuple):
         task_infos = self.update_task(task_id, new_status='pending', new_payload=new_payload, new_priority=1)
-        self._safe_request_ui_update()
+        self.notify_task_dirty(task_id)
         return task_infos
         
     def add_pending_tasks(self, tasks: list):
@@ -561,7 +561,9 @@ class ChapterQueueManager(QObject):
         task_for_work = self.update_task(task_id=None, worker_id=worker_id, new_status='in_progress')
         if task_for_work:
             self._log(f"[TASK] →→ Задача '{self._get_task_display_name(task_for_work[1])}' отдана воркеру …{worker_id[-4:]} в работу.")
-        self._safe_request_ui_update()    
+            self.notify_task_dirty(task_for_work[0])
+        else:
+            self._safe_request_ui_update()
         return task_for_work
     
     def update_task(self, task_id: uuid.UUID = None, worker_id: str = None, new_status: str = None, new_payload: tuple = None, new_priority: int = None, new_sequence: int = None, unsafe_mode=False, **conditions) -> tuple | None:
@@ -631,7 +633,7 @@ class ChapterQueueManager(QObject):
                     log_payload['details_title'] = success_payload.get('success_details_title') or f"Полученный пакет для '{display_name}'"
                     log_payload['details_text'] = success_details
             self._log(log_payload)
-            self._safe_request_ui_update()
+            self.notify_task_dirty(task_info[0])
 
     def task_done_with_content(self, worker_id: str, task_info: tuple, translated_content, provider_id: str):
         """
@@ -683,8 +685,8 @@ class ChapterQueueManager(QObject):
                     'chunk_index': int(task_payload[4]),
                     'total_chunks': int(task_payload[5]),
                 })
-            self._safe_request_ui_update()
-    
+            self.notify_task_dirty(task_info[0])
+
     def replace_batch_with_results(self, original_batch_task_id: str, epub_path: str, successful_chapters: list, failed_chapters: list, success_details_map=None):
         """
         Атомарно обновляет пакет: сохраняет успехи и обновляет/удаляет исходную задачу.
@@ -767,7 +769,7 @@ class ChapterQueueManager(QObject):
         )
         if updated:
             self._log(f"[TASK] ❌ Задача '{self._get_task_display_name(task_info[1])}' провалена.")
-            self._safe_request_ui_update()
+            self.notify_task_dirty(task_info[0])
 
     def task_requeued(self, worker_id: str, task_info: tuple):
         """
@@ -790,8 +792,8 @@ class ChapterQueueManager(QObject):
 
         if done:
             self._log(f"[TASK] 🔄 Задача '{self._get_task_display_name(task_info[1])}' возвращена в НАЧАЛО очереди.")
-            self._safe_request_ui_update()
-    
+            self.notify_task_dirty(task_info[0])
+
     def save_glossary_batch(self, task_id: str, timestamp: float, chapters_json: str, glossary_list: list) -> dict:
         """
         Сохраняет пакет терминов.
@@ -882,7 +884,7 @@ class ChapterQueueManager(QObject):
                 
         if done:
             self._log(f"[TASK] 🔄 Задача '{self._get_task_display_name(payload)}' возвращена для повтора.")
-            self._safe_request_ui_update()
+            self.notify_task_dirty(task_info[0])
 
     def split_in_progress_batch_into_chapters(self, task_info: tuple, worker_id: str | None = None, priority: int = 1) -> bool:
         """
@@ -1504,8 +1506,8 @@ class ChapterQueueManager(QObject):
             # [FIX] Игнорируем ошибку, если задача была удалена из базы
             # до того, как воркер успел сообщить о проблеме.
             pass
-        
-        self._safe_request_ui_update()
+
+        self.notify_task_dirty(task_info[0])
         
     def _get_task_display_name(self, task_payload: tuple) -> str:
         if not task_payload: return "Неизвестная задача"
@@ -1703,7 +1705,7 @@ class ChapterQueueManager(QObject):
             f"[TASK MANAGER] Обновлен порядок глав внутри пакета: "
             f"{os.path.basename(new_chapter_order[0])} -> {os.path.basename(new_chapter_order[-1])}."
         )
-        self._safe_request_ui_update()
+        self.notify_task_dirty(task_id)
         return True
     
     def duplicate_tasks(self, task_ids: list) -> bool:

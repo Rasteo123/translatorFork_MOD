@@ -468,5 +468,23 @@ class ThreadHopTests(unittest.TestCase):
                          "QTimer must not be started directly from worker thread")
 
 
+class CallsiteMigrationTests(unittest.TestCase):
+    def test_record_failure_marks_only_that_task_dirty(self):
+        tm = types.SimpleNamespace(
+            _dirty_state_lock=Lock(),
+            _dirty_task_ids=set(),
+            _structural_dirty=False,
+            _ui_update_requested=_SignalStub(),
+        )
+        from gemini_translator.core.task_manager import ChapterQueueManager
+        tm.notify_task_dirty = types.MethodType(ChapterQueueManager.notify_task_dirty, tm)
+
+        tm.notify_task_dirty("00000000-0000-0000-0000-00000000aaaa")
+
+        self.assertEqual(tm._dirty_task_ids, {"00000000-0000-0000-0000-00000000aaaa"})
+        self.assertFalse(tm._structural_dirty,
+                         "Single-task transitions must NOT set the structural flag")
+
+
 if __name__ == "__main__":
     unittest.main()
