@@ -145,6 +145,22 @@ class ModelSettingsWidgetTests(unittest.TestCase):
 
         self.assertEqual(calls, ["translation_provider"])
 
+    def test_skip_content_filter_retry_round_trips_and_defaults_off(self):
+        widget = self._create_widget()
+
+        # Default: off, and exposed in get_settings()
+        self.assertIn("skip_content_filter_retry", widget.get_settings())
+        self.assertFalse(widget.get_settings()["skip_content_filter_retry"])
+
+        # set_settings restores True
+        widget.set_settings({"skip_content_filter_retry": True})
+        self.assertTrue(widget.skip_filter_retry_checkbox.isChecked())
+        self.assertTrue(widget.get_settings()["skip_content_filter_retry"])
+
+        # set_settings restores False
+        widget.set_settings({"skip_content_filter_retry": False})
+        self.assertFalse(widget.get_settings()["skip_content_filter_retry"])
+
     def test_workascii_section_hides_technical_fields_and_shows_auth_buttons(self):
         widget = self._create_widget()
 

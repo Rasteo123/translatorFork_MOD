@@ -141,6 +141,19 @@ class ErrorAnalyzer:
             self.network_warnings = 0
             self.worker._post_event('api_connection_healthy')
 
+        # Опция «Не повторять блокировки»: глава/чанк, заблокированные
+        # контент-фильтром (включая partial с reason SAFETY/PROHIBITED_CONTENT),
+        # проваливаются сразу — без повторных отправок, которые приводят к
+        # усечению текста при до-генерации. Для epub_batch воркер сам разбивает
+        # пакет (_split_batch_after_content_filter имеет приоритет), поэтому
+        # для пакетов это решение игнорируется и безопасно.
+        if getattr(self.worker, 'skip_content_filter_retry', False) and (
+            error_for_rules == ErrorType.CONTENT_FILTER
+            or error_for_history == ErrorType.CONTENT_FILTER
+        ):
+            self._record_and_log_failure(task_info, ErrorType.CONTENT_FILTER, exc)
+            return self._log_and_fail_permanently(task_name, ErrorType.CONTENT_FILTER, exc)
+
         if error_for_rules == ErrorType.CANCEL:
             self._record_and_log_failure(task_info, error_for_history, exc)
             return WorkerAction.RETRY_NON_COUNTABLE, error_for_rules, exc

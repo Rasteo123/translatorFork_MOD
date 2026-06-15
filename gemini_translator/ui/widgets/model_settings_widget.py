@@ -183,6 +183,7 @@ class ModelSettingsWidget(QGroupBox):
         self.force_accept_checkbox.stateChanged.connect(self._emit_settings_changed)
         self.use_json_epub_pipeline_checkbox.stateChanged.connect(self._emit_settings_changed)
         self.warmup_checkbox.stateChanged.connect(self._emit_settings_changed)
+        self.skip_filter_retry_checkbox.stateChanged.connect(self._emit_settings_changed)
         self.workascii_workspace_name_edit.textChanged.connect(self._emit_settings_changed)
         self.workascii_workspace_index_spin.valueChanged.connect(self._emit_settings_changed)
         self.workascii_timeout_spin.valueChanged.connect(self._emit_settings_changed)
@@ -460,10 +461,22 @@ class ModelSettingsWidget(QGroupBox):
         self.prettify_checkbox.setToolTip("Включает типографическое улучшение ответов ИИ.")
         self.prettify_checkbox.setChecked(True)
         self.prettify_checkbox.setVisible(False)
+
+        self.skip_filter_retry_checkbox = QCheckBox("Не повторять блокировки")
+        self.skip_filter_retry_checkbox.setToolTip(
+            "Если глава/чанк заблокированы контент-фильтром — не делать повторных "
+            "попыток перевода в этом прогоне. Задача сразу помечается как «🛡️ Фильтр» "
+            "и уходит вниз к ошибкам, но без повторных отправок в API (которые могут "
+            "приводить к усечению текста). Заблокированные главы можно потом обработать "
+            "вручную кнопкой «Обработка Фильтра»."
+        )
+        self.skip_filter_retry_checkbox.setChecked(False)
         
         misc_layout.addWidget(self.warmup_checkbox)
         misc_layout.addStretch(1)
         misc_layout.addWidget(self.force_accept_checkbox)
+        misc_layout.addStretch(1)
+        misc_layout.addWidget(self.skip_filter_retry_checkbox)
         misc_layout.addStretch(1)
         misc_layout.addWidget(self.use_json_epub_pipeline_checkbox)
         misc_layout.addStretch(1)
@@ -808,6 +821,7 @@ class ModelSettingsWidget(QGroupBox):
             'thinking_budget': thinking_budget,
             'thinking_level': thinking_level, # <-- Новое поле
             'force_accept': self.force_accept_checkbox.isChecked(),
+            'skip_content_filter_retry': self.skip_filter_retry_checkbox.isChecked(),
             'use_json_epub_pipeline': self.use_json_epub_pipeline_checkbox.isChecked(),
             'use_prettify': self.prettify_checkbox.isChecked(),
             'use_warmup': not self.warmup_checkbox.isHidden() and self.warmup_checkbox.isChecked(),
@@ -891,6 +905,7 @@ class ModelSettingsWidget(QGroupBox):
             self.force_accept_checkbox.setChecked(settings.get('force_accept', False))
             self.use_json_epub_pipeline_checkbox.setChecked(settings.get('use_json_epub_pipeline', False))
             self.warmup_checkbox.setChecked(settings.get('use_warmup', False))
+            self.skip_filter_retry_checkbox.setChecked(settings.get('skip_content_filter_retry', False))
 
             self.workascii_workspace_name_edit.setText(settings.get('workascii_workspace_name', ''))
             self.workascii_workspace_index_spin.setValue(int(settings.get('workascii_workspace_index', 1) or 1))
