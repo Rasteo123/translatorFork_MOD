@@ -2,6 +2,7 @@ from gemini_translator.api.errors import PartialGenerationError
 from gemini_translator.api import config as api_config
 import zipfile
 from collections import Counter
+from gemini_translator.utils.epub_tools import normalize_epub_chapter_heading_to_h1
 from gemini_translator.utils.text import brute_force_split
 
 class EmergencyTask:
@@ -53,6 +54,7 @@ class EmergencyTask:
                 with open(epub_path, 'rb') as f:
                     with zipfile.ZipFile(f, "r") as zf:
                         original_content = zf.read(chapter_path).decode("utf-8", "ignore")
+                original_content = normalize_epub_chapter_heading_to_h1(original_content)
                 
                 prefix, body_content, suffix = "", original_content, ""
                 content_lower = original_content.lower()
@@ -89,6 +91,7 @@ class EmergencyTask:
                 with open(epub_path, 'rb') as f:
                     with zipfile.ZipFile(f, "r") as zf:
                         split_source = zf.read(chapter_path).decode("utf-8", "ignore")
+                split_source = normalize_epub_chapter_heading_to_h1(split_source)
 
                 prefix, chunks, suffix = brute_force_split(split_source)
             elif task_type == 'epub_chunk':

@@ -518,7 +518,24 @@ class TaskPreparer:
         self.use_batching = settings.get('use_batching', False)
         self.use_chunking = settings.get('chunking', False)
         self.task_input_size_limit = settings.get('task_size_limit', 30000)
+        self.max_chapters_per_batch = self._normalize_max_chapters_per_batch(
+            settings.get('max_chapters_per_batch', settings.get('batch_chapter_limit_override', 0))
+        )
         self.epub_path = settings.get('file_path')
+
+    @staticmethod
+    def _normalize_max_chapters_per_batch(value):
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            parsed = 0
+        return max(0, parsed)
+
+    def _batch_has_chapter_capacity(self, chapters):
+        return (
+            self.max_chapters_per_batch <= 0
+            or len(chapters or []) < self.max_chapters_per_batch
+        )
 
     def _chunk_target_chars_for_token_limit(self, html_fragment):
         token_count = estimate_gemini_tokens(html_fragment)
@@ -568,8 +585,11 @@ class TaskPreparer:
                 current_batch_chapters, current_batch_size = [], 0
                 continue
 
-            # Сценарий 2: Добавление главы превысит лимит пакета
-            if current_batch_size + input_size > self.task_input_size_limit and current_batch_chapters:
+            # Сценарий 2: Добавление главы превысит лимит пакета или лимит количества глав
+            if current_batch_chapters and (
+                current_batch_size + input_size > self.task_input_size_limit
+                or not self._batch_has_chapter_capacity(current_batch_chapters)
+            ):
                 _flush_current_batch()
                 # Начинаем новый пакет с текущей главы
                 current_batch_chapters, current_batch_size = [chapter_file], input_size
@@ -604,7 +624,10 @@ class TaskPreparer:
                 continue
 
             for batch in open_batches:
-                if batch["size"] + input_size <= self.task_input_size_limit:
+                if (
+                    batch["size"] + input_size <= self.task_input_size_limit
+                    and self._batch_has_chapter_capacity(batch["chapters"])
+                ):
                     batch["chapters"].append(chapter_file)
                     batch["size"] += input_size
                     break

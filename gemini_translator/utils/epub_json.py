@@ -1034,6 +1034,8 @@ def estimate_translation_noise(html_content, translation_payload):
 
 
 def _extract_first_heading(document_model):
+    from .epub_tools import extract_first_epub_heading_text
+
     first_heading = ""
 
     def visitor(node):
@@ -1041,10 +1043,10 @@ def _extract_first_heading(document_model):
         if first_heading:
             return
         if node.get("kind") == "tag" and node.get("role") == "heading":
-            first_heading = BeautifulSoup(render_document_html({
+            first_heading = extract_first_epub_heading_text(render_document_html({
                 "has_body_wrapper": False,
                 "body": {"children": [copy.deepcopy(node)]},
-            }), "html.parser").get_text(" ", strip=True)
+            }))
 
     for child in document_model.get("body", {}).get("children", []):
         _walk_nodes(child, visitor)
@@ -1054,7 +1056,7 @@ def _extract_first_heading(document_model):
 
 
 def epub_to_json_model(epub_path):
-    from .epub_tools import get_epub_chapter_order
+    from .epub_tools import get_epub_chapter_order, normalize_epub_chapter_heading_to_h1
 
     chapter_order = get_epub_chapter_order(epub_path)
     chapter_positions = {path: index for index, path in enumerate(chapter_order)}
@@ -1080,6 +1082,7 @@ def epub_to_json_model(epub_path):
             raw_bytes = epub_zip.read(info.filename)
             if _is_html_path(entry_path):
                 html_text, detected_encoding = _decode_text_bytes(raw_bytes, is_html=True)
+                html_text = normalize_epub_chapter_heading_to_h1(html_text)
                 document_model = build_html_document_model(
                     html_text,
                     document_id=entry_path,

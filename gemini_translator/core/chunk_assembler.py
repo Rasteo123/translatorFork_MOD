@@ -9,6 +9,7 @@ from PyQt6 import QtCore
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..api import config as api_config
 from ..utils.translated_paths import build_translated_output_path
+from ..utils.epub_tools import normalize_epub_chapter_heading_to_h1
 from ..utils.text import prettify_html, process_body_tag
 class ChunkAssembler(QObject):
     """
@@ -96,6 +97,7 @@ class ChunkAssembler(QObject):
     def _build_wrapper_from_source(self, epub_path: str, original_chapter_path: str):
         with open(epub_path, "rb") as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
             original_html = epub_zip.read(original_chapter_path).decode("utf-8", "ignore")
+        original_html = normalize_epub_chapter_heading_to_h1(original_html)
         prefix, _, suffix = process_body_tag(original_html, return_parts=True, body_content_only=True)
         return prefix, suffix
 

@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from constants import BROWSER_ARGS, BROWSER_PROFILE_DIR
+from constants import BROWSER_ARGS, BROWSER_PROFILE_DIR, MAX_RETRIES, RETRY_DELAY_SEC
 from models import ChapterData
 from utils import format_num, format_timedelta
 
@@ -489,6 +489,103 @@ class ApiUploadWorker(QThread):
             }
         )
 
+    def _mark_existing_chapter(
+        self,
+        index: int,
+        chapter: ChapterData,
+        existing_keys: set[str],
+    ):
+        self._skipped += 1
+        existing_keys.add(_chapter_identity(chapter.volume, chapter.number))
+        self.chapter_done_signal.emit(index)
+        self.log(
+            "WARNING",
+            f"API: Т.{chapter.volume} Гл.{format_num(chapter.number)} уже существует, пропускаю.",
+        )
+
+    def _upload_chapter(
+        self,
+        index: int,
+        chapter: ChapterData,
+        manga_id: int,
+        token: dict,
+        existing_chapters: list[dict],
+        existing_keys: set[str],
+        auth_team_ids: list[int],
+    ) -> bool:
+        chapter_key = _chapter_identity(chapter.volume, chapter.number)
+        if chapter_key in existing_keys:
+            self._mark_existing_chapter(index, chapter, existing_keys)
+            return True
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            if not self.is_running:
+                return False
+
+            try:
+                team_ids, branch_id = self._resolve_target_config(
+                    chapter, existing_chapters, auth_team_ids
+                )
+                publish_at = self.current_publish_time if self.schedule_enabled else None
+                payload = _build_payload(
+                    chapter=chapter,
+                    manga_id=manga_id,
+                    team_ids=team_ids,
+                    branch_id=branch_id,
+                    publish_at=publish_at,
+                )
+                response = _json_request(
+                    "/chapters",
+                    method="POST",
+                    token=token["access_token"],
+                    body=payload,
+                )
+                created = response.get("data") if isinstance(response, dict) else response
+                self._ok += 1
+                self.chapter_done_signal.emit(index)
+                self._remember_created_chapter(
+                    existing_chapters,
+                    existing_keys,
+                    chapter,
+                    team_ids,
+                    branch_id,
+                )
+                if self.schedule_enabled:
+                    self.current_publish_time += timedelta(minutes=self.interval_minutes)
+                created_id = created.get("id") if isinstance(created, dict) else None
+                self.log(
+                    "SUCCESS",
+                    f"API: глава {format_num(chapter.number)} сохранена"
+                    + (f" (id={created_id})" if created_id else "")
+                    + (f" (попытка {attempt})" if attempt > 1 else ""),
+                )
+                return True
+            except Exception as error:
+                if _is_duplicate_error(error):
+                    self._mark_existing_chapter(index, chapter, existing_keys)
+                    return True
+
+                if attempt < MAX_RETRIES:
+                    self.log(
+                        "WARNING",
+                        f"API: попытка {attempt}/{MAX_RETRIES} для Т.{chapter.volume} "
+                        f"Гл.{format_num(chapter.number)} не удалась: {error}",
+                    )
+                    logging.warning(traceback.format_exc())
+                    time.sleep(RETRY_DELAY_SEC)
+                    continue
+
+                self._errors += 1
+                self.log(
+                    "ERROR",
+                    f"API: ошибка для Т.{chapter.volume} Гл.{format_num(chapter.number)} "
+                    f"после {MAX_RETRIES} попыток: {error}",
+                )
+                logging.error(traceback.format_exc())
+                return False
+
+        return False
+
     def run(self):
         total = len(self.chapters_list)
         try:
@@ -539,67 +636,15 @@ class ApiUploadWorker(QThread):
                 )
 
                 started_at = time.monotonic()
-                try:
-                    chapter_key = _chapter_identity(chapter.volume, chapter.number)
-                    if chapter_key in existing_keys:
-                        self._skipped += 1
-                        self.chapter_done_signal.emit(index)
-                        self.log(
-                            "WARNING",
-                            f"API: Т.{chapter.volume} Гл.{format_num(chapter.number)} уже существует, пропускаю.",
-                        )
-                    else:
-                        team_ids, branch_id = self._resolve_target_config(
-                            chapter, existing_chapters, auth_team_ids
-                        )
-                        publish_at = self.current_publish_time if self.schedule_enabled else None
-                        payload = _build_payload(
-                            chapter=chapter,
-                            manga_id=manga_id,
-                            team_ids=team_ids,
-                            branch_id=branch_id,
-                            publish_at=publish_at,
-                        )
-                        response = _json_request(
-                            "/chapters",
-                            method="POST",
-                            token=token["access_token"],
-                            body=payload,
-                        )
-                        created = response.get("data") if isinstance(response, dict) else response
-                        self._ok += 1
-                        self.chapter_done_signal.emit(index)
-                        self._remember_created_chapter(
-                            existing_chapters,
-                            existing_keys,
-                            chapter,
-                            team_ids,
-                            branch_id,
-                        )
-                        if self.schedule_enabled:
-                            self.current_publish_time += timedelta(minutes=self.interval_minutes)
-                        created_id = created.get("id") if isinstance(created, dict) else None
-                        self.log(
-                            "SUCCESS",
-                            f"API: глава {format_num(chapter.number)} сохранена"
-                            + (f" (id={created_id})" if created_id else ""),
-                        )
-                except Exception as error:
-                    if _is_duplicate_error(error):
-                        self._skipped += 1
-                        existing_keys.add(_chapter_identity(chapter.volume, chapter.number))
-                        self.chapter_done_signal.emit(index)
-                        self.log(
-                            "WARNING",
-                            f"API: Т.{chapter.volume} Гл.{format_num(chapter.number)} уже существует, пропускаю.",
-                        )
-                    else:
-                        self._errors += 1
-                        self.log(
-                            "ERROR",
-                            f"API: ошибка для Т.{chapter.volume} Гл.{format_num(chapter.number)}: {error}",
-                        )
-                        logging.error(traceback.format_exc())
+                self._upload_chapter(
+                    index,
+                    chapter,
+                    manga_id,
+                    token,
+                    existing_chapters,
+                    existing_keys,
+                    auth_team_ids,
+                )
 
                 self._times.append(time.monotonic() - started_at)
                 progress = int(((index + 1) / total) * 100)

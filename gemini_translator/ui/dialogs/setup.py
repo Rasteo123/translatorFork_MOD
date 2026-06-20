@@ -307,6 +307,8 @@ class InitialSetupDialog(QDialog):
         self._auto_pending_network_retry_chapters = set()
         self._auto_filter_repack_signatures = set()
         self._auto_filter_redirect_signatures = set()
+        self._auto_filter_parallel_redirect_signatures = set()
+        self._auto_filter_parallel_redirect_runs = {}
         self._auto_restart_session_override = None
         self._auto_validator_dialog = None
         self._auto_consistency_worker = None
@@ -1171,6 +1173,10 @@ class InitialSetupDialog(QDialog):
         event_name = event_data.get('event')
         data = event_data.get('data', {})
 
+        if data.get('background_session'):
+            self._handle_background_session_event(event_name, data)
+            return
+
         if self.is_blocked_by_child_dialog and event_name != 'tasks_for_retry_ready':
             return
 
@@ -1206,6 +1212,10 @@ class InitialSetupDialog(QDialog):
 
         if event_name == 'task_state_changed':
             self._schedule_snapshot_save()
+            return
+
+        if event_name == 'task_finished':
+            self._maybe_start_parallel_filter_redirect(event_data)
             return
 
         # Логика для geoblock остается здесь, так как она показывает модальное окно
@@ -4258,6 +4268,12 @@ class InitialSetupDialog(QDialog):
         if not isinstance(auto_settings, dict):
             auto_settings = {}
 
+        def _safe_int(value, default=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
         mode = str(auto_settings.get('translation_mode_override', 'inherit') or 'inherit')
         has_override = False
         if mode == 'batch':
@@ -4284,7 +4300,7 @@ class InitialSetupDialog(QDialog):
         else:
             mode = 'inherit'
 
-        batch_token_limit = int(auto_settings.get('batch_token_limit_override', 0) or 0)
+        batch_token_limit = _safe_int(auto_settings.get('batch_token_limit_override', 0) or 0)
         batch_task_limit = None
         token_profile = None
         if batch_token_limit > 0:
@@ -4292,6 +4308,25 @@ class InitialSetupDialog(QDialog):
             if batch_task_limit:
                 translation_options['task_size_limit'] = batch_task_limit
                 has_override = True
+
+        chapter_limit = _safe_int(auto_settings.get('batch_chapter_limit_override', 0) or 0)
+        if chapter_limit > 0:
+            translation_options['max_chapters_per_batch'] = chapter_limit
+            has_override = True
+
+        if auto_settings.get('source_context_enabled'):
+            source_context_chapters = max(
+                1,
+                _safe_int(auto_settings.get('source_context_chapters', 1) or 1, default=1),
+            )
+            source_context_char_limit = max(
+                1000,
+                _safe_int(auto_settings.get('source_context_char_limit', 60000) or 60000, default=60000),
+            )
+            translation_options['sequential_original_context_enabled'] = True
+            translation_options['sequential_original_context_chapters'] = source_context_chapters
+            translation_options['sequential_original_context_char_limit'] = source_context_char_limit
+            has_override = True
 
         return translation_options, mode, has_override, batch_token_limit, batch_task_limit, token_profile
 
@@ -4671,6 +4706,237 @@ class InitialSetupDialog(QDialog):
                     payload['file_label'] = file_label
             self._post_event('log_message', payload)
 
+    def _handle_background_session_event(self, event_name: str, data: dict):
+        if data.get('background_role') != 'auto_filter_redirect':
+            return
+        run_id = data.get('background_run_id')
+        if not run_id:
+            return
+        runner = self._auto_filter_parallel_redirect_runs.get(run_id)
+        if not runner:
+            return
+        if event_name == 'session_started':
+            runner['session_id'] = data.get('session_id')
+            return
+        if event_name == 'session_finished':
+            self._finish_parallel_filter_redirect_run(run_id, data.get('reason'))
+
+    def _maybe_start_parallel_filter_redirect(self, event_data: dict) -> bool:
+        if not self.is_session_active:
+            return False
+        auto_settings = self.auto_translate_widget.get_settings() if hasattr(self, 'auto_translate_widget') else {}
+        if not (auto_settings.get('enabled') and auto_settings.get('filter_redirect_enabled')):
+            return False
+
+        data = event_data.get('data', {}) if isinstance(event_data, dict) else {}
+        if data.get('success'):
+            return False
+        error_type = str(data.get('error_type') or "").upper()
+        if error_type not in {'FILTERED', 'CONTENT_FILTER'}:
+            return False
+
+        task_info = data.get('task_info')
+        if not isinstance(task_info, tuple) or len(task_info) < 2:
+            return False
+        chapters = self._extract_chapters_from_payload(task_info[1])
+        if not chapters:
+            return False
+
+        redirect_override, redirect_warning = self._resolve_auto_filter_redirect_override(auto_settings)
+        if not redirect_override:
+            if redirect_warning:
+                self._auto_log(f"{redirect_warning} Параллельный redirect пропущен.", force=True)
+            return False
+
+        main_provider = self.key_management_widget.get_selected_provider()
+        redirect_provider = redirect_override.get('provider')
+        if not redirect_provider or redirect_provider == main_provider:
+            return False
+
+        return self._start_parallel_filter_redirect(
+            chapters,
+            auto_settings,
+            redirect_override,
+            source_task_ids=[task_info[0]],
+        )
+
+    def _build_filter_redirect_payloads(self, chapters: list[str], settings: dict) -> list:
+        from ...utils.glossary_tools import TaskPreparer
+
+        cached_sizes = get_epub_chapter_sizes_with_cache(self.project_manager, self.selected_file)
+        real_chapter_sizes = {
+            chapter: int(cached_sizes.get(chapter, 0) or 0)
+            for chapter in set(chapters)
+        }
+        missing_size_chapters = [chapter for chapter, size in real_chapter_sizes.items() if size <= 0]
+        if missing_size_chapters:
+            with open(self.selected_file, 'rb') as epub_file, zipfile.ZipFile(epub_file, 'r') as zf:
+                for chapter in missing_size_chapters:
+                    real_chapter_sizes[chapter] = estimate_epub_chapter_input_tokens(
+                        zf.read(chapter).decode('utf-8', 'ignore')
+                    )
+
+        preparer = TaskPreparer(settings, real_chapter_sizes)
+        return preparer.prepare_tasks(chapters)
+
+    def _start_parallel_filter_redirect(
+        self,
+        chapters,
+        auto_settings: dict,
+        redirect_override: dict,
+        source_task_ids=None,
+    ) -> bool:
+        if not (self.selected_file and self.output_folder and self.bus):
+            return False
+
+        normalized_chapters = self._normalize_auto_chapters(chapters, preserve_order=False)
+        if not normalized_chapters:
+            return False
+
+        signature = self._make_auto_chapter_signature(normalized_chapters)
+        for runner in self._auto_filter_parallel_redirect_runs.values():
+            if runner.get('signature') == signature:
+                runner.setdefault('source_task_ids', set()).update(str(task_id) for task_id in (source_task_ids or []))
+                return True
+
+        try:
+            settings = self.get_settings()
+            settings.update(self._get_filter_retry_translation_options())
+            settings.update(redirect_override)
+            settings['provider'] = redirect_override.get('provider')
+            settings['api_keys'] = list(redirect_override.get('api_keys') or [])
+            settings['model'] = redirect_override.get('model')
+            settings['model_config'] = redirect_override.get('model_config')
+            settings['background_session'] = True
+            settings['background_role'] = 'auto_filter_redirect'
+            settings['auto_translation'] = dict(auto_settings or {})
+            if self.output_folder:
+                settings['project_manager'] = TranslationProjectManager(self.output_folder)
+
+            run_id = str(uuid.uuid4())
+            settings['background_run_id'] = run_id
+            payloads = self._build_filter_redirect_payloads(normalized_chapters, settings)
+            if not payloads:
+                return False
+
+            db_uri = f"file:auto_filter_redirect_{run_id.replace('-', '_')}?mode=memory&cache=shared"
+            db_anchor = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
+            db_anchor.row_factory = sqlite3.Row
+            task_manager = ChapterQueueManager(
+                event_bus=self.bus,
+                db_uri=db_uri,
+                main_connection=db_anchor,
+            )
+            task_manager.set_pending_tasks(payloads)
+
+            engine = TranslationEngine(
+                context_manager=self.context_manager,
+                settings_manager=self.settings_manager,
+                task_manager=task_manager,
+                event_bus=self.bus,
+            )
+            engine_thread = QtCore.QThread(self)
+            engine.moveToThread(engine_thread)
+            engine_thread.finished.connect(engine.deleteLater)
+            engine_thread.start()
+
+            self._auto_filter_parallel_redirect_runs[run_id] = {
+                'signature': signature,
+                'chapters': normalized_chapters,
+                'source_task_ids': {str(task_id) for task_id in (source_task_ids or [])},
+                'task_manager': task_manager,
+                'engine': engine,
+                'thread': engine_thread,
+                'db_anchor': db_anchor,
+            }
+            self._auto_filter_parallel_redirect_signatures.add(signature)
+
+            provider_label = api_config.provider_display_map().get(
+                settings.get('provider'),
+                settings.get('provider'),
+            )
+            self._auto_log(
+                "Параллельно запускаю redirect глав с Content Filter "
+                f"в {provider_label}: {settings.get('model')}.",
+                force=True,
+                details_title="[AUTO] Параллельный filter redirect",
+                details_text=self._compose_auto_details([
+                    ("Главы", normalized_chapters),
+                    ("Ключи redirect", [f"...{key[-4:]}" for key in settings.get('api_keys', [])]),
+                ]),
+            )
+            self.bus.event_posted.emit({
+                'event': 'start_session_requested',
+                'source': 'InitialSetupDialog',
+                'session_id': None,
+                'data': {
+                    'settings': settings,
+                    'target_engine_id': engine.engine_id,
+                },
+            })
+            return True
+        except Exception as exc:
+            self._auto_log(f"Не удалось запустить параллельный filter redirect: {exc}", force=True)
+            return False
+
+    def _finish_parallel_filter_redirect_run(self, run_id: str, reason: str | None = None):
+        runner = self._auto_filter_parallel_redirect_runs.pop(run_id, None)
+        if not runner:
+            return
+
+        chapters = runner.get('chapters') or []
+        signature = runner.get('signature')
+        task_manager = runner.get('task_manager')
+        success_chapters = set()
+        error_chapters = set()
+
+        try:
+            states = task_manager._get_ui_state_list_background() if task_manager else []
+            for task_info, status, _details in states or []:
+                task_chapters = self._extract_chapters_from_payload(task_info[1])
+                if status == 'success':
+                    success_chapters.update(task_chapters)
+                elif status == 'error':
+                    error_chapters.update(task_chapters)
+
+            target_chapters = set(chapters)
+            if target_chapters and target_chapters.issubset(success_chapters):
+                source_task_ids = runner.get('source_task_ids') or set()
+                if source_task_ids and self.engine and self.engine.task_manager:
+                    self.engine.task_manager.mark_tasks_completed(source_task_ids)
+                self._auto_log(
+                    f"Параллельный filter redirect завершён: {len(target_chapters)} глав.",
+                    force=True,
+                    details_title="[AUTO] Параллельный filter redirect завершён",
+                    details_text=self._compose_auto_details([
+                        ("Главы", self._normalize_auto_chapters(success_chapters)),
+                    ]),
+                )
+            else:
+                if signature in self._auto_filter_parallel_redirect_signatures:
+                    self._auto_filter_parallel_redirect_signatures.discard(signature)
+                missing = sorted(target_chapters - success_chapters, key=extract_number_from_path)
+                self._auto_log(
+                    "Параллельный filter redirect завершился не полностью"
+                    + (f": {reason}" if reason else "."),
+                    force=True,
+                    details_title="[AUTO] Параллельный filter redirect: не все главы",
+                    details_text=self._compose_auto_details([
+                        ("Не готово", missing),
+                        ("Ошибки", self._normalize_auto_chapters(error_chapters)),
+                    ]),
+                )
+        finally:
+            thread = runner.get('thread')
+            if thread:
+                thread.quit()
+                thread.wait(3000)
+            db_anchor = runner.get('db_anchor')
+            if db_anchor:
+                db_anchor.close()
+            if task_manager:
+                task_manager.deleteLater()
+
     def _extract_chapters_from_payload(self, payload) -> list[str]:
         if not payload:
             return []
@@ -4875,6 +5141,7 @@ class InitialSetupDialog(QDialog):
         self._auto_pending_network_retry_chapters = set()
         self._auto_filter_repack_signatures = set()
         self._auto_filter_redirect_signatures = set()
+        self._auto_filter_parallel_redirect_signatures = set()
         self._auto_restart_session_override = None
         self._auto_validator_dialog = None
         self._auto_consistency_worker = None
@@ -4975,6 +5242,8 @@ class InitialSetupDialog(QDialog):
             return False
 
         filter_signature = self._make_auto_chapter_signature(filtered_chapters)
+        if filter_signature in self._auto_filter_parallel_redirect_signatures:
+            return False
         if auto_settings.get('filter_redirect_enabled') and self._auto_filter_repack_signatures:
             return False
 
@@ -5072,6 +5341,8 @@ class InitialSetupDialog(QDialog):
             return False
 
         filter_signature = self._make_auto_chapter_signature(filtered_chapters)
+        if filter_signature in self._auto_filter_parallel_redirect_signatures:
+            return False
         if auto_settings.get('filter_repack_enabled') and not self._auto_filter_repack_signatures:
             return False
         if self._auto_filter_redirect_signatures:

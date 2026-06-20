@@ -9,6 +9,7 @@ from gemini_translator.utils.epub_json import (
     build_html_document_model,
     estimate_translation_noise,
 )
+from gemini_translator.utils.epub_tools import normalize_epub_chapter_heading_to_h1
 from gemini_translator.utils.translated_paths import build_translated_output_path
 from gemini_translator.utils.text import (
     process_body_tag, is_content_effectively_empty, clean_html_content, validate_html_structure
@@ -62,6 +63,7 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
 
         with zipfile.ZipFile(epub_path, "r") as zf:
             original_content = zf.read(internal_chapter_path).decode("utf-8", "ignore")
+        original_content = normalize_epub_chapter_heading_to_h1(original_content)
 
         prefix_html, body_content, html_suffix = process_body_tag(original_content, return_parts=True, body_content_only=False)
 

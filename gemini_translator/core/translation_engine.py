@@ -109,6 +109,7 @@ class TranslationEngine(QObject):
         
 
         self.session_id = None
+        self.engine_id = str(uuid.uuid4())
         self.is_cancelled = False
         self.is_session_finishing = False
         self.is_soft_stopping = False
@@ -148,6 +149,38 @@ class TranslationEngine(QObject):
         }
         self.bus.event_posted.emit(event)
 
+    def _active_session_set(self) -> set:
+        if not self.bus or not hasattr(self.bus, 'get_data'):
+            return set()
+        raw_sessions = self.bus.get_data("active_translation_sessions", set())
+        if isinstance(raw_sessions, set):
+            return set(raw_sessions)
+        if isinstance(raw_sessions, (list, tuple)):
+            return {str(item) for item in raw_sessions if str(item)}
+        return set()
+
+    def _register_active_session(self):
+        if not self.bus or not self.session_id:
+            return
+        active_sessions = self._active_session_set()
+        active_sessions.add(self.session_id)
+        if hasattr(self.bus, 'set_data'):
+            self.bus.set_data("active_translation_sessions", active_sessions)
+            if not self.session_settings.get('background_session'):
+                self.bus.set_data("current_active_session", self.session_id)
+
+    def _unregister_active_session(self):
+        if not self.bus or not self.session_id:
+            return
+        active_sessions = self._active_session_set()
+        active_sessions.discard(self.session_id)
+        if hasattr(self.bus, 'set_data'):
+            self.bus.set_data("active_translation_sessions", active_sessions)
+        if hasattr(self.bus, 'get_data') and hasattr(self.bus, 'pop_data'):
+            current_session = self.bus.get_data("current_active_session")
+            if current_session == self.session_id:
+                self.bus.pop_data("current_active_session", None)
+
     @pyqtSlot(dict)
     def on_event(self, event: dict):
         try:
@@ -181,6 +214,8 @@ class TranslationEngine(QObject):
         if 'worker' in source:
             worker_id = source.replace('worker_', '', 1)
             worker_key = self.keys_map.get(worker_id) 
+            if not worker_key or worker_id not in self.active_workers_map:
+                return
 
             # Если ID сессии события не совпадает с текущей активной сессией.
             if event_session != self.session_id and self.session_id is not None:
@@ -202,6 +237,9 @@ class TranslationEngine(QObject):
         # --- КОНЕЦ ПРОВЕРКИ ---
         
         if event_name == 'start_session_requested':
+            target_engine_id = data.get('target_engine_id') or data.get('engine_id')
+            if target_engine_id and target_engine_id != self.engine_id:
+                return
             if self.is_starting or self.session_id is not None:
                 self._post_event('log_message', {'message': "[ENGINE-WARN] Получена команда на старт, но сессия уже запускается или активна. Команда проигнорирована."})
                 return
@@ -654,10 +692,14 @@ class TranslationEngine(QObject):
             self.chunk_assembler = None
         total_tasks_for_session = len(self.task_manager.get_all_pending_tasks())
         model_id = settings.get('model_id')
+        self._register_active_session()
         self._post_event('session_started', {
             'session_id': self.session_id,
             'model_id': model_id,
             'total_tasks': total_tasks_for_session,
+            'background_session': bool(settings.get('background_session')),
+            'background_role': settings.get('background_role'),
+            'background_run_id': settings.get('background_run_id'),
             'settings': {
                 'model_config': settings.get('model_config', {}),
                 'model_id': model_id
@@ -675,8 +717,6 @@ class TranslationEngine(QObject):
         
         if num_to_start > 1:
             self._post_event('log_message', {'message': f"[RAMP-UP] Плавный запуск {num_to_start} воркеров…"})
-        if self.bus:
-            self.bus.set_data("current_active_session", self.session_id)
         
 
     def is_managed_mode(self):
@@ -694,7 +734,6 @@ class TranslationEngine(QObject):
 
     def _end_session(self, reason: str):
         # 1. Очистка глобального трекера сессии
-        self.bus.pop_data("current_active_session", None)
         
         # 2. Принудительная зачистка флагов Оркестратора.
         # Это гарантирует, что при любом выходе (ошибка, стоп, финиш)
@@ -716,6 +755,7 @@ class TranslationEngine(QObject):
         self._stop_timers()
         
         self._terminate_all_workers()
+        self._unregister_active_session()
         
         self._end_session_event(reason, self.session_id)
         if not self.summary_shown_for_session:
@@ -731,7 +771,13 @@ class TranslationEngine(QObject):
         self.is_starting = False # <-- Сбрасываем и этот флаг тоже
         
     def _end_session_event(self, reason: str, session_id_event=None):
-        self._post_event('session_finished', {'reason': reason, "session_id_log": self.session_id})
+        self._post_event('session_finished', {
+            'reason': reason,
+            "session_id_log": self.session_id,
+            'background_session': bool(self.session_settings.get('background_session')),
+            'background_role': self.session_settings.get('background_role'),
+            'background_run_id': self.session_settings.get('background_run_id'),
+        })
     
     def _launch_next_from_ramp_up(self):
         if self.is_soft_stopping:
@@ -964,7 +1010,6 @@ class TranslationEngine(QObject):
         self.executor = None
         self.active_workers_map.clear()
         self._post_event('log_message', {'message': "[MANAGER] Пул потоков полностью остановлен."})
-        self.bus.pop_data("current_active_session", None)
 
     def __del__(self):
         session_id = getattr(self, 'session_id_for_log', 'unknown')

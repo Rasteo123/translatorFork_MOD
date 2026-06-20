@@ -208,6 +208,10 @@ class UniversalWorker(QObject):
             sequential_chapter_order=getattr(self, 'sequential_chapter_order', []),
             sequential_chain_starts=getattr(self, 'sequential_chain_starts', []),
             sequential_reference_char_limit=getattr(self, 'sequential_reference_char_limit', 60000),
+            source_epub_path=getattr(self, 'file_path', None),
+            sequential_original_context_enabled=getattr(self, 'sequential_original_context_enabled', False),
+            sequential_original_context_chapters=getattr(self, 'sequential_original_context_chapters', 0),
+            sequential_original_context_char_limit=getattr(self, 'sequential_original_context_char_limit', 60000),
         )
 
         # D. ResponseParser
@@ -483,7 +487,12 @@ class UniversalWorker(QObject):
             return False
         try:
             if self.bus and hasattr(self.bus, '_data_store'):
-                if 'current_active_session' in self.bus._data_store.keys():
+                active_sessions = self.bus.get_data('active_translation_sessions', set())
+                if isinstance(active_sessions, (set, list, tuple)) and active_sessions:
+                    if self.session_id not in set(active_sessions):
+                        self.cancel()
+                        return False
+                elif 'current_active_session' in self.bus._data_store.keys():
                     if not self.bus.get_data('current_active_session') == self.session_id:
                         self.cancel()
                         return False

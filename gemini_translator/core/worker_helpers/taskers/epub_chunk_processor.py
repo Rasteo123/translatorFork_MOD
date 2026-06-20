@@ -8,6 +8,7 @@ from gemini_translator.utils.epub_json import (
     build_html_document_model,
     estimate_translation_noise,
 )
+from gemini_translator.utils.epub_tools import normalize_epub_chapter_heading_to_h1
 from gemini_translator.utils.text import (
     is_content_effectively_empty,
     clean_html_content,
@@ -90,6 +91,7 @@ class EpubChunkProcessor(BaseTaskProcessor):
             content_to_translate_for_api = "<body>" + content_to_translate_for_api
         if not chunk_content.lower().strip().endswith('</body>'):
             content_to_translate_for_api = content_to_translate_for_api + "</body>"
+        content_to_translate_for_api = normalize_epub_chapter_heading_to_h1(content_to_translate_for_api)
 
         segmented_text = self.worker.context_manager.prepare_html_for_translation(content_to_translate_for_api)
         content_with_placeholders = self.worker.prompt_builder._replace_media_with_placeholders(segmented_text)

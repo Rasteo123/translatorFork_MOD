@@ -12,6 +12,7 @@ from gemini_translator.utils.epub_json import (
     build_translation_payload,
     estimate_translation_noise,
 )
+from gemini_translator.utils.epub_tools import normalize_epub_chapter_heading_to_h1
 from gemini_translator.utils.translated_paths import build_translated_output_path
 from gemini_translator.utils.text import clean_html_content, prettify_html
 
@@ -59,6 +60,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
         with zipfile.ZipFile(epub_path, "r") as epub_zip:
             for chapter_path in chapter_list:
                 chapter_content = epub_zip.read(chapter_path).decode("utf-8", "ignore")
+                chapter_content = normalize_epub_chapter_heading_to_h1(chapter_content)
                 document_model = build_html_document_model(chapter_content, document_id=chapter_path)
                 payload = build_translation_payload(document_model)
                 documents_payload.append(payload)

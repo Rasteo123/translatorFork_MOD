@@ -48,6 +48,28 @@ def test_validate_html_structure_wraps_leading_body_text_as_heading():
     assert '<p>Translated paragraph.</p>' in repaired
 
 
+def test_validate_html_structure_normalizes_split_epub_heading_to_h1():
+    original = (
+        '<body class="chapter">'
+        '<h2 class="head"><span class="chapter-sequence-number">'
+        '\u7b2c175\u7ae0</span><br />\u5c0f\u59e8\u5230\u8bbf</h2>'
+        '<p>First paragraph.</p>'
+        '</body>'
+    )
+    translated = (
+        '<body class="chapter">'
+        '<h2>Глава 175: «Визит тети»</h2>'
+        '<p>Первый абзац.</p>'
+        '</body>'
+    )
+
+    is_valid, reason, repaired = validate_html_structure(original, translated)
+
+    assert is_valid, reason
+    assert '<h1>Глава 175: «Визит тети»</h1>' in repaired
+    assert '<h2>Глава 175: «Визит тети»</h2>' not in repaired
+
+
 def test_normalize_translated_body_wrapper_repairs_inner_html_response():
     original = '<body id="main"><p>Source text.</p></body>'
     translated = '<p>Переведенный текст.</p>'

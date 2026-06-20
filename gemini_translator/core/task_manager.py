@@ -90,14 +90,19 @@ class ChapterQueueManager(QObject):
     """
     
     _ui_update_requested = pyqtSignal()
-    def __init__(self, event_bus=None):
+    def __init__(self, event_bus=None, db_uri: str | None = None, main_connection=None):
         super().__init__()
         app = QtWidgets.QApplication.instance()
-        
-        if not hasattr(app, 'main_db_connection'):
+
+        self.master_uri = db_uri or SHARED_DB_URI
+
+        if main_connection is not None:
+            main_conn = main_connection
+        elif hasattr(app, 'main_db_connection'):
+            main_conn = app.main_db_connection
+        else:
             raise RuntimeError("Главное подключение к БД не найдено в QApplication!")
-        
-        main_conn = app.main_db_connection
+
         self._create_schema(main_conn)
         
         self.bus = event_bus
@@ -107,8 +112,6 @@ class ChapterQueueManager(QObject):
         
         self.session_id = None
         self.bus.event_posted.connect(self.on_event)
-
-        self.master_uri = SHARED_DB_URI
 
         self._chancellor_lock = PatientLock()
         self._ui_state_list_cache = []
@@ -128,7 +131,7 @@ class ChapterQueueManager(QObject):
         
     def _get_conn(self):
         conn = sqlite3.connect(
-            SHARED_DB_URI, 
+            self.master_uri,
             uri=True, 
             check_same_thread=False,
             timeout=10.0
@@ -728,6 +731,38 @@ class ChapterQueueManager(QObject):
         if updated:
             self._log(f"[TASK] ❌ Задача '{self._get_task_display_name(task_info[1])}' провалена.")
             self._safe_request_ui_update()
+
+    def mark_tasks_completed(self, task_ids) -> int:
+        normalized_ids = []
+        for task_id in task_ids or []:
+            try:
+                normalized_ids.append(str(uuid.UUID(str(task_id))))
+            except (TypeError, ValueError):
+                continue
+
+        if not normalized_ids:
+            return 0
+
+        placeholders = ','.join('?' for _ in normalized_ids)
+        with self._get_write_conn() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE tasks
+                SET status = 'completed', worker_id = NULL, priority = 0
+                WHERE task_id IN ({placeholders})
+                """,
+                normalized_ids,
+            )
+            updated_count = cursor.rowcount
+            conn.execute(
+                f"DELETE FROM task_errors WHERE task_id IN ({placeholders})",
+                normalized_ids,
+            )
+
+        if updated_count > 0:
+            self._log(f"[TASK] ✅ Отмечено выполненными после фонового redirect: {updated_count}.")
+            self._safe_request_ui_update()
+        return updated_count
 
     def task_requeued(self, worker_id: str, task_info: tuple):
         """

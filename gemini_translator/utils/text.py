@@ -2502,6 +2502,43 @@ def coerce_translated_body_block(original_html: str, translated_html: str) -> st
     return repair_missing_paragraph_tags(original_html, normalized)
 
 
+def _normalize_epub_heading_for_validation(html_content: str) -> str:
+    try:
+        from .epub_tools import normalize_epub_chapter_heading_to_h1
+    except Exception:
+        return html_content
+    return normalize_epub_chapter_heading_to_h1(html_content)
+
+
+def _first_heading_tag(soup):
+    root = soup.body if getattr(soup, "body", None) else soup
+    return root.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) if root else None
+
+
+def _coerce_first_heading_level(original_html: str, translated_html: str) -> str:
+    if not isinstance(original_html, str) or not isinstance(translated_html, str):
+        return translated_html
+
+    original_soup = BeautifulSoup(original_html, 'html.parser')
+    translated_soup = BeautifulSoup(translated_html, 'html.parser')
+    original_heading = _first_heading_tag(original_soup)
+    translated_heading = _first_heading_tag(translated_soup)
+    if not original_heading or not translated_heading:
+        return translated_html
+
+    original_name = str(original_heading.name or "").lower()
+    translated_name = str(translated_heading.name or "").lower()
+    if original_name == translated_name:
+        return translated_html
+    if original_name != 'h1' or translated_name not in {'h2', 'h3', 'h4', 'h5', 'h6'}:
+        return translated_html
+    if translated_soup.find('h1') is not None:
+        return translated_html
+
+    translated_heading.name = original_name
+    return str(translated_soup)
+
+
 def _paragraph_tag_count(html_content: str) -> int:
     if not isinstance(html_content, str):
         return 0
@@ -2849,10 +2886,12 @@ def validate_html_structure(original_html, translated_html):
     if not translated_html or not translated_html.strip():
         return False, "API вернуло пустой ответ.", translated_html
     
-    final_translated_html = translated_html
+    original_html = _normalize_epub_heading_for_validation(original_html)
+    final_translated_html = _normalize_epub_heading_for_validation(translated_html)
     normalized_orig = prettify_html_for_ai(original_html)
     orig_lower = normalized_orig.lower().strip()
     final_translated_html = normalize_translated_body_wrapper(original_html, final_translated_html)
+    final_translated_html = _coerce_first_heading_level(original_html, final_translated_html)
     trans_lower = final_translated_html.lower().strip()
 
     # --- ПРОВЕРКА 1: Целостность <body> (Regex) ---

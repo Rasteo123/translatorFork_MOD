@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from .menu_utils import prompt_return_to_menu, return_to_main_menu
+from ...utils.epub_tools import extract_first_epub_heading_text, normalize_epub_chapter_heading_to_h1
 
 
 class SimpleEpubReader:
@@ -123,7 +124,7 @@ class SimpleEpubReader:
 
     def read_file(self, filename):
         with self.zf.open(filename) as f:
-            return f.read().decode("utf-8", errors="ignore")
+            return normalize_epub_chapter_heading_to_h1(f.read().decode("utf-8", errors="ignore"))
 
     def close(self):
         self.zf.close()
@@ -288,22 +289,7 @@ class EPUBConverterThread(QThread):
         return "1"
 
     def _extract_title_from_html(self, html_content):
-        patterns = [
-            r"<h1[^>]*>(.*?)</h1>",
-            r"<h2[^>]*>(.*?)</h2>",
-            r"<h3[^>]*>(.*?)</h3>",
-            r"<title[^>]*>(.*?)</title>",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, html_content, re.IGNORECASE | re.DOTALL)
-            if not match:
-                continue
-            raw_title = match.group(1)
-            title = re.sub(r"<[^>]+>", " ", raw_title)
-            title = unescape(title.strip())
-            title = re.sub(r"\s+", " ", title)
-            return title
-        return None
+        return extract_first_epub_heading_text(html_content, include_title=True) or None
 
     def _remove_headers_from_html(self, html_content):
         html_content = re.sub(

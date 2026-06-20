@@ -116,6 +116,7 @@ class _AutoFilterPipelineHarness:
         self._auto_pending_network_retry_chapters = set()
         self._auto_filter_repack_signatures = set()
         self._auto_filter_redirect_signatures = set()
+        self._auto_filter_parallel_redirect_signatures = set()
         self._auto_restart_session_override = None
         self._auto_workflow_round = 0
         self._auto_followup_running = False
@@ -148,6 +149,38 @@ class _AutoFilterPipelineHarness:
 
     def check_ready(self):
         self.ready_called = True
+
+
+class _AutoFilterParallelRedirectHarness(_AutoFilterPipelineHarness):
+    _maybe_start_parallel_filter_redirect = InitialSetupDialog._maybe_start_parallel_filter_redirect
+
+    def __init__(self, key_widget):
+        super().__init__([], key_widget)
+        self.is_session_active = True
+        self.auto_translate_widget = type(
+            "_AutoWidget",
+            (),
+            {
+                "get_settings": lambda _self: {
+                    "enabled": True,
+                    "filter_redirect_enabled": True,
+                    "filter_redirect_provider": "deepseek",
+                    "filter_redirect_model": "deepseek-chat NonThink",
+                }
+            },
+        )()
+        self.parallel_redirect_calls = []
+
+    def _start_parallel_filter_redirect(self, chapters, auto_settings, redirect_override, source_task_ids=None):
+        self.parallel_redirect_calls.append(
+            {
+                "chapters": list(chapters),
+                "auto_settings": dict(auto_settings),
+                "redirect_override": dict(redirect_override),
+                "source_task_ids": list(source_task_ids or []),
+            }
+        )
+        return True
 
 
 class AutoFilterRedirectTests(unittest.TestCase):
@@ -272,6 +305,37 @@ class AutoFilterRedirectTests(unittest.TestCase):
         self.assertEqual(harness.task_management_widget.visible_values, [False])
         self.assertEqual(harness.start_btn.enabled_values, [False])
         self.assertEqual(harness._auto_workflow_round, 1)
+
+    def test_parallel_redirect_uses_target_provider_keys_on_filter_event(self):
+        harness = _AutoFilterParallelRedirectHarness(
+            _KeyManagementWidgetStub(
+                selected_provider="gemini",
+                active_keys=["gemini-key-1"],
+                active_by_provider={
+                    "gemini": ["gemini-key-1"],
+                    "deepseek": ["deepseek-key-1", "deepseek-key-2"],
+                },
+            )
+        )
+
+        started = harness._maybe_start_parallel_filter_redirect(
+            {
+                "event": "task_finished",
+                "data": {
+                    "success": False,
+                    "error_type": "filtered",
+                    "task_info": ("task-1", ("epub", "C:/book.epub", "Text/ch2.xhtml")),
+                },
+            }
+        )
+
+        self.assertTrue(started)
+        self.assertEqual(len(harness.parallel_redirect_calls), 1)
+        call = harness.parallel_redirect_calls[0]
+        self.assertEqual(call["chapters"], ["Text/ch2.xhtml"])
+        self.assertEqual(call["redirect_override"]["provider"], "deepseek")
+        self.assertEqual(call["redirect_override"]["api_keys"], ["deepseek-key-1", "deepseek-key-2"])
+        self.assertEqual(call["source_task_ids"], ["task-1"])
 
 
 if __name__ == "__main__":

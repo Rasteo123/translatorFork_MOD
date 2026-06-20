@@ -230,6 +230,8 @@ class ResponseParser:
                 try:
                     start_marker_info = markers_map.get(i)
                     end_marker_info = markers_map.get(i + 1)
+                    if end_marker_info is None and i == len(chapter_list) - 1 and start_marker_info is not None:
+                        end_marker_info = (len(translated_full_text), len(translated_full_text))
                     
                     if start_marker_info is None or end_marker_info is None:
                         report['failed'].append((chapter_path, "Маркеры не найдены"))

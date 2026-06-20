@@ -800,6 +800,12 @@ class UploadWorker(QThread):
                 f"После сохранения номер следующей главы не изменился ({after_num})"
             )
 
+    def _wait_before_retry(self, page):
+        try:
+            page.wait_for_timeout(RETRY_DELAY_SEC * 1000)
+        except Exception:
+            time.sleep(RETRY_DELAY_SEC)
+
     # ── Загрузка одной главы (с retry) ──
 
     def _upload_chapter(self, page, chapter: ChapterData) -> bool:
@@ -903,7 +909,7 @@ class UploadWorker(QThread):
                     f"Попытка {attempt}/{MAX_RETRIES} для Гл.{format_num(chapter.number)}: {e}",
                 )
                 if attempt < MAX_RETRIES:
-                    page.wait_for_timeout(RETRY_DELAY_SEC * 1000)
+                    self._wait_before_retry(page)
                 else:
                     self.log(
                         "ERROR",

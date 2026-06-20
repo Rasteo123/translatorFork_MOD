@@ -36,6 +36,10 @@ AUTO_TRANSLATION_DEFAULTS = {
     "model_override": None,
     "thinking_mode_override": "inherit",
     "batch_token_limit_override": 0,
+    "batch_chapter_limit_override": 0,
+    "source_context_enabled": False,
+    "source_context_chapters": 1,
+    "source_context_char_limit": 60000,
     "retry_short_enabled": True,
     "retry_short_ratio": 0.70,
     "retry_short_ratio_mode": "translation_over_original",
@@ -233,6 +237,24 @@ class AutoTranslateWidget(QWidget):
             "Примерный лимит входных токенов на пакет/чанк для основного автопрогона.\n"
             "0 = использовать общий лимит из вкладки 'Список задач'."
         )
+        self.batch_chapters_spin = NoScrollSpinBox()
+        self.batch_chapters_spin.setRange(0, 100)
+        self.batch_chapters_spin.setValue(0)
+        self.batch_chapters_spin.setToolTip(
+            "0 = не ограничивать количество глав в одном запросе.\n"
+            "Ненулевое значение ограничивает пакет основного автоперевода по числу глав."
+        )
+        self.source_context_checkbox = QCheckBox("Добавлять исходные главы как контекст")
+        self.source_context_checkbox.setToolTip(
+            "В последовательном переводе добавляет предыдущие главы из оригинального EPUB в промпт.\n"
+            "Это контекст до перевода: модель не должна переводить его как текущий фрагмент."
+        )
+        self.source_context_chapters_spin = NoScrollSpinBox()
+        self.source_context_chapters_spin.setRange(1, 10)
+        self.source_context_chapters_spin.setValue(1)
+        self.source_context_chapters_spin.setToolTip(
+            "Сколько предыдущих исходных глав прикладывать к sequential-промпту."
+        )
 
         profile_group = QGroupBox("Профиль основного прогона")
         profile_layout = QGridLayout(profile_group)
@@ -244,6 +266,11 @@ class AutoTranslateWidget(QWidget):
         profile_layout.addWidget(self.thinking_override_combo, 2, 1)
         profile_layout.addWidget(QLabel("Лимит пакета (~входные токены):"), 3, 0)
         profile_layout.addWidget(self.batch_tokens_spin, 3, 1)
+        profile_layout.addWidget(QLabel("Глав в одном запросе:"), 4, 0)
+        profile_layout.addWidget(self.batch_chapters_spin, 4, 1)
+        profile_layout.addWidget(self.source_context_checkbox, 5, 0, 1, 2)
+        profile_layout.addWidget(QLabel("Исходных глав контекста:"), 6, 0)
+        profile_layout.addWidget(self.source_context_chapters_spin, 6, 1)
 
         self.translation_profile_hint = QLabel(
             "0 в лимите пакета = наследовать общий размер задачи. Значение в токенах "
@@ -254,7 +281,7 @@ class AutoTranslateWidget(QWidget):
         self.translation_profile_hint.setText(
             "0 in batch limit inherits the common task size. Non-zero values are Gemini input tokens and are used directly."
         )
-        profile_layout.addWidget(self.translation_profile_hint, 4, 0, 1, 2)
+        profile_layout.addWidget(self.translation_profile_hint, 7, 0, 1, 2)
 
         self.translation_summary_frame = QFrame()
         self.translation_summary_frame.setObjectName("autoTranslationSummaryFrame")
@@ -452,6 +479,9 @@ class AutoTranslateWidget(QWidget):
             self.model_override_combo,
             self.thinking_override_combo,
             self.batch_tokens_spin,
+            self.batch_chapters_spin,
+            self.source_context_checkbox,
+            self.source_context_chapters_spin,
             self.retry_short_checkbox,
             self.retry_short_ratio_spin,
             self.retry_untranslated_checkbox,
@@ -832,6 +862,9 @@ class AutoTranslateWidget(QWidget):
                 "Batch limit: inherited from common settings "
                 f"({self._format_number(self._current_task_size_limit)} Gemini tokens)."
             )
+        chapter_limit = int(self.batch_chapters_spin.value())
+        if chapter_limit > 0:
+            batch_text = f"{batch_text} Глав в одном запросе: не больше {chapter_limit}."
 
         self.translation_summary_label.setText(
             f"Основной прогон пойдёт в режиме «{mode_text}». "
@@ -851,6 +884,11 @@ class AutoTranslateWidget(QWidget):
                 if "символ" not in note.lower() and "СЃРёРј" not in note
             ]
             notes.append("The token limit is used directly when building tasks.")
+        if self.source_context_checkbox.isChecked():
+            notes.append(
+                "В sequential-режиме будет добавлен оригинальный контекст: "
+                f"{int(self.source_context_chapters_spin.value())} предыдущ. глав."
+            )
         self.translation_summary_note.setText(" ".join(notes))
 
     def _update_control_states(self):
@@ -871,6 +909,7 @@ class AutoTranslateWidget(QWidget):
         self.ai_consistency_fix_medium_checkbox.setEnabled(auto_fix_enabled)
         self.ai_consistency_fix_low_checkbox.setEnabled(auto_fix_enabled)
         self.ai_consistency_chunk_spin.setEnabled(consistency_enabled)
+        self.source_context_chapters_spin.setEnabled(self.source_context_checkbox.isChecked())
 
     def _get_ai_consistency_fix_confidences(self):
         selected = []
@@ -895,6 +934,10 @@ class AutoTranslateWidget(QWidget):
             "model_override": self.model_override_combo.currentData(),
             "thinking_mode_override": self.thinking_override_combo.currentData() or "inherit",
             "batch_token_limit_override": int(self.batch_tokens_spin.value()),
+            "batch_chapter_limit_override": int(self.batch_chapters_spin.value()),
+            "source_context_enabled": self.source_context_checkbox.isChecked(),
+            "source_context_chapters": int(self.source_context_chapters_spin.value()),
+            "source_context_char_limit": int(AUTO_TRANSLATION_DEFAULTS["source_context_char_limit"]),
             "retry_short_enabled": self.retry_short_checkbox.isChecked(),
             "retry_short_ratio": round(float(self.retry_short_ratio_spin.value()), 2),
             "retry_short_ratio_mode": "translation_over_original",
@@ -941,6 +984,11 @@ class AutoTranslateWidget(QWidget):
             selected_thinking = merged.get("thinking_mode_override", "inherit")
             self._rebuild_thinking_override_combo(selected_override=selected_thinking)
             self.batch_tokens_spin.setValue(int(merged.get("batch_token_limit_override", 0) or 0))
+            self.batch_chapters_spin.setValue(int(merged.get("batch_chapter_limit_override", 0) or 0))
+            self.source_context_checkbox.setChecked(bool(merged.get("source_context_enabled", False)))
+            self.source_context_chapters_spin.setValue(
+                max(1, int(merged.get("source_context_chapters", 1) or 1))
+            )
 
             legacy_ratio_value = None
             if isinstance(settings, dict) and "retry_short_ratio" in settings:

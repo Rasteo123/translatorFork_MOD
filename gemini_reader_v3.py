@@ -107,6 +107,12 @@ except Exception:
     TokenCounter = None
 
 try:
+    from gemini_translator.utils.epub_tools import extract_epub_heading_text, normalize_epub_chapter_heading_to_h1
+except Exception:
+    extract_epub_heading_text = None
+    normalize_epub_chapter_heading_to_h1 = None
+
+try:
     from gemini_translator.utils.settings import SettingsManager
 except Exception:
     SettingsManager = None
@@ -2623,6 +2629,24 @@ def _reader_fallback_title(raw_title, fallback):
     return title or fallback
 
 
+def _reader_element_text(element):
+    if not element:
+        return ""
+    tag_name = str(getattr(element, "name", "") or "").lower()
+    if tag_name in ("h1", "h2", "h3") and extract_epub_heading_text is not None:
+        return extract_epub_heading_text(element)
+    try:
+        return element.get_text(" ", strip=True)
+    except TypeError:
+        return element.get_text().strip()
+
+
+def _reader_normalize_epub_html(content):
+    if normalize_epub_chapter_heading_to_h1 is None:
+        return content
+    return normalize_epub_chapter_heading_to_h1(content)
+
+
 def _reader_natural_sort_key(value):
     return [int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", value)]
 
@@ -2660,15 +2684,16 @@ def _reader_parse_epub_chapters(filepath):
     for item_ref in book.spine:
         item = book.get_item_with_id(item_ref[0])
         if item and (item.get_type() == ebooklib.ITEM_DOCUMENT or item.get_name().lower().endswith((".xhtml", ".html", ".htm"))):
+            item_content = _reader_normalize_epub_html(item.get_content())
             raw_title = ""
             if BeautifulSoup is not None:
-                soup = BeautifulSoup(item.get_content(), "html.parser")
+                soup = BeautifulSoup(item_content, "html.parser")
                 heading = soup.find(["h1", "h2", "h3"])
                 if heading:
-                    raw_title = heading.get_text(" ", strip=True)
+                    raw_title = _reader_element_text(heading)
             chapter = Chapter(
                 _reader_fallback_title(raw_title, f"Chapter {len(chapters) + 1}"),
-                item.get_content(),
+                item_content,
             )
             if chapter.flat_sentences:
                 chapters.append(chapter)
@@ -2731,6 +2756,7 @@ def _reader_parse_html_chapters(filepath):
 
     with open(filepath, "r", encoding="utf-8", errors="ignore") as file_obj:
         markup = file_obj.read()
+    markup = _reader_normalize_epub_html(markup)
 
     soup = BeautifulSoup(markup, "html.parser")
     headings = soup.find_all(["h1", "h2"])
@@ -2738,7 +2764,7 @@ def _reader_parse_html_chapters(filepath):
 
     if not headings:
         content = _reader_paragraphs_to_html(
-            [tag.get_text(" ", strip=True) for tag in soup.find_all(["p", "div", "li"]) if tag.get_text(" ", strip=True)]
+            [_reader_element_text(tag) for tag in soup.find_all(["p", "div", "li"]) if _reader_element_text(tag)]
         )
         if content:
             raw_title = soup.title.get_text(" ", strip=True) if soup.title else os.path.splitext(os.path.basename(filepath))[0]
@@ -2746,12 +2772,12 @@ def _reader_parse_html_chapters(filepath):
         return chapters
 
     for index, heading in enumerate(headings, start=1):
-        raw_title = heading.get_text(" ", strip=True)
+        raw_title = _reader_element_text(heading)
         content_lines = []
         for sibling in heading.find_next_siblings():
             if sibling.name in ("h1", "h2"):
                 break
-            text = sibling.get_text(" ", strip=True)
+            text = _reader_element_text(sibling)
             if text:
                 content_lines.append(text)
         content = _reader_paragraphs_to_html(content_lines)
@@ -2790,7 +2816,7 @@ class Chapter:
 
         lines =[]
         for el in soup.find_all(['p', 'h1', 'h2', 'h3', 'div', 'li']):
-            t = el.get_text().strip()
+            t = _reader_element_text(el)
             if t:
                 lines.append(t)
 

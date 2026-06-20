@@ -21,6 +21,21 @@ Strictly forbidden:
 {previous_chapter_reference}
 </previous_chapter_reference>
 
+## 2.1 ORIGINAL SOURCE CONTEXT
+When enabled, previous untranslated source chapters may be attached for source-side continuity.
+
+Use this context only to resolve facts, names, relationships, locations, recurring objects, and ambiguous references in the current source.
+
+Strictly forbidden:
+- do not translate the original context;
+- do not summarize the original context;
+- do not copy context-only events into the current output;
+- do not output anything except the translated current fragment.
+
+<previous_original_context>
+{previous_original_context}
+</previous_original_context>
+
 ## 3. GLOSSARY
 The glossary is the primary authority for fixed terms and gender consistency.
 

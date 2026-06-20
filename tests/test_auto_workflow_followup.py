@@ -241,7 +241,117 @@ class _RunAutoValidatorHarness:
         )
 
 
+class _StartTaskManagerStub:
+    def __init__(self, has_pending_tasks):
+        self._has_pending_tasks = bool(has_pending_tasks)
+        self.release_calls = 0
+
+    def has_pending_tasks(self):
+        return self._has_pending_tasks
+
+    def release_held_tasks(self):
+        self.release_calls += 1
+
+
+class _StartEngineStub:
+    def __init__(self, has_pending_tasks):
+        self.task_manager = _StartTaskManagerStub(has_pending_tasks)
+
+
+class _StartKeyManagementWidgetStub:
+    def __init__(self, active_keys):
+        self._active_keys = list(active_keys or [])
+
+    def get_active_keys(self):
+        return list(self._active_keys)
+
+
+class _StartTranslationHarness:
+    _start_translation = InitialSetupDialog._start_translation
+
+    def __init__(self, has_pending_tasks=True, active_keys=None):
+        self.selected_file = "C:/project/book.epub"
+        self.output_folder = "C:/project"
+        self.engine = _StartEngineStub(has_pending_tasks)
+        self.key_management_widget = _StartKeyManagementWidgetStub(active_keys)
+        self.auto_translate_widget = _AutoTranslateWidgetStub({"enabled": True})
+        self._auto_restart_session_override = None
+        self._auto_followup_running = True
+        self.logs = []
+        self.reset_calls = 0
+        self.ready_calls = 0
+
+    def _check_and_sync_active_session(self):
+        return False
+
+    def _resolve_auto_translation_options(self, auto_settings):
+        return {}, "inherit", False, 0, None, None
+
+    def _resolve_auto_model_override(self, auto_settings):
+        return None, None, None
+
+    def _auto_log(self, message, force=False, **kwargs):
+        entry = {"message": message, "force": force}
+        entry.update(kwargs)
+        self.logs.append(entry)
+
+    def _reset_auto_workflow_state(self):
+        self.reset_calls += 1
+        self._auto_followup_running = False
+
+    def check_ready(self):
+        self.ready_calls += 1
+
+
+class _TranslationOptionsWidgetStub:
+    def get_settings(self):
+        return {
+            "use_batching": False,
+            "chunking": False,
+            "chunk_on_error": False,
+            "sequential_translation": True,
+            "sequential_translation_splits": 1,
+            "task_size_limit": 1500,
+        }
+
+
+class _AutoTranslationOptionsHarness:
+    _resolve_auto_translation_options = InitialSetupDialog._resolve_auto_translation_options
+
+    def __init__(self):
+        self.translation_options_widget = _TranslationOptionsWidgetStub()
+
+    def _estimate_auto_task_size_limit(self, token_limit: int):
+        return int(token_limit) * 2, "stub-profile"
+
+
 class AutoWorkflowFollowupTests(unittest.TestCase):
+    def test_auto_translation_options_include_chapter_limit_and_source_context(self):
+        harness = _AutoTranslationOptionsHarness()
+
+        options, mode, has_override, batch_tokens, batch_task_limit, profile = (
+            harness._resolve_auto_translation_options({
+                "translation_mode_override": "batch",
+                "batch_token_limit_override": 2000,
+                "batch_chapter_limit_override": 3,
+                "source_context_enabled": True,
+                "source_context_chapters": 2,
+                "source_context_char_limit": 40000,
+            })
+        )
+
+        self.assertEqual(mode, "batch")
+        self.assertTrue(has_override)
+        self.assertEqual(batch_tokens, 2000)
+        self.assertEqual(batch_task_limit, 4000)
+        self.assertEqual(profile, "stub-profile")
+        self.assertTrue(options["use_batching"])
+        self.assertFalse(options["chunking"])
+        self.assertEqual(options["max_chapters_per_batch"], 3)
+        self.assertTrue(options["sequential_original_context_enabled"])
+        self.assertEqual(options["sequential_original_context_chapters"], 2)
+        self.assertEqual(options["sequential_original_context_char_limit"], 40000)
+
     def test_auto_short_ratio_uses_cjk_limit_from_flag(self):
         harness = _AutoRatioHarness()
 
@@ -493,6 +603,40 @@ class AutoWorkflowFollowupTests(unittest.TestCase):
         self.assertEqual(harness.reset_calls, 0)
         self.assertEqual(harness.ready_calls, 0)
         self.assertEqual(harness.finished_calls, [])
+
+    def test_auto_restart_without_active_keys_logs_and_unlocks(self):
+        harness = _StartTranslationHarness(has_pending_tasks=True, active_keys=[])
+
+        with patch(
+            "gemini_translator.ui.dialogs.setup.QMessageBox.warning",
+            side_effect=AssertionError("auto restart should not show a modal warning"),
+        ):
+            harness._start_translation(is_auto_restart=True)
+
+        self.assertEqual(harness.engine.task_manager.release_calls, 0)
+        self.assertEqual(harness.reset_calls, 1)
+        self.assertEqual(harness.ready_calls, 1)
+        self.assertFalse(harness._auto_followup_running)
+        self.assertTrue(
+            any("нет активной сессии сервиса/ключей" in entry["message"] for entry in harness.logs)
+        )
+
+    def test_auto_restart_without_pending_tasks_logs_and_unlocks(self):
+        harness = _StartTranslationHarness(has_pending_tasks=False, active_keys=["stub-key"])
+
+        with patch(
+            "gemini_translator.ui.dialogs.setup.QMessageBox.warning",
+            side_effect=AssertionError("auto restart should not show a modal warning"),
+        ):
+            harness._start_translation(is_auto_restart=True)
+
+        self.assertEqual(harness.engine.task_manager.release_calls, 0)
+        self.assertEqual(harness.reset_calls, 1)
+        self.assertEqual(harness.ready_calls, 1)
+        self.assertFalse(harness._auto_followup_running)
+        self.assertTrue(
+            any("нет задач в очереди" in entry["message"] for entry in harness.logs)
+        )
 
 
 class _AutoLogDispatchHarness:
