@@ -12,6 +12,7 @@ google-genai
 jieba
 lxml
 num2words
+opencc-python-reimplemented
 pymorphy3
 pypdf
 PyQt6

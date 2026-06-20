@@ -16,6 +16,7 @@ loguru
 lxml
 nltk
 num2words
+opencc-python-reimplemented
 playwright
 PyAudio
 pydantic>=2.0.0
