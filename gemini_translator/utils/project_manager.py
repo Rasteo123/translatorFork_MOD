@@ -324,6 +324,150 @@ class TranslationProjectManager:
             "failed": failed,
         }
 
+    def _resolve_project_file_path(self, relative_path):
+        if not relative_path:
+            return None
+
+        rel_path = str(relative_path).replace('\\', '/').strip('/')
+        if not rel_path or os.path.isabs(rel_path):
+            return None
+
+        project_root = os.path.abspath(self.project_folder)
+        full_path = os.path.abspath(
+            os.path.join(project_root, rel_path.replace('/', os.sep))
+        )
+        try:
+            if os.path.commonpath([project_root, full_path]) != project_root:
+                return None
+        except ValueError:
+            return None
+        return full_path
+
+    def _translation_suffixes(self):
+        suffixes = set(api_config.all_translated_suffixes())
+        suffixes.add('_validated.html')
+        return tuple(sorted(suffixes, key=len, reverse=True))
+
+    def _collect_reused_project_cleanup_targets(self):
+        html_extensions = ('.html', '.xhtml', '.htm')
+        chapter_dirs = {
+            'OEBPS/Text',
+            'OPS/Text',
+            'EPUB/Text',
+            'Text',
+        }
+        target_paths = set()
+        entry_count = 0
+        suffixes = self._translation_suffixes()
+
+        with self.lock:
+            current_data = self._load_unsafe()
+
+        for original_path, versions in current_data.items():
+            original_path_norm = str(original_path).replace('\\', '/').strip('/')
+            if original_path_norm.lower().endswith(html_extensions):
+                original_dir = os.path.dirname(original_path_norm)
+                if original_dir:
+                    chapter_dirs.add(original_dir)
+                source_path = self._resolve_project_file_path(original_path_norm)
+                if source_path and os.path.exists(source_path):
+                    target_paths.add(source_path)
+
+            for rel_path in versions.values():
+                entry_count += 1
+                full_path = self._resolve_project_file_path(rel_path)
+                if full_path and os.path.exists(full_path):
+                    target_paths.add(full_path)
+
+        for rel_path in self._build_filesystem_map():
+            full_path = self._resolve_project_file_path(rel_path)
+            if full_path and os.path.exists(full_path):
+                target_paths.add(full_path)
+
+        project_root = os.path.abspath(self.project_folder)
+        for relative_dir in chapter_dirs:
+            dir_path = self._resolve_project_file_path(relative_dir)
+            if not dir_path or not os.path.isdir(dir_path):
+                continue
+            if os.path.abspath(dir_path) == project_root:
+                continue
+
+            for root, _, files in os.walk(dir_path):
+                for filename in files:
+                    lower_name = filename.lower()
+                    if lower_name.endswith(html_extensions) or any(filename.endswith(suffix) for suffix in suffixes):
+                        target_paths.add(os.path.join(root, filename))
+
+        return target_paths, entry_count
+
+    def find_reused_project_cleanup_targets(self):
+        """
+        Возвращает файлы и записи карты, которые будут удалены при очистке
+        старых глав в повторно используемой папке проекта.
+        """
+        target_paths, entry_count = self._collect_reused_project_cleanup_targets()
+        return {
+            "files": sorted(target_paths),
+            "entries": entry_count,
+        }
+
+    def cleanup_reused_project_chapter_outputs(self):
+        """
+        Удаляет старые HTML-файлы глав/переводов из повторно используемой
+        папки проекта и очищает translation_map.json от устаревших записей.
+        """
+        target_paths, _ = self._collect_reused_project_cleanup_targets()
+        failed = []
+        removed_files = 0
+        removed_parent_dirs = set()
+
+        for full_path in sorted(target_paths, key=lambda path: len(path), reverse=True):
+            if not os.path.exists(full_path):
+                continue
+            try:
+                os.remove(full_path)
+                removed_files += 1
+                removed_parent_dirs.add(os.path.dirname(full_path))
+            except OSError as exc:
+                failed.append((full_path, str(exc)))
+
+        for parent_dir in sorted(removed_parent_dirs, key=lambda path: len(path), reverse=True):
+            self._cleanup_empty_parent_dirs(parent_dir)
+
+        failed_paths = {
+            os.path.normcase(os.path.abspath(path))
+            for path, _ in failed
+        }
+        removed_entries = 0
+
+        with self.lock:
+            current_data = self._load_unsafe()
+            cleaned_data = {}
+            for original_path, versions in current_data.items():
+                kept_versions = {}
+                for suffix, rel_path in versions.items():
+                    full_path = self._resolve_project_file_path(rel_path)
+                    full_path_key = (
+                        os.path.normcase(os.path.abspath(full_path))
+                        if full_path
+                        else None
+                    )
+                    if full_path_key and full_path_key in failed_paths:
+                        kept_versions[suffix] = rel_path
+                    else:
+                        removed_entries += 1
+
+                if kept_versions:
+                    cleaned_data[original_path] = kept_versions
+
+            self._save_unsafe(cleaned_data)
+
+        return {
+            "removed_files": removed_files,
+            "removed_entries": removed_entries,
+            "failed": failed,
+        }
+
     def _cleanup_empty_parent_dirs(self, start_dir):
         """Удаляет пустые родительские папки внутри каталога проекта."""
         project_root = os.path.abspath(self.project_folder)

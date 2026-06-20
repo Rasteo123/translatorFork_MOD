@@ -1546,8 +1546,12 @@ class InitialSetupDialog(QDialog):
                     QMessageBox.critical(self, "Ошибка перемещения", f"Не удалось переместить исходный файл:\n{e}")
                     return
 
+        old_project_cleanup_confirmed = False
         if pending_cleanup_offer or not is_known_project:
-            self._maybe_offer_old_project_chapter_cleanup(effective_folder, effective_file_path)
+            old_project_cleanup_confirmed = self._maybe_offer_old_project_chapter_cleanup(
+                effective_folder,
+                effective_file_path
+            )
 
         # Добавляем в историю уже финальные, эффективные пути
         self.settings_manager.add_to_project_history(effective_file_path, effective_folder)
@@ -1562,7 +1566,7 @@ class InitialSetupDialog(QDialog):
         if self.html_files:
             self._ask_and_filter_chapters()
 
-        self._on_project_data_changed()
+        self._on_project_data_changed(offer_snapshot_restore=not old_project_cleanup_confirmed)
 
     def _update_cjk_options_for_widgets(self):
         """
@@ -2014,6 +2018,11 @@ class InitialSetupDialog(QDialog):
 
         meta = self.engine.task_manager.read_queue_snapshot_meta(snapshot_path)
         if not meta:
+            return
+
+        saved_sig = meta.get('epub_sig')
+        current_sig = self.engine.task_manager._get_epub_signature(self.selected_file)
+        if not saved_sig or saved_sig != current_sig:
             return
 
         saved_task_count = meta.get('saved_task_count')
@@ -2540,28 +2549,35 @@ class InitialSetupDialog(QDialog):
         # Возвращаем результат для отображения сообщения пользователю.
         return filtered_chapters, original_chapter_count
 
+    def _remove_queue_snapshot_for_folder(self, folder_path):
+        snapshot_path = os.path.join(folder_path, "queue_snapshot.db")
+        if not os.path.exists(snapshot_path):
+            return None
+        try:
+            os.remove(snapshot_path)
+            return None
+        except OSError as exc:
+            return (snapshot_path, str(exc))
+
     def _maybe_offer_old_project_chapter_cleanup(self, folder_path, file_path):
-        text_folder = os.path.join(folder_path, "OEBPS", "Text")
-        if not os.path.isdir(text_folder):
-            return False
+        project_manager = TranslationProjectManager(folder_path)
+        cleanup_targets = project_manager.find_reused_project_cleanup_targets()
+        existing_files = cleanup_targets["files"]
+        entry_count = cleanup_targets["entries"]
 
-        existing_files = []
-        for root, _, files in os.walk(text_folder):
-            for filename in files:
-                existing_files.append(os.path.join(root, filename))
-
-        if not existing_files:
+        if not existing_files and entry_count <= 0:
             return False
 
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Старые главы в проекте")
         msg_box.setIcon(QMessageBox.Icon.Question)
         msg_box.setText(
-            f"В папке проекта уже найдено {len(existing_files)} файл(ов) в 'OEBPS\\Text'."
+            "В папке проекта уже найдены старые данные глав.\n"
+            f"Файлов: {len(existing_files)}; записей карты: {entry_count}."
         )
         msg_box.setInformativeText(
             f"Вы добавляете новый EPUB '{os.path.basename(file_path)}' в существующий проект.\n\n"
-            "Можно удалить прошлые главы из 'OEBPS\\Text' и очистить связанные записи "
+            "Можно удалить прошлые HTML-файлы глав и очистить связанные записи "
             "в 'translation_map.json', чтобы старый текст не смешивался с новым.\n\n"
             "Удалить прошлые главы?"
         )
@@ -2573,13 +2589,18 @@ class InitialSetupDialog(QDialog):
         if msg_box.clickedButton() != remove_button:
             return False
 
-        cleanup_result = TranslationProjectManager(folder_path).cleanup_translations_in_subtree("OEBPS/Text")
-        if cleanup_result["failed"]:
+        cleanup_result = project_manager.cleanup_reused_project_chapter_outputs()
+        snapshot_error = self._remove_queue_snapshot_for_folder(folder_path)
+        failures = list(cleanup_result["failed"])
+        if snapshot_error:
+            failures.append(snapshot_error)
+
+        if failures:
             details = "\n".join(
-                f"- {path}" for path, _ in cleanup_result["failed"][:5]
+                f"- {path}" for path, _ in failures[:5]
             )
-            if len(cleanup_result["failed"]) > 5:
-                details += f"\n… и еще {len(cleanup_result['failed']) - 5}."
+            if len(failures) > 5:
+                details += f"\n… и еще {len(failures) - 5}."
             QMessageBox.warning(
                 self,
                 "Очистка выполнена не полностью",

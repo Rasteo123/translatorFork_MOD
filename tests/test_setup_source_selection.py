@@ -2,6 +2,8 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6 import QtWidgets
+
 from gemini_translator.ui.dialogs.setup import InitialSetupDialog
 
 
@@ -79,7 +81,7 @@ class _InitializationHarness:
         self._pending_old_project_cleanup_offer = True
         self.cleanup_calls = []
         self.filter_calls = 0
-        self.data_changed_calls = 0
+        self.data_changed_calls = []
 
     def _maybe_offer_old_project_chapter_cleanup(self, folder_path, file_path):
         self.cleanup_calls.append((folder_path, file_path))
@@ -88,8 +90,39 @@ class _InitializationHarness:
     def _ask_and_filter_chapters(self):
         self.filter_calls += 1
 
-    def _on_project_data_changed(self):
-        self.data_changed_calls += 1
+    def _on_project_data_changed(self, offer_snapshot_restore=True):
+        self.data_changed_calls.append(offer_snapshot_restore)
+
+
+class _SnapshotTaskManager:
+    def __init__(self, meta, current_sig="current"):
+        self.meta = meta
+        self.current_sig = current_sig
+        self.meta_reads = 0
+
+    def read_queue_snapshot_meta(self, snapshot_path):
+        self.meta_reads += 1
+        return dict(self.meta)
+
+    def _get_epub_signature(self, epub_path):
+        return self.current_sig
+
+
+class _SnapshotHarness:
+    _maybe_offer_snapshot_restore = InitialSetupDialog._maybe_offer_snapshot_restore
+
+    def __init__(self, snapshot_path, meta):
+        self._snapshot_restore_in_progress = False
+        self.is_session_active = False
+        self.selected_file = "current.epub"
+        self.output_folder = os.path.dirname(snapshot_path)
+        self.engine = type("Engine", (), {
+            "task_manager": _SnapshotTaskManager(meta)
+        })()
+        self._snapshot_prompted_projects = set()
+
+    def _get_snapshot_path(self):
+        return os.path.join(self.output_folder, "queue_snapshot.db")
 
 
 def test_selecting_file_after_project_folder_opens_chapter_selection(tmp_path):
@@ -180,4 +213,29 @@ def test_pending_cleanup_offer_runs_even_when_new_source_is_already_in_history(t
     ]
     assert harness.settings_manager.added_projects
     assert harness.filter_calls == 1
-    assert harness.data_changed_calls == 1
+    assert harness.data_changed_calls == [False]
+
+
+def test_snapshot_restore_is_not_offered_for_different_epub_signature(tmp_path, monkeypatch):
+    snapshot_path = tmp_path / "queue_snapshot.db"
+    snapshot_path.write_bytes(b"placeholder")
+    harness = _SnapshotHarness(
+        str(snapshot_path),
+        {
+            "epub_sig": "old",
+            "saved_task_count": 3,
+            "saved_at": 123.0,
+        },
+    )
+    question_calls = []
+
+    def fake_question(*args, **kwargs):
+        question_calls.append((args, kwargs))
+        return QtWidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", fake_question)
+
+    harness._maybe_offer_snapshot_restore()
+
+    assert question_calls == []
+    assert harness._snapshot_prompted_projects == set()
