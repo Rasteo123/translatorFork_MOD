@@ -861,7 +861,7 @@ class RanobeUploaderApp(QMainWindow):
         self._rulate_worker = RulateDownloadWorker(
             rulate_url=rulate_url,
             default_vol=vol,
-            skip_after=int(self._last_lib_chapter),
+            skip_after=self._last_lib_chapter,
         )
         self._rulate_worker.log_signal.connect(
             lambda level, msg: self._process_log("rulate_fetch", level, msg)
@@ -955,12 +955,14 @@ class RanobeUploaderApp(QMainWindow):
     def _download_rulate_chapters(self):
         """Скачать выбранные главы с Rulate."""
         selected_ids = []
+        selected_infos = []
         for i in range(self.rulate_list_widget.count()):
             item = self.rulate_list_widget.item(i)
             if item.checkState() == Qt.CheckState.Checked:
                 ch = item.data(Qt.ItemDataRole.UserRole)
                 if ch and ch.get("id"):
                     selected_ids.append(ch["id"])
+                    selected_infos.append(dict(ch))
 
         if not selected_ids:
             return QMessageBox.warning(self, "Ошибка", "Не выбрано ни одной главы для скачивания.")
@@ -988,6 +990,7 @@ class RanobeUploaderApp(QMainWindow):
             rulate_url=rulate_url,
             default_vol=vol,
             chapter_ids=selected_ids,
+            chapter_infos=selected_infos,
         )
         self._rulate_dl_worker.log_signal.connect(
             lambda level, msg: self._process_log("rulate_download", level, msg)

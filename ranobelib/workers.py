@@ -21,7 +21,7 @@ from constants import (
 )
 from models import ChapterData
 from parsers import FileParser
-from utils import format_num, format_timedelta
+from utils import format_num, format_timedelta, parse_vol_and_chapter
 
 def _has_saved_ranobelib_auth(profile_dir) -> tuple[bool, str | None]:
     try:
@@ -70,7 +70,8 @@ class RulateDownloadWorker(QThread):
     finished_signal = pyqtSignal()
 
     def __init__(self, rulate_url: str, default_vol: str,
-                 skip_after: int = 0, chapter_ids: list = None):
+                 skip_after: int = 0, chapter_ids: list = None,
+                 chapter_infos: list = None):
         """
         rulate_url: ссылка вида https://tl.rulate.ru/book/123870
         default_vol: том по умолчанию
@@ -83,6 +84,12 @@ class RulateDownloadWorker(QThread):
         self.default_vol = default_vol
         self.skip_after = skip_after
         self.chapter_ids = chapter_ids
+        self.chapter_infos = chapter_infos or []
+        self._chapter_info_by_id = {
+            str(ch.get("id")): ch
+            for ch in self.chapter_infos
+            if ch and ch.get("id") is not None
+        }
         self.is_running = True
         self._mode = "download" if chapter_ids else "list"
 
@@ -128,16 +135,33 @@ class RulateDownloadWorker(QThread):
                         const link = row.querySelector('td.t a');
                         const checkbox = row.querySelector('input.download_chapter');
                         if (!link) continue;
-                        const title = link.textContent.trim();
+                        const titleCandidates = [
+                            link.getAttribute('title'),
+                            link.getAttribute('data-original-title'),
+                            link.getAttribute('aria-label'),
+                            row.getAttribute('data-title'),
+                            link.textContent,
+                        ].map(value => (value || '').trim()).filter(Boolean);
+                        const title = titleCandidates.reduce(
+                            (best, value) => value.length > best.length ? value : best,
+                            ''
+                        );
                         const hasCheckbox = !!checkbox;
                         // Пробуем извлечь номер из названия:
                         // 1) "Глава/Chapter/Ch N"
                         // 2) просто первое число в заголовке
-                        let match = title.match(/(?:Глава|Chapter|Ch)\\s*\\.?\\s*(\\d+(?:\\.\\d+)?)/i);
+                        // 3) "Часть/Part N" превращаем в дробную главу: 30 + Часть 2 -> 30.2
+                        let match = title.match(/(?:Глава|Chapter|Ch|Гл)\\s*\\.?\\s*(\\d+(?:\\.\\d+)?)/i);
                         if (!match) {
                             match = title.match(/(\\d+(?:\\.\\d+)?)/);
                         }
-                        const num = match ? parseFloat(match[1]) : 0;
+                        let num = match ? parseFloat(match[1]) : 0;
+                        const partMatch = title.match(/(?:Часть|Part)\\s*(\\d+)\\s*$/i);
+                        if (num > 0 && partMatch) {
+                            const base = String(num);
+                            const part = partMatch[1];
+                            num = parseFloat(base.includes(".") ? `${base}${part}` : `${base}.${part}`);
+                        }
                         result.push({
                             id: id,
                             title: title,
@@ -161,6 +185,153 @@ class RulateDownloadWorker(QThread):
         except Exception as e:
             self.log("ERROR", f"Rulate: ошибка при получении списка глав: {e}")
             logging.error(traceback.format_exc())
+
+    @staticmethod
+    def _chapter_has_part(title: str) -> bool:
+        return bool(re.search(r"(?:Часть|Part)\s*\d+\s*$", title or "", re.IGNORECASE))
+
+    @staticmethod
+    def _chapter_base_number(number) -> int:
+        try:
+            value = float(number)
+        except (TypeError, ValueError):
+            return 0
+        return int(value) if value > 0 else 0
+
+    def _should_download_individually(self) -> bool:
+        if not self.chapter_infos or len(self.chapter_ids or []) <= 1:
+            return False
+
+        seen_bases = set()
+        for info in self.chapter_infos:
+            title = info.get("title", "")
+            number = info.get("number", 0)
+            try:
+                numeric = float(number)
+            except (TypeError, ValueError):
+                numeric = 0.0
+            if self._chapter_has_part(title) or (numeric and numeric != int(numeric)):
+                return True
+
+            base = self._chapter_base_number(number)
+            if base and base in seen_bases:
+                return True
+            if base:
+                seen_bases.add(base)
+        return False
+
+    def _apply_chapter_info(self, chapter: ChapterData, info: dict | None):
+        if not info:
+            return
+
+        title = info.get("title", "")
+        fallback = int(float(info.get("number") or 1))
+        vol, number, clean_title, num_found = parse_vol_and_chapter(
+            title, self.default_vol, fallback
+        )
+        if info.get("number"):
+            try:
+                number = float(info["number"])
+                num_found = True
+            except (TypeError, ValueError):
+                pass
+
+        chapter.volume = vol
+        chapter.number = number
+        if clean_title:
+            chapter.title = clean_title
+        chapter._num_found = num_found
+
+    def _apply_chapter_infos(self, chapters: list[ChapterData], infos: list[dict] | None):
+        if not chapters or not infos:
+            return
+
+        unused_infos = list(infos)
+        for chapter in chapters:
+            matched = None
+            for info in unused_infos:
+                try:
+                    info_number = float(info.get("number") or 0)
+                except (TypeError, ValueError):
+                    info_number = 0.0
+                if info_number and abs(float(chapter.number) - info_number) < 0.0001:
+                    matched = info
+                    break
+
+            if matched is None and len(chapters) == len(infos):
+                matched = unused_infos[0]
+
+            if matched:
+                self._apply_chapter_info(chapter, matched)
+                unused_infos.remove(matched)
+
+    def _parse_downloaded_file(self, file_path: str, chapter_info: dict | None = None) -> list[ChapterData]:
+        if file_path.lower().endswith(".zip"):
+            chapters = FileParser.parse_zip_docx(file_path, self.default_vol, self.log)
+        elif file_path.lower().endswith(".docx"):
+            doc = Document(file_path)
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            content = "\n".join(paragraphs)
+            chapters = [ChapterData(self.default_vol, 1, "", content)]
+        else:
+            self.log("ERROR", f"Rulate: unknown downloaded file format: {file_path}")
+            return []
+
+        if chapter_info and len(chapters) == 1:
+            self._apply_chapter_info(chapters[0], chapter_info)
+        return chapters
+
+    def _select_download_checkboxes(self, page, chapter_ids: list[str]) -> int:
+        page.evaluate("""() => {
+            document.querySelectorAll('input.download_chapter').forEach(cb => {
+                cb.checked = false;
+            });
+        }""")
+
+        return page.evaluate("""(ids) => {
+            let count = 0;
+            for (const id of ids) {
+                const row = document.querySelector(`tr[data-id="${id}"]`);
+                if (row) {
+                    const cb = row.querySelector('input.download_chapter');
+                    if (cb) {
+                        cb.checked = true;
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }""", [str(cid) for cid in chapter_ids])
+
+    def _download_selected_file(self, page, chapter_ids: list[str], chapter_info: dict | None = None) -> list[ChapterData]:
+        checked_count = self._select_download_checkboxes(page, chapter_ids)
+        self.log("INFO", f"Rulate: отмечено {checked_count} из {len(chapter_ids)} глав")
+
+        if checked_count == 0:
+            self.log("ERROR", "Rulate: ни одна глава не была отмечена для скачивания.")
+            return []
+
+        self.log("INFO", "Rulate: запускаю скачивание .docx…")
+        with page.expect_download(timeout=120000) as download_info:
+            page.click('input[name="download_d"]')
+
+        download = download_info.value
+        self.log("INFO", f"Rulate: файл скачивается: {download.suggested_filename}")
+
+        tmp_dir = tempfile.mkdtemp(prefix="rulate_")
+        try:
+            zip_path = os.path.join(tmp_dir, download.suggested_filename or "rulate_chapters.zip")
+            download.save_as(zip_path)
+            self.log("SUCCESS", f"Rulate: файл сохранён ({os.path.getsize(zip_path):,} байт)")
+            self.log("INFO", "Rulate: разбираю скачанный архив…")
+            return self._parse_downloaded_file(zip_path, chapter_info)
+        finally:
+            try:
+                for name in os.listdir(tmp_dir):
+                    os.remove(os.path.join(tmp_dir, name))
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
 
     def _download_chapters(self):
         """Скачать выбранные главы через форму «Скачать .docx»."""
@@ -187,6 +358,43 @@ class RulateDownloadWorker(QThread):
 
                 self.log("INFO", "Rulate: выбираю главы…")
                 self.progress_signal.emit(10)
+
+                if self._should_download_individually():
+                    total = len(self.chapter_ids)
+                    chapters = []
+                    self.log(
+                        "INFO",
+                        "Rulate: обнаружены главы с частями; скачиваю по одной, чтобы архив не потерял одноимённые части",
+                    )
+                    for index, chapter_id in enumerate(self.chapter_ids, start=1):
+                        if not self.is_running:
+                            break
+                        chapter_info = self._chapter_info_by_id.get(str(chapter_id))
+                        title = (chapter_info or {}).get("title") or str(chapter_id)
+                        self.log("INFO", f"Rulate: [{index}/{total}] {title}")
+                        try:
+                            chapters.extend(
+                                self._download_selected_file(
+                                    page, [str(chapter_id)], chapter_info
+                                )
+                            )
+                        except Exception as item_error:
+                            self.log(
+                                "ERROR",
+                                f"Rulate: ошибка скачивания главы {title}: {item_error}",
+                            )
+                            logging.error(traceback.format_exc())
+                        self.progress_signal.emit(10 + int(index * 90 / max(1, total)))
+
+                    browser.close()
+                    self.progress_signal.emit(100)
+
+                    if chapters:
+                        self.log("SUCCESS", f"Rulate: получено {len(chapters)} глав")
+                        self.chapters_ready.emit(chapters)
+                    else:
+                        self.log("WARNING", "Rulate: из выбранных глав не удалось извлечь ни одной главы")
+                    return
 
                 # Снимаем все чекбоксы, затем ставим нужные
                 page.evaluate("""() => {
@@ -256,6 +464,7 @@ class RulateDownloadWorker(QThread):
                     self.log("ERROR", f"Rulate: неизвестный формат файла: {zip_path}")
                     return
 
+                self._apply_chapter_infos(chapters, self.chapter_infos)
                 self.progress_signal.emit(100)
 
                 if chapters:

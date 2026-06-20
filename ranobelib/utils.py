@@ -145,6 +145,7 @@ def parse_vol_and_chapter(text: str, default_vol: str, fallback_num: int):
     detected_vol = default_vol
     chap_num = 0.0
     clean_title = text
+    dash_chars = "—–"
 
     # Том
     vol_m = re.search(r"(?:Том|Vol(?:ume)?|Т|V)\s*\.?\s*(\d+)", text, re.IGNORECASE)
@@ -161,12 +162,12 @@ def parse_vol_and_chapter(text: str, default_vol: str, fallback_num: int):
         raw_tail = ch_m.group(2)
         # Убираем индикатор прогресса вида (24/536) из хвоста
         raw_tail = re.sub(r"\s*\(\d+/\d+\)\s*$", "", raw_tail)
-        clean_title = re.sub(r"^[\s.\-:—_]+", "", raw_tail).strip()
+        clean_title = re.sub(rf"^[\s.\-:{dash_chars}_]+", "", raw_tail).strip()
         # Если после номера главы нет названия, проверяем текст ПЕРЕД "Глава N"
         # Например: "Гений призыва из школы некромантов – Глава 26"
         if not clean_title and ch_m.start() > 0:
             prefix = text[: ch_m.start()].strip()
-            prefix = re.sub(r"[\s.\-:—–_]+$", "", prefix).strip()
+            prefix = re.sub(rf"[\s.\-:{dash_chars}_]+$", "", prefix).strip()
             if prefix:
                 clean_title = prefix
     else:
@@ -176,7 +177,7 @@ def parse_vol_and_chapter(text: str, default_vol: str, fallback_num: int):
             idx = text.find(nums[0])
             if idx != -1:
                 raw_tail = text[idx + len(nums[0]) :]
-                clean_title = re.sub(r"^[\s.\-:—_]+", "", raw_tail).strip()
+                clean_title = re.sub(rf"^[\s.\-:{dash_chars}_]+", "", raw_tail).strip()
         else:
             clean_title = text
 
@@ -187,14 +188,14 @@ def parse_vol_and_chapter(text: str, default_vol: str, fallback_num: int):
     #   15 (Часть 2)   → 15.2
     #   5.1 (Часть 2) → 5.12   (к дробной части приклеивается номер части)
     part_match = re.search(
-        r"[\s\-—,]*\(?\s*(?:Часть|Part)\s*(\d+)\s*\)?\s*$",
+        rf"[\s\-{dash_chars},]*\(?\s*(?:Часть|Part)\s*(\d+)\s*\)?\s*$",
         clean_title,
         re.IGNORECASE,
     )
     if part_match:
         part_num = part_match.group(1)  # строка, не int — для конкатенации
         clean_title = clean_title[: part_match.start()].strip()
-        clean_title = re.sub(r"[\s.\-:—_]+$", "", clean_title)
+        clean_title = re.sub(rf"[\s.\-:{dash_chars}_]+$", "", clean_title)
         if chap_num == 0:
             chap_num = float(fallback_num)
         # Приклеиваем номер части к строковому представлению номера:

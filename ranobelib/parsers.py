@@ -1,4 +1,5 @@
 import io
+import html
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -12,6 +13,40 @@ from utils import natural_sort_key, parse_vol_and_chapter
 
 class FileParser:
     """Статические методы для разбора файлов разных форматов."""
+
+    @staticmethod
+    def _wrap_paragraphs(parts: list[str]) -> str:
+        paragraphs = []
+        for part in parts:
+            text = re.sub(r"\s+", " ", part).strip()
+            if text:
+                paragraphs.append(f"<p>{html.escape(text, quote=False)}</p>")
+        return "".join(paragraphs)
+
+    @staticmethod
+    def _extract_epub_text_content(soup: BeautifulSoup) -> str:
+        tag_parts = []
+        for tag in soup.find_all(["p", "div"]):
+            t = tag.get_text(" ", strip=True)
+            if t:
+                tag_parts.append(t)
+
+        tag_content = FileParser._wrap_paragraphs(tag_parts)
+        if len(tag_content) > 100:
+            return tag_content
+
+        body = soup.body or soup
+        body_copy = BeautifulSoup(str(body), "html.parser")
+        for tag in body_copy.find_all(["script", "style"]):
+            tag.decompose()
+        for br in body_copy.find_all("br"):
+            br.replace_with("\n")
+
+        body_text = body_copy.get_text("\n", strip=True)
+        fallback_content = FileParser._wrap_paragraphs(body_text.splitlines())
+        if len(fallback_content) > len(tag_content):
+            return fallback_content
+        return tag_content
 
     @staticmethod
     def parse_epub(path: str, default_vol: str, log_fn=None) -> list[ChapterData]:
@@ -59,11 +94,7 @@ class FileParser:
                         raw_title = heading.get_text(strip=True)
                         heading.decompose()
 
-                    text_content = ""
-                    for tag in soup.find_all(["p", "div"]):
-                        t = tag.get_text(strip=True)
-                        if t:
-                            text_content += f"<p>{t}</p>"
+                    text_content = FileParser._extract_epub_text_content(soup)
 
                     if len(text_content) > 100:
                         vol, c_num, title, _found = parse_vol_and_chapter(
@@ -93,6 +124,8 @@ class FileParser:
                 ],
                 key=natural_sort_key,
             )
+            if log_fn:
+                log_fn("INFO", f"ZIP: найдено DOCX-файлов: {len(file_list)}")
             cnt = 1
             all_nums_found = True
             for filename in file_list:
