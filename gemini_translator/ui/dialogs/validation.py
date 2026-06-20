@@ -20,7 +20,12 @@ from ...utils.validation_cache import (
     is_snapshot_compatible,
     restore_result_data,
 )
-from ...utils.text import find_unwrapped_body_text_snippets, is_well_formed_xml
+from ...utils.text import (
+    find_stray_angle_bracket_snippets,
+    find_unwrapped_body_text_snippets,
+    is_well_formed_xml,
+    repair_ai_html_artifacts,
+)
 from ...utils.project_migrator import ProjectMigrator
 from ...utils.translation_versions import (
     select_target_translation_version,
@@ -473,6 +478,9 @@ class StructureErrorsDialog(QDialog):
         def format_line(name, orig, trans):
             color = "red" if str(orig) != str(trans) else "green"
             return f'<li><b>{name}:</b> Оригинал: {orig}, Перевод: {trans} <font color="{color}">({ "Несовпадение" if str(orig) != str(trans) else "OK"})</font></li>'
+
+        def html_safe(value):
+            return str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         
         has_tag_errors = False
         tag_html = "<ul>"
@@ -492,8 +500,14 @@ class StructureErrorsDialog(QDialog):
         if 'body_root_text' in errors:
             has_tag_errors = True
             snippets = errors['body_root_text']
-            preview = "; ".join(snippets) if isinstance(snippets, list) else str(snippets)
+            preview = html_safe("; ".join(snippets) if isinstance(snippets, list) else str(snippets))
             tag_html += format_line("Текст напрямую в &lt;body&gt;", "Нет", preview)
+
+        if 'stray_angle_brackets' in errors:
+            has_tag_errors = True
+            snippets = errors['stray_angle_brackets']
+            preview = html_safe("; ".join(snippets) if isinstance(snippets, list) else str(snippets))
+            tag_html += format_line("Лишние &lt; или &gt; вне тегов", "Нет", preview)
 
         for h in sorted(errors.get('headings', {}).keys()):
             orig_h, trans_h = errors['headings'][h]
@@ -682,6 +696,9 @@ class ValidationThread(QThread):
             root_text_snippets = find_unwrapped_body_text_snippets(translated_content)
             if root_text_snippets:
                 structural_errors['body_root_text'] = root_text_snippets
+        angle_snippets = find_stray_angle_bracket_snippets(translated_content)
+        if angle_snippets:
+            structural_errors['stray_angle_brackets'] = angle_snippets
 
         # --- НАЧАЛО БЛОКА TRY (Восстановлено) ---
         try:
@@ -1682,6 +1699,8 @@ class TranslationValidatorDialog(QDialog):
         grid.setVerticalSpacing(4)
         
         self.check_structure = QCheckBox("Структура (теги, заголовки)")
+        self.btn_fix_ai_artifacts = QPushButton("Исправить ошибки ИИ")
+        self.btn_fix_ai_artifacts.clicked.connect(self._repair_ai_artifacts_for_selection)
         self.check_length_ratio = QCheckBox("Соотношение длин (перевод / оригинал)")
         
         untranslated_layout = QHBoxLayout()
@@ -1694,7 +1713,13 @@ class TranslationValidatorDialog(QDialog):
         untranslated_layout.addWidget(self.btn_fix_untranslated)
         untranslated_layout.addStretch()
     
-        grid.addWidget(self.check_structure, 0, 0)
+        structure_layout = QHBoxLayout()
+        structure_layout.setContentsMargins(0,0,0,0); structure_layout.setSpacing(5)
+        structure_layout.addWidget(self.check_structure)
+        structure_layout.addWidget(self.btn_fix_ai_artifacts)
+        structure_layout.addStretch()
+
+        grid.addLayout(structure_layout, 0, 0)
         grid.addLayout(untranslated_layout, 1, 0)
         grid.addWidget(self.check_length_ratio, 2, 0)
         
@@ -1818,6 +1843,11 @@ class TranslationValidatorDialog(QDialog):
         # Группа 1: Основные проверки
         structure_tooltip = "Проверяет соответствие ключевых тегов (<html>, <body>), заголовков (<h1>-<h6>), изображений и списков.\nТакже проверяет баланс тегов <p>."
         self.check_structure.setToolTip(structure_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
+        self.btn_fix_ai_artifacts.setToolTip(
+            "Исправляет типовые ошибки ИИ в HTML: лишние символы < или > вне тегов, "
+            "текст напрямую внутри body без p, потерянную обёртку body и баланс p."
+            .replace('<', '&lt;').replace('>', '&gt;')
+        )
         
         self.check_untranslated.setToolTip("Включить/выключить проверку на недоперевод.")
         self.btn_fix_untranslated.setToolTip("Ищет в переводе латинские слова (3+ букв) и иероглифы, которые также присутствуют в оригинале.\nОткрывает диалог для пакетного исправления, если что-то найдено.")

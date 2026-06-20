@@ -1644,6 +1644,127 @@ def repair_unbalanced_paragraphs(html_content: str) -> str:
     
     return content
 
+HTML_TAG_TOKEN_RE = re.compile(
+    r'</?\s*[A-Za-z][A-Za-z0-9:_-]*'
+    r'(?:\s+[A-Za-z_:][A-Za-z0-9:._-]*'
+    r'(?:\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s"\'=<>`]+))?)*'
+    r'\s*/?>',
+    re.DOTALL,
+)
+
+
+def _consume_valid_angle_token(text: str, start: int) -> int | None:
+    if text.startswith('<!--', start):
+        end = text.find('-->', start + 4)
+        return end + 3 if end != -1 else None
+
+    if text.startswith('<![CDATA[', start):
+        end = text.find(']]>', start + 9)
+        return end + 3 if end != -1 else None
+
+    if text.startswith('<?', start):
+        end = text.find('?>', start + 2)
+        return end + 2 if end != -1 else None
+
+    doctype_match = re.match(r'<!DOCTYPE\b[^>]*>', text[start:], flags=re.IGNORECASE)
+    if doctype_match:
+        return start + doctype_match.end()
+
+    tag_match = HTML_TAG_TOKEN_RE.match(text, start)
+    if tag_match:
+        return tag_match.end()
+
+    return None
+
+
+def _angle_artifact_preview(html_content: str, index: int, radius: int = 80) -> str:
+    start = max(0, index - radius)
+    end = min(len(html_content), index + radius + 1)
+    raw = html_content[start:end].replace('\r', ' ').replace('\n', ' ')
+    try:
+        preview = BeautifulSoup(raw, 'html.parser').get_text(" ", strip=True)
+    except Exception:
+        preview = raw
+    preview = re.sub(r'\s+', ' ', preview).strip() or raw.strip()
+    if len(preview) > 160:
+        preview = preview[:157].rstrip() + "..."
+    return preview
+
+
+def _scan_stray_angle_brackets(html_content: str, collect_limit: int = 0) -> tuple[str, list[str]]:
+    if not isinstance(html_content, str) or not html_content:
+        return html_content, []
+
+    result = []
+    snippets = []
+    i = 0
+    length = len(html_content)
+
+    while i < length:
+        char = html_content[i]
+
+        if char == '<':
+            token_end = _consume_valid_angle_token(html_content, i)
+            if token_end is not None:
+                result.append(html_content[i:token_end])
+                i = token_end
+                continue
+
+            result.append('&lt;')
+            if collect_limit <= 0 or len(snippets) < collect_limit:
+                snippets.append(f"<: {_angle_artifact_preview(html_content, i)}")
+            i += 1
+            continue
+
+        if char == '>':
+            result.append('&gt;')
+            if collect_limit <= 0 or len(snippets) < collect_limit:
+                snippets.append(f">: {_angle_artifact_preview(html_content, i)}")
+            i += 1
+            continue
+
+        result.append(char)
+        i += 1
+
+    return "".join(result), snippets
+
+
+def escape_stray_angle_brackets(html_content: str) -> str:
+    """
+    Escapes literal < and > characters that are not part of real HTML/XML tags.
+    This keeps visible text intact while making EPUB XHTML parseable again.
+    """
+    repaired, _ = _scan_stray_angle_brackets(html_content)
+    return repaired
+
+
+def find_stray_angle_bracket_snippets(html_content: str, limit: int = 3) -> list[str]:
+    """Return short previews for literal < or > characters outside real tags."""
+    _, snippets = _scan_stray_angle_brackets(html_content, collect_limit=limit)
+    return snippets[:limit]
+
+
+def repair_ai_html_artifacts(original_html: str, translated_html: str) -> str:
+    """
+    Repairs common AI HTML artifacts without changing translation wording:
+    missing body wrapper, stray angle brackets, unbalanced <p>, and direct
+    visible text inside <body> that should be wrapped in paragraphs.
+    """
+    if not isinstance(translated_html, str) or not translated_html.strip():
+        return translated_html
+
+    original_html = original_html if isinstance(original_html, str) else ""
+    repaired = normalize_translated_body_wrapper(original_html, translated_html)
+    repaired = escape_stray_angle_brackets(repaired)
+    repaired = optimize_headings(repaired)
+    repaired = repair_unbalanced_paragraphs(repaired)
+    repaired = repair_missing_paragraph_tags(original_html, repaired)
+    repaired = _coerce_first_heading_level(original_html, repaired)
+    repaired = coerce_translated_body_block(original_html, repaired)
+    repaired = RAW_AMPERSAND_PATTERN.sub('&amp;', repaired)
+    return repaired
+
+
 def repair_json_string(json_string: str) -> str | None:
     """
     Восстанавливает поврежденную JSON-строку, извлекая и ремонтируя
