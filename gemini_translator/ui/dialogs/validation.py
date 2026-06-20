@@ -1843,11 +1843,11 @@ class TranslationValidatorDialog(QDialog):
         # Группа 1: Основные проверки
         structure_tooltip = "Проверяет соответствие ключевых тегов (<html>, <body>), заголовков (<h1>-<h6>), изображений и списков.\nТакже проверяет баланс тегов <p>."
         self.check_structure.setToolTip(structure_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
-        self.btn_fix_ai_artifacts.setToolTip(
+        ai_repair_tooltip = (
             "Исправляет типовые ошибки ИИ в HTML: лишние символы < или > вне тегов, "
             "текст напрямую внутри body без p, потерянную обёртку body и баланс p."
-            .replace('<', '&lt;').replace('>', '&gt;')
         )
+        self.btn_fix_ai_artifacts.setToolTip(ai_repair_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
         
         self.check_untranslated.setToolTip("Включить/выключить проверку на недоперевод.")
         self.btn_fix_untranslated.setToolTip("Ищет в переводе латинские слова (3+ букв) и иероглифы, которые также присутствуют в оригинале.\nОткрывает диалог для пакетного исправления, если что-то найдено.")
