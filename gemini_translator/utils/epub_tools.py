@@ -468,7 +468,10 @@ class EpubCreator:
         return ncx
         
     def _create_styles(self):
-        return '''body { font-family: Georgia, serif; } p { text-indent: 1.5em; margin: 0; }'''
+        return '''
+body { font-family: Georgia, serif; line-height: 1.55; }
+p { text-indent: 1.5em; margin: 0 0 0.85em 0; }
+'''
 
 
 def _get_path_from_item(item):

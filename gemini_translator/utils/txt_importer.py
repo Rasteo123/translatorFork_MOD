@@ -909,7 +909,7 @@ class TxtImportWizardDialog(QDialog):
                 # Экранирование HTML внутри текста не нужно, если content чистый текст, 
                 # но EpubCreator обычно сам оборачивает. Здесь мы делаем базовую разметку.
                 # strip() у каждой строки нужен, чтобы убрать лишние пробелы.
-                paragraphs = ''.join([f'<p>{line.strip()}</p>' for line in content.splitlines() if line.strip()])
+                paragraphs = '\n\n'.join([f'<p>{line.strip()}</p>' for line in content.splitlines() if line.strip()])
                 
                 html_content = f"""<?xml version='1.0' encoding='utf-8'?>
 <html xmlns="http://www.w3.org/1999/xhtml">

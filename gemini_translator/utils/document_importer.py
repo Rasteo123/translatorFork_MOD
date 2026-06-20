@@ -160,7 +160,7 @@ def _paragraphs_from_plain_text(text: str) -> str:
             continue
         buffer.append(line)
     flush()
-    return "\n".join(paragraphs)
+    return "\n\n".join(paragraphs)
 
 
 def _plain_text_to_chapters(text: str, title: str) -> list[DocumentChapter]:

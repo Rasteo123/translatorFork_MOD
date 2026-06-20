@@ -76,3 +76,20 @@ def test_txt_import_detects_chapter_markers(tmp_path):
 
     assert result.source_format == "txt"
     assert [chapter.title for chapter in result.chapters] == ["Chapter 1", "Chapter 2"]
+
+
+def test_txt_import_epub_spaces_paragraphs(tmp_path):
+    txt_path = tmp_path / "plain.txt"
+    txt_path.write_text("First line.\nWrapped line.\n\nSecond paragraph.", encoding="utf-8")
+
+    result = extract_document_chapters(txt_path)
+
+    assert result.source_format == "txt"
+    assert result.chapters[0].html == "<p>First line. Wrapped line.</p>\n\n<p>Second paragraph.</p>"
+
+    epub_path = create_epub_from_import(result, txt_path, tmp_path, title="Plain")
+    chapter = _read_epub_text(epub_path, "OEBPS/chapter_0001.xhtml")
+    styles = _read_epub_text(epub_path, "OEBPS/styles.css")
+
+    assert "</p>\n\n<p>" in chapter
+    assert "p { text-indent: 1.5em; margin: 0 0 0.85em 0; }" in styles
