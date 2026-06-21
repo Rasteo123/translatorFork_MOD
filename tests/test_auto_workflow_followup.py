@@ -293,6 +293,10 @@ class _StartTranslationHarness:
     def _resolve_auto_model_override(self, auto_settings):
         return None, None, None
 
+    def _ensure_pending_tasks_for_start(self):
+        task_manager = self.engine.task_manager if self.engine else None
+        return bool(task_manager and task_manager.has_pending_tasks())
+
     def _auto_log(self, message, force=False, **kwargs):
         entry = {"message": message, "force": force}
         entry.update(kwargs)

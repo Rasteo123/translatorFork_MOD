@@ -28,6 +28,7 @@ from gemini_translator.api import config as api_config
 from gemini_translator.core.task_manager import ChapterQueueManager
 from gemini_translator.utils.proxy_tool import GlobalProxyController
 from gemini_translator.utils.server_manager import ServerManager
+from gemini_translator.version import APP_VERSION
 from window_branding import install_window_title_branding
 from gemini_translator.ui.dialogs.proxy import ProxySettingsDialog
 from gemini_translator.ui.themes import (
@@ -38,7 +39,6 @@ from gemini_translator.ui.themes import (
 
 # ---------------------------------------------------------------------------
 # Gemini EPUB Translator - Точка входа в приложение
-APP_VERSION = "V 10.5.17"  # <-- ОПРЕДЕЛЕНИЕ ВЕРСИИ ЗДЕСЬ
 
 # ---------------------------------------------------------------------------
 # Этот файл отвечает за запуск приложения, обработку аргументов командной

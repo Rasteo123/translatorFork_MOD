@@ -1,0 +1,30 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["."]
+filterwarnings = [
+    "default",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+    ".git",
+    ".pytest_cache",
+    ".pytest_tmp",
+    ".venv",
+    ".venv-linux",
+    "build",
+    "build_verify",
+    "build_verify_project_runtime",
+    "dist",
+    "dist_verify",
+    "dist_verify_project_runtime",
+    "playwright_runtime",
+    "chatgpt-profile-run",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E501"]
