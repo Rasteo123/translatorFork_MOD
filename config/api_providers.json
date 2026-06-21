@@ -305,6 +305,36 @@
       }
     }
    },
+  "openmodel": {
+    "display_name": "OpenModel DeepSeek V4 Flash",
+    "provider": "openmodel",
+    "handler_class": "OpenModelApiHandler",
+    "base_url": "https://api.openmodel.ai",
+    "anthropic_version": "2023-06-01",
+    "base_timeout": 1200,
+    "is_async": true,
+    "needs_warmup": true,
+    "visible": true,
+    "file_suffix": "_translated_openmodel.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "DeepSeek V4 Flash (OpenModel)": {
+        "id": "deepseek-v4-flash",
+        "rpm": 5,
+        "tpm": 50000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 8192,
+        "context_length": 1000000,
+        "context_window": 1000000,
+        "min_thinking_budget": false
+      }
+    }
+   },
   "nvidia": {
     "display_name": "NVIDIA NIM API",
     "provider": "nvidia",

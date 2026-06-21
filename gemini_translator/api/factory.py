@@ -11,6 +11,7 @@ HANDLER_CLASS_MAP = {
     "OpenRouterApiHandler": handlers.OpenRouterApiHandler,
     "HuggingFaceApiHandler": handlers.HuggingFaceApiHandler,
     "DeepseekApiHandler": handlers.DeepseekApiHandler,
+    "OpenModelApiHandler": handlers.OpenModelApiHandler,
     "DryRunApiHandler": handlers.DryRunApiHandler,
     "LocalApiHandler": handlers.LocalApiHandler,
     "BrowserApiHandler": handlers.BrowserApiHandler,
