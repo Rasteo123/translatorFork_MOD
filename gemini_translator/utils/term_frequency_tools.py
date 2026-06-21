@@ -10,16 +10,16 @@ from collections import Counter, defaultdict
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from .language_tools import GlossaryRegexService
+from .language_tools import GlossaryRegexService, LanguageDetector, normalize_glossary_search_text
 
 try:
-    from bs4 import BeautifulSoup
+    from bs4 import BeautifulSoup, UnicodeDammit
     BS4_AVAILABLE = True
 except ImportError:
     BS4_AVAILABLE = False
 
 
-TERM_FREQUENCY_CACHE_VERSION = 1
+TERM_FREQUENCY_CACHE_VERSION = 3
 
 
 def collect_glossary_originals(glossary_source):
@@ -155,11 +155,144 @@ def get_term_frequency_range(payload):
     return min(counts), max(counts)
 
 
+def _decode_epub_html(raw_content):
+    if raw_content is None:
+        return ""
+    if isinstance(raw_content, str):
+        return raw_content
+
+    if BS4_AVAILABLE:
+        decoded = UnicodeDammit(raw_content, is_html=True)
+        if decoded.unicode_markup is not None:
+            return decoded.unicode_markup
+
+    for encoding in ("utf-8-sig", "utf-8", "utf-16", "cp1251", "gb18030", "big5", "shift_jis", "euc-kr"):
+        try:
+            return raw_content.decode(encoding)
+        except UnicodeError:
+            continue
+
+    return raw_content.decode("utf-8", errors="replace")
+
+
 def _extract_text_from_html(raw_content):
+    raw_content = _decode_epub_html(raw_content)
     if BS4_AVAILABLE:
         soup = BeautifulSoup(raw_content, "html.parser")
         return soup.get_text(separator=" ")
     return re.sub(r"<[^>]+>", " ", raw_content)
+
+
+def _frequency_key(text):
+    normalized = normalize_glossary_search_text(text)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized.casefold()
+
+
+def _surface_pattern(surface):
+    parts = re.split(r"(\s+)", surface.strip())
+    pattern_parts = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isspace():
+            pattern_parts.append(r"\s+")
+        else:
+            pattern_parts.append(re.escape(part))
+    return "".join(pattern_parts)
+
+
+def _last_word_variants(word):
+    variants = {word}
+    lower_word = word.casefold()
+    if len(word) < 3 or not re.fullmatch(r"[A-Za-z]+", word):
+        return variants
+
+    variants.add(f"{word}'s")
+
+    if lower_word.endswith("y") and len(word) > 3:
+        plural = f"{word[:-1]}ies"
+    elif lower_word.endswith(("s", "x", "z")) or lower_word.endswith(("ch", "sh")):
+        plural = f"{word}es"
+    else:
+        plural = f"{word}s"
+
+    variants.add(plural)
+    variants.add(f"{plural}'")
+    return variants
+
+
+def _alpha_frequency_surfaces(term):
+    normalized = normalize_glossary_search_text(term).strip()
+    if not normalized or LanguageDetector.is_cjk_text(normalized):
+        return set()
+    if not re.search(r"[A-Za-z]", normalized):
+        return set()
+
+    match = re.search(r"([A-Za-z]+)$", normalized)
+    if not match:
+        return {normalized}
+
+    prefix = normalized[:match.start(1)]
+    last_word = match.group(1)
+    variants = {f"{prefix}{variant}" for variant in _last_word_variants(last_word)}
+
+    if prefix.strip() and len(last_word) >= 4:
+        variants.add(f"{prefix}{last_word}y")
+
+    return variants
+
+
+class GlossaryFrequencyVariantMatcher:
+    """Counts safe alphabetic surface variants for frequency analysis only."""
+
+    def __init__(self, glossary_terms):
+        self.variant_map = defaultdict(set)
+        self.pattern = None
+
+        exact_keys = {
+            _frequency_key(term)
+            for term in glossary_terms or []
+            if _frequency_key(term)
+        }
+
+        pattern_sources = set()
+        for term in glossary_terms or []:
+            base_key = _frequency_key(term)
+            if not base_key:
+                continue
+
+            for surface in _alpha_frequency_surfaces(term):
+                surface_key = _frequency_key(surface)
+                if not surface_key:
+                    continue
+                if surface_key != base_key and surface_key in exact_keys:
+                    continue
+
+                self.variant_map[surface_key].add(term)
+                pattern_sources.add(_surface_pattern(surface))
+
+        if pattern_sources:
+            sorted_sources = sorted(pattern_sources, key=len, reverse=True)
+            self.pattern = re.compile(
+                r"(?<![A-Za-z0-9_])(?:"
+                + "|".join(sorted_sources)
+                + r")(?![A-Za-z0-9_])",
+                re.IGNORECASE,
+            )
+
+    def count_matches(self, text):
+        found_counts = Counter()
+        if not self.pattern:
+            return found_counts
+
+        normalized_text = normalize_glossary_search_text(text)
+        for match in self.pattern.finditer(normalized_text):
+            surface_key = _frequency_key(match.group(0))
+            for original in self.variant_map.get(surface_key, ()):
+                found_counts[original] += 1
+
+        return found_counts
 
 
 class GlossaryFrequencyWorker(QThread):
@@ -189,6 +322,7 @@ class GlossaryFrequencyWorker(QThread):
                 return
 
             regex_service = GlossaryRegexService(self.glossary_dict)
+            variant_matcher = GlossaryFrequencyVariantMatcher(self.glossary_terms)
             term_occurrences = Counter()
             term_distribution = defaultdict(set)
 
@@ -208,9 +342,12 @@ class GlossaryFrequencyWorker(QThread):
                     self.progress_update.emit(index + 1, total_files, os.path.basename(filename))
 
                     try:
-                        raw_content = archive.read(filename).decode("utf-8", errors="ignore")
+                        raw_content = archive.read(filename)
                         clean_text = _extract_text_from_html(raw_content)
                         match_counts = regex_service.count_matches(clean_text)
+                        variant_counts = variant_matcher.count_matches(clean_text)
+                        for term, count in variant_counts.items():
+                            match_counts[term] = max(int(match_counts.get(term, 0) or 0), int(count or 0))
 
                         for term, count in match_counts.items():
                             count = int(count or 0)
