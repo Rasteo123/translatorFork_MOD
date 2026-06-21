@@ -1940,6 +1940,7 @@ class GenerationSessionDialog(QDialog):
         
         self.key_widget = KeyManagementWidget(self.settings_manager, self)
         self.model_settings_widget = ModelSettingsWidget(self)
+        self.model_settings_widget.set_provider_event_source(self.key_widget)
         
         # --- ЧИСТКА ИНТЕРФЕЙСА ---
         # 1. Скрываем ненужные группы

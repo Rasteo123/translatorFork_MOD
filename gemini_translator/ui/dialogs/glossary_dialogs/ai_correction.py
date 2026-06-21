@@ -294,6 +294,7 @@ class CorrectionSessionDialog(QDialog):
         # 2. Средняя панель: Настройки модели + Лог
         middle_panel_layout = QHBoxLayout()
         self.model_settings_widget = ModelSettingsWidget(self)
+        self.model_settings_widget.set_provider_event_source(self.key_widget)
         
         def safe_hide_widget(object_name):
             widget_to_hide = self.model_settings_widget.findChild(QWidget, object_name)

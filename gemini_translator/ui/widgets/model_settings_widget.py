@@ -149,6 +149,7 @@ class ModelSettingsWidget(QGroupBox):
         self.bus = app.event_bus
         self._uses_topic_subscription = False
         self._uses_broadcast_subscription = False
+        self._provider_event_source_id = None
         # Виджету интересна только смена провайдера; не будимся на чужие события.
         self._event_topics = ('provider_changed',)
         self._connect_to_bus()
@@ -764,6 +765,9 @@ class ModelSettingsWidget(QGroupBox):
     # Публичные методы
     # ----------------------------------------------------
 
+    def set_provider_event_source(self, provider_widget):
+        self._provider_event_source_id = id(provider_widget) if provider_widget is not None else None
+
     def get_settings(self):
         """Возвращает словарь с текущими настройками этого виджета."""
         max_concurrent = self.max_concurrent_spin.value()
@@ -919,7 +923,13 @@ class ModelSettingsWidget(QGroupBox):
     @pyqtSlot(dict)
     def on_event(self, event: dict):
         if event.get('event') == 'provider_changed':
-            provider_id = event.get('data', {}).get('provider_id')
+            data = event.get('data', {}) or {}
+            expected_source_id = getattr(self, '_provider_event_source_id', None)
+            event_source_id = data.get('provider_widget_id')
+            if expected_source_id is not None and event_source_id != expected_source_id:
+                return
+
+            provider_id = data.get('provider_id')
             if provider_id:
                 self.set_available_models(provider_id)
 

@@ -693,7 +693,10 @@ class KeyManagementWidget(QWidget):
         self.bus.event_posted.emit({
             'event': 'provider_changed',
             'source': 'KeyManagementWidget',
-            'data': {'provider_id': provider_id}
+            'data': {
+                'provider_id': provider_id,
+                'provider_widget_id': id(self),
+            }
         })
 
         self._load_and_refresh_keys()

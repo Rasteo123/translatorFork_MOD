@@ -2279,6 +2279,7 @@ class AITranslationDialog(QDialog):
         # 2. Модель и Лог
         middle_panel_layout = QHBoxLayout()
         self.model_settings_widget = ModelSettingsWidget(self)
+        self.model_settings_widget.set_provider_event_source(self.key_widget)
         
         # Скрываем лишнее
         for name in ["rpm_row", "concurrent_row", "right_column_widget"]:

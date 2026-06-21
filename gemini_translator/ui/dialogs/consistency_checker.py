@@ -536,6 +536,8 @@ class ConsistencyValidatorDialog(QDialog):
             parent=self, 
             settings_manager=self.settings_manager
         )
+        if hasattr(self, 'key_management_widget'):
+            self.model_settings_widget.set_provider_event_source(self.key_management_widget)
         layout.addWidget(self.model_settings_widget)
         
         # Дополнительный блок настроек именно для Consistency Checker

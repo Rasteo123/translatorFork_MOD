@@ -443,6 +443,7 @@ class InitialSetupDialog(QDialog):
             distribution_group_widget=distribution_group,
             server_manager=server_manager
         )
+        self.model_settings_widget.set_provider_event_source(self.key_management_widget)
         # Подключаем сигналы ключей
         self.key_management_widget.active_keys_changed.connect(self._update_distribution_info_from_widget)
         self.key_management_widget.active_keys_changed.connect(self.check_ready)

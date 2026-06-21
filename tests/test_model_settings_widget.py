@@ -119,6 +119,32 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         # Энергоэффективность: виджет не должен будиться на частые чужие события.
         self.assertNotIn("log_message", bus.subscriptions)
 
+    def test_ignores_provider_changes_from_other_key_widgets(self):
+        widget = self._create_widget()
+        own_key_widget = object()
+        other_key_widget = object()
+        calls = []
+
+        widget.set_provider_event_source(own_key_widget)
+        widget.set_available_models = lambda provider_id: calls.append(provider_id)
+
+        widget.on_event({
+            "event": "provider_changed",
+            "data": {
+                "provider_id": "glossary_provider",
+                "provider_widget_id": id(other_key_widget),
+            },
+        })
+        widget.on_event({
+            "event": "provider_changed",
+            "data": {
+                "provider_id": "translation_provider",
+                "provider_widget_id": id(own_key_widget),
+            },
+        })
+
+        self.assertEqual(calls, ["translation_provider"])
+
     def test_workascii_section_hides_technical_fields_and_shows_auth_buttons(self):
         widget = self._create_widget()
 
