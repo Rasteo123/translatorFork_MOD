@@ -324,8 +324,8 @@
     "models": {
       "DeepSeek V4 Flash (OpenModel)": {
         "id": "deepseek-v4-flash",
-        "rpm": 5,
-        "tpm": 50000,
+        "rpm": 10,
+        "tpm": 100000,
         "needs_chunking": true,
         "max_concurrent_requests": 1,
         "max_output_tokens": 8192,
