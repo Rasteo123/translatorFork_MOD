@@ -2271,7 +2271,8 @@ class CorrectionSessionDialog(QDialog):
         try:
             # 2. Используем "патченный" open() для получения файлового объекта,
             #    который на самом деле является потоком в памяти.
-            with zipfile.ZipFile(open(virtual_path, 'wb'), 'w', zipfile.ZIP_DEFLATED) as zf:
+            with open(virtual_path, 'wb') as epub_file, \
+                    zipfile.ZipFile(epub_file, 'w', zipfile.ZIP_DEFLATED) as zf:
                 # 3. Записываем нашу "главу" в этот виртуальный архив.
                 zf.writestr(internal_chapter_path, content_str.encode('utf-8'))
             

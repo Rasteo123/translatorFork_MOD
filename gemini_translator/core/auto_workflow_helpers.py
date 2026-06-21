@@ -56,6 +56,35 @@ def effective_auto_short_ratio_limit(
     return base_limit, "alphabetic"
 
 
+def estimate_auto_task_size_limit(token_limit: Any) -> tuple[int | None, str | None]:
+    token_limit = int(token_limit or 0)
+    if token_limit <= 0:
+        return None, None
+
+    profile_name = "Gemini-токены"
+    task_token_limit = max(500, min(token_limit, 350000))
+    return task_token_limit, profile_name
+
+
+def build_sequential_chapter_chains(chapters: Any, split_count: Any) -> list[list[str]]:
+    chapters = list(chapters or [])
+    if not chapters:
+        return []
+    try:
+        split_count = int(split_count)
+    except (TypeError, ValueError):
+        split_count = 1
+    split_count = max(1, min(split_count, len(chapters)))
+
+    chains = []
+    for index in range(split_count):
+        start = (index * len(chapters)) // split_count
+        end = ((index + 1) * len(chapters)) // split_count
+        if start < end:
+            chains.append(chapters[start:end])
+    return chains
+
+
 def extract_chapters_from_payload(payload: Any) -> list[str]:
     if not payload:
         return []

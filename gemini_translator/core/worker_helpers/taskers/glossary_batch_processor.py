@@ -63,7 +63,8 @@ class GlossaryBatchProcessor(BaseTaskProcessor):
 
         try:
             processed_parts = []
-            with zipfile.ZipFile(open(epub_path_or_object, 'rb'), "r") as zf:
+            with open(epub_path_or_object, 'rb') as epub_file, \
+                    zipfile.ZipFile(epub_file, "r") as zf:
                 for chapter_path in chapter_paths:
                     raw_html = zf.read(chapter_path).decode("utf-8", "ignore")
                     soup = BeautifulSoup(raw_html, 'html.parser')

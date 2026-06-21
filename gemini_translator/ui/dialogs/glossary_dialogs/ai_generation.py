@@ -1656,7 +1656,7 @@ class GenerationSessionDialog(QDialog):
             
         is_any_cjk = False
         try:
-            with zipfile.ZipFile(open(self.epub_path, 'rb'), 'r') as zf:
+            with zipfile.ZipFile(self.epub_path, 'r') as zf:
                 # Проверяем до 3 глав из списка self.html_files
                 for chapter_path in self.html_files[:3]:
                     content = zf.read(chapter_path).decode('utf-8', 'ignore')
@@ -1849,7 +1849,7 @@ class GenerationSessionDialog(QDialog):
         
         real_chapter_sizes = {}
         try:
-            with zipfile.ZipFile(open(self.epub_path, 'rb'), 'r') as zf:
+            with zipfile.ZipFile(self.epub_path, 'r') as zf:
                 for chapter in self.html_files:
                     real_chapter_sizes[chapter] = estimate_epub_chapter_input_tokens(
                         zf.read(chapter).decode('utf-8', 'ignore')

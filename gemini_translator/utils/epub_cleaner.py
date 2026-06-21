@@ -135,7 +135,7 @@ class EpubCleaner:
             from .epub_tools import get_epub_chapter_order
             ordered_chapters = get_epub_chapter_order(self.epub_path)
         
-        with zipfile.ZipFile(open(self.epub_path, 'rb'), 'r') as zin:
+        with zipfile.ZipFile(self.epub_path, 'r') as zin:
             with zipfile.ZipFile(temp_output_buffer, 'w', zipfile.ZIP_DEFLATED) as zout:
                 
                 # 1. Read all files into memory

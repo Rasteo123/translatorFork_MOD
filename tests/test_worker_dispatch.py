@@ -33,6 +33,11 @@ class LegacyWorkerPredicateTests(unittest.TestCase):
 
 
 class DispatchRoutingTests(unittest.TestCase):
+    def test_destructor_ignores_partially_constructed_engine(self):
+        eng = TranslationEngine.__new__(TranslationEngine)
+
+        TranslationEngine.__del__(eng)
+
     def _engine(self):
         eng = TranslationEngine.__new__(TranslationEngine)
         eng.executor = MagicMock()

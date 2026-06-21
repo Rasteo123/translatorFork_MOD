@@ -1089,7 +1089,14 @@ class TranslationEngine(QObject):
         self._post_event('log_message', {'message': "[MANAGER] Пул потоков полностью остановлен."})
 
     def __del__(self):
-        session_id = getattr(self, 'session_id_for_log', 'unknown')
+        try:
+            session_id = getattr(self, 'session_id_for_log', 'unknown')
+        except RuntimeError:
+            # QObject attributes are unavailable if construction did not reach
+            # QObject.__init__, which can happen in focused unit tests.
+            return
+        except Exception:
+            session_id = 'unknown'
         if session_id:
             print(f"[MANAGER LIFECYCLE] Объект TranslationEngine для сессии …{session_id[:8]} УНИЧТОЖЕН.")
         

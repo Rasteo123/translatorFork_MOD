@@ -1,8 +1,10 @@
 from gemini_translator.core.auto_workflow_helpers import (
     auto_result_uses_cjk_ratio,
+    build_sequential_chapter_chains,
     compose_auto_details,
     describe_auto_payload,
     effective_auto_short_ratio_limit,
+    estimate_auto_task_size_limit,
     extract_chapters_from_payload,
     format_auto_chapter_list,
     make_auto_chapter_signature,
@@ -51,6 +53,22 @@ def test_auto_short_ratio_keeps_alphabetic_user_limit():
 
     assert ratio_limit == 0.82
     assert profile == "alphabetic"
+
+
+def test_estimate_auto_task_size_limit_clamps_to_supported_range():
+    assert estimate_auto_task_size_limit(0) == (None, None)
+    assert estimate_auto_task_size_limit(120) == (500, "Gemini-токены")
+    assert estimate_auto_task_size_limit(2000) == (2000, "Gemini-токены")
+    assert estimate_auto_task_size_limit(999999) == (350000, "Gemini-токены")
+
+
+def test_build_sequential_chapter_chains_splits_evenly_and_safely():
+    chapters = ["ch1", "ch2", "ch3", "ch4", "ch5"]
+
+    assert build_sequential_chapter_chains(chapters, 2) == [["ch1", "ch2"], ["ch3", "ch4", "ch5"]]
+    assert build_sequential_chapter_chains(chapters, 99) == [["ch1"], ["ch2"], ["ch3"], ["ch4"], ["ch5"]]
+    assert build_sequential_chapter_chains(chapters, "bad") == [chapters]
+    assert build_sequential_chapter_chains([], 3) == []
 
 
 def test_normalize_auto_chapters_deduplicates_and_sorts_naturally():

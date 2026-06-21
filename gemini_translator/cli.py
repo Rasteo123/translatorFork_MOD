@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .core.auto_workflow_helpers import build_sequential_chapter_chains
+
 
 class CliError(Exception):
     def __init__(self, message: str, *, exit_code: int = 2, payload: dict | None = None):
@@ -177,23 +179,6 @@ def load_project_glossary(project_folder: str, glossary_path: str | None = None)
             }
         return result
     raise CliError(f"Unsupported glossary format: {path}")
-
-
-def _build_sequential_chapter_chains(chapters: list[str], split_count: int) -> list[list[str]]:
-    if not chapters:
-        return []
-    try:
-        split_count = int(split_count)
-    except (TypeError, ValueError):
-        split_count = 1
-    split_count = max(1, min(split_count, len(chapters)))
-    chains = []
-    for index in range(split_count):
-        start = (index * len(chapters)) // split_count
-        end = ((index + 1) * len(chapters)) // split_count
-        if start < end:
-            chains.append(chapters[start:end])
-    return chains
 
 
 def _chapter_sizes(epub_path: str, chapters: list[str], project_manager=None) -> dict[str, int]:
@@ -451,7 +436,7 @@ def build_session_settings(settings_manager, project_manager, chapters: list[str
 
     if settings.get("sequential_translation"):
         settings["sequential_chapter_order"] = get_epub_chapters(epub_path)
-        chapter_chains = _build_sequential_chapter_chains(
+        chapter_chains = build_sequential_chapter_chains(
             chapters,
             settings.get("sequential_translation_splits", 1),
         )
@@ -475,7 +460,7 @@ def build_task_plan(epub_path: str, chapters: list[str], settings: dict, project
     sizes = _chapter_sizes(epub_path, chapters, project_manager)
     preparer = TaskPreparer(settings, sizes)
     if settings.get("sequential_translation"):
-        chapter_chains = _build_sequential_chapter_chains(
+        chapter_chains = build_sequential_chapter_chains(
             chapters,
             settings.get("sequential_translation_splits", 1),
         )

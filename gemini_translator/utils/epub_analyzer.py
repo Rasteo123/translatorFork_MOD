@@ -103,7 +103,7 @@ class EpubAnalyzer:
         num_mismatches: List[Dict] = []
         
         try:
-            with zipfile.ZipFile(open(self.epub_path, "rb"), "r") as zf:
+            with zipfile.ZipFile(self.epub_path, "r") as zf:
                 # Get chapter list if not provided
                 if self.chapters_list is None:
                     self.chapters_list = [

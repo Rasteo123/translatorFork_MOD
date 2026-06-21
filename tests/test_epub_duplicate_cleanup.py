@@ -2,7 +2,7 @@ import unittest
 
 from bs4 import BeautifulSoup
 
-from gemini_translator.ui.dialogs.epub import (
+from gemini_translator.core.epub_duplicate_helpers import (
     analyze_duplicate_findings,
     extract_duplicate_review_blocks,
 )

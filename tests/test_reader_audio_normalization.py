@@ -9,6 +9,18 @@ import gemini_reader_v3 as reader
 
 
 class ReaderAudioNormalizationTests(unittest.TestCase):
+    def test_sentence_tokenize_does_not_download_punkt_by_default(self):
+        fake_nltk = SimpleNamespace(
+            sent_tokenize=mock.Mock(side_effect=LookupError("punkt missing")),
+            download=mock.Mock(),
+        )
+
+        with mock.patch.object(reader, "nltk", fake_nltk), mock.patch.dict(os.environ, {}, clear=True):
+            sentences = reader._sentence_tokenize("One sentence. Two sentence.")
+
+        self.assertEqual(sentences, ["One sentence.", "Two sentence."])
+        fake_nltk.download.assert_not_called()
+
     def test_normalize_mp3_file_runs_loudnorm_and_replaces_output(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             audio_path = os.path.join(tmp_dir, "book_part.mp3")

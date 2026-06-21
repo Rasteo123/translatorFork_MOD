@@ -2461,7 +2461,7 @@ class InitialSetupDialog(QDialog):
 
         for source_epub in candidate_epubs:
             try:
-                with zipfile.ZipFile(open(source_epub, 'rb'), 'r') as zf:
+                with zipfile.ZipFile(source_epub, 'r') as zf:
                     html_content = zf.read(chapter_path).decode('utf-8', 'ignore')
                 break
             except Exception as e:
@@ -2827,7 +2827,7 @@ class InitialSetupDialog(QDialog):
             if replacer:
                 replacer.prepare()
 
-            with zipfile.ZipFile(open(self.selected_file, 'rb'), 'r') as epub_zip:
+            with zipfile.ZipFile(self.selected_file, 'r') as epub_zip:
                 for chapter_path in chapters_to_process:
                     try:
                         full_dest_path = build_translated_output_path(
@@ -3873,7 +3873,7 @@ class InitialSetupDialog(QDialog):
         text_sample = ""
         if self.html_files and self.selected_file:
             try:
-                with zipfile.ZipFile(open(self.selected_file, 'rb'), 'r') as zf:
+                with zipfile.ZipFile(self.selected_file, 'r') as zf:
                     first_chapter_content = zf.read(self.html_files[0]).decode('utf-8', 'ignore')
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(first_chapter_content, 'html.parser')
@@ -4075,13 +4075,7 @@ class InitialSetupDialog(QDialog):
 # gemini_translator/ui/dialogs/setup.py
 
     def _estimate_auto_task_size_limit(self, token_limit: int):
-        token_limit = int(token_limit or 0)
-        if token_limit <= 0:
-            return None, None
-
-        profile_name = "Gemini-токены"
-        task_token_limit = max(500, min(token_limit, 350000))
-        return task_token_limit, profile_name
+        return auto_workflow_helpers.estimate_auto_task_size_limit(token_limit)
 
     def _get_effective_auto_short_ratio_limit(self, auto_settings: dict | None, result_data: dict | None = None):
         return auto_workflow_helpers.effective_auto_short_ratio_limit(
@@ -4374,22 +4368,7 @@ class InitialSetupDialog(QDialog):
         return translation_options, mode, has_override, batch_token_limit, batch_task_limit, token_profile
 
     def _build_sequential_chapter_chains(self, chapters: list, split_count: int) -> list[list]:
-        chapters = list(chapters or [])
-        if not chapters:
-            return []
-        try:
-            split_count = int(split_count)
-        except (TypeError, ValueError):
-            split_count = 1
-        split_count = max(1, min(split_count, len(chapters)))
-
-        chains = []
-        for index in range(split_count):
-            start = (index * len(chapters)) // split_count
-            end = ((index + 1) * len(chapters)) // split_count
-            if start < end:
-                chains.append(chapters[start:end])
-        return chains
+        return auto_workflow_helpers.build_sequential_chapter_chains(chapters, split_count)
 
     def _prepare_and_display_tasks(self, clean_rebuild=False, translation_options_override: dict | None = None):
         """
@@ -6037,7 +6016,7 @@ class InitialSetupDialog(QDialog):
         glossary_text = "\n".join(glossary_lines)
 
         try:
-            with zipfile.ZipFile(open(self.selected_file, 'rb'), 'r') as epub_zip:
+            with zipfile.ZipFile(self.selected_file, 'r') as epub_zip:
                 for html_file in self.html_files[:10]:
                     try:
                         html_content = epub_zip.read(html_file).decode('utf-8', errors='ignore')

@@ -1587,7 +1587,7 @@ class ValidationThread(QThread):
 
             total_to_scan = len(files_to_process)
 
-            with zipfile.ZipFile(open(self.original_epub_path, 'rb'), 'r') as epub_zip:
+            with zipfile.ZipFile(self.original_epub_path, 'r') as epub_zip:
                 epub_namelist = set(epub_zip.namelist())
                 for i, file_info in enumerate(files_to_process):
                     if not self._is_running: break
@@ -3943,7 +3943,7 @@ class TranslationValidatorDialog(QDialog):
             return
 
         try:
-            with zipfile.ZipFile(open(self.original_epub_path, 'rb'), 'r') as epub_zip:
+            with zipfile.ZipFile(self.original_epub_path, 'r') as epub_zip:
                 html_files = [name for name in epub_zip.namelist() if name.lower().endswith(('.html', '.xhtml')) and not name.startswith('__MACOSX')]
                 if not html_files:
                     return
@@ -4750,7 +4750,7 @@ class TranslationValidatorDialog(QDialog):
             original_html = self.original_content_cache[internal_path]
         elif self.original_epub_path and os.path.exists(self.original_epub_path):
             try:
-                with zipfile.ZipFile(open(self.original_epub_path, 'rb'), 'r') as epub_zip:
+                with zipfile.ZipFile(self.original_epub_path, 'r') as epub_zip:
                     original_html = epub_zip.read(internal_path).decode('utf-8', errors='ignore')
             except Exception:
                 original_html = ""

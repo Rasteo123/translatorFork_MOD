@@ -2534,11 +2534,13 @@ def _sentence_tokenize(text):
     try:
         return nltk.sent_tokenize(text)
     except LookupError:
-        try:
-            nltk.download("punkt", quiet=True)
-            return nltk.sent_tokenize(text)
-        except Exception:
-            return fallback_sentences
+        if os.environ.get("GEMINI_READER_ALLOW_NLTK_DOWNLOAD") == "1":
+            try:
+                nltk.download("punkt", quiet=True)
+                return nltk.sent_tokenize(text)
+            except Exception:
+                return fallback_sentences
+        return fallback_sentences
     except Exception:
         return fallback_sentences
 

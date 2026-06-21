@@ -574,7 +574,7 @@ class TranslationProjectManager:
         """Читает EPUB и возвращает set полных внутренних путей ко всем HTML-файлам."""
         structure_set = set()
         try:
-            with zipfile.ZipFile(open(epub_path, 'rb'), 'r') as epub_zip:
+            with zipfile.ZipFile(epub_path, 'r') as epub_zip:
                 for name in epub_zip.namelist():
                     if name.lower().endswith(('.html', '.xhtml', '.htm')) and not name.startswith('__MACOSX'):
                         structure_set.add(name.replace('\\', '/'))

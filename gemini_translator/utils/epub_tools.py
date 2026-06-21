@@ -223,7 +223,7 @@ class EpubUpdater:
         # --- Шаг 2: Чтение и модификация файлов в памяти ---
         modified_files = {}
         
-        with zipfile.ZipFile(open(self.original_epub_path, 'rb'), 'r') as original_zip:
+        with zipfile.ZipFile(self.original_epub_path, 'r') as original_zip:
             
             # Список всех файлов для поиска TOC
             all_files = original_zip.namelist()
@@ -328,8 +328,8 @@ class EpubUpdater:
                     final_new_files[internal_path] = f.read()
 
         # --- Шаг 4: Сборка ---
-        with zipfile.ZipFile(open(self.original_epub_path, 'rb'), 'r') as original_zip:
-            with zipfile.ZipFile(open(output_path, 'wb'), 'w', zipfile.ZIP_DEFLATED) as new_zip:
+        with zipfile.ZipFile(self.original_epub_path, 'r') as original_zip:
+            with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as new_zip:
                 for item in original_zip.infolist():
                     # Пропускаем файлы, которые мы заменяем полностью
                     if item.filename in self.replacements: # Тут старые пути
@@ -378,7 +378,7 @@ class EpubCreator:
 
     def create_epub(self, output_path):
         """Создает EPUB файл."""
-        with zipfile.ZipFile(open(output_path, 'wb'), 'w', zipfile.ZIP_DEFLATED) as epub:
+        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as epub:
             epub.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
             epub.writestr('META-INF/container.xml', self._create_container())
             epub.writestr('OEBPS/content.opf', self._create_opf())
@@ -666,7 +666,7 @@ def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_s
         current_epub_size = epub_stat.st_size
         
         # Получаем список файлов внутри
-        with zipfile.ZipFile(open(epub_path, 'rb'), 'r') as zf:
+        with zipfile.ZipFile(epub_path, 'r') as zf:
             # Собираем список файлов и их сжатых размеров для контрольной суммы
             chapter_info_list = [
                 (info.filename, info.file_size)
@@ -709,7 +709,7 @@ def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_s
                     # Выбираем индексы для проверки: 0, середина, последний
                     indices_to_check = {0, len(sorted_keys) // 2, len(sorted_keys) - 1}
                     
-                    with zipfile.ZipFile(open(epub_path, 'rb'), 'r') as zf:
+                    with zipfile.ZipFile(epub_path, 'r') as zf:
                         all_samples_match = True
                         for idx in indices_to_check:
                             if idx < 0 or idx >= len(sorted_keys): continue
@@ -742,7 +742,7 @@ def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_s
     print("[CACHE] Кэш размеров невалиден или отсутствует, выполняется полный пересчет...")
     final_sizes = {}
     try:
-        with zipfile.ZipFile(open(epub_path, 'rb'), 'r') as zf:
+        with zipfile.ZipFile(epub_path, 'r') as zf:
             # Перебираем сохраненный ранее список файлов
             for fname, _ in chapter_info_list:
                 content_str = zf.read(fname).decode('utf-8', errors='ignore')
