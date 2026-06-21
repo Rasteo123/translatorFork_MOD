@@ -182,6 +182,23 @@ def test_extract_qidian_description_from_body_removes_trailing_book_tag():
     assert "月票" not in description
 
 
+def test_extract_qidian_description_accepts_alternate_headers_and_rank_stop():
+    body_text = (
+        "内容简介\n\n"
+        "在日常之下，在理性尽头，在你所熟悉的世界之外——是你从未想象过的风景。\n"
+        "当于生第一次打开那扇门的时候，他所熟悉的世界便轰然倒塌。\n\n"
+        "男生月票榜No.10\n\n"
+        "月票\n推荐票"
+    )
+
+    description = _extract_qidian_description_from_body(body_text)
+
+    assert description == (
+        "在日常之下，在理性尽头，在你所熟悉的世界之外——是你从未想象过的风景。\n"
+        "当于生第一次打开那扇门的时候，他所熟悉的世界便轰然倒塌。"
+    )
+
+
 def test_select_qidian_description_prefers_full_body_over_truncated_meta():
     payload = {
         "body_text": (
@@ -204,6 +221,21 @@ def test_select_qidian_description_prefers_full_body_over_truncated_meta():
     description = _select_qidian_description(payload, title="冒牌领主", author="盲候")
 
     assert description == "罗南穿越而来，成了贵族大少的背锅替身。\n直到有一天，他登通天塔而上。\n我叫罗南，我即天灾。"
+
+
+def test_select_qidian_description_uses_clean_partial_when_only_truncated_exists():
+    payload = {
+        "body_text": "",
+        "description": "",
+        "meta_description": (
+            "盲候创作的奇幻小说《冒牌领主》，已更新227章，"
+            "最新章节：第226章 瑟银要塞陷落。罗南穿越而来，直到有一天，他登…"
+        ),
+    }
+
+    description = _select_qidian_description(payload, title="冒牌领主", author="盲候")
+
+    assert description == "罗南穿越而来，直到有一天，他登…"
 
 
 def test_build_ai_prompt_contains_source_context_and_description_rule():

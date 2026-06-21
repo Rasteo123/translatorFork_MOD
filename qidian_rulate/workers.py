@@ -50,7 +50,17 @@ RULATE_BOOK_TYPE_SELECTOR = 'a.create-card.card-book[href*="typ=A"]'
 RULATE_CHINESE_CATEGORY_TITLE = "Китайские"
 
 QIDIAN_DESCRIPTION_HEADER = "作品简介"
+QIDIAN_DESCRIPTION_HEADERS = {
+    "作品简介",
+    "内容简介",
+    "书籍简介",
+    "小说简介",
+    "作品介绍",
+    "内容介绍",
+}
 QIDIAN_DESCRIPTION_STOP_LINES = {
+    "男生月票榜",
+    "女生月票榜",
     "月票",
     "推荐票",
     "打赏",
@@ -395,6 +405,7 @@ def _clean_qidian_description(value: str | None, *, title: str = "", author: str
         description = re.sub(pattern, "", description, count=1).strip()
 
     seo_suffix_patterns = [
+        r"\s*(?:男生|女生)?月票榜No\.\d+.*$",
         r"\s*本书的主要角色有.*$",
         r"\s*本书主要角色有.*$",
         r"\s*本书又名.*$",
@@ -407,11 +418,28 @@ def _clean_qidian_description(value: str | None, *, title: str = "", author: str
     return _clean_multiline(description)
 
 
+def _is_qidian_description_header_line(line: str) -> bool:
+    line = _clean_text(line)
+    if line in QIDIAN_DESCRIPTION_HEADERS:
+        return True
+    return any(line.endswith(header) for header in QIDIAN_DESCRIPTION_HEADERS if len(line) <= 16)
+
+
 def _is_qidian_description_stop_line(line: str) -> bool:
     line = _clean_text(line)
     if line in QIDIAN_DESCRIPTION_STOP_LINES:
         return True
-    return any(line.startswith(prefix) for prefix in ("包含本书的书单", "目录 ", "目录\t", "目录 连载"))
+    return any(
+        line.startswith(prefix)
+        for prefix in (
+            "男生月票榜",
+            "女生月票榜",
+            "包含本书的书单",
+            "目录 ",
+            "目录\t",
+            "目录 连载",
+        )
+    )
 
 
 def _is_likely_qidian_book_tag_line(line: str) -> bool:
@@ -425,12 +453,12 @@ def _is_likely_qidian_book_tag_line(line: str) -> bool:
 
 def _extract_qidian_description_from_body(body_text: str | None) -> str:
     body_text = str(body_text or "").replace("\r\n", "\n").replace("\r", "\n")
-    if QIDIAN_DESCRIPTION_HEADER not in body_text:
+    if not any(header in body_text for header in QIDIAN_DESCRIPTION_HEADERS):
         return ""
 
     lines = [re.sub(r"[ \t\u00a0]+", " ", line).strip() for line in body_text.split("\n")]
     try:
-        start_index = next(index for index, line in enumerate(lines) if line == QIDIAN_DESCRIPTION_HEADER)
+        start_index = next(index for index, line in enumerate(lines) if _is_qidian_description_header_line(line))
     except StopIteration:
         return ""
 
@@ -488,10 +516,17 @@ def _select_qidian_description(payload: dict, *, title: str = "", author: str = 
         payload.get("description"),
         payload.get("meta_description"),
     ]
+    partial_candidates = []
     for candidate in candidates:
         description = _clean_qidian_description(candidate, title=title, author=author)
-        if description and not _is_truncated_qidian_description(description):
-            return description
+        if not description:
+            continue
+        if _is_truncated_qidian_description(description):
+            partial_candidates.append(description)
+            continue
+        return description
+    if partial_candidates:
+        return max(partial_candidates, key=len)
     return ""
 
 
@@ -672,7 +707,7 @@ class QidianFetchWorker(QThread):
                         page.wait_for_function(
                             """() => {
                                 const body = document.body && document.body.innerText;
-                                return body && body.includes("作品简介") && body.length > 1000;
+                                return body && /(?:作品|内容|书籍|小说)(?:简介|介绍)/.test(body) && body.length > 1000;
                             }""",
                             timeout=12000,
                         )
@@ -1001,7 +1036,7 @@ class RulateFillWorker(QThread):
     def _fill_general(self, page) -> None:
         qidian = self.draft.qidian
         prepared = self.draft.prepared
-        page.click('a[href="#general"]')
+        _show_rulate_tab(page, "general")
         page.select_option("#Book_s_lang", "7")
         page.select_option("#Book_t_lang", "1")
         _fill(page, "#Book_s_title", prepared.english_title)
@@ -1013,7 +1048,7 @@ class RulateFillWorker(QThread):
     def _fill_description(self, page) -> None:
         qidian = self.draft.qidian
         prepared = self.draft.prepared
-        page.click('a[href="#description"]')
+        _show_rulate_tab(page, "description")
         _fill(page, "#Book_new_img_url", qidian.cover_url)
         page.select_option('select[name="Book[status]"]', "1")
         page.evaluate(
@@ -1031,9 +1066,11 @@ class RulateFillWorker(QThread):
             prepared.translated_description,
         )
         for genre in prepared.genres[:5]:
-            _select_magic_value(page, "#Book_genres", genre, allow_free=False)
+            if not _select_magic_value(page, "#Book_genres", genre, allow_free=False):
+                self.log("WARNING", f"Rulate: жанр '{genre}' не найден в форме и пропущен.")
         for tag in prepared.tags[:8]:
-            _select_magic_value(page, "#Book_tags", tag, allow_free=False)
+            if not _select_magic_value(page, "#Book_tags", tag, allow_free=False):
+                self.log("WARNING", f"Rulate: тег '{tag}' не найден в форме и пропущен.")
 
 
 class _PromptBuilder:
@@ -1103,59 +1140,170 @@ def _fill(page, selector: str, value: str) -> None:
     )
 
 
-def _select_magic_value(page, selector: str, value: str, *, allow_free: bool) -> None:
+def _show_rulate_tab(page, tab_id: str) -> None:
+    page.evaluate(
+        """(tabId) => {
+            const selector = `a[href="#${tabId}"]`;
+            const link = document.querySelector(selector);
+            if (window.jQuery && link && window.jQuery.fn && window.jQuery.fn.tab) {
+                window.jQuery(link).tab("show");
+            } else if (link) {
+                link.click();
+            }
+            const pane = document.getElementById(tabId);
+            if (pane) {
+                pane.classList.add("active");
+                pane.style.display = "";
+            }
+        }""",
+        tab_id,
+    )
+    try:
+        page.locator(f"#{tab_id}").wait_for(state="visible", timeout=5000)
+    except Exception:
+        page.wait_for_timeout(500)
+
+
+def _select_magic_value(page, selector: str, value: str, *, allow_free: bool) -> bool:
     value = (value or "").strip()
     if not value:
-        return
+        return True
+
+    page.locator(selector).wait_for(state="attached", timeout=15000)
+    selected = False
+    for _ in range(20):
+        selected = page.evaluate(_MAGIC_SELECT_SCRIPT, [selector, value, allow_free])
+        if selected:
+            return True
+        page.wait_for_timeout(250)
+
+    activated = page.evaluate(_MAGIC_TYPE_SCRIPT, [selector, value])
+    if not activated:
+        return False
+    page.wait_for_timeout(500)
 
     selected = page.evaluate(
         """([selector, value, allowFree]) => {
-            if (!window.jQuery) return false;
-            const box = window.jQuery(selector);
-            const api = box.data("magicSuggest") || box.data("magicsuggest") || box.data("ms");
-            if (!api || typeof api.setValue !== "function") return false;
-            const displayField = (api.settings && api.settings.displayField) || "name";
-            const valueField = (api.settings && api.settings.valueField) || displayField;
-            let selectedValue = value;
-            const data = typeof api.getData === "function"
-                ? api.getData()
-                : ((api.settings && api.settings.data) || []);
-            const items = Array.isArray(data) ? data : Object.values(data || {});
-            const matched = items.find(item => {
-                const display = item && item[displayField] != null ? String(item[displayField]) : "";
-                const name = item && item.name != null ? String(item.name) : "";
-                const title = item && item.title != null ? String(item.title) : "";
-                return [display, name, title].some(candidate => (
-                    candidate && candidate.toLowerCase() === String(value).toLowerCase()
-                ));
-            });
-            if (matched && matched[valueField] != null) {
-                selectedValue = matched[valueField];
-            } else if (!allowFree) {
-                return false;
+            const normalize = (text) => String(text || "").replace(/\\s+/g, " ").trim().toLowerCase();
+            const root = document.querySelector(selector);
+            const containers = root ? [root] : [];
+            const items = containers
+                .flatMap(container => Array.from(container.querySelectorAll(".ms-res-item")))
+                .concat(Array.from(document.querySelectorAll(".ms-res-item")));
+            for (const item of items) {
+                if (normalize(item.textContent) !== normalize(value)) continue;
+                item.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window}));
+                item.click();
+                item.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window}));
+                return true;
             }
-            const current = typeof api.getValue === "function" ? api.getValue() : [];
-            const next = Array.isArray(current) ? current.slice() : [];
-            if (!next.some(item => String(item).toLowerCase() === String(selectedValue).toLowerCase())) {
-                next.push(selectedValue);
-            }
-            api.setValue(next);
+            if (!allowFree || !root) return false;
+            const input = root.querySelector(".ms-sel-ctn input, input[type='text']");
+            if (!input) return false;
+            input.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", code: "Enter", bubbles: true}));
+            input.dispatchEvent(new KeyboardEvent("keyup", {key: "Enter", code: "Enter", bubbles: true}));
             return true;
         }""",
         [selector, value, allow_free],
     )
-    if selected:
-        return
+    return bool(selected)
 
-    input_locator = page.locator(f"{selector} input").first
-    input_locator.click()
-    input_locator.fill(value)
-    page.wait_for_timeout(400)
-    try:
-        page.locator(f"{selector} .ms-res-item", has_text=value).first.click(timeout=3500)
-    except Exception:
-        if allow_free:
-            input_locator.press("Enter")
+
+_MAGIC_SELECT_SCRIPT = """([selector, value, allowFree]) => {
+    const normalize = (text) => String(text || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const root = document.querySelector(selector);
+    if (!root || !window.jQuery) return false;
+
+    const candidates = [root, root.parentElement, root.previousElementSibling, root.nextElementSibling]
+        .filter(Boolean);
+    for (const child of Array.from(root.querySelectorAll("*"))) {
+        candidates.push(child);
+    }
+
+    let api = null;
+    for (const node of candidates) {
+        const data = window.jQuery(node).data() || {};
+        api = data.magicSuggest || data.magicsuggest || data.ms || data.magic_suggest || null;
+        if (!api) {
+            api = Object.values(data).find(candidate => (
+                candidate && (
+                    typeof candidate.setValue === "function" ||
+                    typeof candidate.setSelection === "function"
+                )
+            )) || null;
+        }
+        if (api && (typeof api.setValue === "function" || typeof api.setSelection === "function")) break;
+    }
+    if (!api) return false;
+
+    const displayField = (api.settings && api.settings.displayField) || "name";
+    const valueField = (api.settings && api.settings.valueField) || displayField;
+    const rawData = typeof api.getData === "function"
+        ? api.getData()
+        : ((api.settings && api.settings.data) || []);
+    const items = Array.isArray(rawData) ? rawData : Object.values(rawData || {});
+    const matched = items.find(item => {
+        const display = item && item[displayField] != null ? String(item[displayField]) : "";
+        const name = item && item.name != null ? String(item.name) : "";
+        const title = item && item.title != null ? String(item.title) : "";
+        const id = item && item.id != null ? String(item.id) : "";
+        return [display, name, title, id].some(candidate => normalize(candidate) === normalize(value));
+    });
+
+    if (matched && typeof api.setSelection === "function") {
+        const currentSelection = typeof api.getSelection === "function" ? api.getSelection() : [];
+        const selection = Array.isArray(currentSelection) ? currentSelection.slice() : [];
+        const matchedKey = matched[valueField] != null ? matched[valueField] : (matched.id != null ? matched.id : value);
+        const hasMatched = selection.some(item => {
+            const itemKey = item && item[valueField] != null ? item[valueField] : (item && item.id != null ? item.id : item);
+            return normalize(itemKey) === normalize(matchedKey);
+        });
+        if (!hasMatched) selection.push(matched);
+        api.setSelection(selection);
+        return true;
+    }
+
+    let selectedValue = value;
+    if (matched && matched[valueField] != null) {
+        selectedValue = matched[valueField];
+    } else if (matched && matched.id != null) {
+        selectedValue = matched.id;
+    } else if (!allowFree) {
+        return false;
+    }
+
+    if (typeof api.setValue !== "function") return false;
+    const current = typeof api.getValue === "function" ? api.getValue() : [];
+    const next = Array.isArray(current) ? current.slice() : [];
+    if (!next.some(item => normalize(item) === normalize(selectedValue))) {
+        next.push(selectedValue);
+    }
+    api.setValue(next);
+    return true;
+}"""
+
+
+_MAGIC_TYPE_SCRIPT = """([selector, value]) => {
+    const root = document.querySelector(selector);
+    if (!root) return false;
+    root.scrollIntoView({block: "center", inline: "nearest"});
+    root.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, view: window}));
+    root.click();
+    root.dispatchEvent(new MouseEvent("mouseup", {bubbles: true, cancelable: true, view: window}));
+
+    const input = root.querySelector(".ms-sel-ctn input, input[type='text']");
+    if (!input) return false;
+    input.focus();
+    input.value = value;
+    input.dispatchEvent(new Event("input", {bubbles: true}));
+    input.dispatchEvent(new Event("change", {bubbles: true}));
+    for (const letter of value) {
+        input.dispatchEvent(new KeyboardEvent("keydown", {key: letter, bubbles: true}));
+        input.dispatchEvent(new KeyboardEvent("keypress", {key: letter, bubbles: true}));
+        input.dispatchEvent(new KeyboardEvent("keyup", {key: letter, bubbles: true}));
+    }
+    return true;
+}"""
 
 
 _QIDIAN_EXTRACT_SCRIPT = r"""() => {
@@ -1221,10 +1369,18 @@ _QIDIAN_EXTRACT_SCRIPT = r"""() => {
     const descriptionFromBody = () => {
         const body = bodyText();
         const lines = body.replace(/\r/g, "").split("\n").map((line) => line.replace(/[ \t\u00a0]+/g, " ").trim());
-        const start = lines.findIndex((line) => line === "作品简介");
+        const headers = new Set(["作品简介", "内容简介", "书籍简介", "小说简介", "作品介绍", "内容介绍"]);
+        const isHeader = (line) => headers.has(line) || (line.length <= 16 && Array.from(headers).some((header) => line.endsWith(header)));
+        const start = lines.findIndex(isHeader);
         if (start < 0) return "";
-        const stopLines = new Set(["月票", "推荐票", "打赏", "本月票数", "本周打赏人数", "包含本书的书单", "目录", "书友互动", "本书荣誉"]);
-        const isStopLine = (line) => stopLines.has(line) || line.startsWith("包含本书的书单") || line.startsWith("目录 ");
+        const stopLines = new Set(["男生月票榜", "女生月票榜", "月票", "推荐票", "打赏", "本月票数", "本周打赏人数", "包含本书的书单", "目录", "书友互动", "本书荣誉"]);
+        const isStopLine = (line) => (
+            stopLines.has(line) ||
+            line.startsWith("男生月票榜") ||
+            line.startsWith("女生月票榜") ||
+            line.startsWith("包含本书的书单") ||
+            line.startsWith("目录 ")
+        );
         const isLikelyTag = (line) => (
             line &&
             line.length <= 8 &&
