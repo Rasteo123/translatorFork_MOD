@@ -1046,10 +1046,8 @@ class RulateFillWorker(QThread):
         _fill(page, "#Book_a_title_1", qidian.title_original)
 
     def _fill_description(self, page) -> None:
-        qidian = self.draft.qidian
         prepared = self.draft.prepared
         _show_rulate_tab(page, "description")
-        _fill(page, "#Book_new_img_url", qidian.cover_url)
         page.select_option('select[name="Book[status]"]', "1")
         page.evaluate(
             """(description) => {

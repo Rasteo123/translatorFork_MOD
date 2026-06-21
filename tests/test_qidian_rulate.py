@@ -1,6 +1,7 @@
 import json
 
 from qidian_rulate.models import QidianBookMetadata
+from qidian_rulate.models import PreparedRulateMetadata, RulateBookDraft
 from qidian_rulate import workers
 from gemini_translator.ui.dialogs import qidian_rulate_creator as creator_module
 from gemini_translator.ui.dialogs.qidian_rulate_creator import QidianRulateCreatorWindow
@@ -17,6 +18,7 @@ from qidian_rulate.workers import (
     RULATE_CHINESE_CATEGORY_TITLE,
     RULATE_INFO_URL,
     RULATE_PROFILE_DIR,
+    RulateFillWorker,
     build_ai_prompt,
     normalize_rulate_tags,
     parse_prepared_metadata,
@@ -41,6 +43,53 @@ class _QidianCreatorHarness:
 
     def close(self):
         self.calls.append("close")
+
+
+class _FillDescriptionHarness:
+    _fill_description = RulateFillWorker._fill_description
+
+    def __init__(self):
+        self.logs = []
+        self.draft = RulateBookDraft(
+            qidian=QidianBookMetadata(
+                source_url="https://www.qidian.com/book/1041604040/",
+                title_original="\u5f02\u5ea6\u65c5\u793e",
+                author_name="\u8fdc\u77b3",
+                description="\u63cf\u8ff0",
+                cover_url="https://example.com/cover.webp",
+            ),
+            prepared=PreparedRulateMetadata(
+                translated_description="\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435",
+                genres=[],
+                tags=[],
+            ),
+        )
+
+    def log(self, level, message):
+        self.logs.append((level, message))
+
+
+class _DescriptionPage:
+    def __init__(self):
+        self.filled_selectors = []
+        self.selected_options = []
+        self.evaluated = []
+
+    def evaluate(self, script, arg=None):
+        self.evaluated.append((script, arg))
+
+    def locator(self, selector):
+        class _Locator:
+            def wait_for(self, **kwargs):
+                return None
+
+        return _Locator()
+
+    def wait_for_timeout(self, timeout):
+        return None
+
+    def select_option(self, selector, value):
+        self.selected_options.append((selector, value))
 
 
 def test_validate_qidian_url_accepts_book_links_only():
@@ -98,6 +147,19 @@ def test_qidian_creator_return_to_menu_without_handler_closes_then_reboots(monke
 
     assert harness.calls == ["close"]
     assert reboot_calls == ["menu"]
+
+
+def test_rulate_description_fill_does_not_insert_cover_url(monkeypatch):
+    filled = []
+    monkeypatch.setattr(workers, "_fill", lambda page, selector, value: filled.append((selector, value)))
+
+    harness = _FillDescriptionHarness()
+    page = _DescriptionPage()
+
+    harness._fill_description(page)
+
+    assert "#Book_new_img_url" not in [selector for selector, _value in filled]
+    assert ('select[name="Book[status]"]', "1") in page.selected_options
 
 
 def test_parse_prepared_metadata_strips_json_fence_and_normalizes_lists(monkeypatch):
