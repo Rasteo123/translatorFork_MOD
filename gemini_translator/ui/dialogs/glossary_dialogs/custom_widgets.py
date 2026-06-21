@@ -79,7 +79,11 @@ class ExpandingTextEditDelegate(QtWidgets.QStyledItemDelegate):
             ))
 
     def sizeHint(self, option, index):
-        text = index.model().data(index, QtCore.Qt.ItemDataRole.DisplayRole)
+        model = index.model() if index.isValid() else None
+        if model is None:
+            return super().sizeHint(option, index)
+
+        text = model.data(index, QtCore.Qt.ItemDataRole.DisplayRole)
         doc = QtGui.QTextDocument(str(text))
         doc.setDefaultFont(option.font)
         doc.setTextWidth(option.rect.width() - 10)
