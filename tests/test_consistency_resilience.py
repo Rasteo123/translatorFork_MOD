@@ -8,7 +8,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from gemini_translator.api.errors import NetworkError, RateLimitExceededError, TemporaryRateLimitError
-from gemini_translator.core.consistency_engine import ConsistencyEngine
+from gemini_translator.core.consistency_engine import FAST_PROOFREAD_MODE, ConsistencyEngine
 from gemini_translator.ui.dialogs.consistency_checker import ConsistencyValidatorDialog
 
 
@@ -436,12 +436,21 @@ class ConsistencyKeyRetryTests(unittest.TestCase):
             "quote": "Text 1",
             "description": "saved",
         }
+        config = {
+            "chunk_size": 1,
+            "provider": "gemini",
+            "model": "gemini-2.0-flash-exp",
+        }
+        session_signature = engine.build_session_signature(chapters, config)
         resume_state = {
+            "session_signature": session_signature,
             "glossary": {"characters": [], "terms": []},
             "processed_chapters": ["chapter_01.xhtml"],
             "problems": [saved_problem],
             "completed_chunks": {
-                "analysis": [ConsistencyEngine.chunk_resume_key([chapters[0]])],
+                "analysis": [
+                    ConsistencyEngine.chunk_resume_key([chapters[0]], session_signature)
+                ],
             },
         }
 
@@ -459,9 +468,7 @@ class ConsistencyKeyRetryTests(unittest.TestCase):
         engine.analyze_chapters(
             chapters,
             {
-                "chunk_size": 1,
-                "provider": "gemini",
-                "model": "gemini-2.0-flash-exp",
+                **config,
                 "_consistency_resume_state": resume_state,
             },
             ["good-key-123456"],
@@ -474,14 +481,118 @@ class ConsistencyKeyRetryTests(unittest.TestCase):
             ["chapter_01.xhtml", "chapter_02.xhtml"],
         )
         self.assertIn(
-            ConsistencyEngine.chunk_resume_key([chapters[0]]),
+            ConsistencyEngine.chunk_resume_key([chapters[0]], session_signature),
             engine.get_completed_chunk_keys()["analysis"],
         )
         self.assertIn(
-            ConsistencyEngine.chunk_resume_key([chapters[1]]),
+            ConsistencyEngine.chunk_resume_key([chapters[1]], session_signature),
             engine.get_completed_chunk_keys()["analysis"],
         )
         self.assertEqual(len(chunks_done), 1)
+
+    def test_analyze_chapters_resume_does_not_skip_when_text_signature_changes(self):
+        settings = _RetrySettingsStub()
+        engine = ConsistencyEngine(settings)
+        calls = []
+        original_chapters = [
+            {"name": "chapter_01.xhtml", "content": "Old text 1", "path": "chapter_01.xhtml"},
+            {"name": "chapter_02.xhtml", "content": "Text 2", "path": "chapter_02.xhtml"},
+        ]
+        changed_chapters = [
+            {"name": "chapter_01.xhtml", "content": "Changed text 1", "path": "chapter_01.xhtml"},
+            {"name": "chapter_02.xhtml", "content": "Text 2", "path": "chapter_02.xhtml"},
+        ]
+        config = {
+            "chunk_size": 1,
+            "provider": "gemini",
+            "model": "gemini-2.0-flash-exp",
+        }
+        saved_signature = engine.build_session_signature(original_chapters, config)
+        resume_state = {
+            "session_signature": saved_signature,
+            "glossary": {"characters": [], "terms": []},
+            "processed_chapters": ["chapter_01.xhtml"],
+            "problems": [],
+            "completed_chunks": {
+                "analysis": [
+                    ConsistencyEngine.chunk_resume_key([original_chapters[0]], saved_signature)
+                ],
+            },
+        }
+
+        def fake_call_api(prompt, config, api_key):
+            calls.append(prompt)
+            return (
+                '{"problems":[],"glossary_update":{"characters":[],"terms":[]},'
+                '"context_summary":{"processed_chapters":[]}}'
+            )
+
+        engine._call_api = fake_call_api
+
+        engine.analyze_chapters(
+            changed_chapters,
+            {
+                **config,
+                "_consistency_resume_state": resume_state,
+            },
+            ["good-key-123456"],
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Changed text 1", calls[0])
+        self.assertIn("chapter_02.xhtml", calls[1])
+
+    def test_analyze_chapters_resume_does_not_skip_when_mode_signature_changes(self):
+        settings = _RetrySettingsStub()
+        engine = ConsistencyEngine(settings)
+        calls = []
+        chapters = [
+            {"name": "chapter_01.xhtml", "content": "Text 1", "path": "chapter_01.xhtml"},
+        ]
+        saved_config = {
+            "chunk_size": 1,
+            "provider": "gemini",
+            "model": "gemini-2.0-flash-exp",
+        }
+        fast_config = {
+            **saved_config,
+            "consistency_mode": FAST_PROOFREAD_MODE,
+        }
+        saved_signature = engine.build_session_signature(chapters, saved_config)
+        resume_state = {
+            "session_signature": saved_signature,
+            "glossary": {"characters": [], "terms": []},
+            "processed_chapters": ["chapter_01.xhtml"],
+            "problems": [],
+            "completed_chunks": {
+                "analysis": [
+                    ConsistencyEngine.chunk_resume_key([chapters[0]], saved_signature)
+                ],
+            },
+        }
+
+        def fake_call_api(prompt, config, api_key):
+            calls.append(prompt)
+            return (
+                '{"problems":[{"id":1,"type":"typo","chapter":"chapter_01.xhtml"}],'
+                '"glossary_update":{"characters":[],"terms":[]},'
+                '"context_summary":{"processed_chapters":["chapter_01.xhtml"]}}'
+            )
+
+        engine._call_api = fake_call_api
+
+        engine.analyze_chapters(
+            chapters,
+            {
+                **fast_config,
+                "_consistency_resume_state": resume_state,
+            },
+            ["good-key-123456"],
+            mode=FAST_PROOFREAD_MODE,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(engine.all_problems), 1)
 
     def test_analyze_chapters_resume_backfills_old_session_processed_chapters(self):
         settings = _RetrySettingsStub()

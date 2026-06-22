@@ -90,6 +90,22 @@ def _append_fix_trace(trace_file, stage: str, **data):
         pass
 
 
+def _build_problem_key(problem: dict) -> str:
+    if not isinstance(problem, dict):
+        return ""
+
+    payload = {
+        key: str(problem.get(key) or "")
+        for key in ('chapter', 'type', 'quote', 'description', 'suggestion')
+    }
+    raw_id = str(problem.get('id') or "").strip()
+    if raw_id:
+        payload['id'] = raw_id
+        return "idmeta:" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    return "meta:" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 class AnalysisWorker(QThread):
     """Воркер для фонового анализа глав."""
     finished = pyqtSignal()
@@ -184,6 +200,8 @@ class SingleFixWorker(QThread):
                 'chapter_name': self.chapter_meta.get('name'),
                 'chapter_content': self.chapter_content,
                 'problem_id': self.problem.get('id'),
+                'problem': dict(self.problem),
+                'problem_key': _build_problem_key(self.problem),
                 'fixed_content': fixed_content,
             }
             _append_fix_trace(self.trace_file, "worker_emit_result", problem_id=self.problem.get('id'))
@@ -231,7 +249,7 @@ class ConsistencyValidatorDialog(QDialog):
         
         # Кэш исправлений для применения
         self.pending_fixes = {}  # {path: new_content}
-        self.fix_previews = {}   # {problem_id: (old_content, fixed_content)}
+        self.fix_previews = {}   # {problem_key: (old_content, fixed_content)}
         self.resolved_problem_keys = set()
         self.current_problem = None
         self.current_chapter = None
@@ -638,15 +656,34 @@ class ConsistencyValidatorDialog(QDialog):
         prompts_file = api_config.get_resource_path("config/consistency_prompts.json")
         
         data = {}
+        if prompts_file.exists():
+            try:
+                with open(prompts_file, 'r', encoding='utf-8') as f:
+                    loaded_data = json.load(f)
+                if isinstance(loaded_data, dict):
+                    data = loaded_data
+            except Exception:
+                data = {}
         for key, editor in self.prompts_editors.items():
             content = editor.toPlainText().strip()
             data[key] = content.split('\n')
             
         try:
-            with open(prompts_file, 'w', encoding='utf-8') as f:
+            prompts_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp_file = prompts_file.with_name(
+                f".{prompts_file.name}.{os.getpid()}.tmp"
+            )
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp_file, prompts_file)
             QMessageBox.information(self, "Успех", "Промты успешно сохранены.")
         except Exception as e:
+            try:
+                if 'tmp_file' in locals() and tmp_file.exists():
+                    tmp_file.unlink()
+            except Exception:
+                pass
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить промты: {e}")
 
     def _reset_prompts(self):
@@ -1342,19 +1379,7 @@ class ConsistencyValidatorDialog(QDialog):
 
     def _problem_key(self, problem: dict) -> str:
         """Возвращает стабильный ключ проблемы для исключения уже принятых правок."""
-        if not isinstance(problem, dict):
-            return ""
-
-        payload = {
-            key: str(problem.get(key) or "")
-            for key in ('chapter', 'type', 'quote', 'description', 'suggestion')
-        }
-        raw_id = str(problem.get('id') or "").strip()
-        if raw_id:
-            payload['id'] = raw_id
-            return "idmeta:" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-        return "meta:" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return _build_problem_key(problem)
 
     def _is_problem_resolved(self, problem: dict) -> bool:
         key = self._problem_key(problem)
@@ -1480,13 +1505,13 @@ class ConsistencyValidatorDialog(QDialog):
         if not self.current_problem or not self.current_chapter:
             return
 
-        problem_id = self.current_problem.get('id')
-        if not problem_id or problem_id not in self.fix_previews:
+        problem_key = self._problem_key(self.current_problem)
+        if not problem_key or problem_key not in self.fix_previews:
             return
 
-        old_content, _ = self.fix_previews[problem_id]
+        old_content, _ = self.fix_previews[problem_key]
         if old_content == self.current_chapter.get('content'):
-            self.fix_previews[problem_id] = (old_content, new_content)
+            self.fix_previews[problem_key] = (old_content, new_content)
 
     def _get_type_colors(self, problem_type: str) -> tuple:
         """Возвращает (bg_color, text_color) для типа проблемы."""
@@ -1605,9 +1630,9 @@ class ConsistencyValidatorDialog(QDialog):
             self.skip_btn.setEnabled(True)
             
             # Восстанавливаем превью, если оно есть
-            prob_id = prob_data.get('id')
-            if prob_id in self.fix_previews:
-                old_c, new_c = self.fix_previews[prob_id]
+            prob_key = self._problem_key(prob_data)
+            if prob_key in self.fix_previews:
+                old_c, new_c = self.fix_previews[prob_key]
                 # Проверяем, актуально ли превью для текущего контента главы
                 if old_c == self.current_chapter['content']:
                     self._show_diff(old_c, new_c)
@@ -1773,11 +1798,11 @@ class ConsistencyValidatorDialog(QDialog):
             QMessageBox.warning(self, "Пустая глава", "В выбранной главе нет текста для ручного исправления.")
             return
 
-        problem_id = self.current_problem.get('id')
+        problem_key = self._problem_key(self.current_problem)
         self._set_corrected_preview_plain_text(chapter_content)
         self.corrected_text.setProperty('new_content', chapter_content)
-        if problem_id:
-            self.fix_previews[problem_id] = (chapter_content, chapter_content)
+        if problem_key:
+            self.fix_previews[problem_key] = (chapter_content, chapter_content)
 
         self.apply_btn.setEnabled(True)
         self.corrected_text.setFocus()
@@ -1817,6 +1842,13 @@ class ConsistencyValidatorDialog(QDialog):
             chapter_content = self._sanitize_preview_text(result.get('chapter_content', ''))
             fixed_content = result.get('fixed_content', '')
             problem_id = result.get('problem_id')
+            problem_key = str(result.get('problem_key') or "").strip()
+            if not problem_key:
+                result_problem = result.get('problem')
+                if isinstance(result_problem, dict):
+                    problem_key = self._problem_key(result_problem)
+            if not problem_key:
+                problem_key = self._problem_key(self.current_problem)
             chapter_name = result.get('chapter_name', '')
             _append_fix_trace(
                 self.single_fix_trace_file,
@@ -1841,7 +1873,9 @@ class ConsistencyValidatorDialog(QDialog):
                 chapter=chapter_name,
                 fixed_len=len(fixed_content),
             )
-            self.fix_previews[problem_id] = (chapter_content, fixed_content)
+            if not problem_key:
+                raise ValueError("Unable to determine problem key for preview.")
+            self.fix_previews[problem_key] = (chapter_content, fixed_content)
             self.apply_btn.setEnabled(True)
             self._log(f"🔧 Сгенерировано исправление для: {chapter_name}")
         except Exception as e:
@@ -2291,9 +2325,13 @@ class ConsistencyValidatorDialog(QDialog):
         trace_getter = getattr(self.engine, 'get_request_response_trace', None)
         request_response_trace = trace_getter() if callable(trace_getter) else []
 
+        signature_getter = getattr(self.engine, 'get_session_signature', None)
+        session_signature = signature_getter() if callable(signature_getter) else ""
+
         return {
             'timestamp': str(datetime.now()),
             'consistency_mode': ConsistencyValidatorDialog._current_consistency_mode(self),
+            'session_signature': session_signature,
             'glossary': self.engine.glossary_session.to_dict(),
             'processed_chapters': self.engine.glossary_session.processed_chapters,
             'problems': problems_data,
@@ -2314,7 +2352,20 @@ class ConsistencyValidatorDialog(QDialog):
 
         chunk_size = int(config.get('chunk_size') or 3)
         chunks = self.engine._split_into_chunks(selected_chapters, chunk_size)
+        session_signature = ""
+        signature_builder = getattr(self.engine, 'build_session_signature', None)
+        if callable(signature_builder):
+            session_signature = signature_builder(selected_chapters, config, mode)
+        saved_session_signature = str(resume_state.get('session_signature') or "").strip()
+        if saved_session_signature and saved_session_signature != session_signature:
+            return False
+
         completed_chunks = resume_state.get('completed_chunks')
+        legacy_completed_chunks_present = (
+            not saved_session_signature
+            and isinstance(completed_chunks, dict)
+            and bool(completed_chunks)
+        )
         has_completed_chunk_match = False
         required_phases = ['analysis']
         if mode == 'glossary_first':
@@ -2330,7 +2381,11 @@ class ConsistencyValidatorDialog(QDialog):
                 if not completed:
                     continue
                 for chunk in chunks:
-                    if self.engine.chunk_resume_key(chunk) in completed:
+                    chunk_key = self.engine.chunk_resume_key(
+                        chunk,
+                        session_signature if saved_session_signature else None,
+                    )
+                    if chunk_key in completed:
                         has_completed_chunk_match = True
                         break
                 if has_completed_chunk_match:
@@ -2339,7 +2394,7 @@ class ConsistencyValidatorDialog(QDialog):
         if has_completed_chunk_match:
             return True
 
-        if mode != 'glossary_first':
+        if mode != 'glossary_first' and not legacy_completed_chunks_present:
             processed = {
                 str(chapter).strip()
                 for chapter in resume_state.get('processed_chapters', [])
@@ -2398,6 +2453,8 @@ class ConsistencyValidatorDialog(QDialog):
             completed_restore = getattr(self.engine, '_restore_completed_chunk_keys', None)
             if callable(completed_restore):
                 completed_restore(data.get('completed_chunks'))
+            if hasattr(self.engine, 'session_signature'):
+                self.engine.session_signature = str(data.get('session_signature') or "")
             trace = data.get('request_response_trace', [])
             if isinstance(trace, list):
                 self.engine.request_response_trace = [

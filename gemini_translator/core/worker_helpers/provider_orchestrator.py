@@ -10,6 +10,17 @@ from pathlib import Path
 from typing import Any
 
 from gemini_translator.api import config as api_config
+from gemini_translator.api.errors import (
+    ContentFilterError,
+    LocationBlockedError,
+    ModelNotFoundError,
+    NetworkError,
+    OperationCancelledError,
+    PartialGenerationError,
+    RateLimitExceededError,
+    TemporaryRateLimitError,
+    ValidationFailedError,
+)
 from gemini_translator.api.factory import get_api_handler_class
 
 
@@ -37,6 +48,7 @@ class ProviderAttemptResult:
     text: str = ""
     elapsed_ms: int = 0
     error: str = ""
+    exception: Exception | None = None
 
     @property
     def ok(self) -> bool:
@@ -129,6 +141,28 @@ def _provider_info(provider_id: str) -> dict:
     if provider_id == "local":
         return api_config.ensure_dynamic_provider_models(provider_id)
     return api_config.api_providers().get(provider_id, {})
+
+
+def _provider_single_profile_fanout_limited(provider_id: str, provider_info: dict) -> bool:
+    try:
+        max_instances = api_config.provider_max_instances(provider_id)
+    except Exception:
+        max_instances = None
+    if max_instances is None:
+        try:
+            max_instances = int(provider_info.get("max_instances"))
+        except (TypeError, ValueError, AttributeError):
+            max_instances = None
+    if max_instances == 1:
+        return True
+
+    handler_class = str(provider_info.get("handler_class") or "")
+    return bool(
+        provider_info.get("stateful")
+        or provider_info.get("browser_based")
+        or provider_info.get("use_browser")
+        or handler_class in {"BrowserApiHandler", "WorkAsciiChatGptApiHandler"}
+    )
 
 
 def _resolve_model(provider_id: str, model_name: str | None, fallback_model_config: dict | None = None) -> tuple[str, dict]:
@@ -317,11 +351,16 @@ def _build_attempts(worker) -> list[ProviderAttempt]:
 
     attempts: list[ProviderAttempt] = []
     seen = set()
+    single_profile_attempts = set()
+    single_profile_logged = set()
     for provider_index, provider_spec in enumerate(provider_specs):
         provider_id = str(provider_spec.get("provider") or provider_spec.get("provider_id") or "").strip()
         if not provider_id:
             continue
 
+        provider_info = _provider_info(provider_id)
+        if not isinstance(provider_info, dict):
+            provider_info = {}
         fallback_config = provider_spec.get("model_config")
         if not isinstance(fallback_config, dict):
             fallback_config = None
@@ -335,6 +374,17 @@ def _build_attempts(worker) -> list[ProviderAttempt]:
             _post_log(worker, f"[ORCH] Provider '{provider_id}' skipped: no active API key/session.")
             continue
 
+        single_profile_limited = _provider_single_profile_fanout_limited(provider_id, provider_info)
+        profile_key = (
+            provider_id,
+            str(
+                provider_spec.get("profile")
+                or provider_spec.get("profile_id")
+                or provider_spec.get("browser_profile")
+                or api_key
+                or "default"
+            ),
+        )
         for pass_index, pass_spec in enumerate(pass_specs, start=1):
             label = str(provider_spec.get("label") or provider_id)
             pass_label = str(pass_spec.get("label") or f"pass-{pass_index}")
@@ -354,6 +404,15 @@ def _build_attempts(worker) -> list[ProviderAttempt]:
                 continue
             seen.add(key)
 
+            if single_profile_limited and profile_key in single_profile_attempts:
+                if profile_key not in single_profile_logged:
+                    _post_log(
+                        worker,
+                        f"[ORCH] Provider '{provider_id}' fan-out collapsed for one stateful/browser profile.",
+                    )
+                    single_profile_logged.add(profile_key)
+                continue
+
             attempts.append(
                 ProviderAttempt(
                     provider_id=provider_id,
@@ -368,6 +427,8 @@ def _build_attempts(worker) -> list[ProviderAttempt]:
                     pass_index=pass_index,
                 )
             )
+            if single_profile_limited:
+                single_profile_attempts.add(profile_key)
             if len(attempts) >= max_attempts:
                 return attempts
 
@@ -412,7 +473,8 @@ async def _cleanup_handler(handler) -> None:
 async def _run_attempt(worker, attempt: ProviderAttempt, prompt: str, log_prefix: str, call_kwargs: dict) -> ProviderAttemptResult:
     provider_info = _provider_info(attempt.provider_id)
     if not provider_info:
-        return ProviderAttemptResult(attempt=attempt, error=f"Provider '{attempt.provider_id}' not found")
+        error = ModelNotFoundError(f"Provider '{attempt.provider_id}' not found")
+        return ProviderAttemptResult(attempt=attempt, error=f"{type(error).__name__}: {error}", exception=error)
 
     handler_class_name = provider_info.get("handler_class")
     started_at = time.perf_counter()
@@ -436,7 +498,12 @@ async def _run_attempt(worker, attempt: ProviderAttempt, prompt: str, log_prefix
         return ProviderAttemptResult(attempt=attempt, text=str(text or ""), elapsed_ms=elapsed_ms)
     except Exception as exc:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        return ProviderAttemptResult(attempt=attempt, error=f"{type(exc).__name__}: {exc}", elapsed_ms=elapsed_ms)
+        return ProviderAttemptResult(
+            attempt=attempt,
+            error=f"{type(exc).__name__}: {exc}",
+            elapsed_ms=elapsed_ms,
+            exception=exc,
+        )
     finally:
         if handler is not None:
             await _cleanup_handler(handler)
@@ -530,15 +597,122 @@ def _save_attempt_results(worker, operation_context: dict | None, results: list[
         return
 
 
+_EXCEPTION_PRIORITY: tuple[tuple[type[Exception], int], ...] = (
+    (OperationCancelledError, 100),
+    (RateLimitExceededError, 90),
+    (LocationBlockedError, 85),
+    (ModelNotFoundError, 80),
+    (TemporaryRateLimitError, 75),
+    (ContentFilterError, 70),
+    (PartialGenerationError, 65),
+    (ValidationFailedError, 60),
+    (NetworkError, 50),
+)
+
+
+def _exception_priority(exc: Exception) -> int:
+    for exc_type, priority in _EXCEPTION_PRIORITY:
+        if isinstance(exc, exc_type):
+            return priority
+    return 0
+
+
+def _dominant_exception(results: list[ProviderAttemptResult]) -> Exception | None:
+    grouped: dict[type[Exception], dict[str, Any]] = {}
+    for order, result in enumerate(results):
+        exc = result.exception
+        if exc is None:
+            continue
+        exc_type = type(exc)
+        group = grouped.setdefault(
+            exc_type,
+            {
+                "count": 0,
+                "exception": exc,
+                "priority": _exception_priority(exc),
+                "first_order": order,
+            },
+        )
+        group["count"] += 1
+
+    if not grouped:
+        return None
+
+    selected = max(
+        grouped.values(),
+        key=lambda group: (
+            group["count"],
+            group["priority"],
+            -group["first_order"],
+        ),
+    )
+    return selected["exception"]
+
+
 def _select_result(strategy: str, results: list[ProviderAttemptResult]) -> ProviderAttemptResult:
     successful = [result for result in results if result.ok]
     if not successful:
+        dominant = _dominant_exception(results)
+        if dominant is not None:
+            raise dominant
         errors = "; ".join(result.error for result in results if result.error)
         raise RuntimeError(errors or "All provider attempts failed")
 
     if strategy == "best_score":
         return max(successful, key=_score_result)
     return successful[0]
+
+
+async def _run_attempt_with_index(
+    index: int,
+    worker,
+    attempt: ProviderAttempt,
+    prompt: str,
+    log_prefix: str,
+    call_kwargs: dict,
+) -> tuple[int, ProviderAttemptResult]:
+    return index, await _run_attempt(worker, attempt, prompt, log_prefix, call_kwargs)
+
+
+async def _cancel_pending_attempt_tasks(tasks: list[asyncio.Task]) -> int:
+    pending = [task for task in tasks if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    return len(pending)
+
+
+async def _run_attempts_first_success(
+    worker,
+    attempts: list[ProviderAttempt],
+    prompt: str,
+    log_prefix: str,
+    call_kwargs: dict,
+) -> tuple[list[ProviderAttemptResult], ProviderAttemptResult | None, int]:
+    tasks = [
+        asyncio.create_task(_run_attempt_with_index(index, worker, attempt, prompt, log_prefix, call_kwargs))
+        for index, attempt in enumerate(attempts)
+    ]
+    results: list[ProviderAttemptResult] = []
+    selected: ProviderAttemptResult | None = None
+    cancelled_count = 0
+
+    try:
+        for completed in asyncio.as_completed(tasks):
+            _index, result = await completed
+            results.append(result)
+            if result.ok:
+                selected = result
+                break
+    except BaseException:
+        await _cancel_pending_attempt_tasks(tasks)
+        raise
+
+    if selected is not None:
+        cancelled_count = await _cancel_pending_attempt_tasks(tasks)
+
+    return results, selected, cancelled_count
 
 
 def _build_synthesis_prompt(original_prompt: str, results: list[ProviderAttemptResult]) -> str:
@@ -599,14 +773,36 @@ async def execute_orchestrated_api_call(
         worker,
         f"[ORCH] Running {len(attempts)} provider/pass attempt(s), strategy={strategy}.",
     )
+    cancelled_count = 0
+    selected_first_success = None
     with _debug_context(worker, operation_context):
-        results = await asyncio.gather(
-            *[_run_attempt(worker, attempt, prompt, log_prefix, call_kwargs) for attempt in attempts]
-        )
+        if strategy == "first_success":
+            results, selected_first_success, cancelled_count = await _run_attempts_first_success(
+                worker,
+                attempts,
+                prompt,
+                log_prefix,
+                call_kwargs,
+            )
+        else:
+            results = await asyncio.gather(
+                *[_run_attempt(worker, attempt, prompt, log_prefix, call_kwargs) for attempt in attempts]
+            )
 
     _save_attempt_results(worker, operation_context, results)
     success_count = sum(1 for result in results if result.ok)
-    _post_log(worker, f"[ORCH] Attempts completed: {success_count}/{len(results)} successful.")
+    if cancelled_count:
+        _post_log(
+            worker,
+            f"[ORCH] Attempts completed: {success_count}/{len(results)} successful, "
+            f"{cancelled_count} pending cancelled.",
+        )
+    else:
+        _post_log(worker, f"[ORCH] Attempts completed: {success_count}/{len(results)} successful.")
+
+    if selected_first_success is not None:
+        _post_log(worker, f"[ORCH] Selected result: {selected_first_success.attempt.label}.")
+        return selected_first_success.text
 
     if strategy in {"merge", "synthesis"} and success_count > 1:
         synthesis_prompt = _build_synthesis_prompt(prompt, results)

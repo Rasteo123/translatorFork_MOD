@@ -1,14 +1,23 @@
 import os
 import zipfile
+from argparse import Namespace
+
+import pytest
 
 from gemini_translator.cli import (
+    CliError,
+    TaskPlan,
     _choose_translation_rel_path,
     _collect_untranslated_fix_items,
     _load_translated_chapter_records,
+    _resolve_model,
     _safe_settings_for_output,
     _scan_untranslated_records,
     build_parser,
+    build_session_settings,
     build_task_plan,
+    command_plan,
+    command_translate,
     select_chapters,
 )
 from gemini_translator.utils.project_manager import TranslationProjectManager
@@ -46,6 +55,82 @@ def _build_epub(path):
         epub.writestr("OEBPS/ch2.xhtml", "<html><body><p>Two</p></body></html>")
 
 
+class _FakeApiConfig:
+    def __init__(self):
+        self.providers = {
+            "fake": {
+                "models": {
+                    "Known Model": {"id": "known-model-id", "rpm": 7},
+                    "Fallback Model": {"id": "fallback-model-id", "rpm": 9},
+                }
+            }
+        }
+
+    def ensure_dynamic_provider_models(self, provider_id):
+        self.dynamic_provider = provider_id
+
+    def api_providers(self):
+        return self.providers
+
+    def default_model_name(self):
+        return "Fallback Model"
+
+    def provider_requires_api_key(self, provider_id):
+        return True
+
+    def provider_placeholder_api_key(self, provider_id):
+        return f"placeholder:{provider_id}"
+
+    def provider_max_instances(self, provider_id):
+        return None
+
+    def default_prompt(self):
+        return "prompt"
+
+    def all_models(self):
+        return {
+            model_name: {**model_config, "provider": provider_id}
+            for provider_id, provider in self.providers.items()
+            for model_name, model_config in provider.get("models", {}).items()
+        }
+
+
+class _NoKeysSettingsManager:
+    def load_full_session_settings(self):
+        return {}
+
+    def get_custom_prompt(self):
+        return ""
+
+    def load_key_statuses(self):
+        raise AssertionError("plan settings must not read configured API keys")
+
+
+def _session_args(tmp_path, **overrides):
+    values = {
+        "provider": "fake",
+        "model": "Known Model",
+        "api_key": None,
+        "api_key_file": None,
+        "all_keys": False,
+        "workers": None,
+        "rpm": None,
+        "temperature": None,
+        "mode": "single",
+        "task_size": None,
+        "splits": 1,
+        "force_accept": False,
+        "json_epub": False,
+        "prompt_file": None,
+        "glossary": None,
+        "settings_json": None,
+        "project": str(tmp_path),
+        "epub": str(tmp_path / "book.epub"),
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
+
 def test_select_chapters_pending_skips_project_map_entries(tmp_path):
     epub_path = tmp_path / "book.epub"
     project_dir = tmp_path / "project"
@@ -65,6 +150,57 @@ def test_select_chapters_pending_skips_project_map_entries(tmp_path):
 
     assert select_chapters(str(epub_path), manager, mode="pending") == ["OEBPS/ch2.xhtml"]
     assert select_chapters(str(epub_path), manager, mode="translated") == ["OEBPS/ch1.xhtml"]
+
+
+def test_resolve_model_accepts_explicit_model_id():
+    api_config = _FakeApiConfig()
+
+    model_name, model_config = _resolve_model(api_config, "fake", {}, "known-model-id")
+
+    assert model_name == "Known Model"
+    assert model_config["id"] == "known-model-id"
+    assert model_config["provider"] == "fake"
+
+
+def test_resolve_model_rejects_unknown_explicit_model_with_available_models():
+    api_config = _FakeApiConfig()
+
+    with pytest.raises(CliError) as exc_info:
+        _resolve_model(api_config, "fake", {"model": "Known Model"}, "missing-model")
+
+    assert "missing-model" in str(exc_info.value)
+    assert exc_info.value.payload["provider"] == "fake"
+    assert exc_info.value.payload["available_models"] == ["Known Model", "Fallback Model"]
+    assert exc_info.value.payload["available_model_ids"] == ["known-model-id", "fallback-model-id"]
+
+
+def test_resolve_model_falls_back_only_without_explicit_model():
+    api_config = _FakeApiConfig()
+
+    model_name, model_config = _resolve_model(api_config, "fake", {"model": "missing-model"}, None)
+
+    assert model_name == "Fallback Model"
+    assert model_config["id"] == "fallback-model-id"
+
+
+def test_build_session_settings_can_skip_api_key_resolution(monkeypatch, tmp_path):
+    from gemini_translator import cli
+
+    monkeypatch.setattr(cli, "_ensure_api_config_initialized", lambda: _FakeApiConfig())
+    args = _session_args(tmp_path)
+
+    settings = build_session_settings(
+        _NoKeysSettingsManager(),
+        project_manager=None,
+        chapters=[],
+        args=args,
+        require_api_keys=False,
+    )
+
+    assert settings["provider"] == "fake"
+    assert settings["model"] == "Known Model"
+    assert settings["api_keys"] == []
+    assert settings["num_instances"] == 1
 
 
 def test_build_task_plan_uses_batch_mode(tmp_path):
@@ -144,6 +280,162 @@ def test_new_cli_commands_parse_common_arguments():
     ])
     assert args.func.__name__ == "command_untranslated_fix"
     assert args.dry_run is True
+
+
+def test_command_plan_shuts_down_when_selection_fails(monkeypatch, tmp_path):
+    from gemini_translator import cli
+
+    runtimes = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.shutdown_called = False
+            runtimes.append(self)
+
+        def bootstrap(self, *, include_engine):
+            assert include_engine is False
+            return Namespace(settings_manager=object())
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    monkeypatch.setattr(cli, "HeadlessRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "_project_manager", lambda project_folder: object())
+
+    def raise_selection_error(*args, **kwargs):
+        raise CliError("selection failed")
+
+    monkeypatch.setattr(cli, "select_chapters", raise_selection_error)
+
+    args = Namespace(
+        project=str(tmp_path / "project"),
+        epub=str(tmp_path / "book.epub"),
+        chapters="pending",
+        chapter=[],
+        offset=0,
+        limit=None,
+    )
+
+    with pytest.raises(CliError):
+        command_plan(args)
+
+    assert runtimes[0].shutdown_called is True
+
+
+def test_command_translate_reports_failed_task_as_not_ok(monkeypatch, tmp_path):
+    from gemini_translator import cli
+
+    runtimes = []
+
+    class FakeSignal:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event):
+            self.events.append(event)
+
+    class FakeEventBus:
+        def __init__(self):
+            self.event_posted = FakeSignal()
+            self.data = {}
+            self.popped = []
+
+        def set_data(self, key, value):
+            self.data[key] = value
+
+        def pop_data(self, key, default=None):
+            self.popped.append(key)
+            return self.data.pop(key, default)
+
+    class FakeTaskManager:
+        def __init__(self):
+            self.pending_tasks = None
+            self.pending_task_chains = None
+
+        def set_pending_tasks(self, payloads):
+            self.pending_tasks = payloads
+
+        def set_pending_task_chains(self, task_chains):
+            self.pending_task_chains = task_chains
+
+    class FakeApp:
+        def __init__(self):
+            self.settings_manager = object()
+            self.task_manager = FakeTaskManager()
+            self.event_bus = FakeEventBus()
+            self.exec_called = False
+
+        def exec(self):
+            self.exec_called = True
+
+    class FakeQTimer:
+        @staticmethod
+        def singleShot(ms, callback):
+            callback()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.shutdown_called = False
+            self.app = FakeApp()
+            self.app_main = Namespace(QtCore=Namespace(QTimer=FakeQTimer))
+            runtimes.append(self)
+
+        def bootstrap(self, *, include_engine):
+            assert include_engine is True
+            return self.app
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    class FakeObserver:
+        def __init__(self, app, *, verbose, timeout_sec):
+            self.app = app
+            self.verbose = verbose
+            self.timeout_sec = timeout_sec
+
+        def result_payload(self, task_manager):
+            return {
+                "finished": True,
+                "timed_out": False,
+                "task_events": {"total": 1, "success": 0, "failed": 1},
+            }
+
+    monkeypatch.setattr(cli, "HeadlessRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "CliSessionObserver", FakeObserver)
+    monkeypatch.setattr(cli, "_project_manager", lambda project_folder: object())
+    monkeypatch.setattr(cli, "select_chapters", lambda *args, **kwargs: ["OEBPS/ch1.xhtml"])
+    monkeypatch.setattr(cli, "build_session_settings", lambda *args, **kwargs: {"provider": "fake"})
+    monkeypatch.setattr(
+        cli,
+        "build_task_plan",
+        lambda epub_path, chapters, settings, project_manager=None: TaskPlan(
+            chapters=chapters,
+            payloads=[("epub", epub_path, chapters[0])],
+            task_chains=[],
+            settings=settings,
+            summary={"task_count": 1},
+        ),
+    )
+
+    args = Namespace(
+        project=str(tmp_path / "project"),
+        epub=str(tmp_path / "book.epub"),
+        chapters="pending",
+        chapter=[],
+        offset=0,
+        limit=None,
+        verbose=False,
+        timeout=None,
+    )
+
+    payload = command_translate(args)
+
+    assert payload["ok"] is False
+    assert payload["status"] == "finished"
+    assert runtimes[0].app.exec_called is True
+    assert runtimes[0].app.task_manager.pending_tasks == [("epub", str(tmp_path / "book.epub"), "OEBPS/ch1.xhtml")]
+    assert runtimes[0].app.event_bus.popped == ["cli_session_active"]
+    assert runtimes[0].shutdown_called is True
 
 
 def test_untranslated_scan_reads_project_translations(tmp_path):

@@ -5,6 +5,7 @@ ConsistencyEngine v2 — Движок для проверки согласова
 """
 
 import asyncio
+import hashlib
 import html
 import inspect
 import json
@@ -497,6 +498,7 @@ class ConsistencyEngine(QObject):
             "glossary_collection": set(),
             "analysis": set(),
         }
+        self.session_signature = ""
         
         # Индекс текущего ключа для ротации
         self._current_key_index = 0
@@ -517,6 +519,7 @@ class ConsistencyEngine(QObject):
             "glossary_collection": set(),
             "analysis": set(),
         }
+        self.session_signature = ""
         self.is_cancelled = False
         self._current_key_index = 0
 
@@ -528,16 +531,145 @@ class ConsistencyEngine(QObject):
                 return value
         return json.dumps(chapter or {}, ensure_ascii=False, sort_keys=True, default=str)
 
+    @staticmethod
+    def _text_sha256(value: Any) -> str:
+        return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
     @classmethod
-    def chunk_resume_key(cls, chunk: List[Dict[str, Any]]) -> str:
-        chapter_ids = [cls._chapter_resume_id(chapter) for chapter in (chunk or [])]
-        return json.dumps(chapter_ids, ensure_ascii=False, separators=(",", ":"))
+    def _chapter_resume_payload(cls, chapter: Dict[str, Any]) -> Dict[str, str]:
+        chapter = chapter or {}
+        return {
+            "id": cls._chapter_resume_id(chapter),
+            "path": str(chapter.get("path") or "").strip(),
+            "source_path": str(chapter.get("source_path") or "").strip(),
+            "name": str(chapter.get("name") or "").strip(),
+            "content_sha256": cls._text_sha256(chapter.get("content")),
+            "source_content_sha256": cls._text_sha256(chapter.get("source_content")),
+        }
+
+    @classmethod
+    def chunk_resume_key(
+        cls,
+        chunk: List[Dict[str, Any]],
+        session_signature: str | None = None,
+    ) -> str:
+        payload: Dict[str, Any] = {
+            "v": 2,
+            "chapters": [cls._chapter_resume_payload(chapter) for chapter in (chunk or [])],
+        }
+        if session_signature:
+            payload["session_signature"] = str(session_signature)
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _normalize_analysis_runtime_mode(mode: Any, consistency_mode: Any) -> str:
+        normalized_consistency_mode = normalize_consistency_mode(consistency_mode)
+        if normalized_consistency_mode == FAST_PROOFREAD_MODE:
+            return FAST_PROOFREAD_MODE
+        normalized_mode = str(mode or "").strip().lower()
+        if normalized_mode == "glossary_first":
+            return "glossary_first"
+        return "standard"
+
+    def build_session_signature(
+        self,
+        chapters: List[Dict[str, Any]],
+        config: Dict[str, Any] | None,
+        mode: str = "standard",
+    ) -> str:
+        config = dict(config or {})
+        consistency_mode = normalize_consistency_mode(config.get("consistency_mode") or mode)
+        runtime_mode = self._normalize_analysis_runtime_mode(mode, consistency_mode)
+
+        relevant_config_keys = (
+            "provider",
+            "model",
+            "chunk_size",
+            "consistency_mode",
+            "consistency_original_chapter_limit",
+            "system_prompt",
+            "temperature",
+            "temperature_override_enabled",
+            "thinking_enabled",
+            "thinking_budget",
+            "thinking_level",
+            "max_output_tokens",
+        )
+        config_payload = {
+            key: config.get(key)
+            for key in relevant_config_keys
+            if key in config
+        }
+        config_payload["consistency_mode"] = consistency_mode
+        model_config = config.get("model_config")
+        if isinstance(model_config, dict):
+            config_payload["model_config"] = {
+                key: model_config.get(key)
+                for key in (
+                    "id",
+                    "name",
+                    "display_name",
+                    "max_output_tokens",
+                    "supports_thinking",
+                    "thinking_budget",
+                )
+                if key in model_config
+            }
+
+        prompts_data = self._load_consistency_prompts_data()
+        prompt_keys = (
+            "consistency_analysis",
+            "fast_proofread_3_1_analysis",
+            "glossary_collection",
+            "source_reference",
+        )
+        prompts_payload = {
+            key: prompts_data.get(key)
+            for key in prompt_keys
+            if key in prompts_data
+        }
+
+        payload = {
+            "v": 1,
+            "mode": runtime_mode,
+            "consistency_mode": consistency_mode,
+            "config": config_payload,
+            "chapters": [
+                self._chapter_resume_payload(chapter)
+                for chapter in (chapters or [])
+                if isinstance(chapter, dict)
+            ],
+            "prompts": prompts_payload,
+        }
+        raw_payload = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def resume_state_matches_signature(
+        resume_state: Dict[str, Any] | None,
+        session_signature: str,
+    ) -> bool:
+        if not isinstance(resume_state, dict) or not session_signature:
+            return False
+        saved_signature = str(resume_state.get("session_signature") or "").strip()
+        return bool(saved_signature and saved_signature == session_signature)
 
     def _is_chunk_completed(self, phase: str, chunk: List[Dict[str, Any]]) -> bool:
-        return self.chunk_resume_key(chunk) in self.completed_chunk_keys.get(phase, set())
+        return (
+            self.chunk_resume_key(chunk, self.session_signature)
+            in self.completed_chunk_keys.get(phase, set())
+        )
 
     def _mark_chunk_completed(self, phase: str, chunk: List[Dict[str, Any]]) -> None:
-        self.completed_chunk_keys.setdefault(phase, set()).add(self.chunk_resume_key(chunk))
+        self.completed_chunk_keys.setdefault(phase, set()).add(
+            self.chunk_resume_key(chunk, self.session_signature)
+        )
 
     @staticmethod
     def _chapter_resume_id_candidates(chapter: Dict[str, Any]) -> set[str]:
@@ -573,6 +705,9 @@ class ConsistencyEngine(QObject):
             for phase, keys in self.completed_chunk_keys.items()
             if keys
         }
+
+    def get_session_signature(self) -> str:
+        return str(self.session_signature or "")
 
     def _restore_completed_chunk_keys(self, value: Any) -> None:
         restored = {
@@ -749,8 +884,6 @@ class ConsistencyEngine(QObject):
         """
         config = dict(config or {})
         resume_state = config.pop("_consistency_resume_state", None)
-        self.reset_session()
-        self._restore_runtime_state(resume_state)
 
         consistency_mode = normalize_consistency_mode(config.get("consistency_mode") or mode)
         config["consistency_mode"] = consistency_mode
@@ -760,6 +893,20 @@ class ConsistencyEngine(QObject):
             config["consistency_mode"] = FAST_PROOFREAD_MODE
         elif mode == DEEP_CONSISTENCY_MODE:
             mode = "standard"
+
+        session_signature = self.build_session_signature(chapters, config, mode)
+        if not self.resume_state_matches_signature(resume_state, session_signature):
+            can_restore_legacy_processed_chapters = (
+                isinstance(resume_state, dict)
+                and not str(resume_state.get("session_signature") or "").strip()
+                and not resume_state.get("completed_chunks")
+            )
+            if not can_restore_legacy_processed_chapters:
+                resume_state = None
+
+        self.reset_session()
+        self.session_signature = session_signature
+        self._restore_runtime_state(resume_state)
 
         if not active_keys:
             self.error_occurred.emit("Нет активных ключей для анализа")

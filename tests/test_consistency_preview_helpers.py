@@ -3,11 +3,12 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from PyQt6 import QtWidgets
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextOption
-from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QTextEdit
+from PyQt6.QtWidgets import QMessageBox, QTableWidget, QTableWidgetItem, QTextEdit
 
 from gemini_translator.ui.dialogs.consistency_checker import (
     build_changed_line_format,
@@ -32,6 +33,7 @@ class _ManualFixHarness:
     _focus_corrected_preview_on_quote = ConsistencyValidatorDialog._focus_corrected_preview_on_quote
     _get_corrected_preview_content = ConsistencyValidatorDialog._get_corrected_preview_content
     _sync_corrected_preview_content = ConsistencyValidatorDialog._sync_corrected_preview_content
+    _problem_key = ConsistencyValidatorDialog._problem_key
     start_manual_fix = ConsistencyValidatorDialog.start_manual_fix
 
     def __init__(self):
@@ -100,6 +102,7 @@ class _SessionSaveHarness:
                 to_dict=lambda: {"characters": [], "terms": [], "plots": []},
             ),
             get_completed_chunk_keys=lambda: {"analysis": ["chunk-key-1"]},
+            get_session_signature=lambda: "signature-1",
             get_request_response_trace=lambda: [{"phase": "analysis", "prompt": "p", "response": "r"}],
         )
         self.selected_chapter_ids = set()
@@ -136,12 +139,14 @@ class ConsistencyPreviewHelpersTests(unittest.TestCase):
 
         harness.start_manual_fix()
 
+        problem_key = harness._problem_key(harness.current_problem)
         self.assertTrue(harness.apply_btn.enabled)
         self.assertEqual(harness.corrected_text.toPlainText(), "<p>Hello world</p>\n")
         self.assertEqual(
-            harness.fix_previews["p1"],
+            harness.fix_previews[problem_key],
             ("<p>Hello world</p>\n", "<p>Hello world</p>\n"),
         )
+        self.assertNotIn("p1", harness.fix_previews)
         self.assertTrue(any("Ручное исправление" in entry for entry in harness.logs))
 
     def test_manual_preview_edits_are_kept_when_selection_changes(self):
@@ -151,10 +156,31 @@ class ConsistencyPreviewHelpersTests(unittest.TestCase):
         harness.corrected_text.setPlainText("<p>Hello fixed world</p>")
         harness._sync_corrected_preview_content()
 
+        problem_key = harness._problem_key(harness.current_problem)
         self.assertEqual(
-            harness.fix_previews["p1"],
+            harness.fix_previews[problem_key],
             ("<p>Hello world</p>\n", "<p>Hello fixed world</p>"),
         )
+
+    def test_manual_previews_with_same_id_use_distinct_problem_keys(self):
+        harness = _ManualFixHarness()
+        first_key = harness._problem_key(harness.current_problem)
+        harness.start_manual_fix()
+
+        harness.current_problem = {
+            "id": "p1",
+            "chapter": "chapter.xhtml",
+            "type": "typo",
+            "quote": "Hello",
+            "description": "Different issue",
+            "suggestion": "Hi",
+        }
+        second_key = harness._problem_key(harness.current_problem)
+        harness.start_manual_fix()
+
+        self.assertNotEqual(first_key, second_key)
+        self.assertIn(first_key, harness.fix_previews)
+        self.assertIn(second_key, harness.fix_previews)
 
     def test_resolved_problem_is_unchecked_and_not_counted_for_batch_fix(self):
         harness = _ResolvedProblemHarness()
@@ -233,10 +259,50 @@ class ConsistencyPreviewHelpersTests(unittest.TestCase):
             [{"id": "p2", "chapter": "chapter.xhtml"}],
         )
         self.assertEqual(payload["completed_chunks"], {"analysis": ["chunk-key-1"]})
+        self.assertEqual(payload["session_signature"], "signature-1")
         self.assertEqual(
             payload["request_response_trace"],
             [{"phase": "analysis", "prompt": "p", "response": "r"}],
         )
+
+    def test_save_custom_prompts_merges_existing_json_and_keeps_unknown_keys(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            prompts_file = Path(temp_dir) / "consistency_prompts.json"
+            prompts_file.write_text(
+                json.dumps(
+                    {
+                        "consistency_analysis": ["old"],
+                        "fast_proofread_3_1_analysis": ["keep fast"],
+                        "source_reference": {"intro": ["keep source"]},
+                        "unknown_section": {"keep": True},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            editor = QTextEdit()
+            editor.setPlainText("new analysis\nsecond line")
+            harness = SimpleNamespace(prompts_editors={"consistency_analysis": editor})
+
+            with patch(
+                "gemini_translator.ui.dialogs.consistency_checker.api_config.get_resource_path",
+                return_value=prompts_file,
+            ), patch.object(QMessageBox, "information") as information, patch.object(
+                QMessageBox,
+                "critical",
+            ) as critical:
+                ConsistencyValidatorDialog._save_custom_prompts(harness)
+
+            payload = json.loads(prompts_file.read_text(encoding="utf-8"))
+            leftovers = list(Path(temp_dir).glob(".consistency_prompts.json.*.tmp"))
+
+        self.assertTrue(information.called)
+        self.assertFalse(critical.called)
+        self.assertEqual(leftovers, [])
+        self.assertEqual(payload["consistency_analysis"], ["new analysis", "second line"])
+        self.assertEqual(payload["fast_proofread_3_1_analysis"], ["keep fast"])
+        self.assertEqual(payload["source_reference"], {"intro": ["keep source"]})
+        self.assertEqual(payload["unknown_section"], {"keep": True})
 
 
 if __name__ == "__main__":

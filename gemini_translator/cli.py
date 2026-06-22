@@ -272,6 +272,43 @@ def _provider_models(api_config, provider_id: str) -> dict:
     return models if isinstance(models, dict) else {}
 
 
+def _normalized_model_config(model_config: Any, provider_id: str, model_name: str) -> dict:
+    if isinstance(model_config, dict):
+        cfg = dict(model_config)
+    else:
+        cfg = {"id": str(model_config or model_name).strip() or model_name}
+    cfg.setdefault("provider", provider_id)
+    return cfg
+
+
+def _available_model_names(models_for_provider: dict) -> list[str]:
+    return [str(model_name) for model_name in models_for_provider]
+
+
+def _available_model_ids(models_for_provider: dict, provider_id: str) -> list[str]:
+    seen = set()
+    model_ids = []
+    for model_name, model_config in models_for_provider.items():
+        cfg = _normalized_model_config(model_config, provider_id, str(model_name))
+        model_id = str(cfg.get("id") or "").strip()
+        if model_id and model_id not in seen:
+            seen.add(model_id)
+            model_ids.append(model_id)
+    return model_ids
+
+
+def _find_provider_model(models_for_provider: dict, provider_id: str, model_ref: str | None) -> tuple[str, dict] | None:
+    model_ref = str(model_ref or "").strip()
+    if not model_ref:
+        return None
+    for model_name, model_config in models_for_provider.items():
+        model_name = str(model_name)
+        cfg = _normalized_model_config(model_config, provider_id, model_name)
+        if model_name == model_ref or str(cfg.get("id") or "").strip() == model_ref:
+            return model_name, cfg
+    return None
+
+
 def _resolve_provider(api_config, saved_settings: dict, provider_arg: str | None) -> str:
     providers = api_config.api_providers()
     provider_id = str(provider_arg or saved_settings.get("provider") or "").strip()
@@ -290,28 +327,38 @@ def _resolve_provider(api_config, saved_settings: dict, provider_arg: str | None
 
 def _resolve_model(api_config, provider_id: str, saved_settings: dict, model_arg: str | None) -> tuple[str, dict]:
     models_for_provider = _provider_models(api_config, provider_id)
-    all_models = api_config.all_models()
     explicit = str(model_arg or "").strip()
     saved = str(saved_settings.get("model") or "").strip()
 
-    for model_name in [explicit, saved, api_config.default_model_name()]:
+    if explicit:
+        resolved = _find_provider_model(models_for_provider, provider_id, explicit)
+        if resolved:
+            return resolved
+        raise CliError(
+            f"Unknown model for provider {provider_id}: {explicit}",
+            payload={
+                "provider": provider_id,
+                "available_models": _available_model_names(models_for_provider),
+                "available_model_ids": _available_model_ids(models_for_provider, provider_id),
+            },
+        )
+
+    for model_name in [saved, api_config.default_model_name()]:
         if not model_name:
             continue
-        model_config = all_models.get(model_name)
-        if model_config and str(model_config.get("provider") or provider_id) == provider_id:
-            return model_name, model_config
-        if model_name in models_for_provider:
-            cfg = dict(models_for_provider[model_name] or {})
-            cfg.setdefault("provider", provider_id)
-            return model_name, cfg
+        resolved = _find_provider_model(models_for_provider, provider_id, model_name)
+        if resolved:
+            return resolved
 
     if models_for_provider:
         model_name, model_config = next(iter(models_for_provider.items()))
-        cfg = dict(model_config or {})
-        cfg.setdefault("provider", provider_id)
+        cfg = _normalized_model_config(model_config, provider_id, str(model_name))
         return model_name, cfg
 
-    raise CliError(f"Provider has no models: {provider_id}")
+    raise CliError(
+        f"Provider has no models: {provider_id}",
+        payload={"provider": provider_id, "available_models": [], "available_model_ids": []},
+    )
 
 
 def _read_api_key_file(path: str | None) -> list[str]:
@@ -363,7 +410,7 @@ def _resolve_api_keys(api_config, settings_manager, provider_id: str, saved_sett
     return list(dict.fromkeys(keys))
 
 
-def build_session_settings(settings_manager, project_manager, chapters: list[str], args) -> dict:
+def build_session_settings(settings_manager, project_manager, chapters: list[str], args, *, require_api_keys: bool = True) -> dict:
     api_config = _ensure_api_config_initialized()
     saved_settings = settings_manager.load_full_session_settings() or {}
     if not isinstance(saved_settings, dict):
@@ -371,7 +418,11 @@ def build_session_settings(settings_manager, project_manager, chapters: list[str
 
     provider_id = _resolve_provider(api_config, saved_settings, getattr(args, "provider", None))
     model_name, model_config = _resolve_model(api_config, provider_id, saved_settings, getattr(args, "model", None))
-    api_keys = _resolve_api_keys(api_config, settings_manager, provider_id, saved_settings, args)
+    api_keys = (
+        _resolve_api_keys(api_config, settings_manager, provider_id, saved_settings, args)
+        if require_api_keys
+        else []
+    )
 
     prompt_text = _load_text_file(getattr(args, "prompt_file", None))
     if prompt_text is None:
@@ -887,92 +938,95 @@ def command_settings(args) -> dict:
 
 def command_plan(args) -> dict:
     runtime = HeadlessRuntime()
-    app = runtime.bootstrap(include_engine=False)
-    project_folder = _abs_path(args.project)
-    epub_path = _abs_path(args.epub)
-    pm = _project_manager(project_folder)
-    chapters = select_chapters(
-        epub_path,
-        pm,
-        mode=args.chapters,
-        patterns=args.chapter or [],
-        offset=args.offset,
-        limit=args.limit,
-    )
-    settings = build_session_settings(app.settings_manager, pm, chapters, args)
-    plan = build_task_plan(epub_path, chapters, settings, pm)
-    payload = {
-        "ok": True,
-        "epub": epub_path,
-        "project": project_folder,
-        "plan": plan.summary,
-        "settings": _safe_settings_for_output(settings),
-    }
-    runtime.shutdown()
-    return payload
+    try:
+        app = runtime.bootstrap(include_engine=False)
+        project_folder = _abs_path(args.project)
+        epub_path = _abs_path(args.epub)
+        pm = _project_manager(project_folder)
+        chapters = select_chapters(
+            epub_path,
+            pm,
+            mode=args.chapters,
+            patterns=args.chapter or [],
+            offset=args.offset,
+            limit=args.limit,
+        )
+        settings = build_session_settings(app.settings_manager, pm, chapters, args, require_api_keys=False)
+        plan = build_task_plan(epub_path, chapters, settings, pm)
+        return {
+            "ok": True,
+            "epub": epub_path,
+            "project": project_folder,
+            "plan": plan.summary,
+            "settings": _safe_settings_for_output(settings),
+        }
+    finally:
+        runtime.shutdown()
 
 
 def command_translate(args) -> dict:
     runtime = HeadlessRuntime()
-    app = runtime.bootstrap(include_engine=True)
-    project_folder = _abs_path(args.project)
-    epub_path = _abs_path(args.epub)
-    pm = _project_manager(project_folder)
-    chapters = select_chapters(
-        epub_path,
-        pm,
-        mode=args.chapters,
-        patterns=args.chapter or [],
-        offset=args.offset,
-        limit=args.limit,
-    )
-    settings = build_session_settings(app.settings_manager, pm, chapters, args)
-    plan = build_task_plan(epub_path, chapters, settings, pm)
+    try:
+        app = runtime.bootstrap(include_engine=True)
+        project_folder = _abs_path(args.project)
+        epub_path = _abs_path(args.epub)
+        pm = _project_manager(project_folder)
+        chapters = select_chapters(
+            epub_path,
+            pm,
+            mode=args.chapters,
+            patterns=args.chapter or [],
+            offset=args.offset,
+            limit=args.limit,
+        )
+        settings = build_session_settings(app.settings_manager, pm, chapters, args)
+        plan = build_task_plan(epub_path, chapters, settings, pm)
 
-    if not plan.payloads:
-        runtime.shutdown()
+        if not plan.payloads:
+            return {
+                "ok": True,
+                "status": "no_tasks",
+                "epub": epub_path,
+                "project": project_folder,
+                "plan": plan.summary,
+            }
+
+        if plan.task_chains:
+            app.task_manager.set_pending_task_chains(plan.task_chains)
+        else:
+            app.task_manager.set_pending_tasks(plan.payloads)
+
+        observer = CliSessionObserver(
+            app,
+            verbose=bool(args.verbose),
+            timeout_sec=args.timeout,
+        )
+
+        def start_session():
+            app.event_bus.event_posted.emit({
+                "event": "start_session_requested",
+                "source": "cli",
+                "data": {"settings": settings},
+            })
+
+        app.event_bus.set_data("cli_session_active", True)
+        try:
+            runtime.app_main.QtCore.QTimer.singleShot(0, start_session)
+            app.exec()
+        finally:
+            app.event_bus.pop_data("cli_session_active", None)
+
+        result = observer.result_payload(app.task_manager)
         return {
-            "ok": True,
-            "status": "no_tasks",
+            "ok": _session_completed_ok(result),
+            "status": "finished" if result["finished"] else "stopped",
             "epub": epub_path,
             "project": project_folder,
             "plan": plan.summary,
+            "result": result,
         }
-
-    if plan.task_chains:
-        app.task_manager.set_pending_task_chains(plan.task_chains)
-    else:
-        app.task_manager.set_pending_tasks(plan.payloads)
-
-    observer = CliSessionObserver(
-        app,
-        verbose=bool(args.verbose),
-        timeout_sec=args.timeout,
-    )
-
-    def start_session():
-        app.event_bus.event_posted.emit({
-            "event": "start_session_requested",
-            "source": "cli",
-            "data": {"settings": settings},
-        })
-
-    app.event_bus.set_data("cli_session_active", True)
-    runtime.app_main.QtCore.QTimer.singleShot(0, start_session)
-    app.exec()
-    app.event_bus.pop_data("cli_session_active", None)
-
-    result = observer.result_payload(app.task_manager)
-    payload = {
-        "ok": bool(result["finished"] and not result["timed_out"]),
-        "status": "finished" if result["finished"] else "stopped",
-        "epub": epub_path,
-        "project": project_folder,
-        "plan": plan.summary,
-        "result": result,
-    }
-    runtime.shutdown()
-    return payload
+    finally:
+        runtime.shutdown()
 
 
 def _choose_translation_rel_path(versions: dict, suffix: str | None = None) -> str | None:
