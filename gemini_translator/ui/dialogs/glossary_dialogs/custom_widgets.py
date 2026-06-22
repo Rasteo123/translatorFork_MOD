@@ -57,6 +57,13 @@ class ExpandingTextEditDelegate(QtWidgets.QStyledItemDelegate):
         editor.installEventFilter(self)
         return editor
 
+    def destroyEditor(self, editor, index):
+        if isinstance(editor, ExpandingTextEdit):
+            # Блокируем сигналы перед удалением, чтобы избежать Access Violation
+            # из-за geometryChangeRequested во время обработки DeferredDelete.
+            editor.blockSignals(True)
+        super().destroyEditor(editor, index)
+
     def setEditorData(self, editor, index):
         value = index.model().data(index, QtCore.Qt.ItemDataRole.EditRole)
         editor.setPlainText(str(value))
