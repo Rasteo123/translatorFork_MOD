@@ -58,6 +58,7 @@ from .validation_dialogs.untranslated_fixer_dialog import (
 )
 
 REGEX_DIGITS = re.compile(r'\d')
+VALIDATION_SCROLL_CONTENT_MIN_HEIGHT = 900
 
 # 1. Восклицательные и вопросительные знаки
 # Логика: Группируем последовательности с пробелами (например, "? !", "!!!").
@@ -1918,23 +1919,28 @@ class TranslationValidatorPage(ShellPage):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
 
-        self.main_tabs = QtWidgets.QTabWidget()
-        self.main_tabs.setDocumentMode(True)
+        self.content_scroll_area = QScrollArea()
+        self.content_scroll_area.setWidgetResizable(True)
+        self.content_scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.content_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.content_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        settings_tab = QWidget()
-        settings_layout = QVBoxLayout(settings_tab)
-        settings_layout.setContentsMargins(0, 0, 0, 0)
-        settings_layout.setSpacing(8)
-        settings_layout.addWidget(self._create_source_group())
-        settings_layout.addWidget(self._create_main_settings_group(), 1)
+        self.content_widget = QWidget()
+        content_layout = QVBoxLayout(self.content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(6)
 
-        self.results_tab = self._create_results_widget()
-        self.editor_tab = self._create_comparison_widget()
+        content_layout.addWidget(self._create_source_group())
+        content_layout.addWidget(self._create_main_settings_group())
 
-        self.main_tabs.addTab(settings_tab, "Проверка")
-        self.main_tabs.addTab(self.results_tab, "Главы")
-        self.main_tabs.addTab(self.editor_tab, "Редактор")
-        main_layout.addWidget(self.main_tabs, 1)
+        self.results_widget = self._create_results_widget()
+        self.comparison_widget = self._create_comparison_widget()
+        content_layout.addWidget(self.results_widget, 1)
+        content_layout.addWidget(self.comparison_widget, 2)
+
+        self.content_widget.setMinimumHeight(VALIDATION_SCROLL_CONTENT_MIN_HEIGHT)
+        self.content_scroll_area.setWidget(self.content_widget)
+        main_layout.addWidget(self.content_scroll_area, 1)
 
         main_layout.addLayout(self._create_bottom_buttons())
 
@@ -2315,35 +2321,19 @@ class TranslationValidatorPage(ShellPage):
         self._refresh_previous_problem_paths()
 
     def _create_main_settings_group(self):
-        """Создает вкладочную панель настроек без плотной пятиколоночной строки."""
+        """Создает компактную строку настроек, как в старом окне валидатора."""
         main_group = QGroupBox("Настройки проверки и Поиск по содержимому")
         main_layout = QHBoxLayout(main_group)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
         main_group.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Preferred,
             QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Maximum,
         )
 
-        settings_tabs = QtWidgets.QTabWidget()
-        settings_tabs.setDocumentMode(True)
-
-        checks_tab = QWidget()
-        checks_layout = QHBoxLayout(checks_tab)
-        checks_layout.setContentsMargins(6, 6, 6, 6)
-        checks_layout.setSpacing(10)
-        checks_layout.addWidget(self._create_combined_checks_panel(), 2)
-        checks_layout.addWidget(self._create_group3_options(), 1)
-
-        search_tab = QWidget()
-        search_layout = QVBoxLayout(search_tab)
-        search_layout.setContentsMargins(6, 6, 6, 6)
-        search_layout.addWidget(self._create_group4_custom_filter())
-        search_layout.addStretch(1)
-
-        settings_tabs.addTab(checks_tab, "Проверки")
-        settings_tabs.addTab(search_tab, "Поиск")
-        main_layout.addWidget(settings_tabs, 1)
+        main_layout.addWidget(self._create_combined_checks_panel(), 3)
+        main_layout.addWidget(self._create_group3_options(), 1)
+        main_layout.addWidget(self._create_group4_custom_filter(), 5)
         main_layout.addWidget(self._create_group5_actions())
 
         return main_group
@@ -2552,6 +2542,8 @@ class TranslationValidatorPage(ShellPage):
         """Группа 3: "Показать все" и пресеты."""
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         self.check_show_all = QCheckBox("Показать все файлы")
         
 
@@ -2569,17 +2561,13 @@ class TranslationValidatorPage(ShellPage):
         self.ratio_presets_combo = QComboBox()
         for i, text in enumerate(self.RATIO_PRESETS.keys()): self.ratio_presets_combo.addItem(text)
         
-        layout.addStretch(1)
         layout.addWidget(self.check_show_all)
-        layout.addStretch(1)
         layout.addWidget(self.check_revalidate_ok) # <-- Добавляем новый флажок
-        layout.addStretch(1)
         layout.addWidget(QLabel("Режим анализа"))
         layout.addWidget(self.analysis_mode_combo)
         layout.addWidget(self.lbl_analysis_scope)
-        layout.addStretch(1)
         layout.addWidget(self.ratio_presets_combo)
-        layout.addStretch(1)
+        layout.addStretch()
         
         self.check_revalidate_ok.clicked.connect(self._update_analyze_button_state)
         self.check_show_all.clicked.connect(self.reapply_filters)
@@ -2734,9 +2722,10 @@ class TranslationValidatorPage(ShellPage):
         self.btn_show_editor_tab = QPushButton("Редактор")
         self.btn_show_editor_tab.clicked.connect(self._show_editor_tab)
         self.btn_show_editor_tab.setEnabled(False)
+        self.btn_show_editor_tab.setVisible(False)
         self.btn_prev_item = QPushButton("↑"); self.btn_prev_item.setFixedSize(28, 28); self.btn_prev_item.clicked.connect(self._go_to_previous_item); self.btn_prev_item.setEnabled(False)
         self.btn_next_item = QPushButton("↓"); self.btn_next_item.setFixedSize(28, 28); self.btn_next_item.clicked.connect(self._go_to_next_item); self.btn_next_item.setEnabled(False)
-        for btn in [self.btn_mark_delete, self.btn_mark_ok, self.btn_retry_selected, self.btn_reset_marks, self.btn_show_editor_tab, self.btn_prev_item, self.btn_next_item]:
+        for btn in [self.btn_mark_delete, self.btn_mark_ok, self.btn_retry_selected, self.btn_reset_marks, self.btn_prev_item, self.btn_next_item]:
             top_bar_layout.addWidget(btn)
         results_layout.addLayout(top_bar_layout)
         
@@ -2744,7 +2733,7 @@ class TranslationValidatorPage(ShellPage):
         
         
         self.table_results = QTableWidget()
-        self.table_results.setMinimumHeight(360)
+        self.table_results.setMinimumHeight(180)
         self.table_results.setItemDelegateForColumn(0, ChapterStatusDelegate(self.table_results))
         self.table_results.setColumnCount(4); self.table_results.setHorizontalHeaderLabels(["Исходный файл в EPUB", "Проблемы", "Длина (Ориг|Перевод)", "Статус"])
         
@@ -2814,8 +2803,8 @@ class TranslationValidatorPage(ShellPage):
         self.comparison_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.view_original = QTextEdit(); self.view_original.setReadOnly(True)
         self.view_translated = QTextEdit(); self.view_translated.setReadOnly(True); self.view_translated.textChanged.connect(self.on_text_edited)
-        self.view_original.setMinimumHeight(420)
-        self.view_translated.setMinimumHeight(420)
+        self.view_original.setMinimumHeight(160)
+        self.view_translated.setMinimumHeight(160)
         self.comparison_splitter.addWidget(self.view_original); self.comparison_splitter.addWidget(self.view_translated)
         self.comparison_splitter.setSizes([1, 1])
         comparison_layout.addWidget(self.comparison_splitter)
@@ -2871,12 +2860,12 @@ class TranslationValidatorPage(ShellPage):
         QMessageBox.information(self, "Замена", f"Заменено совпадений: {count}.")
 
     def _show_editor_tab(self):
-        if hasattr(self, 'main_tabs') and hasattr(self, 'editor_tab'):
-            self.main_tabs.setCurrentWidget(self.editor_tab)
+        if hasattr(self, 'view_translated'):
+            self.view_translated.setFocus()
 
     def _show_results_tab(self):
-        if hasattr(self, 'main_tabs') and hasattr(self, 'results_tab'):
-            self.main_tabs.setCurrentWidget(self.results_tab)
+        if hasattr(self, 'table_results'):
+            self.table_results.setFocus()
 
     def _create_bottom_buttons(self):
         bottom_layout = QHBoxLayout()

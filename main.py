@@ -933,9 +933,30 @@ class EventBus(QtCore.QObject):
             entries = list(self._topic_subscribers.get(event_name, []))
         for callback in entries:
             try:
-                callback(event)
+                self._dispatch_callback(callback, event)
             except Exception:
                 pass
+
+    def _dispatch_callback(self, callback, event: dict):
+        receiver = getattr(callback, "__self__", None)
+        method_name = getattr(callback, "__name__", "")
+        if (
+            isinstance(receiver, QtCore.QObject)
+            and method_name
+            and receiver.thread() is not QtCore.QThread.currentThread()
+        ):
+            try:
+                QtCore.QMetaObject.invokeMethod(
+                    receiver,
+                    method_name,
+                    QtCore.Qt.ConnectionType.QueuedConnection,
+                    QtCore.Q_ARG(dict, event),
+                )
+                return
+            except (RuntimeError, TypeError):
+                pass
+
+        callback(event)
 
     def emit_event(self, event: dict):
         """Совместимый способ отправки: topics + старый event_posted сигнал."""

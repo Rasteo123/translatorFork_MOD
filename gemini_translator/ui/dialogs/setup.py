@@ -89,6 +89,9 @@ import time # <-- НОВЫЙ ИМПОРТ
 BENCHMARK_GLOSSARY_SIZE = 100    # Увеличиваем количество терминов
 BENCHMARK_TEXT_SIZE = 10000     # Увеличиваем размер текста
 BASE_GLOSSARY_PROMPT_STATE_FILE = "base_glossary_prompt_state.json"
+TASK_LIST_MIN_HEIGHT = 420
+TASK_OPTIONS_MIN_HEIGHT = 400
+TASKS_TAB_MIN_HEIGHT = TASK_LIST_MIN_HEIGHT + TASK_OPTIONS_MIN_HEIGHT + 24
 # --- КОНЕЦ НОВЫХ КОНСТАНТ ---
 
 def _format_duration(seconds: float) -> str:
@@ -102,6 +105,44 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes} мин {secs} сек"
     return f"{secs} сек"
+
+
+def _create_tasks_tab_scroll_area(task_management_widget, translation_options_widget):
+    tasks_tab_container = QWidget()
+    tasks_tab_layout = QVBoxLayout(tasks_tab_container)
+    tasks_tab_layout.setContentsMargins(4, 4, 4, 4)
+    tasks_tab_layout.setSpacing(8)
+
+    tasks_splitter = QSplitter(QtCore.Qt.Orientation.Vertical)
+    tasks_splitter.setChildrenCollapsible(False)
+
+    task_management_widget.setMinimumHeight(TASK_LIST_MIN_HEIGHT)
+    task_management_widget.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Preferred,
+        QtWidgets.QSizePolicy.Policy.Expanding,
+    )
+    translation_options_widget.setMinimumHeight(TASK_OPTIONS_MIN_HEIGHT)
+
+    tasks_splitter.addWidget(task_management_widget)
+    tasks_splitter.addWidget(translation_options_widget)
+    tasks_splitter.setStretchFactor(0, 5)
+    tasks_splitter.setStretchFactor(1, 1)
+    tasks_splitter.setCollapsible(0, False)
+    tasks_splitter.setCollapsible(1, True)
+    tasks_splitter.setSizes([560, TASK_OPTIONS_MIN_HEIGHT])
+    tasks_splitter.setMinimumHeight(TASKS_TAB_MIN_HEIGHT)
+
+    tasks_tab_layout.addWidget(tasks_splitter, 1)
+    tasks_tab_container.setMinimumHeight(TASKS_TAB_MIN_HEIGHT)
+
+    tasks_scroll = QScrollArea()
+    tasks_scroll.setWidgetResizable(True)
+    tasks_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    tasks_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    tasks_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    tasks_scroll.setWidget(tasks_tab_container)
+
+    return tasks_scroll, tasks_splitter
 
 
 class PreflightEstimateDialog(QDialog):
@@ -479,21 +520,11 @@ class InitialSetupPage(ShellPage):
         tabs_group.addTab(settings_scroll, "Настройки")
 
         # Вкладка 2: Список Задач + Оптимизация
-        tasks_tab_container = QWidget()
-        tasks_tab_layout = QVBoxLayout(tasks_tab_container)
-        tasks_tab_layout.setContentsMargins(4, 4, 4, 4)
-        tasks_tab_layout.setSpacing(8)
-        self.tasks_splitter = QSplitter(QtCore.Qt.Orientation.Vertical)
-        self.tasks_splitter.setChildrenCollapsible(False)
-        self.tasks_splitter.addWidget(self.task_management_widget)
-        self.tasks_splitter.addWidget(self.translation_options_widget)
-        self.tasks_splitter.setStretchFactor(0, 5)
-        self.tasks_splitter.setStretchFactor(1, 1)
-        self.tasks_splitter.setCollapsible(0, False)
-        self.tasks_splitter.setCollapsible(1, True)
-        self.tasks_splitter.setSizes([560, 150])
-        tasks_tab_layout.addWidget(self.tasks_splitter, 1)
-        tabs_group.addTab(tasks_tab_container, "Список Задач")
+        tasks_scroll, self.tasks_splitter = _create_tasks_tab_scroll_area(
+            self.task_management_widget,
+            self.translation_options_widget,
+        )
+        tabs_group.addTab(tasks_scroll, "Список Задач")
 
         # Остальные вкладки
         tabs_group.addTab(self.log_widget, "Логирование")
@@ -578,8 +609,7 @@ class InitialSetupPage(ShellPage):
         self.project_actions_widget.open_history_requested.connect(self._open_project_history)
         self.project_actions_widget.sync_project_requested.connect(self._run_project_sync)
 
-        self.translation_options_widget.settings_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=False))
-        self.translation_options_widget.task_size_spin.valueChanged.connect(self._refresh_auto_translate_runtime_context)
+        self.translation_options_widget.settings_changed.connect(self._on_translation_options_changed)
         self.task_management_widget.tasks_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=True))
 
         self.model_settings_widget.recalibrate_requested.connect(self._calibrate_cpu)
@@ -618,7 +648,6 @@ class InitialSetupPage(ShellPage):
         self.project_actions_widget.build_epub_requested.connect(self._open_epub_builder_standalone)
 
         self.model_settings_widget.settings_changed.connect(self._mark_settings_as_dirty)
-        self.translation_options_widget.settings_changed.connect(self._mark_settings_as_dirty)
         self.key_management_widget.active_keys_changed.connect(self._mark_settings_as_dirty)
         self.key_management_widget.provider_combo.currentIndexChanged.connect(self._mark_settings_as_dirty)
         self.instances_spin.valueChanged.connect(self._mark_settings_as_dirty)
@@ -629,6 +658,10 @@ class InitialSetupPage(ShellPage):
         self.auto_translate_widget.open_validator_requested.connect(self.open_translation_validator)
         self.auto_translate_widget.open_consistency_requested.connect(self.open_ai_consistency_checker)
         self._refresh_auto_translate_runtime_context()
+
+    def _on_translation_options_changed(self):
+        self._refresh_auto_translate_runtime_context()
+        self._mark_settings_as_dirty()
 
     def _on_main_tab_changed(self, index: int):
         if index == getattr(self, 'glossary_tab_index', -1):

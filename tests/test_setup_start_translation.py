@@ -40,6 +40,24 @@ class _StartTranslationHarness:
         self.task_manager.has_pending = True
 
 
+class _TranslationOptionsChangedHarness:
+    _on_translation_options_changed = InitialSetupDialog._on_translation_options_changed
+
+    def __init__(self):
+        self.prepare_calls = []
+        self.runtime_refreshes = 0
+        self.dirty_marks = 0
+
+    def _prepare_and_display_tasks(self, *args, **kwargs):
+        self.prepare_calls.append((args, kwargs))
+
+    def _refresh_auto_translate_runtime_context(self):
+        self.runtime_refreshes += 1
+
+    def _mark_settings_as_dirty(self):
+        self.dirty_marks += 1
+
+
 class StartTranslationQueueTests(unittest.TestCase):
     def test_start_translation_rebuilds_missing_task_queue_from_selected_chapters(self):
         harness = _StartTranslationHarness(has_pending=False)
@@ -69,6 +87,15 @@ class StartTranslationQueueTests(unittest.TestCase):
         self.assertIs(harness._ensure_pending_tasks_for_start(), False)
 
         self.assertEqual(harness.prepare_calls, [])
+
+    def test_translation_option_changes_do_not_rebuild_task_queue(self):
+        harness = _TranslationOptionsChangedHarness()
+
+        harness._on_translation_options_changed()
+
+        self.assertEqual(harness.prepare_calls, [])
+        self.assertEqual(harness.runtime_refreshes, 1)
+        self.assertEqual(harness.dirty_marks, 1)
 
 
 if __name__ == "__main__":

@@ -634,6 +634,7 @@ class UntranslatedFixerPage(ShellPage):
 
     def __init__(self, data_list, parent=None, initial_source_filter='all'):
         super().__init__(parent)
+        self._validator_host = parent
         self.setWindowTitle("Помощник исправления недопереводов")
         # --- Геометрия окна ---
         available_geometry = self.screen().availableGeometry()
@@ -1809,8 +1810,18 @@ class UntranslatedFixerPage(ShellPage):
         dialog.exec()
 
     def _get_project_manager(self):
+        checked = set()
+        current_parent = getattr(self, '_validator_host', None)
+        while current_parent and id(current_parent) not in checked:
+            checked.add(id(current_parent))
+            project_manager = getattr(current_parent, 'project_manager', None)
+            if project_manager:
+                return project_manager
+            current_parent = current_parent.parent()
+
         current_parent = self.parent()
-        while current_parent:
+        while current_parent and id(current_parent) not in checked:
+            checked.add(id(current_parent))
             project_manager = getattr(current_parent, 'project_manager', None)
             if project_manager:
                 return project_manager
@@ -2028,10 +2039,12 @@ class UntranslatedFixerPage(ShellPage):
             tasks_list.append(full_html)
 
         # 3. Запускаем диалог
-        parent = self.parent()
-        if not (parent and hasattr(parent, 'settings_manager')): return
+        settings_owner = getattr(self, '_validator_host', None)
+        if not (settings_owner and hasattr(settings_owner, 'settings_manager')):
+            settings_owner = self.parent()
+        if not (settings_owner and hasattr(settings_owner, 'settings_manager')): return
         
-        dlg = AITranslationDialog(tasks_list, parent.settings_manager, self)
+        dlg = AITranslationDialog(tasks_list, settings_owner.settings_manager, self)
         
         # Если нажали "Применить" (Accepted)
         if dlg.exec():
@@ -2194,7 +2207,7 @@ class UntranslatedFixerDialog(QDialog, metaclass=_UntranslatedFixerDialogMeta):
     def __init__(self, data_list, parent=None, initial_source_filter='all'):
         super().__init__(parent)
         self.setWindowTitle("Помощник исправления недопереводов")
-        self.page = UntranslatedFixerPage(data_list, self, initial_source_filter=initial_source_filter)
+        self.page = UntranslatedFixerPage(data_list, parent, initial_source_filter=initial_source_filter)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.page)
