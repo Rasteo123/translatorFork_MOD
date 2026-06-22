@@ -347,8 +347,10 @@ class ChapterStatusDelegate(QtWidgets.QStyledItemDelegate):
         has_validated = index.data(Qt.ItemDataRole.UserRole)
 
         init_option = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(init_option, index)
         init_option.text = ""
-        super().paint(painter, init_option, index)
+        style = init_option.widget.style() if init_option.widget else QApplication.style()
+        style.drawControl(QtWidgets.QStyle.ControlElement.CE_ItemViewItem, init_option, painter, init_option.widget)
         text_rect = QtCore.QRect(option.rect)
         
         if has_validated:
