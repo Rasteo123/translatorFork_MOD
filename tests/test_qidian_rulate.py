@@ -10,6 +10,7 @@ from qidian_rulate.workers import (
     _clean_qidian_description,
     _clean_qidian_chapter_text,
     _extract_qidian_description_from_body,
+    _QIDIAN_CHAPTER_LINKS_SCRIPT,
     _select_qidian_description,
     _tag_file_candidates,
     RULATE_BOOK_TYPE_DESCRIPTION,
@@ -412,6 +413,12 @@ def test_clean_qidian_chapter_text_removes_comment_counters():
     raw_text = "Первый абзац\n806\n\n\u3000\u3000Второй абзац\n109\n本章完"
 
     assert _clean_qidian_chapter_text(raw_text) == "Первый абзац\nВторой абзац"
+
+
+def test_qidian_chapter_link_script_supports_chinese_chapter_numbers():
+    assert "chineseNumber" in _QIDIAN_CHAPTER_LINKS_SCRIPT
+    assert "[0-9零〇一二两三四五六七八九十百千万]+" in _QIDIAN_CHAPTER_LINKS_SCRIPT
+    assert r"^第\s*\d+\s*章" not in _QIDIAN_CHAPTER_LINKS_SCRIPT
 
 
 def test_build_cover_prompt_request_includes_ru_title_and_chapters():

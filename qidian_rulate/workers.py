@@ -1659,10 +1659,36 @@ _MAGIC_TYPE_SCRIPT = """([selector, value]) => {
 _QIDIAN_CHAPTER_LINKS_SCRIPT = r"""(limit) => {
     const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
     const byHref = new Map();
-    const isChapterTitle = (text) => /^第\s*\d+\s*章/.test(text) || /^(序章|楔子|引子)/.test(text);
+    const chineseNumber = (value) => {
+        const digits = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9};
+        const units = {"十": 10, "百": 100, "千": 1000, "万": 10000};
+        let total = 0;
+        let section = 0;
+        let number = 0;
+        for (const char of value) {
+            if (Object.prototype.hasOwnProperty.call(digits, char)) {
+                number = digits[char];
+            } else if (Object.prototype.hasOwnProperty.call(units, char)) {
+                const unit = units[char];
+                if (unit === 10000) {
+                    section = (section + number) * unit;
+                    total += section;
+                    section = 0;
+                    number = 0;
+                } else {
+                    section += (number || 1) * unit;
+                    number = 0;
+                }
+            }
+        }
+        return total + section + number;
+    };
+    const isChapterTitle = (text) => /^第\s*([0-9零〇一二两三四五六七八九十百千万]+)\s*章/.test(text) || /^(序章|楔子|引子)/.test(text);
     const chapterNumber = (text) => {
-        const match = text.match(/^第\s*(\d+)\s*章/);
-        return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+        if (/^(序章|楔子|引子)/.test(text)) return 0;
+        const match = text.match(/^第\s*([0-9零〇一二两三四五六七八九十百千万]+)\s*章/);
+        if (!match) return Number.MAX_SAFE_INTEGER;
+        return /^\d+$/.test(match[1]) ? Number(match[1]) : chineseNumber(match[1]);
     };
     const isServiceTitle = (text) => /(最新章节|已更新至|免费试读)/.test(text);
     for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
