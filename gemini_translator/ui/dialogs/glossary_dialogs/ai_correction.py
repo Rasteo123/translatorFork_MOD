@@ -230,9 +230,10 @@ class CorrectionSessionPage(ShellPage):
         self._frequency_worker = None
         self._frequency_project_manager = None
         self._frequency_epub_path = None
+        self._glossary_owner = self._locate_glossary_owner()
 
         # Сохраняем доступ к анализатору из родительского окна
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         self.morph_analyzer = None
         if main_window and hasattr(main_window, 'morph_analyzer'):
             self.morph_analyzer = main_window.morph_analyzer
@@ -242,6 +243,17 @@ class CorrectionSessionPage(ShellPage):
         app = QtWidgets.QApplication.instance()
         if app:
             self.engine = app.engine
+
+    def _locate_glossary_owner(self):
+        parent = self.parent()
+        if parent and parent.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
+            return parent
+        return find_ancestor_by_class_name(self, 'MainWindow', 'GlossaryManagerPage')
+
+    def _get_glossary_owner(self):
+        if self._glossary_owner is None:
+            self._glossary_owner = self._locate_glossary_owner()
+        return self._glossary_owner
             
     def _update_start_button_state(self):
         if not self.is_session_active:
@@ -494,7 +506,7 @@ class CorrectionSessionPage(ShellPage):
         self.key_widget.active_keys_changed.connect(self._update_start_button_state)
         
         # Инициализация
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
             glossary_sample = main_window.get_glossary()[:50]
             cjk_count = sum(1 for entry in glossary_sample if LanguageDetector.is_cjk_text(entry.get('original', '')))
@@ -642,7 +654,7 @@ class CorrectionSessionPage(ShellPage):
         Адаптивно перестраивает сетку чекбоксов во вкладке 'Данные'.
         Скрытые (пустые) категории не занимают место в layout.
         """
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
 
@@ -701,7 +713,7 @@ class CorrectionSessionPage(ShellPage):
         self.update_token_estimation()
 
     def _resolve_frequency_sources(self):
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return None, None
 
@@ -715,7 +727,7 @@ class CorrectionSessionPage(ShellPage):
         self._term_frequency_payload = {}
         self._term_frequency_map = {}
 
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         glossary = main_window.get_glossary() if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage') else []
 
         self.cb_frequency_filter.blockSignals(True)
@@ -746,7 +758,7 @@ class CorrectionSessionPage(ShellPage):
         self._start_frequency_analysis()
 
     def _start_frequency_analysis(self):
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
         if not self._frequency_epub_path or not os.path.exists(self._frequency_epub_path):
@@ -888,7 +900,7 @@ class CorrectionSessionPage(ShellPage):
         allowed_terms = set()
         source_entries = glossary_entries
         if source_entries is None:
-            main_window = self.parent()
+            main_window = self._get_glossary_owner()
             if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
                 source_entries = main_window.get_glossary()
             else:
@@ -908,7 +920,7 @@ class CorrectionSessionPage(ShellPage):
         return allowed_terms
 
     def _get_data_and_estimate_tokens(self):
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return None, 0, None, False, 0, 0, 0
     
@@ -1397,7 +1409,7 @@ class CorrectionSessionPage(ShellPage):
     def _run_partial_overlap_analysis(self):
         """Безопасный 'безголовый' метод для запуска анализа скрытых конфликтов."""
         if self._cached_analysis_results is None:
-            main_window = self.parent()
+            main_window = self._get_glossary_owner()
             if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'): return
 
             # --- ИЗМЕНЕНИЕ: Не собираем base_conflicts, передаем пустой set() ---
@@ -1416,7 +1428,7 @@ class CorrectionSessionPage(ShellPage):
     def _run_pattern_analysis(self):
         """Безопасный 'безголовый' метод для запуска анализа паттернов."""
         if self._cached_pattern_results is None:
-            main_window = self.parent()
+            main_window = self._get_glossary_owner()
             if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'): return
 
             min_size = self.pattern_group_size_spinbox.value() if hasattr(self, 'pattern_group_size_spinbox') else 3
@@ -1564,7 +1576,7 @@ class CorrectionSessionPage(ShellPage):
         Продвинутый анализ паттернов 11.0 (Super Glue Gravity):
         Усиленная гравитация для родственных заголовков, чтобы избежать разрывов контекста.
         """
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or not cached_patterns:
             return []
 
@@ -1978,7 +1990,7 @@ class CorrectionSessionPage(ShellPage):
 
         # 2. Анализ подгрупп
         local_glossary = [{'original': m} for m in members]
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         
         sub_patterns = main_window.logic.analyze_patterns_with_substring(
             local_glossary, min_group_size=2, return_hierarchy=True, min_overlap_len=3
@@ -2374,7 +2386,7 @@ class CorrectionSessionPage(ShellPage):
             QMessageBox.information(self, "Результат", "AI-корректор не нашел терминов, требующих исправления.")
             return
             
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
 
