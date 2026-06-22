@@ -17,7 +17,7 @@ import sqlite3 # <-- Новый импорт
 import uuid    # <-- Новый импорт
 # --- Импорты из PyQt6 ---
 from PyQt6 import QtWidgets, QtGui, QtCore
-from PyQt6.QtCore import Qt, pyqtSlot, QTimer
+from PyQt6.QtCore import Qt, pyqtSlot, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel,
@@ -29,17 +29,19 @@ from PyQt6.QtWidgets import (
 # --- Импорты из модулей проекта ---
 
 # Диалоги, вынесенные в отдельные файлы
-from .glossary_dialogs.ai_correction import CorrectionSessionDialog
-from .glossary_dialogs.core_term_dialog import CoreTermAnalyzerDialog
+from .glossary_dialogs.ai_correction import CorrectionSessionDialog, CorrectionSessionPage
+from .glossary_dialogs.core_term_dialog import CoreTermAnalyzerDialog, CoreTermAnalyzerPage
 from .glossary_dialogs.versioning import TermVersioningDialog
-from .glossary_dialogs.residue_analyzer import ResidueAnalyzerDialog
+from .glossary_dialogs.residue_analyzer import ResidueAnalyzerDialog, ResidueAnalyzerPage
 from .glossary_dialogs.conflict_resolvers import (
     DirectConflictResolverDialog,
     ReverseConflictResolverDialog,
-    ComplexOverlapResolverDialog
+    ReverseConflictResolverPage,
+    ComplexOverlapResolverDialog,
+    ComplexOverlapResolverPage,
 )
-from .glossary_dialogs.group_analyzer import GroupAnalysisDialog
-from .glossary_dialogs.term_frequency_analyzer import TermFrequencyAnalyzerDialog
+from .glossary_dialogs.group_analyzer import GroupAnalysisDialog, GroupAnalysisPage
+from .glossary_dialogs.term_frequency_analyzer import TermFrequencyAnalyzerDialog, TermFrequencyAnalyzerPage
 from .glossary_dialogs.import_master import (
     ImporterWizardDialog,
     MultiImportManagerDialog
@@ -48,6 +50,7 @@ from .glossary_dialogs.import_master import (
 from .glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 
 # Утилиты и API
+from ..shell import ShellPage
 from ...api import config as api_config
 from ...utils.settings import SettingsManager
 from ...utils.language_tools import (
@@ -346,9 +349,11 @@ class GlossarySortDialog(QDialog):
 # --- Основное окно приложения
 # ---------------------------------------------------------------------------
 
-class MainWindow(QDialog):
+class GlossaryManagerPage(ShellPage):
+    page_title = "Менеджер глоссариев"
+    result_ready = pyqtSignal(bool)   # emitted with accepted=True/False when the editor finishes
     ConflictTypeRole = Qt.ItemDataRole.UserRole + 1
-    DB_ID_ROLE = Qt.ItemDataRole.UserRole + 2 
+    DB_ID_ROLE = Qt.ItemDataRole.UserRole + 2
 
     def __init__(self, parent=None, mode='standalone', project_path=None):
         super().__init__(parent)
@@ -373,13 +378,6 @@ class MainWindow(QDialog):
         self.move(
             available_geometry.center().x() - self.width() // 2,
             available_geometry.center().y() - self.height() // 2
-        )
-        
-        self.setWindowFlags(
-            self.windowFlags() | 
-            Qt.WindowType.WindowMinimizeButtonHint | 
-            Qt.WindowType.WindowMaximizeButtonHint | 
-            Qt.WindowType.WindowCloseButtonHint
         )
         
         self.launch_mode = mode
@@ -747,6 +745,17 @@ class MainWindow(QDialog):
     def _has_unsaved_glossary_changes(self) -> bool:
         return self._snapshot_glossary_state() != self._saved_glossary_snapshot
 
+    def can_leave(self) -> bool:
+        if self._has_unsaved_glossary_changes():
+            answer = QMessageBox.question(
+                self, "Несохранённые изменения",
+                "В глоссарии есть несохранённые изменения. Выйти без сохранения?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            return answer == QMessageBox.StandardButton.Yes
+        return True
+
     def mark_current_state_as_saved(self, saved_to_project: bool = False):
         self._saved_glossary_snapshot = self._snapshot_glossary_state()
         self._saved_to_project_in_session = saved_to_project
@@ -783,9 +792,8 @@ class MainWindow(QDialog):
             except TypeError:
                 parent_widget.set_glossary(copied_glossary)
 
-            parent_dialog = parent_widget.parent()
-            while parent_dialog and parent_dialog.__class__.__name__ != 'InitialSetupDialog':
-                parent_dialog = parent_dialog.parent()
+            from gemini_translator.ui.widgets.ancestor_utils import find_ancestor_by_class_name
+            parent_dialog = find_ancestor_by_class_name(parent_widget, 'InitialSetupDialog', 'InitialSetupPage')
 
             if parent_dialog and hasattr(parent_dialog, 'mark_project_glossary_as_saved'):
                 parent_dialog.mark_project_glossary_as_saved(copied_glossary)
@@ -961,7 +969,7 @@ class MainWindow(QDialog):
                 break
     
     def open_frequency_analyzer(self):
-        """Открывает диалог частотного анализа и применяет полученный патч."""
+        """Открывает страницу частотного анализа и применяет полученный патч."""
         if self._is_glossary_empty():
             QMessageBox.warning(self, "Нет данных", "Глоссарий пуст.")
             return
@@ -982,18 +990,21 @@ class MainWindow(QDialog):
         
         current_glossary = self.get_glossary()
         
-        dialog = TermFrequencyAnalyzerDialog(current_glossary, epub_path, self)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Получаем унифицированный патч (удаления + обновления)
-            patch_list = dialog.get_patch()
-            
-            if patch_list:
-                self._apply_patch_and_log_history(
-                    patch_list, 
-                    "Частотный анализ", 
-                    current_glossary
-                )
+        page = TermFrequencyAnalyzerPage(current_glossary, epub_path, self)
+
+        def apply_frequency_result(accepted, page=page):
+            if accepted:
+                patch_list = page.get_patch()
+                if patch_list:
+                    self._apply_patch_and_log_history(
+                        patch_list,
+                        "Частотный анализ",
+                        current_glossary
+                    )
+            page.request_back.emit()
+
+        page.result_ready.connect(apply_frequency_result)
+        self.request_push.emit(page)
     
     def _add_table_row(self, entry_data: dict):
         """Быстро добавляет одну строку в конец таблицы."""
@@ -1091,11 +1102,16 @@ class MainWindow(QDialog):
             QMessageBox.information(self, "Нет данных", "Предварительный анализ не нашел паттернов для дальнейшей работы.")
             return
 
-        dialog = CoreTermAnalyzerDialog(current_glossary, self.logic, self.core_term_candidates, PYMORPHY_AVAILABLE, self)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            patch_list = dialog.get_patch()
-            self._apply_patch_and_log_history(patch_list, "Анализ по паттернам", current_glossary)
+        page = CoreTermAnalyzerPage(current_glossary, self.logic, self.core_term_candidates, PYMORPHY_AVAILABLE, self)
+
+        def apply_core_term_result(accepted, page=page):
+            if accepted:
+                patch_list = page.get_patch()
+                self._apply_patch_and_log_history(patch_list, "Анализ по паттернам", current_glossary)
+            page.request_back.emit()
+
+        page.result_ready.connect(apply_core_term_result)
+        self.request_push.emit(page)
     
     
     def _apply_row_highlight(self, row):
@@ -1660,14 +1676,20 @@ class MainWindow(QDialog):
         current_glossary = self.get_glossary() # Захватываем состояние "до" для истории
 
 
-        self.correction_dialog = CorrectionSessionDialog(self.settings_manager, self)
-        
-        self.correction_dialog.correction_accepted.connect(
-            lambda patch_list: self._apply_patch_and_log_history(patch_list, "AI-коррекция", current_glossary)
-        )
-        
-        self.correction_dialog.exec()
-        self.correction_dialog = None
+        self.correction_page = CorrectionSessionPage(self.settings_manager, self)
+
+        def apply_correction_result(patch_list, page=self.correction_page):
+            self._apply_patch_and_log_history(patch_list, "AI-коррекция", current_glossary)
+            page.request_back.emit()
+            self.correction_page = None
+
+        def close_correction_page(_accepted, page=self.correction_page):
+            page.request_back.emit()
+            self.correction_page = None
+
+        self.correction_page.correction_accepted.connect(apply_correction_result)
+        self.correction_page.result_ready.connect(close_correction_page)
+        self.request_push.emit(self.correction_page)
     
     
     def _on_generate_note_in_main_table_clicked(self, row):
@@ -2062,14 +2084,15 @@ class MainWindow(QDialog):
         return False
     
     def open_group_analysis(self):
-        """Открывает диалог анализа групп по ключевым словам."""
+        """Открывает страницу анализа групп по ключевым словам."""
         if self._is_glossary_empty():
             QMessageBox.warning(self, "Нет данных", "Глоссарий пуст.")
             return
             
         current_glossary = self.get_glossary()
-        dialog = GroupAnalysisDialog(current_glossary, parent=self)
-        dialog.exec() # Диалог модальный, он сам управляет процессом
+        page = GroupAnalysisPage(current_glossary, parent=self)
+        page.result_ready.connect(lambda _accepted, page=page: page.request_back.emit())
+        self.request_push.emit(page)
     
     def _calculate_molecule_energy(self, molecule):
         """
@@ -3279,20 +3302,38 @@ class MainWindow(QDialog):
         self.table.setCurrentItem(None)
         if not self.reverse_issues: return
         current_glossary = self.get_glossary()
-        dlg = ReverseConflictResolverDialog(self.reverse_issues, current_glossary, self, morph=morph_analyzer)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            patch_list = dlg.get_patch()
-            self._apply_patch_and_log_history(patch_list, "Обратные конфликты", current_glossary)
+        page = ReverseConflictResolverPage(self.reverse_issues, current_glossary, self, morph=morph_analyzer)
+
+        def apply_reverse_result(accepted, page=page):
+            if accepted:
+                patch_list = page.get_patch()
+                self._apply_patch_and_log_history(patch_list, "Обратные конфликты", current_glossary)
+            page.request_back.emit()
+
+        page.result_ready.connect(apply_reverse_result)
+        self.request_push.emit(page)
 
     def resolve_overlaps(self):
         self.table.setCurrentItem(None)
         if not self.overlap_groups: return
         current_glossary = self.get_glossary()
         glossary_for_dialog = {e['original']: {k: e.get(k, '') for k in ['rus', 'note']} for e in current_glossary if e.get('original')}
-        dlg = ComplexOverlapResolverDialog(self.overlap_groups, self.inverted_overlaps, glossary_for_dialog, PYMORPHY_AVAILABLE, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            patch_list = dlg.get_patch()
-            self._apply_patch_and_log_history(patch_list, "Наложения", current_glossary)
+        page = ComplexOverlapResolverPage(
+            self.overlap_groups,
+            self.inverted_overlaps,
+            glossary_for_dialog,
+            PYMORPHY_AVAILABLE,
+            self,
+        )
+
+        def apply_overlap_result(accepted, page=page):
+            if accepted:
+                patch_list = page.get_patch()
+                self._apply_patch_and_log_history(patch_list, "Наложения", current_glossary)
+            page.request_back.emit()
+
+        page.result_ready.connect(apply_overlap_result)
+        self.request_push.emit(page)
     
     def resolve_untranslated_residue(self):
         """Открывает диалог для исправления непереведенных остатков."""
@@ -3301,11 +3342,16 @@ class MainWindow(QDialog):
             return
     
         current_glossary = self.get_glossary()
-        dialog = ResidueAnalyzerDialog(self.untranslated_residue, current_glossary, self.settings_manager, self)
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            patch_list = dialog.get_final_patch()
-            self._apply_patch_and_log_history(patch_list, "Анализ остатков", current_glossary)
+        page = ResidueAnalyzerPage(self.untranslated_residue, current_glossary, self.settings_manager, self)
+
+        def apply_residue_result(accepted, page=page):
+            if accepted:
+                patch_list = page.get_final_patch()
+                self._apply_patch_and_log_history(patch_list, "Анализ остатков", current_glossary)
+            page.request_back.emit()
+
+        page.result_ready.connect(apply_residue_result)
+        self.request_push.emit(page)
 
 
     def _apply_patch(self, patch_list: list):
@@ -3557,10 +3603,8 @@ class MainWindow(QDialog):
     def _close_via_result(self, accepted: bool):
         self._dialog_result_closing = True
         try:
-            if accepted:
-                super().accept()
-            else:
-                super().reject()
+            self._ask_delete_backup()
+            self.result_ready.emit(accepted)
         finally:
             self._dialog_result_closing = False
 
@@ -3613,44 +3657,77 @@ class MainWindow(QDialog):
         if clicked == cancel_btn:
             return
 
+
+# --- Wrapper and re-export follow below ---
+
+
+class _GlossaryDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(GlossaryManagerPage, name)
+
+
+class MainWindow(QDialog, metaclass=_GlossaryDialogMeta):
+    """Thin modal wrapper hosting GlossaryManagerPage (preserves the old QDialog API + result)."""
+
+    def __init__(self, parent=None, mode='standalone', project_path=None):
+        super().__init__(parent)
+        app = QtWidgets.QApplication.instance()
+        version = getattr(app, "global_version", "") if app else ""
+        self.setWindowTitle(f"Менеджер Глоссариев {version}".rstrip())
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.page = GlossaryManagerPage(self, mode=mode, project_path=project_path)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
     def closeEvent(self, event):
-        """Обработка закрытия с выбором: Выход или Меню."""
-        if self.launch_mode != 'standalone' and not self._dialog_result_closing:
+        # MOVED from the page; self.<x> → self.page.<x>
+        if self.page.launch_mode != 'standalone' and not self.page._dialog_result_closing:
             event.ignore()
-            self.reject()
+            self.page.reject()
             return
 
-        if self.launch_mode == 'standalone':
+        if self.page.launch_mode == 'standalone':
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Завершение работы")
             msg_box.setText("Вы хотите закрыть приложение или вернуться в главное меню?")
             msg_box.setIcon(QMessageBox.Icon.Question)
-            
+
             btn_menu = msg_box.addButton("Вернуться в меню", QMessageBox.ButtonRole.ActionRole)
             btn_exit = msg_box.addButton("Выйти из программы", QMessageBox.ButtonRole.DestructiveRole)
             btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-            
+
             msg_box.exec()
             clicked = msg_box.clickedButton()
-            
+
             if clicked == btn_cancel:
                 event.ignore()
                 return
             elif clicked == btn_menu:
-                self._ask_delete_backup()
+                self.page._ask_delete_backup()
                 # Спецкод для main.py
-                QApplication.exit(2000) 
+                QApplication.exit(2000)
                 event.accept()
             else:
-                self._ask_delete_backup()
+                self.page._ask_delete_backup()
                 # Обычный выход (код 0)
                 event.accept()
         else:
-            self._ask_delete_backup()
+            self.page._ask_delete_backup()
             # Для диалогового режима просто закрываемся
             event.accept()
-
-    def done(self, r):
-        """Перехватывает закрытие окна через accept/reject в диалоговом режиме."""
-        self._ask_delete_backup()
-        super().done(r)

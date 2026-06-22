@@ -126,6 +126,13 @@ class _SetupSettingsHarness:
         self._returning_to_main_menu = False
         self.close_called = False
         self.is_settings_dirty = True
+        # Stub for the ShellPage signal used by _return_to_main_menu_from_button
+        class _SignalStub:
+            def __init__(self):
+                self.emitted = False
+            def emit(self):
+                self.emitted = True
+        self.request_back = _SignalStub()
         self.is_glossary_dirty = False
         self._ui_theme_colors = {
             "window_bg": "#12202d",
@@ -260,8 +267,10 @@ class SetupSettingsPersistenceTests(unittest.TestCase):
 
         harness._return_to_main_menu_from_button()
 
-        self.assertTrue(harness._returning_to_main_menu)
-        self.assertTrue(harness.close_called)
+        # Since migration to ShellPage, the button emits request_back instead of
+        # directly closing. The wrapper's _return_to_menu handles _returning_to_main_menu
+        # and close(); here we verify the signal was emitted and pre-close ran.
+        self.assertTrue(harness.request_back.emitted)
         self.assertEqual(settings_manager.saved_full_session["task_size_limit"], 15000)
 
 

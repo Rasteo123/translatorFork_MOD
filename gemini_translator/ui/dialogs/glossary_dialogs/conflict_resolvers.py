@@ -13,6 +13,7 @@ from PyQt6.QtGui import QColor
 
 # --- Импорты из вашего проекта ---
 from gemini_translator.ui.widgets.common_widgets import NoScrollComboBox
+from gemini_translator.ui.shell import ShellPage
 from .custom_widgets import ExpandingTextEditDelegate, SmartTextEdit
 
 # --- Аннотация типа для избежания циклического импорта ---
@@ -38,12 +39,15 @@ def _get_checked_color(widget):
     return QtGui.QColor(r, g, b)
 
 
-class ComplexOverlapResolverDialog(QDialog):
+class ComplexOverlapResolverPage(ShellPage):
     """
     Супер-диалог для разрешения наложений с двумя режимами:
     1. Общий вид (свободная навигация по списку).
     2. Пошаговый режим "Визард" (проход по нерешенным проблемам).
     """
+    page_title = "Наложения"
+    result_ready = pyqtSignal(bool)
+
     def __init__(self, overlap_groups, inverted_groups, original_glossary, pymorphy_available, parent=None):
         super().__init__(parent)
         self.overlap_groups = overlap_groups
@@ -580,6 +584,12 @@ class ComplexOverlapResolverDialog(QDialog):
     def accept_changes(self):
         self.accept()
 
+    def accept(self):
+        self.result_ready.emit(True)
+
+    def reject(self):
+        self.result_ready.emit(False)
+
     def get_patch(self):
         """Возвращает список изменений (патч) для применения в MainWindow."""
         patch_list = []
@@ -601,11 +611,51 @@ class ComplexOverlapResolverDialog(QDialog):
         return patch_list
 
 
-class ReverseConflictResolverDialog(QDialog):
+class _ComplexOverlapResolverDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(ComplexOverlapResolverPage, name)
+
+
+class ComplexOverlapResolverDialog(QDialog, metaclass=_ComplexOverlapResolverDialogMeta):
+    """Modal wrapper hosting ComplexOverlapResolverPage for the legacy exec() API."""
+
+    def __init__(self, overlap_groups, inverted_groups, original_glossary, pymorphy_available, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Шаг 3: Комплексное разрешение наложений")
+        self.page = ComplexOverlapResolverPage(
+            overlap_groups,
+            inverted_groups,
+            original_glossary,
+            pymorphy_available,
+            self,
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()
+
+
+class ReverseConflictResolverPage(ShellPage):
     """
     Супер-диалог, который решает и обратные конфликты, и связывает "сирот".
     Версия 2.2 с пошаговым режимом "Визард".
     """
+    page_title = "Обратные конфликты"
+    result_ready = pyqtSignal(bool)
+
     def __init__(self, reverse_issues, original_glossary, parent=None, morph=None):
         super().__init__(parent)
         self.reverse_issues = reverse_issues
@@ -1034,6 +1084,12 @@ class ReverseConflictResolverDialog(QDialog):
     def accept_changes(self):
         self.accept()
 
+    def accept(self):
+        self.result_ready.emit(True)
+
+    def reject(self):
+        self.result_ready.emit(False)
+
     def get_patch(self):
         """
         Возвращает список изменений (патч) для применения в MainWindow.
@@ -1056,6 +1112,37 @@ class ReverseConflictResolverDialog(QDialog):
                     patch_list.append({'before': before_state, 'after': None})
         
         return patch_list
+
+
+class _ReverseConflictResolverDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(ReverseConflictResolverPage, name)
+
+
+class ReverseConflictResolverDialog(QDialog, metaclass=_ReverseConflictResolverDialogMeta):
+    """Modal wrapper hosting ReverseConflictResolverPage for the legacy exec() API."""
+
+    def __init__(self, reverse_issues, original_glossary, parent=None, morph=None):
+        super().__init__(parent)
+        self.setWindowTitle("Шаг 2: Обратные конфликты и связывание")
+        self.page = ReverseConflictResolverPage(reverse_issues, original_glossary, self, morph=morph)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()
 
 
 class DirectConflictResolverDialog(QDialog):
@@ -1608,4 +1695,3 @@ class DirectConflictResolverDialog(QDialog):
             pass
             
         self.accept()
-

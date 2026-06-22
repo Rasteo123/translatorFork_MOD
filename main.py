@@ -1063,6 +1063,56 @@ def initialize_global_resources(app: QApplication):
             f"КРИТИЧЕСКАЯ ОШИБКА при инициализации глобальных ресурсов: {e}")
 
 
+def open_tool_in_shell(shell, tool_id):
+    """Route a HomePage tool selection into the shared navigation shell."""
+    nav = shell.navigation
+    try:
+        if tool_id == 'translator':
+            from gemini_translator.ui.dialogs.setup import InitialSetupPage
+            nav.push(InitialSetupPage())
+        elif tool_id == 'validator':
+            startup = ValidatorStartupDialog()
+            if startup.exec():
+                from gemini_translator.ui.dialogs.validation import TranslationValidatorPage
+                pm = TranslationProjectManager(startup.output_folder)
+                nav.push(TranslationValidatorPage(
+                    startup.output_folder, startup.original_epub_path,
+                    retry_enabled=False, project_manager=pm))
+        elif tool_id == 'glossary':
+            from gemini_translator.ui.dialogs.glossary import GlossaryStartupDialog, GlossaryManagerPage
+            startup = GlossaryStartupDialog()
+            if startup.exec():
+                nav.push(GlossaryManagerPage(mode='standalone', project_path=startup.project_path))
+        elif tool_id == 'rulate_export':
+            from gemini_translator.ui.pages.rulate_export_page import RulateExportPage
+            nav.push(RulateExportPage())
+        elif tool_id == 'chapter_splitter':
+            from gemini_translator.ui.pages.chapter_splitter_page import ChapterSplitterPage
+            nav.push(ChapterSplitterPage())
+        elif tool_id == 'qidian_rulate_creator':
+            from gemini_translator.ui.pages.qidian_creator_page import QidianCreatorPage
+            nav.push(QidianCreatorPage())
+        elif tool_id == 'prompt_benchmark':
+            from gemini_translator.ui.pages.benchmark_page import PromptBenchmarkPage
+            nav.push(PromptBenchmarkPage())
+        elif tool_id == 'gemini_reader':
+            window, _ = launch_gemini_reader()
+            if window is not None:
+                from gemini_translator.ui.pages.external_window_page import EmbeddedWindowPage
+                nav.push(EmbeddedWindowPage(window, title=window.windowTitle() or "Gemini Reader"))
+        elif tool_id == 'ranobelib_uploader':
+            window, _ = launch_ranobelib_uploader()
+            if window is not None:
+                from gemini_translator.ui.pages.external_window_page import EmbeddedWindowPage
+                nav.push(EmbeddedWindowPage(window, title=window.windowTitle() or "RanobeLib Uploader"))
+    except Exception as e:
+        tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        QtWidgets.QMessageBox.critical(
+            shell, "Ошибка",
+            f"Не удалось открыть инструмент '{tool_id}':\n\n{tb_str}"
+        )
+
+
 # ============================================================================
 # ОСНОВНАЯ ТОЧКА ВХОДА
 # ============================================================================
@@ -1141,107 +1191,24 @@ if __name__ == "__main__":
         print(f"[WARN] Could not warm up jieba dictionary: {e}")
 
     # --- ГЛАВНЫЙ ЦИКЛ ПРИЛОЖЕНИЯ ---
+    from gemini_translator.ui.shell import MainShell
+    from gemini_translator.ui.pages.home_page import HomePage
+
     while True:
-        main_window_to_run = None
-        loading_dialog = LoadingDialog()
-
         try:
-            # Диалог выбора инструмента
-            tool_dialog = StartupToolDialog(app_version=APP_VERSION)
-            if tool_dialog.exec():
-                selected_tool = tool_dialog.selected_tool
-                if selected_tool == 'translator':
-                    main_window_to_run = InitialSetupDialog()
-                elif selected_tool == 'validator':
-                    startup_dialog = ValidatorStartupDialog()
-                    if startup_dialog.exec():
-                        output_folder = startup_dialog.output_folder
-                        original_epub = startup_dialog.original_epub_path
-                        project_manager = TranslationProjectManager(
-                            output_folder)
-                        # retry_enabled=False означает автономный режим
-                        main_window_to_run = TranslationValidatorDialog(
-                            output_folder,
-                            original_epub,
-                            retry_enabled=False,
-                            project_manager=project_manager
-                        )
-                elif selected_tool == 'glossary':
-                    # Импортируем диалог запуска (он теперь внутри модуля)
-                    from gemini_translator.ui.dialogs.glossary import GlossaryStartupDialog
-
-                    startup_dialog = GlossaryStartupDialog()
-                    if startup_dialog.exec():
-                        # project_path может быть путем или None (если выбран пустой режим)
-                        project_path = startup_dialog.project_path
-                        main_window_to_run = GlossaryToolWindow(
-                            mode='standalone',
-                            project_path=project_path
-                        )
-                elif selected_tool == 'rulate_export':
-                    from gemini_translator.ui.dialogs.rulate_export import (
-                        RulateMarkdownExportWindow,
-                    )
-
-                    main_window_to_run = RulateMarkdownExportWindow()
-                elif selected_tool == 'chapter_splitter':
-                    from gemini_translator.ui.dialogs.chapter_splitter import (
-                        ChapterSplitterWindow,
-                    )
-
-                    main_window_to_run = ChapterSplitterWindow()
-                elif selected_tool == 'gemini_reader':
-                    gemini_reader_window, _ = launch_gemini_reader()
-                    if gemini_reader_window:
-                        main_window_to_run = gemini_reader_window
-                    else:
-                        continue
-                elif selected_tool == 'ranobelib_uploader':
-                    ranobelib_window, _ = launch_ranobelib_uploader()
-                    if ranobelib_window:
-                        main_window_to_run = ranobelib_window
-                    else:
-                        continue
-                elif selected_tool == 'qidian_rulate_creator':
-                    from gemini_translator.ui.dialogs.qidian_rulate_creator import QidianRulateCreatorWindow
-
-                    main_window_to_run = QidianRulateCreatorWindow()
-                    if hasattr(main_window_to_run, "set_return_to_menu_handler"):
-                        def return_to_menu():
-                            app.exit(EXIT_CODE_REBOOT)
-
-                        main_window_to_run.set_return_to_menu_handler(return_to_menu)
-                elif selected_tool == 'prompt_benchmark':
-                    from gemini_translator.ui.dialogs.benchmark import PromptBenchmarkDialog
-                    main_window_to_run = PromptBenchmarkDialog()
-            else:
-                # Пользователь закрыл меню — выход
-                break
-
+            shell = MainShell()
+            shell._external_windows = []
+            home = HomePage()
+            shell.set_home(home)
+            home.tool_selected.connect(lambda tool_id, s=shell: open_tool_in_shell(s, tool_id))
         except Exception as e:
-            if loading_dialog.isVisible():
-                loading_dialog.close()
+            tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            QtWidgets.QMessageBox.critical(None, "Ошибка запуска", f"Не удалось создать главное окно:\n\n{tb_str}")
+            break
 
-            tb_str = "".join(traceback.format_exception(
-                type(e), e, e.__traceback__))
-            error_message = (
-                f"Произошла критическая ошибка при инициализации окна: {type(e).__name__}\n\n"
-                f"--- Полный Traceback ---\n{tb_str}"
-            )
-            print(f"[CRITICAL STARTUP ERROR]\n{error_message}")
-            QtWidgets.QMessageBox.critical(
-                None, "Ошибка запуска", error_message)
-            main_window_to_run = None
-
-        # Запуск выбранного окна
-        if main_window_to_run:
-            main_window_to_run.show()
-            exit_code = app.exec()
-
-            # Если код возврата равен коду перезагрузки, цикл while повторится
-            if exit_code != EXIT_CODE_REBOOT:
-                break
-        else:
+        shell.show()
+        exit_code = app.exec()
+        if exit_code != EXIT_CODE_REBOOT:
             break
 
     # --- ЗАВЕРШЕНИЕ ---

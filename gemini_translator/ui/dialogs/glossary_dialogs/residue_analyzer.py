@@ -13,17 +13,20 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from .custom_widgets import ExpandingTextEditDelegate, ExpandingTextEdit
 from ....ui.widgets.preset_widget import PresetWidget
 from ....api import config as api_config
+from ...shell import ShellPage
 
 NO_RUS_PATTERN = re.compile(r'[^а-яА-ЯёЁ\s\d!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~]+')
 
 
 
-class ResidueAnalyzerDialog(QDialog):
+class ResidueAnalyzerPage(ShellPage):
     """
     Диалог для анализа и исправления "перекрестного загрязнения" и "неизвестных остатков".
     Версия 11.0: Финальная унификация UI.
     """
+    page_title = "Анализ остатков"
     create_new_term_requested = pyqtSignal(dict)
+    result_ready = pyqtSignal(bool)
 
     def __init__(self, residue_map, original_glossary_list, settings_manager, parent=None):
         super().__init__(parent)
@@ -509,6 +512,12 @@ class ResidueAnalyzerDialog(QDialog):
             if key in final_patch_map: final_patch_map[key]['after'] = after
             else: final_patch_map[key] = change
         return list(final_patch_map.values())
+
+    def accept(self):
+        self.result_ready.emit(True)
+
+    def reject(self):
+        self.result_ready.emit(False)
         
     def _is_entry_deleted(self, entry):
         entry_id = self._get_entry_id(entry)
@@ -539,3 +548,34 @@ class ResidueAnalyzerDialog(QDialog):
             exceptions_widget.save_last_session_state()
             self.settings_manager.save_last_word_exceptions_text(exceptions_widget.get_prompt())
             self._apply_all_filters_and_update_view()
+
+
+class _ResidueAnalyzerDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(ResidueAnalyzerPage, name)
+
+
+class ResidueAnalyzerDialog(QDialog, metaclass=_ResidueAnalyzerDialogMeta):
+    """Modal wrapper hosting ResidueAnalyzerPage for the legacy exec() API."""
+
+    def __init__(self, residue_map, original_glossary_list, settings_manager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Анализатор остаточных фрагментов")
+        self.page = ResidueAnalyzerPage(residue_map, original_glossary_list, settings_manager, self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()

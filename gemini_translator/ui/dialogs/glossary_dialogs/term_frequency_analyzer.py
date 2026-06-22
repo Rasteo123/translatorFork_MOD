@@ -17,10 +17,14 @@ from gemini_translator.utils.term_frequency_tools import (
     get_term_frequency_map,
     is_term_frequency_payload_valid,
 )
+from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.widgets.common_widgets import NoScrollSpinBox
 from .custom_widgets import ExpandingTextEditDelegate
 
-class TermFrequencyAnalyzerDialog(QDialog):
+class TermFrequencyAnalyzerPage(ShellPage):
+    page_title = "Частотный анализ"
+    result_ready = QtCore.pyqtSignal(bool)
+
     def __init__(self, glossary_data, epub_path=None, parent=None):
         super().__init__(parent)
         self.glossary_data = glossary_data
@@ -498,7 +502,12 @@ class TermFrequencyAnalyzerDialog(QDialog):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(2000)
-        super().reject()
+        self.result_ready.emit(False)
+
+    def on_leave(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(2000)
 
     def accept(self):
         """Подтверждение действий."""
@@ -528,4 +537,37 @@ class TermFrequencyAnalyzerDialog(QDialog):
         msg.exec()
         
         if msg.clickedButton() == btn_yes:
-            super().accept()
+            self.result_ready.emit(True)
+
+
+class _TermFrequencyAnalyzerDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(TermFrequencyAnalyzerPage, name)
+
+
+class TermFrequencyAnalyzerDialog(QDialog, metaclass=_TermFrequencyAnalyzerDialogMeta):
+    """Modal wrapper hosting TermFrequencyAnalyzerPage for the legacy exec() API."""
+
+    def __init__(self, glossary_data, epub_path=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Глобальный частотный анализ")
+        if parent is not None and hasattr(parent, "associated_project_path"):
+            self.associated_project_path = parent.associated_project_path
+        self.page = TermFrequencyAnalyzerPage(glossary_data, epub_path, self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()

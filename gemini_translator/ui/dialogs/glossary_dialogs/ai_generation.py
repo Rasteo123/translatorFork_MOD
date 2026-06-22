@@ -23,6 +23,8 @@ from gemini_translator.ui.widgets.model_settings_widget import ModelSettingsWidg
 from gemini_translator.ui.widgets.log_widget import LogWidget
 from gemini_translator.ui.widgets.preset_widget import PresetWidget
 from gemini_translator.ui.widgets.chapter_list_widget import ChapterListWidget
+from gemini_translator.ui.widgets.status_bar_widget import StatusBarWidget
+from gemini_translator.ui.shell import ShellPage
 from gemini_translator.utils.language_tools import LanguageDetector
 # Импорты для работы движка
 from gemini_translator.api import config as api_config
@@ -281,8 +283,10 @@ class SequentialTaskProvider(QObject):
         
         self._is_running = False
 
-class GenerationSessionDialog(QDialog):
+class GenerationSessionPage(ShellPage):
+    page_title = "Генерация глоссария AI"
     generation_finished = pyqtSignal(list, set)
+    result_ready = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -333,12 +337,12 @@ class GenerationSessionDialog(QDialog):
         self.bus = event_bus
         if self.bus is None:
             if hasattr(app, 'event_bus'): self.bus = app.event_bus
-            else: raise RuntimeError("GenerationSessionDialog requires an event bus.")
+            else: raise RuntimeError("GenerationSessionPage requires an event bus.")
         
         self.engine = translate_engine
         if self.engine is None:
             if hasattr(app, 'engine'): self.engine = app.engine
-            else: raise RuntimeError("GenerationSessionDialog requires an engine.")
+            else: raise RuntimeError("GenerationSessionPage requires an engine.")
         
         self.task_manager = self.engine.task_manager if self.engine.task_manager else None
         
@@ -363,13 +367,6 @@ class GenerationSessionDialog(QDialog):
             available_geometry.center().y() - self.height() // 2
         )
 
-        self.setWindowFlags(
-            self.windowFlags() | 
-            Qt.WindowType.WindowMaximizeButtonHint | 
-            Qt.WindowType.WindowCloseButtonHint
-        )
-        
-        
         self.autosave_timer = QTimer(self)
         self.autosave_timer.setSingleShot(True)
         self.autosave_timer.setInterval(1500)
@@ -501,6 +498,9 @@ class GenerationSessionDialog(QDialog):
 
         bottom_control_layout.addWidget(self.button_box)
         main_layout.addLayout(bottom_control_layout)
+
+        self.status_bar = self._create_bottom_status_bar()
+        main_layout.addWidget(self.status_bar)
         
         # Подключения сигналов
         self.key_widget.active_keys_changed.connect(self._update_start_button_state)
@@ -508,6 +508,20 @@ class GenerationSessionDialog(QDialog):
         self.key_widget.provider_combo.currentIndexChanged.emit(
             self.key_widget.provider_combo.currentIndex()
         )
+
+    def _create_bottom_status_bar(self):
+        return StatusBarWidget(self, event_bus=self.bus, engine=self.engine)
+
+    def can_leave(self):
+        is_running = (self.orchestrator and self.orchestrator._is_running) or (self.engine and self.engine.session_id)
+        if is_running:
+            self.reject()
+            return False
+        return True
+
+    def on_leave(self):
+        keep_recovery_file = bool(getattr(self, "apply_btn", None) and self.apply_btn.isVisible())
+        self._cleanup(keep_recovery_file=keep_recovery_file)
     
     def _create_tasks_tab(self):
         """Создает и настраивает вкладку со списком задач."""
@@ -2787,7 +2801,7 @@ class GenerationSessionDialog(QDialog):
         self.generation_finished.emit(final_glossary, processed_chapters)
     
         self._cleanup()
-        super().accept()
+        self.result_ready.emit(True)
 
     def reject(self):
         """
@@ -2824,12 +2838,12 @@ class GenerationSessionDialog(QDialog):
                 self._save_persistent_ui_settings()
                 self._perform_safe_recovery_save()
                 self._cleanup(keep_recovery_file=True)
-                super().reject()
+                self.result_ready.emit(False)
                 return
             
         self._save_persistent_ui_settings()
         self._cleanup()
-        super().reject()
+        self.result_ready.emit(False)
     
     def showEvent(self, event):
         """Перехватывает событие первого показа окна и запускает отложенную загрузку."""
@@ -2860,4 +2874,80 @@ class GenerationSessionDialog(QDialog):
         """Перехватываем событие закрытия (крестик) и направляем его в нашу логику reject."""
         print("[DEBUG] GenerationSessionDialog.closeEvent() called.")
         self.reject()
+        event.ignore()
+
+
+class _GenerationSessionDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(GenerationSessionPage, name)
+
+
+class GenerationSessionDialog(QDialog, metaclass=_GenerationSessionDialogMeta):
+    """Modal wrapper hosting GenerationSessionPage for the legacy exec() API."""
+
+    generation_finished = pyqtSignal(list, set)
+
+    def __init__(
+        self,
+        settings_manager,
+        initial_glossary,
+        merge_mode,
+        html_files,
+        epub_path,
+        project_manager,
+        initial_ui_settings,
+        parent=None,
+        event_bus=None,
+        translate_engine=None,
+        restore_saved_ui_settings=True,
+        persist_ui_settings=True,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Генерация Глоссария с помощью AI")
+        self.page = GenerationSessionPage(
+            settings_manager=settings_manager,
+            initial_glossary=initial_glossary,
+            merge_mode=merge_mode,
+            html_files=html_files,
+            epub_path=epub_path,
+            project_manager=project_manager,
+            initial_ui_settings=initial_ui_settings,
+            parent=self,
+            event_bus=event_bus,
+            translate_engine=translate_engine,
+            restore_saved_ui_settings=restore_saved_ui_settings,
+            persist_ui_settings=persist_ui_settings,
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.generation_finished.connect(
+            lambda glossary, chapters: self.generation_finished.emit(glossary, chapters)
+        )
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        page = self.__dict__.get("page")
+        if page is not None and hasattr(page, name):
+            setattr(page, name, value)
+            return
+        super().__setattr__(name, value)
+
+    def accept(self):
+        self.page.accept()
+
+    def reject(self):
+        self.page.reject()
+
+    def closeEvent(self, event):
+        self.page.reject()
         event.ignore()

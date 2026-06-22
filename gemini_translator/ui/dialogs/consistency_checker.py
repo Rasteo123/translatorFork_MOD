@@ -25,6 +25,7 @@ from ...core.consistency_engine import ConsistencyEngine
 from ...api import config as api_config
 from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
+from ..shell import ShellPage
 from .chapter_selection_dialog import ChapterSelectionDialog
 
 # Импорт для fuzzy matching (опционально)
@@ -198,7 +199,9 @@ class SingleFixWorker(QThread):
             self.engine.close_session_resources()
 
 
-class ConsistencyValidatorDialog(QDialog):
+class ConsistencyValidatorPage(ShellPage):
+    page_title = "Проверка согласованности"
+
     """
     Диалог проверки согласованности перевода v2.
     
@@ -245,13 +248,6 @@ class ConsistencyValidatorDialog(QDialog):
 
         self.setWindowTitle("🔍 Проверка согласованности (Consistency Checker)")
         self.resize(1400, 950)
-        window_flags = self.windowFlags()
-        window_flags |= Qt.WindowType.WindowSystemMenuHint
-        window_flags |= Qt.WindowType.WindowMinimizeButtonHint
-        window_flags |= Qt.WindowType.WindowMaximizeButtonHint
-        window_flags |= Qt.WindowType.WindowCloseButtonHint
-        window_flags &= ~Qt.WindowType.WindowContextHelpButtonHint
-        self.setWindowFlags(window_flags)
 
         self._init_ui()
         self._set_selected_chapters(self._all_chapter_ids(), fallback_to_all=True)
@@ -749,7 +745,7 @@ class ConsistencyValidatorDialog(QDialog):
         self.batch_fix_btn.clicked.connect(self.run_batch_fix)
         self.glossary_btn.clicked.connect(self.show_glossary)
         self.save_all_btn.clicked.connect(self.save_all_fixes)
-        self.close_btn.clicked.connect(self.close)
+        self.close_btn.clicked.connect(self.request_back.emit)
         self.corrected_text.textChanged.connect(self._sync_corrected_preview_content)
 
         # Сигналы от engine
@@ -2280,8 +2276,7 @@ class ConsistencyValidatorDialog(QDialog):
             self.save_all_btn.setEnabled(False)
             self._log(f"❌ Ошибка восстановления сессии: {e}")
 
-    def closeEvent(self, event):
-        """Обрабатывает закрытие диалога."""
+    def can_leave(self) -> bool:
         if self.pending_fixes:
             reply = QMessageBox.question(
                 self, "Несохранённые изменения",
@@ -2290,13 +2285,54 @@ class ConsistencyValidatorDialog(QDialog):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
-        
+                return False
+        return True
+
+    def on_leave(self) -> None:
         # Отменяем фоновые операции
         self.engine.cancel()
         self._wait_for_thread('analysis_thread', 1000)
         self._wait_for_thread('fix_thread', 1000)
         self._wait_for_thread('single_fix_thread', 1000)
-        
+
+
+class _ConsistencyValidatorDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(ConsistencyValidatorPage, name)
+
+
+class ConsistencyValidatorDialog(QDialog, metaclass=_ConsistencyValidatorDialogMeta):
+    """Thin modal wrapper hosting ConsistencyValidatorPage for the legacy exec() API."""
+
+    def __init__(self, chapters, settings_manager, parent=None, project_manager=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔍 Проверка согласованности (Consistency Checker)")
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.page = ConsistencyValidatorPage(
+            chapters,
+            settings_manager,
+            self,
+            project_manager=project_manager,
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.request_back.connect(self.close)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        if not self.page.can_leave():
+            event.ignore()
+            return
+        self.page.on_leave()
         event.accept()

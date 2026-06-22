@@ -22,6 +22,7 @@ from ...widgets import (
     KeyManagementWidget, ModelSettingsWidget, LogWidget, PresetWidget
 )
 from ...widgets.common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
+from ...shell import ShellPage
 
 # Алиасы для удобства
 QSpinBox = NoScrollSpinBox
@@ -621,11 +622,13 @@ class AdvancedTagFilterDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить фильтры:\n{e}")
 
 # --- ОСНОВНОЙ КЛАСС ---
-class UntranslatedFixerDialog(QDialog):
+class UntranslatedFixerPage(ShellPage):
     """
     Диалог для пакетного исправления найденных недопереводов.
     Версия 6.0: Пагинация и сохранение выделения.
     """
+    page_title = "Исправление недопереводов"
+    result_ready = pyqtSignal(bool)
     navigate_to_chapter_requested = pyqtSignal(dict)
     mark_chapters_for_retry_requested = pyqtSignal(list)
 
@@ -2072,7 +2075,9 @@ class UntranslatedFixerDialog(QDialog):
             if 'new_context' in item and item['new_context'] != item['context']:
                 self.changes.append(item.copy())
         
-        if not self.changes: super().accept(); return
+        if not self.changes:
+            self.result_ready.emit(True)
+            return
 
         msg = QMessageBox(self)
         msg.setWindowTitle("Применение")
@@ -2089,7 +2094,10 @@ class UntranslatedFixerDialog(QDialog):
             return
 
         self._should_save_immediately = (msg.clickedButton() == b_save)
-        super().accept()
+        self.result_ready.emit(True)
+
+    def reject(self):
+        self.result_ready.emit(False)
 
     def should_save_immediately(self): return getattr(self, '_should_save_immediately', False)
     def get_changes(self): return self.changes
@@ -2171,6 +2179,41 @@ class UntranslatedFixerDialog(QDialog):
 
         self.update_table_view()
 
+
+class _UntranslatedFixerDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(UntranslatedFixerPage, name)
+
+
+class UntranslatedFixerDialog(QDialog, metaclass=_UntranslatedFixerDialogMeta):
+    """Modal wrapper hosting UntranslatedFixerPage for the legacy exec() API."""
+
+    navigate_to_chapter_requested = pyqtSignal(dict)
+    mark_chapters_for_retry_requested = pyqtSignal(list)
+
+    def __init__(self, data_list, parent=None, initial_source_filter='all'):
+        super().__init__(parent)
+        self.setWindowTitle("Помощник исправления недопереводов")
+        self.page = UntranslatedFixerPage(data_list, self, initial_source_filter=initial_source_filter)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.navigate_to_chapter_requested.connect(self.navigate_to_chapter_requested.emit)
+        self.page.mark_chapters_for_retry_requested.connect(self.mark_chapters_for_retry_requested.emit)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()
 
 
 # --- ДИАЛОГ ПЕРЕВОДА (ОБНОВЛЕННЫЙ v6: Dark Theme UI) ---

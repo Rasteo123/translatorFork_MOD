@@ -26,6 +26,8 @@ from gemini_translator.ui.widgets.key_management_widget import KeyManagementWidg
 from gemini_translator.ui.widgets.model_settings_widget import ModelSettingsWidget
 from gemini_translator.ui.widgets.log_widget import LogWidget
 from gemini_translator.ui.widgets.preset_widget import PresetWidget
+from gemini_translator.ui.widgets.ancestor_utils import find_ancestor_by_class_name
+from gemini_translator.ui.shell import ShellPage
 
 # API и утилиты
 from gemini_translator.api import config as api_config
@@ -171,9 +173,11 @@ class NoteWipeResolutionDialog(QDialog):
                 
         super().accept()
 
-class CorrectionSessionDialog(QDialog):
+class CorrectionSessionPage(ShellPage):
     """Минималистичный диалог для настройки сессии AI-коррекции."""
+    page_title = "AI-коррекция глоссария"
     correction_accepted = pyqtSignal(list)
+    result_ready = pyqtSignal(bool)
 
     def __init__(self, settings_manager=None, parent=None):
         super().__init__(parent)
@@ -491,7 +495,7 @@ class CorrectionSessionDialog(QDialog):
         
         # Инициализация
         main_window = self.parent()
-        if main_window and main_window.__class__.__name__ == 'MainWindow':
+        if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
             glossary_sample = main_window.get_glossary()[:50]
             cjk_count = sum(1 for entry in glossary_sample if LanguageDetector.is_cjk_text(entry.get('original', '')))
             if glossary_sample and (cjk_count / len(glossary_sample) > 0.3):
@@ -639,7 +643,7 @@ class CorrectionSessionDialog(QDialog):
         Скрытые (пустые) категории не занимают место в layout.
         """
         main_window = self.parent()
-        if not main_window or main_window.__class__.__name__ != 'MainWindow': 
+        if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
 
         # 1. Определяем, какие виджеты должны быть показаны
@@ -698,7 +702,7 @@ class CorrectionSessionDialog(QDialog):
 
     def _resolve_frequency_sources(self):
         main_window = self.parent()
-        if not main_window or main_window.__class__.__name__ != 'MainWindow':
+        if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return None, None
 
         project_path = getattr(main_window, 'associated_project_path', None)
@@ -712,7 +716,7 @@ class CorrectionSessionDialog(QDialog):
         self._term_frequency_map = {}
 
         main_window = self.parent()
-        glossary = main_window.get_glossary() if main_window and main_window.__class__.__name__ == 'MainWindow' else []
+        glossary = main_window.get_glossary() if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage') else []
 
         self.cb_frequency_filter.blockSignals(True)
         self.cb_frequency_filter.setChecked(False)
@@ -743,7 +747,7 @@ class CorrectionSessionDialog(QDialog):
 
     def _start_frequency_analysis(self):
         main_window = self.parent()
-        if not main_window or main_window.__class__.__name__ != 'MainWindow':
+        if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
         if not self._frequency_epub_path or not os.path.exists(self._frequency_epub_path):
             return
@@ -885,7 +889,7 @@ class CorrectionSessionDialog(QDialog):
         source_entries = glossary_entries
         if source_entries is None:
             main_window = self.parent()
-            if main_window and main_window.__class__.__name__ == 'MainWindow':
+            if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
                 source_entries = main_window.get_glossary()
             else:
                 source_entries = []
@@ -905,7 +909,7 @@ class CorrectionSessionDialog(QDialog):
 
     def _get_data_and_estimate_tokens(self):
         main_window = self.parent()
-        if not main_window or main_window.__class__.__name__ != 'MainWindow': 
+        if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return None, 0, None, False, 0, 0, 0
     
         # Сброс реестра усыновленных терминов
@@ -1394,8 +1398,8 @@ class CorrectionSessionDialog(QDialog):
         """Безопасный 'безголовый' метод для запуска анализа скрытых конфликтов."""
         if self._cached_analysis_results is None:
             main_window = self.parent()
-            if not main_window or main_window.__class__.__name__ != 'MainWindow': return
-            
+            if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'): return
+
             # --- ИЗМЕНЕНИЕ: Не собираем base_conflicts, передаем пустой set() ---
             # Мы хотим найти ВСЕ возможные скрытые конфликты в кэш.
             # Фильтрация будет происходить динамически в _get_data_and_estimate_tokens
@@ -1413,8 +1417,8 @@ class CorrectionSessionDialog(QDialog):
         """Безопасный 'безголовый' метод для запуска анализа паттернов."""
         if self._cached_pattern_results is None:
             main_window = self.parent()
-            if not main_window or main_window.__class__.__name__ != 'MainWindow': return
-            
+            if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'): return
+
             min_size = self.pattern_group_size_spinbox.value() if hasattr(self, 'pattern_group_size_spinbox') else 3
             
             # ИСПОЛЬЗУЕМ НОВЫЙ МЕТОД
@@ -2370,9 +2374,9 @@ class CorrectionSessionDialog(QDialog):
             return
             
         main_window = self.parent()
-        if not main_window or main_window.__class__.__name__ != 'MainWindow':
+        if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
-            
+
         preview = CorrectionPreviewDialog(
             main_window.get_glossary(), 
             patch_dict, 
@@ -2421,7 +2425,13 @@ class CorrectionSessionDialog(QDialog):
         if self.is_session_active:
             self._on_start_stop_clicked()
         else:
-            super().reject()
+            self.result_ready.emit(False)
+
+    def can_leave(self):
+        if self.is_session_active:
+            self._on_start_stop_clicked()
+            return False
+        return True
     
     def get_settings(self):
         settings = self.model_settings_widget.get_settings()
@@ -2437,6 +2447,43 @@ class CorrectionSessionDialog(QDialog):
         settings['rpm_limit'] = 1
         settings['glossary_merge_mode'] = "accumulate"
         return settings
+
+
+class _CorrectionSessionDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(CorrectionSessionPage, name)
+
+
+class CorrectionSessionDialog(QDialog, metaclass=_CorrectionSessionDialogMeta):
+    """Modal wrapper hosting CorrectionSessionPage for the legacy exec() API."""
+
+    correction_accepted = pyqtSignal(list)
+
+    def __init__(self, settings_manager=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройка AI-корректора")
+        self.page = CorrectionSessionPage(settings_manager, self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.correction_accepted.connect(self.correction_accepted)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        if not self.page.can_leave():
+            event.ignore()
+            return
+        self.page.reject()
+        event.accept()
 
 class CorrectionPreviewDialog(QDialog):
     """
@@ -3486,5 +3533,3 @@ class CorrectionPreviewDialog(QDialog):
         self._auto_scroll_timer.stop()
         self._flush_review_preferences()
         super().reject()
-
-

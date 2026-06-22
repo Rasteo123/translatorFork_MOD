@@ -15,9 +15,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, Qt, pyqtSlot, QTimer
 
-from ..dialogs.glossary import MainWindow as GlossaryToolWindow
-from ..dialogs.glossary import ImporterWizardDialog
+from ..dialogs.glossary import GlossaryManagerPage, ImporterWizardDialog, MainWindow as GlossaryToolWindow
 from ..dialogs.glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
+from .ancestor_utils import find_ancestor_by_class_name
 from ...utils.settings import SettingsManager
 from ...api import config as api_config
 from collections import defaultdict
@@ -248,10 +248,7 @@ class GlossaryWidget(QWidget):
             return json.load(handle)
 
     def _find_setup_dialog(self):
-        parent_dialog = self.parent()
-        while parent_dialog and parent_dialog.__class__.__name__ != "InitialSetupDialog":
-            parent_dialog = parent_dialog.parent()
-        return parent_dialog
+        return find_ancestor_by_class_name(self, "InitialSetupDialog", "InitialSetupPage")
 
     def _sync_saved_state_to_parent(self, glossary_data):
         parent_dialog = self._find_setup_dialog()
@@ -682,16 +679,38 @@ class GlossaryWidget(QWidget):
             QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось прочитать или обработать файл: {e}")
             
     def _open_manager(self):
-        parent_dialog = self.parent()
-        # Ищем родительское окно настроек, чтобы заблокировать его и взять путь
-        while parent_dialog and parent_dialog.__class__.__name__ != 'InitialSetupDialog':
-            parent_dialog = parent_dialog.parent()
+        # Ищем страницу/диалог настроек, чтобы взять путь проекта и выбрать способ открытия.
+        parent_dialog = find_ancestor_by_class_name(self, 'InitialSetupDialog', 'InitialSetupPage')
         
         # --- ИЗВЛЕЧЕНИЕ ПУТИ ПРОЕКТА ---
         project_folder = None
         if parent_dialog and hasattr(parent_dialog, 'output_folder'):
             project_folder = parent_dialog.output_folder
         # -------------------------------
+
+        if parent_dialog and hasattr(parent_dialog, 'request_push'):
+            manager_page = GlossaryManagerPage(mode='dialog', project_path=project_folder)
+            manager_page.set_glossary(self.get_glossary())
+            manager_page.mark_current_state_as_saved()
+
+            def apply_manager_result(accepted, page=manager_page):
+                is_project_synced = False
+                if accepted:
+                    updated_glossary = page.get_glossary()
+                    is_project_synced = page.is_current_state_saved_to_project()
+                    self.set_glossary(updated_glossary, emit_signal=not is_project_synced)
+                    if is_project_synced:
+                        self.mark_current_state_as_saved()
+                        self._sync_saved_state_to_parent(updated_glossary)
+
+                # Страница уже обработала accept/reject; shell может закрыть её
+                # без повторного вопроса про несохраненные изменения.
+                page.mark_current_state_as_saved(saved_to_project=is_project_synced)
+                page.request_back.emit()
+
+            manager_page.result_ready.connect(apply_manager_result)
+            parent_dialog.request_push.emit(manager_page)
+            return
 
         if parent_dialog:
             parent_dialog.setEnabled(False)
@@ -716,12 +735,10 @@ class GlossaryWidget(QWidget):
             parent_dialog._check_and_sync_active_session()
             
     def _open_ai_generation_dialog(self):
-        from ..dialogs.glossary_dialogs.ai_generation import GenerationSessionDialog
+        from ..dialogs.glossary_dialogs.ai_generation import GenerationSessionDialog, GenerationSessionPage
         
-        # Ищем наше главное окно InitialSetupDialog, поднимаясь по иерархии
-        parent_dialog = self.parent()
-        while parent_dialog and parent_dialog.__class__.__name__ != 'InitialSetupDialog':
-            parent_dialog = parent_dialog.parent()
+        # Ищем наше главное окно InitialSetupDialog/InitialSetupPage, поднимаясь по иерархии
+        parent_dialog = find_ancestor_by_class_name(self, 'InitialSetupDialog', 'InitialSetupPage')
         
         if not parent_dialog:
             QMessageBox.warning(self, "Ошибка", "Не удалось найти основное окно настроек (InitialSetupDialog).")
@@ -731,13 +748,39 @@ class GlossaryWidget(QWidget):
             QMessageBox.warning(self, "Нет данных", "Сначала выберите EPUB файл и главы в основном окне.")
             return
             
+        def refresh_parent_after_generation():
+            parent_dialog._check_and_sync_active_session()
+            parent_dialog._prepare_and_display_tasks(clean_rebuild=True)
+            if hasattr(parent_dialog, 'auto_translate_widget'):
+                parent_dialog.auto_translate_widget.refresh_glossary_presets()
+
+        if hasattr(parent_dialog, 'request_push'):
+            page = GenerationSessionPage(
+                settings_manager=self.settings_manager,
+                initial_glossary=self.get_glossary(),
+                merge_mode=None,
+                html_files=parent_dialog.html_files,
+                epub_path=parent_dialog.selected_file,
+                project_manager=parent_dialog.project_manager,
+                initial_ui_settings=parent_dialog.get_settings()
+            )
+            page.generation_finished.connect(self._on_generation_dialog_finished)
+
+            def finish_generation_page(_accepted, page=page):
+                refresh_parent_after_generation()
+                page.request_back.emit()
+
+            page.result_ready.connect(finish_generation_page)
+            parent_dialog.request_push.emit(page)
+            return
+
         dialog = GenerationSessionDialog(
-            settings_manager=self.settings_manager, 
-            initial_glossary=self.get_glossary(), 
-            merge_mode=None, 
-            html_files=parent_dialog.html_files, 
-            epub_path=parent_dialog.selected_file, 
-            project_manager=parent_dialog.project_manager, 
+            settings_manager=self.settings_manager,
+            initial_glossary=self.get_glossary(),
+            merge_mode=None,
+            html_files=parent_dialog.html_files,
+            epub_path=parent_dialog.selected_file,
+            project_manager=parent_dialog.project_manager,
             initial_ui_settings=parent_dialog.get_settings()
         )
         dialog.generation_finished.connect(self._on_generation_dialog_finished)
@@ -749,11 +792,7 @@ class GlossaryWidget(QWidget):
         finally:
             parent_dialog.setEnabled(True)
             parent_dialog.is_blocked_by_child_dialog = False
-            parent_dialog._check_and_sync_active_session()
-            # Теперь мы вызываем метод у найденного родительского окна
-            parent_dialog._prepare_and_display_tasks(clean_rebuild=True)
-            if hasattr(parent_dialog, 'auto_translate_widget'):
-                parent_dialog.auto_translate_widget.refresh_glossary_presets()
+            refresh_parent_after_generation()
     
     @pyqtSlot(list, set)
     def _on_generation_dialog_finished(self, final_glossary_from_ai, updated_generated_chapters_map):
@@ -775,9 +814,7 @@ class GlossaryWidget(QWidget):
         if changed_count > 0: summary_parts.append(f"Изменено: {changed_count}")
         if deleted_count > 0: summary_parts.append(f"Удалено: {deleted_count}")
         summary_text = ", ".join(summary_parts)
-        parent_dialog = self.parent()
-        while parent_dialog and parent_dialog.__class__.__name__ != 'InitialSetupDialog':
-            parent_dialog = parent_dialog.parent()
+        parent_dialog = find_ancestor_by_class_name(self, 'InitialSetupDialog', 'InitialSetupPage')
         project_folder = getattr(parent_dialog, 'output_folder', None) if parent_dialog else None
         msg_box = QMessageBox(self); msg_box.setWindowTitle("Генерация завершена")
         msg_box.setText(f"Обнаружены изменения в глоссарии: {summary_text}.")

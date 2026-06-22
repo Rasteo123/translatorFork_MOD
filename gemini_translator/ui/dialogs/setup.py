@@ -70,6 +70,7 @@ from .misc import ProjectHistoryDialog, ProjectFolderDialog, GeoBlockDialog
 from .menu_utils import post_session_separator, prompt_return_to_menu, return_to_main_menu
 from .glossary import MainWindow as GlossaryToolWindow
 from .glossary import ImporterWizardDialog
+from ..shell import ShellPage
 from .auto_workflow import (
     AutoConsistencyWorker,
     choose_preferred_translation_rel_path,
@@ -228,26 +229,22 @@ class ChapterTextPreviewDialog(QDialog):
         layout.addWidget(buttons)
 
 
-class InitialSetupDialog(QDialog):
+class InitialSetupPage(ShellPage):
     """
     Единый диалог для настройки перевода.
     """
+    page_title = "Переводчик EPUB"
     tasks_changed = pyqtSignal()
     def __init__(self, parent=None, prefill_data=None):
         super().__init__(parent)
 
         # --- Флаги и базовые атрибуты (быстрая инициализация) ---
         self._initial_show_done = False
+        self._full_ui_loaded = False
         self.prefill_data = prefill_data
 
 
         self.setMinimumSize(700, 550) # Компактный размер
-        self.setWindowFlags(
-            QtCore.Qt.WindowType.Dialog |
-            QtCore.Qt.WindowType.WindowMinimizeButtonHint |
-            QtCore.Qt.WindowType.WindowMaximizeButtonHint |
-            QtCore.Qt.WindowType.WindowCloseButtonHint
-        )
         self._apply_initial_geometry()
 
         app = QtWidgets.QApplication.instance()
@@ -835,8 +832,7 @@ class InitialSetupDialog(QDialog):
         """Возвращает пользователя в главное меню по кнопке 'Выход'."""
         if not self._prepare_for_close():
             return
-        self._returning_to_main_menu = True
-        self.close()
+        self.request_back.emit()
 
     def _set_stop_button_mode(self, hard_stop: bool):
         self._hard_stop_enabled = hard_stop
@@ -4525,21 +4521,12 @@ class InitialSetupDialog(QDialog):
 
         self._post_event('log_message', {'message': "[INFO] Открытие инструмента проверки переводов…"})
 
-
-        self.setEnabled(False)
-        self.is_blocked_by_child_dialog = True
-        # Импортируем диалог прямо здесь, чтобы избежать циклических зависимостей
-        from .validation import TranslationValidatorDialog
-        self.validator_dialog = TranslationValidatorDialog(self.output_folder, self.selected_file, self, project_manager=self.project_manager)
-
-
-        self.validator_dialog.exec()
-
-        self.setEnabled(True)
-        self.is_blocked_by_child_dialog = False
-        self._check_and_sync_active_session()
-
-        self._post_event('log_message', {'message': "[INFO] Инструмент проверки переводов закрыт."})
+        from .validation import TranslationValidatorPage
+        page = TranslationValidatorPage(
+            self.output_folder, self.selected_file, self,
+            retry_enabled=True, project_manager=self.project_manager,
+        )
+        self.request_push.emit(page)
 
     def open_ai_glossary_generation(self):
         """Открывает существующий AI-генератор глоссария с выбранным шаблоном."""
@@ -4729,17 +4716,17 @@ class InitialSetupDialog(QDialog):
             QMessageBox.warning(self, "Нет данных", "Не найдено переведённых глав для AI-проверки согласованности.")
             return
 
-        from .consistency_checker import ConsistencyValidatorDialog
+        from .consistency_checker import ConsistencyValidatorPage
 
-        dialog = ConsistencyValidatorDialog(
+        page = ConsistencyValidatorPage(
             chapters_to_analyze,
             self.settings_manager,
             self,
             project_manager=self.project_manager
         )
-        if hasattr(dialog, '_update_chunk_stats'):
-            dialog._update_chunk_stats()
-        dialog.exec()
+        if hasattr(page, '_update_chunk_stats'):
+            page._update_chunk_stats()
+        self.request_push.emit(page)
 
     def _auto_log(
         self,
@@ -6001,7 +5988,7 @@ class InitialSetupDialog(QDialog):
         if not self._prepare_for_close():
             return
 
-        super().reject()
+        self.request_back.emit()
 
 
     # --------------------------------------------------------------------
@@ -6352,10 +6339,12 @@ class InitialSetupDialog(QDialog):
 
         # 2. Загружаем данные в уже созданные виджеты
         self._load_initial_data()
+        self._full_ui_loaded = True
 
         # 3. "Подменяем" заглушку на готовый интерфейс
         self.loading_label.setVisible(False)
         self.main_content_widget.setVisible(True)
+        self._check_and_sync_active_session()
 
     def _show_custom_message(self, title, text, icon=QMessageBox.Icon.Information, informative_text="", button_text="ОК"):
         """Показывает QMessageBox с кастомной кнопкой 'ОК'."""
@@ -6369,25 +6358,71 @@ class InitialSetupDialog(QDialog):
         ok_button = msg_box.addButton(button_text, QMessageBox.ButtonRole.AcceptRole)
         msg_box.exec()
 
+    def on_enter(self) -> None:
+        """Re-sync session UI whenever this page becomes current (initial push or return from a child)."""
+        if not getattr(self, '_full_ui_loaded', False):
+            return
+        self._check_and_sync_active_session()
+
+    def can_leave(self) -> bool:
+        return self._prepare_for_close()
+
+    def on_leave(self) -> None:
+        self._disconnect_event_bus()
+
+
+class _InitialSetupDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(InitialSetupPage, name)
+
+
+class InitialSetupDialog(QDialog, metaclass=_InitialSetupDialogMeta):
+    """Thin window wrapper hosting InitialSetupPage (preserves the old QDialog API)."""
+
+    def __init__(self, parent=None, prefill_data=None):
+        super().__init__(parent)
+        self._returning_to_main_menu = False
+        # window flags copied from the old page __init__ verbatim so standalone
+        # behaviour + macOS controls are preserved:
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Dialog |
+            QtCore.Qt.WindowType.WindowMinimizeButtonHint |
+            QtCore.Qt.WindowType.WindowMaximizeButtonHint |
+            QtCore.Qt.WindowType.WindowCloseButtonHint
+        )
+        self.page = InitialSetupPage(self, prefill_data=prefill_data)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.request_back.connect(self._return_to_menu)
+        # mirror the window title the page set, for the standalone window:
+        self.setWindowTitle(self.page.windowTitle())
+
+    def _return_to_menu(self):
+        self._returning_to_main_menu = True
+        self.close()
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
     def closeEvent(self, event):
-        """Отписываемся от шины событий перед уничтожением окна."""
+        # MOVED from the page; self.<x> → self.page.<x> for _disconnect_event_bus/_prepare_for_close
         if self._returning_to_main_menu:
-            self._disconnect_event_bus()
+            self.page._disconnect_event_bus()
             return_to_main_menu()
             event.accept()
             return
-
         action = prompt_return_to_menu(self)
         if action == "cancel":
             event.ignore()
             return
-
-        if not self._prepare_for_close():
+        if not self.page._prepare_for_close():
             event.ignore()
             return
-
-        self._disconnect_event_bus()
-
+        self.page._disconnect_event_bus()
         if action == "menu":
             return_to_main_menu()
         event.accept()

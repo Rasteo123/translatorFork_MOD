@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt
 # --- Импорты из вашего проекта ---
 # Импортируем виджеты из их нового местоположения
 from .custom_widgets import ExpandingTextEditDelegate
+from ...shell import ShellPage
 
 # --- Аннотация типа для избежания циклического импорта ---
 from typing import TYPE_CHECKING
@@ -21,12 +22,15 @@ if TYPE_CHECKING:
     from gemini_translator.ui.dialogs.glossary import MainWindow, GlossaryLogic
 
 
-class CoreTermAnalyzerDialog(QDialog):
+class CoreTermAnalyzerPage(ShellPage):
     """
     Супер-диалог для разрешения наложений с двумя режимами:
     1. Общий вид (свободная навигация по списку).
     2. Пошаговый режим "Визард" (проход по нерешенным проблемам).
     """
+    page_title = "Анализ по паттернам"
+    result_ready = QtCore.pyqtSignal(bool)
+
     def __init__(self, original_glossary_list, logic, analysis_results, pymorphy_available, parent=None): # <-- ИЗМЕНЕНЫ АРГУМЕНТЫ
         super().__init__(parent)
         self.original_glossary_list = original_glossary_list
@@ -802,6 +806,12 @@ class CoreTermAnalyzerDialog(QDialog):
         # Здесь можно добавить логику подтверждения, если нужно
         self.accept()
 
+    def accept(self):
+        self.result_ready.emit(True)
+
+    def reject(self):
+        self.result_ready.emit(False)
+
 
     def get_patch(self):
         """
@@ -887,8 +897,8 @@ class CoreTermAnalyzerDialog(QDialog):
     def _generate_note_for_member(self, row):
         """Генерирует примечание для термина в таблице 'соседей'."""
         main_window = self.parent_window
-        if main_window and main_window.__class__.__name__ == 'MainWindow':
-            if not self.pymorphy_available: 
+        if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
+            if not self.pymorphy_available:
                 return
         
         translation_item = self.members_table.item(row, 1)
@@ -965,3 +975,40 @@ class CoreTermAnalyzerDialog(QDialog):
             self._is_loaded = True
             # Запускаем тяжелую работу после того, как окно уже показалось
             QtCore.QTimer.singleShot(50, self._async_prepare_data_and_populate)
+
+
+class _CoreTermAnalyzerDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(CoreTermAnalyzerPage, name)
+
+
+class CoreTermAnalyzerDialog(QDialog, metaclass=_CoreTermAnalyzerDialogMeta):
+    """Modal wrapper hosting CoreTermAnalyzerPage for the legacy exec() API."""
+
+    def __init__(self, original_glossary_list, logic, analysis_results, pymorphy_available, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Анализатор Паттернов v4.1 (Гига-глоссарий)")
+        self.page = CoreTermAnalyzerPage(
+            original_glossary_list,
+            logic,
+            analysis_results,
+            pymorphy_available,
+            self,
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()

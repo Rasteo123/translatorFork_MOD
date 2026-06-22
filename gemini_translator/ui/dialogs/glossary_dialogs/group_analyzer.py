@@ -6,13 +6,17 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, 
     QSpinBox, QGroupBox, QMessageBox, QAbstractItemView, QApplication
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
+from gemini_translator.ui.shell import ShellPage
 
-class GroupAnalysisDialog(QDialog):
+class GroupAnalysisPage(ShellPage):
     """
     Диалог для группировки терминов по часто встречающимся словам.
     Работает строго со СПИСКАМИ индексов, чтобы сохранить дубликаты.
     """
+    page_title = "Анализ групп"
+    result_ready = pyqtSignal(bool)
+
     def __init__(self, full_glossary, parent=None):
         super().__init__(parent)
         # Сохраняем ссылку на исходный список. Порядок в нем важен для индексов.
@@ -29,6 +33,9 @@ class GroupAnalysisDialog(QDialog):
         self._init_ui()
         self._run_analysis()
         self._apply_filters() 
+
+    def reject(self):
+        self.result_ready.emit(False)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -242,12 +249,35 @@ class GroupAnalysisDialog(QDialog):
         # Если в исходном списке были дубликаты на разных строках, они попадут сюда как разные объекты.
         subset_glossary = [self.full_glossary[i] for i in sorted_indices]
         
-        from gemini_translator.ui.dialogs.glossary import MainWindow as GlossaryManager
+        from gemini_translator.ui.dialogs.glossary import (
+            GlossaryManagerPage,
+            MainWindow as GlossaryManager,
+        )
+
+        title_part = ", ".join(selected_words[:3])
+        if len(selected_words) > 3:
+            title_part += "..."
+
+        if hasattr(self, 'request_push') and self.parent_manager and hasattr(self.parent_manager, 'request_push'):
+            child_page = GlossaryManagerPage(parent=self, mode='child')
+            child_page.setWindowTitle(f"Редактор групп ({len(subset_glossary)} записей): {title_part}")
+            child_page.set_glossary(subset_glossary, run_analysis=True)
+
+            def apply_child_result(accepted, page=child_page):
+                if accepted:
+                    modified_subset = page.get_glossary()
+                    QtCore.QTimer.singleShot(
+                        50,
+                        lambda: self._apply_changes_to_parent(modified_subset, sorted_indices)
+                    )
+                page.request_back.emit()
+
+            child_page.result_ready.connect(apply_child_result)
+            self.request_push.emit(child_page)
+            return
         
         # Создаем дочернее окно поверх текущего
         child_manager = GlossaryManager(parent=self, mode='child')
-        title_part = ", ".join(selected_words[:3])
-        if len(selected_words) > 3: title_part += "..."
         child_manager.setWindowTitle(f"Редактор групп ({len(subset_glossary)} записей): {title_part}")
         
         # Передаем данные. В режиме 'child' используется изолированная БД, так что
@@ -320,3 +350,34 @@ class GroupAnalysisDialog(QDialog):
             QApplication.restoreOverrideCursor()
         
         QMessageBox.information(self, "Готово", "Изменения успешно применены.")
+
+
+class _GroupAnalysisDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(GroupAnalysisPage, name)
+
+
+class GroupAnalysisDialog(QDialog, metaclass=_GroupAnalysisDialogMeta):
+    """Modal wrapper hosting GroupAnalysisPage for the legacy exec() API."""
+
+    def __init__(self, full_glossary, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Анализ групп терминов (сохранение дубликатов)")
+        self.page = GroupAnalysisPage(full_glossary, self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()

@@ -7,6 +7,7 @@ import re
 import json
 import hashlib
 import difflib
+import importlib
 from bs4 import BeautifulSoup, NavigableString, ProcessingInstruction, Comment, Declaration
 import shutil
 from datetime import datetime
@@ -45,11 +46,13 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 from ..widgets.preset_widget import PresetWidget
+from ..shell import ShellPage
 from ...api import config as api_config
 from .validation_dialogs import UntranslatedWordDetector
 from .validation_dialogs.untranslated_fixer_dialog import (
     AITranslationDialog,
     UntranslatedFixerDialog,
+    UntranslatedFixerPage,
     build_effective_untranslated_prompt,
     build_translation_tasks_from_data_items,
 )
@@ -634,7 +637,10 @@ def apply_line_review_selection(segments, accepted_change_ids, edited_new_text_b
     return "".join(result_lines)
 
 
-class AIRepairReviewDialog(QDialog):
+class AIRepairReviewPage(ShellPage):
+    page_title = "Построчная проверка автоправки"
+    result_ready = pyqtSignal(bool)
+
     def __init__(self, candidates, parent=None):
         super().__init__(parent)
         self.candidates = candidates or []
@@ -984,6 +990,43 @@ class AIRepairReviewDialog(QDialog):
                 result[candidate["row"]] = selected_html
 
         return result
+
+    def accept(self):
+        self.result_ready.emit(True)
+
+    def reject(self):
+        self.result_ready.emit(False)
+
+
+class _AIRepairReviewDialogMeta(type(QDialog)):
+    def __getattr__(cls, name):
+        return getattr(AIRepairReviewPage, name)
+
+
+class AIRepairReviewDialog(QDialog, metaclass=_AIRepairReviewDialogMeta):
+    """Modal wrapper hosting AIRepairReviewPage for the legacy exec() API."""
+
+    def __init__(self, candidates, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Построчная проверка автоправки")
+        self.page = AIRepairReviewPage(candidates, self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.result_ready.connect(self._on_result)
+
+    def _on_result(self, accepted: bool):
+        self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+    def closeEvent(self, event):
+        self.page.reject()
+        event.accept()
 
 class StructureErrorsDialog(QDialog):
     """
@@ -1651,8 +1694,10 @@ class ValidationThread(QThread):
         self._is_running = False
 
 # --- Главное окно диалога ---
-class TranslationValidatorDialog(QDialog):
-    
+class TranslationValidatorPage(ShellPage):
+
+    page_title = "Валидация перевода"
+
     ANALYSIS_MODES = (
         ("all", "Все главы"),
         ("problematic", "Только проблемные"),
@@ -1671,14 +1716,7 @@ class TranslationValidatorDialog(QDialog):
 
     def __init__(self, translated_folder, original_epub_path, parent=None, retry_enabled=True, project_manager=None):
         super().__init__(parent)
-        
-        self.setWindowFlags(
-            Qt.WindowType.Dialog |
-            Qt.WindowType.WindowMinimizeButtonHint |
-            Qt.WindowType.WindowMaximizeButtonHint |
-            Qt.WindowType.WindowCloseButtonHint
-        )
-        
+
         self.translated_folder = translated_folder
         self.original_epub_path = original_epub_path
         self.project_manager = project_manager # <-- ДОБАВЛЯЕМ ЭТУ СТРОКУ
@@ -2698,50 +2736,62 @@ class TranslationValidatorDialog(QDialog):
             QMessageBox.information(self, "Автоправка", message)
             return
 
-        review_dialog = AIRepairReviewDialog(review_candidates, self)
-        if review_dialog.exec() != QDialog.DialogCode.Accepted:
-            self.lbl_status.setText("Автоправка отменена: изменения не применялись.")
-            return
+        TranslationValidatorPage._push_ai_repair_review_page(self, review_candidates, used_selection, unchanged_count, errors)
 
-        approved_html_by_row = review_dialog.selected_html_by_row()
-        if not approved_html_by_row:
-            QMessageBox.information(self, "Автоправка", "Не выбрано ни одной строки для применения.")
-            return
+    def _push_ai_repair_review_page(self, review_candidates, used_selection, unchanged_count, errors):
+        page = AIRepairReviewPage(review_candidates, self)
 
-        changed_rows = []
-        for row, selected_html in approved_html_by_row.items():
-            data = self.results_data.get(row)
-            if not isinstance(data, dict):
-                continue
-            current_html = self._ensure_row_translated_html_loaded(row)
-            if selected_html == current_html:
-                continue
-            data['translated_html'] = selected_html
-            self._mark_row_changed_by_ai_repair(row)
-            changed_rows.append(row)
+        def apply_review_result(accepted, page=page):
+            if not accepted:
+                self.lbl_status.setText("Автоправка отменена: изменения не применялись.")
+                page.request_back.emit()
+                return
 
-        if changed_rows:
-            self.btn_save_changes.setEnabled(True)
-            self._fixer_data_fingerprint = None
-            self.reapply_filters()
-            self.update_comparison_view()
-            scope_text = "выделенных строках" if used_selection else "видимых проблемных строках"
-            message = (
-                f"Применено к главам: {len(changed_rows)} в {scope_text}.\n"
-                f"Глав с предложениями: {len(review_candidates)}.\n"
-                f"Без изменений: {unchanged_count}.\n\n"
-                "Проверьте результат справа и нажмите «Сохранить изменения»."
-            )
-            if errors:
-                message += "\n\nОшибки:\n" + "\n".join(errors[:5])
-                if len(errors) > 5:
-                    message += f"\n... и ещё {len(errors) - 5}."
-            QMessageBox.information(self, "Автоправка завершена", message)
-        else:
-            message = "Подтверждённые строки не изменили текущий текст."
-            if errors:
-                message += "\n\nОшибки:\n" + "\n".join(errors[:5])
-            QMessageBox.information(self, "Автоправка", message)
+            approved_html_by_row = page.selected_html_by_row()
+            if not approved_html_by_row:
+                QMessageBox.information(self, "Автоправка", "Не выбрано ни одной строки для применения.")
+                page.request_back.emit()
+                return
+
+            changed_rows = []
+            for row, selected_html in approved_html_by_row.items():
+                data = self.results_data.get(row)
+                if not isinstance(data, dict):
+                    continue
+                current_html = self._ensure_row_translated_html_loaded(row)
+                if selected_html == current_html:
+                    continue
+                data['translated_html'] = selected_html
+                self._mark_row_changed_by_ai_repair(row)
+                changed_rows.append(row)
+
+            if changed_rows:
+                self.btn_save_changes.setEnabled(True)
+                self._fixer_data_fingerprint = None
+                self.reapply_filters()
+                self.update_comparison_view()
+                scope_text = "выделенных строках" if used_selection else "видимых проблемных строках"
+                message = (
+                    f"Применено к главам: {len(changed_rows)} в {scope_text}.\n"
+                    f"Глав с предложениями: {len(review_candidates)}.\n"
+                    f"Без изменений: {unchanged_count}.\n\n"
+                    "Проверьте результат справа и нажмите «Сохранить изменения»."
+                )
+                if errors:
+                    message += "\n\nОшибки:\n" + "\n".join(errors[:5])
+                    if len(errors) > 5:
+                        message += f"\n... и ещё {len(errors) - 5}."
+                QMessageBox.information(self, "Автоправка завершена", message)
+            else:
+                message = "Подтверждённые строки не изменили текущий текст."
+                if errors:
+                    message += "\n\nОшибки:\n" + "\n".join(errors[:5])
+                QMessageBox.information(self, "Автоправка", message)
+
+            page.request_back.emit()
+
+        page.result_ready.connect(apply_review_result)
+        self.request_push.emit(page)
 
     def _show_results_context_menu(self, pos):
         clicked_item = self.table_results.itemAt(pos)
@@ -2868,8 +2918,6 @@ class TranslationValidatorDialog(QDialog):
 
     def _on_consistency_check(self):
         """Запуск нового режима проверки согласованности."""
-        from .consistency_checker import ConsistencyValidatorDialog
-
         if not self.settings_manager:
             QMessageBox.warning(self, "Ошибка", "SettingsManager не доступен.")
             return
@@ -2968,17 +3016,33 @@ class TranslationValidatorDialog(QDialog):
                                 "Нет переведенных глав для анализа.")
             return
 
-        dialog = ConsistencyValidatorDialog(
-            chapters_to_analyze, 
-            self.settings_manager, 
-            self,
-            project_manager=self.project_manager
+        TranslationValidatorPage._push_consistency_checker_page(self, chapters_to_analyze)
+
+    def _push_consistency_checker_page(self, chapters_to_analyze):
+        consistency_module = importlib.import_module("gemini_translator.ui.dialogs.consistency_checker")
+        parent = self if isinstance(self, QtWidgets.QWidget) else None
+
+        if hasattr(self, 'request_push') and hasattr(consistency_module, 'ConsistencyValidatorPage'):
+            page = consistency_module.ConsistencyValidatorPage(
+                chapters_to_analyze,
+                self.settings_manager,
+                parent,
+                project_manager=getattr(self, 'project_manager', None)
+            )
+            if hasattr(page, '_update_chunk_stats'):
+                page._update_chunk_stats()
+            self.request_push.emit(page)
+            return page
+
+        dialog = consistency_module.ConsistencyValidatorDialog(
+            chapters_to_analyze,
+            self.settings_manager,
+            parent,
+            project_manager=getattr(self, 'project_manager', None)
         )
-        # Принудительно обновляем статистику после загрузки
         if hasattr(dialog, '_update_chunk_stats'):
             dialog._update_chunk_stats()
-            
-        dialog.exec()
+        return dialog.exec()
 
 
     def _on_header_clicked(self, logical_index):
@@ -5437,71 +5501,87 @@ class TranslationValidatorDialog(QDialog):
             if saved_state and self._fixer_data_fingerprint == new_fp:
                 effective_source_filter = saved_state.get('source_filter', initial_source_filter)
 
-            dialog = UntranslatedFixerDialog(
-                data_for_dialog,
+            TranslationValidatorPage._push_untranslated_fixer_page(
                 self,
-                initial_source_filter=effective_source_filter
+                data_for_dialog,
+                soup_cache,
+                effective_source_filter=effective_source_filter,
+                saved_state=saved_state,
+                new_fp=new_fp,
             )
-            dialog.navigate_to_chapter_requested.connect(self.navigate_to_problem_chapter)
-            dialog.mark_chapters_for_retry_requested.connect(self.mark_chapters_for_retry)
+        except Exception as e:
+            print(f"[UntranslatedFixer] Error: {e}")
+            QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при обработке недоперевода:\n{e}")
 
-            # Восстанавливаем фильтры из кеша
-            if saved_state:
-                data_unchanged = (self._fixer_data_fingerprint == new_fp)
-                dialog.restore_filter_state(saved_state, restore_selection=data_unchanged)
+    def _push_untranslated_fixer_page(self, data_for_dialog, soup_cache, *, effective_source_filter, saved_state, new_fp):
+        page = UntranslatedFixerPage(
+            data_for_dialog,
+            self,
+            initial_source_filter=effective_source_filter
+        )
+        page.navigate_to_chapter_requested.connect(self.navigate_to_problem_chapter)
+        page.mark_chapters_for_retry_requested.connect(self.mark_chapters_for_retry)
 
-            self._fixer_data_fingerprint = new_fp
-            dialog_result = dialog.exec()
+        if saved_state:
+            data_unchanged = (self._fixer_data_fingerprint == new_fp)
+            page.restore_filter_state(saved_state, restore_selection=data_unchanged)
 
-            # Сохраняем состояние фильтров при любом закрытии
-            self._fixer_filter_state = dialog.save_filter_state()
+        self._fixer_data_fingerprint = new_fp
 
-            glossary_updated = dialog.has_glossary_updates()
+        def apply_fixer_result(accepted, page=page):
+            try:
+                self._fixer_filter_state = page.save_filter_state()
 
-            if dialog_result != QDialog.DialogCode.Accepted:
+                glossary_updated = page.has_glossary_updates()
+
+                if not accepted:
+                    if glossary_updated:
+                        self._recalculate_untranslated_words_for_rows(list(self.results_data.keys()))
+                        self.reapply_filters()
+                        self._recalc_untranslated_stats_ui()
+                    return
+
+                changes = page.get_changes()
+                apply_info = None
+                if changes:
+                    apply_info = self._apply_untranslated_fixer_changes(
+                        changes,
+                        soup_cache,
+                        save_immediately=page.should_save_immediately(),
+                        show_feedback=True,
+                    )
+                    self._fixer_data_fingerprint = None
+
                 if glossary_updated:
                     self._recalculate_untranslated_words_for_rows(list(self.results_data.keys()))
                     self.reapply_filters()
                     self._recalc_untranslated_stats_ui()
-                return
+                elif not changes:
+                    self._recalc_untranslated_stats_ui()
 
-            changes = dialog.get_changes()
-            apply_info = None
-            if changes:
-                apply_info = self._apply_untranslated_fixer_changes(
-                    changes,
-                    soup_cache,
-                    save_immediately=dialog.should_save_immediately(),
-                    show_feedback=True,
-                )
-                # Данные изменились — инвалидируем fingerprint
-                self._fixer_data_fingerprint = None
+                if not changes:
+                    if glossary_updated:
+                        QMessageBox.information(
+                            self,
+                            "Глоссарий обновлён",
+                            "Изменения в project_glossary.json сохранены. Список недопереводов пересчитан."
+                        )
+                    return
 
-            if glossary_updated:
-                self._recalculate_untranslated_words_for_rows(list(self.results_data.keys()))
-                self.reapply_filters()
-                self._recalc_untranslated_stats_ui()
-            elif not changes:
-                self._recalc_untranslated_stats_ui()
-
-            if not changes:
-                if glossary_updated:
+                if page.should_save_immediately():
                     QMessageBox.information(
                         self,
-                        "Глоссарий обновлён",
-                        "Изменения в project_glossary.json сохранены. Список недопереводов пересчитан."
+                        "Готово",
+                        f"Применено и сохранено {apply_info.get('replacements', 0) if apply_info else 0} исправлений."
                     )
-                return
+            except Exception as e:
+                print(f"[UntranslatedFixer] Error: {e}")
+                QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при обработке недоперевода:\n{e}")
+            finally:
+                page.request_back.emit()
 
-            if dialog.should_save_immediately():
-                QMessageBox.information(
-                    self,
-                    "Готово",
-                    f"Применено и сохранено {apply_info.get('replacements', 0) if apply_info else 0} исправлений."
-                )
-        except Exception as e:
-            print(f"[UntranslatedFixer] Error: {e}")
-            QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при обработке недоперевода:\n{e}")
+        page.result_ready.connect(apply_fixer_result)
+        self.request_push.emit(page)
 
     def request_retry_translation(self):
         files_to_retry = []
@@ -5530,17 +5610,74 @@ class TranslationValidatorDialog(QDialog):
             # Используем правильный сигнал 'event_posted'
             app.event_bus.event_posted.emit(event)
             # Закрываем окно валидатора после успешной отправки
-            self.accept() 
+            self.request_back.emit()
         # --- КОНЕЦ ИСПРАВЛЕНИЙ ---
 
+    def can_leave(self) -> bool:
+        if self.analysis_thread is not None and self.analysis_thread.isRunning():
+            answer = QMessageBox.question(
+                self, "Выход",
+                "Проверка ещё не завершена. Прервать и выйти?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+            self.analysis_thread.stop()
+            if not self.analysis_thread.wait(1000):
+                self.analysis_thread.terminate()
+        return True
+
+
+class _ValidatorDialogMeta(type(QDialog)):
+    """Metaclass that delegates unknown class-level attribute lookups to
+    TranslationValidatorPage, so that tests which borrow unbound methods via
+    ``TranslationValidatorDialog._some_method`` keep working after the rename."""
+
+    def __getattr__(cls, name):
+        return getattr(TranslationValidatorPage, name)
+
+
+class TranslationValidatorDialog(QDialog, metaclass=_ValidatorDialogMeta):
+    """Thin window wrapper hosting TranslationValidatorPage (preserves the old API)."""
+
+    def __init__(self, translated_folder, original_epub_path, parent=None, retry_enabled=True, project_manager=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        app = QtWidgets.QApplication.instance()
+        version = getattr(app, "global_version", "") if app else ""
+        self.setWindowTitle(f"Инструмент проверки переводов {version}".rstrip())
+        self.page = TranslationValidatorPage(
+            translated_folder,
+            original_epub_path,
+            self,
+            retry_enabled=retry_enabled,
+            project_manager=project_manager,
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.page)
+        self.page.request_back.connect(self.accept)
+
+    def __getattr__(self, name):
+        # Delegate unknown attributes to the page so old callers/tests
+        # (e.g. dialog.check_show_all) keep working transparently.
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
     def closeEvent(self, event):
-        """
-        Перехватывает событие закрытия окна.
-        1. Проверяет активный поток анализа.
-        2. Если retry_enabled=False (автономный режим), спрашивает о выходе в меню.
-        """
+        # MOVED VERBATIM from the old dialog, with self.<x> -> self.page.<x>
+        # for analysis_thread and retry_is_available.
+
         # 1. Проверка потока
-        if self.analysis_thread and self.analysis_thread.isRunning():
+        if self.page.analysis_thread and self.page.analysis_thread.isRunning():
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle('Выход')
             msg_box.setText("Проверка еще не завершена. Прервать и выйти?")
@@ -5549,35 +5686,35 @@ class TranslationValidatorDialog(QDialog):
             no_button = msg_box.addButton("Нет", QMessageBox.ButtonRole.NoRole)
             msg_box.setDefaultButton(no_button)
             msg_box.exec()
-            
+
             if msg_box.clickedButton() != yes_button:
                 event.ignore()
                 return
-            
-            self.analysis_thread.stop()
-            if not self.analysis_thread.wait(1000):
-                self.analysis_thread.terminate()
+
+            self.page.analysis_thread.stop()
+            if not self.page.analysis_thread.wait(1000):
+                self.page.analysis_thread.terminate()
 
         # 2. Логика выхода в меню (только если retry недоступен, т.е. автономный режим)
-        if not self.retry_is_available:
+        if not self.page.retry_is_available:
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("Завершение работы")
             msg_box.setText("Вы хотите закрыть приложение или вернуться в главное меню?")
             msg_box.setIcon(QMessageBox.Icon.Question)
-            
+
             btn_menu = msg_box.addButton("Вернуться в меню", QMessageBox.ButtonRole.ActionRole)
             btn_exit = msg_box.addButton("Выйти из программы", QMessageBox.ButtonRole.DestructiveRole)
             btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-            
+
             msg_box.exec()
             clicked = msg_box.clickedButton()
-            
+
             if clicked == btn_cancel:
                 event.ignore()
                 return
             elif clicked == btn_menu:
                 # Устанавливаем спецкод для перезагрузки цикла в main.py
-                QApplication.exit(2000) # EXIT_CODE_REBOOT
+                QApplication.exit(2000)  # EXIT_CODE_REBOOT
                 event.accept()
             else:
                 # Обычный выход
