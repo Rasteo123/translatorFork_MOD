@@ -48,6 +48,8 @@ RULATE_BOOK_TYPE_TITLE = "Книга"
 RULATE_BOOK_TYPE_DESCRIPTION = "Публикуйте свои произведения"
 RULATE_BOOK_TYPE_SELECTOR = 'a.create-card.card-book[href*="typ=A"]'
 RULATE_CHINESE_CATEGORY_TITLE = "Китайские"
+QIDIAN_COVER_PROMPT_CHAPTER_COUNT = 3
+QIDIAN_COVER_PROMPT_MAX_CHARS = 18000
 
 QIDIAN_DESCRIPTION_HEADER = "作品简介"
 QIDIAN_DESCRIPTION_HEADERS = {
@@ -665,6 +667,133 @@ def build_ai_prompt(metadata: QidianBookMetadata, english_title: str) -> str:
 """
 
 
+def _clean_qidian_chapter_text(value: str | None) -> str:
+    value = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = []
+    for raw_line in value.split("\n"):
+        line = re.sub(r"[\u3000 \t]+", " ", raw_line).strip()
+        if not line:
+            continue
+        if re.fullmatch(r"\d+", line):
+            continue
+        if line in {"本章完", "未完待续"}:
+            continue
+        lines.append(line)
+    return _clean_multiline("\n".join(lines))
+
+
+def _truncate_cover_source_text(text: str, max_chars: int = QIDIAN_COVER_PROMPT_MAX_CHARS) -> str:
+    text = _clean_multiline(text)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n\n[Текст обрезан по лимиту контекста.]"
+
+
+def build_cover_prompt_request(title_ru: str, chapters_text: str, original_description: str = "") -> str:
+    title_ru = _clean_text(title_ru)
+    original_description = _clean_multiline(original_description)
+    chapters_text = _truncate_cover_source_text(chapters_text)
+    return f"""Роль:
+Ты — эксперт по промптингу для нейросетей нового поколения (DALL-E 3, Ideogram), которые умеют генерировать текст.
+Твоя задача: на основе Названия, оригинального описания и Текста новеллы создать единый промт на английском, который опишет и визуал, и дизайн заголовка.
+
+ВВОДНЫЕ ДАННЫЕ:
+1. Название (RU): {title_ru}
+2. Оригинальное описание Qidian:
+{original_description or "[описание не найдено]"}
+3. Текст первых глав:
+{chapters_text}
+
+ИНСТРУКЦИЯ:
+1. Проанализируй жанр.
+2. Опиши сцену (Герой + Фон).
+3. ГЛАВНОЕ: Добавь блок с описанием Текста (Typography). Вставь русское название новеллы в кавычки внутри промта. Подбери шрифт под жанр (например: Horror = bloody font; Cyberpunk = neon glitch; Fantasy = golden 3D font).
+
+СТРУКТУРА ОТВЕТА (Строго этот формат, один промпт на английском, без markdown и пояснений):
+`[Subject & Action]`, `[Background & Atmosphere]`, `[Typography: The text "{title_ru}" written in [Font Style Description: e.g. massive 3D golden letters / grungy horror font / futuristic neon glitch font], placed at the [bottom/top], professional book cover typography, legible, high contrast]`, `[Visual Style: Manhwa style, Riot Games Splash Art, 8k, masterpiece]`, `--ar 2:3`
+
+ПРИМЕР ТОГО, ЧТО ТЫ ДОЛЖЕН ВЫДАТЬ:
+A dark necromancer raising skeletons, green fire aura, dark dungeon background. Typography: The text "ВЕК МЁРТВЫХ" written in massive bold rusted metal 3D font, jagged edges, glowing red outline, placed at the bottom center. Manhwa style, semi-realistic, cinematic lighting, --ar 2:3
+"""
+
+
+def clean_cover_prompt_response(raw_response: str) -> str:
+    response = (raw_response or "").strip()
+    response = re.sub(r"^```(?:text|prompt)?\s*", "", response, flags=re.IGNORECASE)
+    response = re.sub(r"\s*```$", "", response)
+    return response.strip().strip("`").strip()
+
+
+def _run_ai_request(
+    *,
+    provider_id: str,
+    model_settings: dict,
+    active_keys: list[str],
+    settings_manager,
+    prompt: str,
+    log_callback,
+    log_prefix: str,
+    max_output_tokens: int = 4096,
+) -> str:
+    provider_config = deepcopy(api_config.api_providers().get(provider_id) or {})
+    if not provider_config:
+        raise ValueError(f"Провайдер '{provider_id}' не найден в конфиге.")
+
+    model_name = model_settings.get("model") or api_config.default_model_name()
+    model_config = deepcopy(api_config.all_models().get(model_name) or {})
+    if not model_config:
+        provider_models = provider_config.get("models") or {}
+        model_config = deepcopy(provider_models.get(model_name) or {})
+    if not model_config:
+        raise ValueError(f"Модель '{model_name}' не найдена в конфиге провайдера.")
+
+    model_config.setdefault("provider", provider_id)
+    model_config.setdefault("id", model_config.get("model_id") or model_name)
+    api_key = active_keys[0]
+
+    worker = _SingleRequestWorker(
+        settings_manager=settings_manager,
+        provider_config=provider_config,
+        model_config=model_config,
+        api_key=api_key,
+        model_settings=model_settings,
+        log_callback=log_callback,
+    )
+
+    handler_class_name = provider_config.get("handler_class")
+    if not handler_class_name:
+        raise ValueError(f"У провайдера '{provider_id}' не указан handler_class.")
+
+    handler_class = get_api_handler_class(handler_class_name)
+    handler = handler_class(worker)
+    client = SimpleNamespace(api_key=api_key)
+    proxy_settings = settings_manager.load_proxy_settings() if settings_manager else None
+    if not handler.setup_client(client_override=client, proxy_settings=proxy_settings):
+        raise ValueError(f"Не удалось подготовить клиент провайдера '{provider_id}'.")
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(
+            handler.execute_api_call(
+                prompt,
+                log_prefix,
+                allow_incomplete=False,
+                debug=False,
+                use_stream=True,
+                max_output_tokens=max_output_tokens,
+            )
+        )
+    finally:
+        close_coro = getattr(handler, "_close_thread_session_internal", None)
+        if callable(close_coro):
+            try:
+                loop.run_until_complete(close_coro())
+            except Exception:
+                pass
+        loop.close()
+
+
 class QidianFetchWorker(QThread):
     log_signal = pyqtSignal(str, str)
     metadata_ready = pyqtSignal(object)
@@ -845,63 +974,162 @@ class AiPrepareWorker(QThread):
             self.finished_signal.emit()
 
     def _run_ai_request(self, prompt: str) -> str:
-        provider_config = deepcopy(api_config.api_providers().get(self.provider_id) or {})
-        if not provider_config:
-            raise ValueError(f"Провайдер '{self.provider_id}' не найден в конфиге.")
-
-        model_name = self.model_settings.get("model") or api_config.default_model_name()
-        model_config = deepcopy(api_config.all_models().get(model_name) or {})
-        if not model_config:
-            provider_models = provider_config.get("models") or {}
-            model_config = deepcopy(provider_models.get(model_name) or {})
-        if not model_config:
-            raise ValueError(f"Модель '{model_name}' не найдена в конфиге провайдера.")
-
-        model_config.setdefault("provider", self.provider_id)
-        model_config.setdefault("id", model_config.get("model_id") or model_name)
-        api_key = self.active_keys[0]
-
-        worker = _SingleRequestWorker(
-            settings_manager=self.settings_manager,
-            provider_config=provider_config,
-            model_config=model_config,
-            api_key=api_key,
+        return _run_ai_request(
+            provider_id=self.provider_id,
             model_settings=self.model_settings,
+            active_keys=self.active_keys,
+            settings_manager=self.settings_manager,
+            prompt=prompt,
             log_callback=self.log,
+            log_prefix="Qidian -> Rulate",
+            max_output_tokens=4096,
         )
 
-        handler_class_name = provider_config.get("handler_class")
-        if not handler_class_name:
-            raise ValueError(f"У провайдера '{self.provider_id}' не указан handler_class.")
 
-        handler_class = get_api_handler_class(handler_class_name)
-        handler = handler_class(worker)
-        client = SimpleNamespace(api_key=api_key)
-        proxy_settings = self.settings_manager.load_proxy_settings() if self.settings_manager else None
-        if not handler.setup_client(client_override=client, proxy_settings=proxy_settings):
-            raise ValueError(f"Не удалось подготовить клиент провайдера '{self.provider_id}'.")
+class CoverPromptWorker(QThread):
+    log_signal = pyqtSignal(str, str)
+    prompt_ready = pyqtSignal(str)
+    finished_signal = pyqtSignal()
 
-        loop = asyncio.new_event_loop()
+    def __init__(
+        self,
+        qidian_url: str,
+        title_ru: str,
+        provider_id: str,
+        model_settings: dict,
+        active_keys: list[str],
+        settings_manager,
+        *,
+        original_description: str = "",
+        visible_browser: bool = False,
+    ):
+        super().__init__()
+        self.qidian_url = qidian_url.strip()
+        self.title_ru = title_ru.strip()
+        self.original_description = _clean_multiline(original_description)
+        self.provider_id = provider_id
+        self.model_settings = model_settings or {}
+        self.active_keys = active_keys or []
+        self.settings_manager = settings_manager
+        self.visible_browser = visible_browser
+
+    def log(self, level: str, message: str) -> None:
+        self.log_signal.emit(level, message)
+
+    def run(self) -> None:
         try:
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(
-                handler.execute_api_call(
-                    prompt,
-                    "Qidian -> Rulate",
-                    allow_incomplete=False,
-                    debug=False,
-                    use_stream=True,
-                    max_output_tokens=4096,
-                )
+            if not validate_qidian_url(self.qidian_url):
+                raise ValueError("Введите ссылку вида https://www.qidian.com/book/1041604040/")
+            if not self.title_ru:
+                raise ValueError("Заполните русское название перед генерацией промпта обложки.")
+            if not self.provider_id:
+                raise ValueError("Не выбран AI-сервис.")
+            if not self.active_keys:
+                raise ValueError("Не выбран активный ключ или сессия для AI-сервиса.")
+
+            chapters_text = self._fetch_chapters_text()
+            if not chapters_text:
+                raise ValueError("Не удалось получить текст первых глав Qidian.")
+
+            prompt = build_cover_prompt_request(
+                self.title_ru,
+                chapters_text,
+                original_description=self.original_description,
             )
+            self.log("INFO", "AI: генерирую промпт для обложки...")
+            raw_response = _run_ai_request(
+                provider_id=self.provider_id,
+                model_settings=self.model_settings,
+                active_keys=self.active_keys,
+                settings_manager=self.settings_manager,
+                prompt=prompt,
+                log_callback=self.log,
+                log_prefix="Qidian cover prompt",
+                max_output_tokens=2048,
+            )
+            cover_prompt = clean_cover_prompt_response(raw_response)
+            if not cover_prompt:
+                raise ValueError("AI не вернул промпт для обложки.")
+            self.prompt_ready.emit(cover_prompt)
+            self.log("SUCCESS", "AI: промпт для обложки готов.")
+        except Exception as error:
+            self.log("ERROR", f"Cover prompt: {error}")
+            self.log("DEBUG", traceback.format_exc())
         finally:
-            close_coro = getattr(handler, "_close_thread_session_internal", None)
-            if callable(close_coro):
+            self.finished_signal.emit()
+
+    def _fetch_chapters_text(self) -> str:
+        configure_playwright_runtime()
+        from playwright.sync_api import sync_playwright
+
+        self.log("INFO", "Qidian: ищу первые главы для промпта обложки...")
+        chapters = []
+        with sync_playwright() as playwright:
+            browser = _launch_chromium(
+                playwright,
+                headless=not self.visible_browser,
+                log_callback=self.log,
+            )
+            page = browser.new_page(
+                viewport={"width": 1280, "height": 900},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+            )
+            try:
+                page.goto(self.qidian_url, wait_until="domcontentloaded", timeout=60000)
                 try:
-                    loop.run_until_complete(close_coro())
+                    page.wait_for_function(
+                        "() => Array.from(document.querySelectorAll('a[href]')).some(a => a.href.includes('/chapter/'))",
+                        timeout=12000,
+                    )
                 except Exception:
-                    pass
-            loop.close()
+                    page.wait_for_timeout(3000)
+
+                if not self.original_description:
+                    try:
+                        payload = page.evaluate(_QIDIAN_EXTRACT_SCRIPT)
+                        title_original = _clean_text(payload.get("title"))
+                        author_name = _clean_text(payload.get("author"))
+                        self.original_description = _select_qidian_description(
+                            payload,
+                            title=title_original,
+                            author=author_name,
+                        )
+                        if self.original_description:
+                            self.log("SUCCESS", "Qidian: описание добавлено в контекст промпта обложки.")
+                    except Exception as error:
+                        self.log("WARNING", f"Qidian: не удалось получить описание для промпта обложки: {error}")
+
+                links = page.evaluate(_QIDIAN_CHAPTER_LINKS_SCRIPT, QIDIAN_COVER_PROMPT_CHAPTER_COUNT)
+                if not links:
+                    raise ValueError("На странице книги не найдены ссылки на главы.")
+
+                for index, link in enumerate(links[:QIDIAN_COVER_PROMPT_CHAPTER_COUNT], start=1):
+                    href = link.get("href") if isinstance(link, dict) else ""
+                    if not href:
+                        continue
+                    title = _clean_text(link.get("title") if isinstance(link, dict) else "") or f"Глава {index}"
+                    self.log("INFO", f"Qidian: читаю {title}...")
+                    page.goto(href, wait_until="domcontentloaded", timeout=60000)
+                    try:
+                        page.wait_for_selector(".content-text, main[id^='c-'], main.content", timeout=12000)
+                    except Exception:
+                        page.wait_for_timeout(2500)
+                    payload = page.evaluate(_QIDIAN_CHAPTER_TEXT_SCRIPT)
+                    chapter_title = title or _clean_text(payload.get("title")) or f"Глава {index}"
+                    chapter_text = _clean_qidian_chapter_text(payload.get("text"))
+                    if not chapter_text:
+                        self.log("WARNING", f"Qidian: текст главы '{title}' не найден, пропускаю.")
+                        continue
+                    chapters.append(f"{chapter_title}\n{chapter_text}")
+            finally:
+                browser.close()
+
+        self.log("SUCCESS", f"Qidian: получено глав для промпта обложки: {len(chapters)}.")
+        return _truncate_cover_source_text("\n\n".join(chapters))
 
 
 class RulateFillWorker(QThread):
@@ -1301,6 +1529,76 @@ _MAGIC_TYPE_SCRIPT = """([selector, value]) => {
         input.dispatchEvent(new KeyboardEvent("keyup", {key: letter, bubbles: true}));
     }
     return true;
+}"""
+
+
+_QIDIAN_CHAPTER_LINKS_SCRIPT = r"""(limit) => {
+    const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+    const byHref = new Map();
+    const isChapterTitle = (text) => /^第\s*\d+\s*章/.test(text) || /^(序章|楔子|引子)/.test(text);
+    const chapterNumber = (text) => {
+        const match = text.match(/^第\s*(\d+)\s*章/);
+        return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+    };
+    const isServiceTitle = (text) => /(最新章节|已更新至|免费试读)/.test(text);
+    for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
+        const href = anchor.href || "";
+        const text = normalize(anchor.innerText || anchor.textContent || "");
+        if (!/\/chapter\/\d+\/\d+\/?/.test(href)) continue;
+
+        if (!byHref.has(href)) {
+            byHref.set(href, {href, title: "", index: byHref.size, number: Number.MAX_SAFE_INTEGER, isChapter: false, isService: false});
+        }
+        const item = byHref.get(href);
+        if (isChapterTitle(text)) {
+            item.title = text;
+            item.number = chapterNumber(text);
+            item.isChapter = true;
+            item.isService = false;
+        } else if (!item.title && text && !isServiceTitle(text)) {
+            item.title = text;
+        } else if (isServiceTitle(text) && !item.isChapter) {
+            item.isService = true;
+        }
+    }
+    const items = Array.from(byHref.values()).sort((left, right) => left.index - right.index);
+    const preferred = items
+        .filter(item => item.isChapter)
+        .sort((left, right) => (left.number - right.number) || (left.index - right.index));
+    const fallback = items.filter(item => !item.isService);
+    return (preferred.length ? preferred : fallback)
+        .slice(0, limit || 2)
+        .map(({href, title}) => ({href, title}));
+}"""
+
+
+_QIDIAN_CHAPTER_TEXT_SCRIPT = r"""() => {
+    const text = (node) => node ? (node.innerText || node.textContent || "").replace(/\r/g, "").trim() : "";
+    const title =
+        text(document.querySelector("h1")) ||
+        text(document.querySelector("[class*='title']")) ||
+        (document.title || "").split("_")[0].trim();
+
+    const paragraphs = Array.from(document.querySelectorAll("main .content-text, .content-text"))
+        .map(node => text(node))
+        .filter(Boolean);
+    if (paragraphs.length) {
+        return {title, text: paragraphs.join("\n")};
+    }
+
+    const candidates = [
+        "main[id^='c-']",
+        "main.content",
+        ".chapter-content",
+        ".read-content",
+        ".chapter-wrapper",
+        "article",
+    ];
+    for (const selector of candidates) {
+        const value = text(document.querySelector(selector));
+        if (value.length > 200) return {title, text: value};
+    }
+    return {title, text: ""};
 }"""
 
 

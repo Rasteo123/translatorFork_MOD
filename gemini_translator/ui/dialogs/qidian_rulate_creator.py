@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 from qidian_rulate.models import PreparedRulateMetadata, QidianBookMetadata, RulateBookDraft
 from qidian_rulate.workers import (
     AiPrepareWorker,
+    CoverPromptWorker,
     QidianFetchWorker,
     RulateFillWorker,
     RulateLoginWorker,
@@ -124,6 +125,10 @@ class QidianRulateCreatorWindow(QMainWindow):
         self.prepare_ai_btn.clicked.connect(self._prepare_ai)
         action_row.addWidget(self.prepare_ai_btn)
 
+        self.cover_prompt_btn = QPushButton("Сгенерировать промпт для обложки")
+        self.cover_prompt_btn.clicked.connect(self._generate_cover_prompt)
+        action_row.addWidget(self.cover_prompt_btn)
+
         self.login_rulate_btn = QPushButton("Войти в Rulate")
         self.login_rulate_btn.clicked.connect(self._login_rulate)
         action_row.addWidget(self.login_rulate_btn)
@@ -199,12 +204,17 @@ class QidianRulateCreatorWindow(QMainWindow):
         self.genres_edit.setPlaceholderText("фэнтези, мистика, приключения")
         self.tags_edit = QLineEdit()
         self.tags_edit.setPlaceholderText("китайская новелла, тайны, сверхъестественное")
+        self.cover_prompt_edit = QTextEdit()
+        self.cover_prompt_edit.setAcceptRichText(False)
+        self.cover_prompt_edit.setMinimumHeight(130)
+        self.cover_prompt_edit.setPlaceholderText("Здесь появится английский промпт для генерации обложки")
 
         layout.addRow("Название EN:", self.english_title_edit)
         layout.addRow("Название RU:", self.translated_title_edit)
         layout.addRow("Описание RU:", self.translated_description_edit)
         layout.addRow("Жанры:", self.genres_edit)
         layout.addRow("Теги:", self.tags_edit)
+        layout.addRow("Промпт обложки:", self.cover_prompt_edit)
 
         return group
 
@@ -294,6 +304,37 @@ class QidianRulateCreatorWindow(QMainWindow):
         self._workers.append(worker)
         worker.start()
 
+    def _generate_cover_prompt(self) -> None:
+        url = self.source_url_edit.text().strip() or self.qidian_url_edit.text().strip()
+        if not validate_qidian_url(url):
+            QMessageBox.warning(self, "Обложка", "Введите ссылку вида https://www.qidian.com/book/1041604040/")
+            return
+
+        title_ru = self.translated_title_edit.text().strip()
+        if not title_ru:
+            QMessageBox.warning(self, "Обложка", "Сначала заполните русское название.")
+            return
+
+        provider_id = self.key_widget.get_selected_provider()
+        active_keys = self.key_widget.get_active_keys()
+        model_settings = self.model_settings_widget.get_settings()
+        self.cover_prompt_btn.setEnabled(False)
+        worker = CoverPromptWorker(
+            url,
+            title_ru,
+            provider_id,
+            model_settings,
+            active_keys,
+            self.settings_manager,
+            original_description=self.description_edit.toPlainText().strip(),
+            visible_browser=self.visible_qidian_checkbox.isChecked(),
+        )
+        worker.log_signal.connect(self._log)
+        worker.prompt_ready.connect(self._apply_cover_prompt)
+        worker.finished_signal.connect(lambda: self._worker_finished(worker, self.cover_prompt_btn))
+        self._workers.append(worker)
+        worker.start()
+
     def _login_rulate(self) -> None:
         self.login_rulate_btn.setEnabled(False)
         worker = RulateLoginWorker()
@@ -359,6 +400,10 @@ class QidianRulateCreatorWindow(QMainWindow):
         self.translated_description_edit.setPlainText(prepared.translated_description)
         self.genres_edit.setText(", ".join(prepared.genres))
         self.tags_edit.setText(", ".join(prepared.tags))
+        self._update_action_state()
+
+    def _apply_cover_prompt(self, prompt: str) -> None:
+        self.cover_prompt_edit.setPlainText(prompt)
         self._update_action_state()
 
     def _collect_qidian_metadata(self) -> QidianBookMetadata:

@@ -8,6 +8,7 @@ from gemini_translator.ui.dialogs.qidian_rulate_creator import QidianRulateCreat
 from qidian_rulate.workers import (
     _is_browser_missing_error,
     _clean_qidian_description,
+    _clean_qidian_chapter_text,
     _extract_qidian_description_from_body,
     _select_qidian_description,
     _tag_file_candidates,
@@ -20,6 +21,8 @@ from qidian_rulate.workers import (
     RULATE_PROFILE_DIR,
     RulateFillWorker,
     build_ai_prompt,
+    build_cover_prompt_request,
+    clean_cover_prompt_response,
     normalize_rulate_tags,
     parse_prepared_metadata,
     validate_qidian_url,
@@ -329,6 +332,35 @@ def test_build_ai_prompt_does_not_include_hardcoded_tag_examples():
     assert "sci-fi, \u043c\u0438\u0441\u0442\u0438\u043a\u0430" not in prompt
     assert "\u043f\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u043c\u0435\u0436\u0434\u0443 \u043c\u0438\u0440\u0430\u043c\u0438" not in prompt
     assert "\u0441\u043e\u0432\u0440\u0435\u043c\u0435\u043d\u043d\u044b\u0439 \u043c\u0438\u0440, \u043a\u0438\u0442\u0430\u0439" not in prompt
+
+
+def test_clean_qidian_chapter_text_removes_comment_counters():
+    raw_text = "Первый абзац\n806\n\n\u3000\u3000Второй абзац\n109\n本章完"
+
+    assert _clean_qidian_chapter_text(raw_text) == "Первый абзац\nВторой абзац"
+
+
+def test_build_cover_prompt_request_includes_ru_title_and_chapters():
+    prompt = build_cover_prompt_request(
+        "Иномирная гостиница",
+        "第1章 雨\nГерой видит странную тень под фонарем.",
+        original_description="Оригинальное описание про странный отель между мирами.",
+    )
+
+    assert "Название (RU): Иномирная гостиница" in prompt
+    assert "Оригинальное описание Qidian:" in prompt
+    assert "Оригинальное описание про странный отель между мирами." in prompt
+    assert 'The text "Иномирная гостиница"' in prompt
+    assert "Герой видит странную тень под фонарем." in prompt
+    assert "--ar 2:3" in prompt
+
+
+def test_clean_cover_prompt_response_strips_markdown_fence():
+    response = "```text\nA hero in rain. Typography: The text \"Название\" written in neon font. --ar 2:3\n```"
+
+    assert clean_cover_prompt_response(response) == (
+        'A hero in rain. Typography: The text "Название" written in neon font. --ar 2:3'
+    )
 
 
 def test_browser_missing_error_is_detected_for_playwright_install_message():
