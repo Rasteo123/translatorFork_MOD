@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6 import QtCore, QtWidgets
 
 from gemini_translator.ui.dialogs import consistency_checker as consistency_module
-from gemini_translator.ui.dialogs import setup as setup_module
+from gemini_translator.ui.dialogs import setup as setup_dialog_module
 from gemini_translator.ui.dialogs import validation as validation_module
 from gemini_translator.ui.dialogs.setup import InitialSetupPage
 from gemini_translator.ui.dialogs.validation import TranslationValidatorPage
@@ -234,7 +234,7 @@ class ValidatorNestedPageTests(unittest.TestCase):
 
         chapters = [{"name": "Chapter 1", "content": "text", "path": "chapter.xhtml"}]
         with (
-            patch.object(setup_module, "load_project_chapters_for_consistency", return_value=chapters),
+            patch.object(setup_dialog_module, "load_project_chapters_for_consistency", return_value=chapters),
             patch.object(consistency_module, "ConsistencyValidatorDialog", side_effect=AssertionError("modal path used")),
             patch.object(consistency_module, "ConsistencyValidatorPage", _FakeConsistencyPage, create=True),
         ):
