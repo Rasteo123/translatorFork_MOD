@@ -250,15 +250,18 @@ class StatusBarWidget(QtWidgets.QWidget):
 
     def closeEvent(self, event):
         """Отписываемся от шины при закрытии/уничтожении виджета."""
-        if self.bus:
+        bus = getattr(self, "bus", None)
+        if bus:
             try:
-                if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                    self.bus.unsubscribe("session_started", self._on_session_started)
-                    self.bus.unsubscribe("session_finished", self._on_session_finished)
-                    self.bus.unsubscribe("task_state_changed", self._on_task_state_changed)
-                elif hasattr(self.bus, "event_posted"):
-                    self.bus.event_posted.disconnect(self.on_event)
+                if self._uses_topic_subscription and hasattr(bus, "unsubscribe"):
+                    bus.unsubscribe("session_started", self._on_session_started)
+                    bus.unsubscribe("session_finished", self._on_session_finished)
+                    bus.unsubscribe("task_state_changed", self._on_task_state_changed)
+                elif hasattr(bus, "event_posted"):
+                    bus.event_posted.disconnect(self.on_event)
             except (TypeError, RuntimeError, ValueError):
                 pass
         self._status_flush_timer.stop()
+        if hasattr(self, "temp_message_timer"):
+            self.temp_message_timer.stop()
         super().closeEvent(event)

@@ -959,9 +959,10 @@ class ChapterListWidget(QWidget):
             
     def closeEvent(self, event):
         """Отписываемся от шины при закрытии/уничтожении виджета."""
-        if self.bus:
+        bus = getattr(self, "bus", None)
+        if bus:
             try:
-                self.bus.event_posted.disconnect(self.on_event)
+                bus.event_posted.disconnect(self.on_event)
             except (TypeError, RuntimeError):
                 pass
         super().closeEvent(event)

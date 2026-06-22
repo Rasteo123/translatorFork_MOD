@@ -321,12 +321,13 @@ class LogWidget(QWidget):
 
     def closeEvent(self, event):
         """Отписываемся от шины при закрытии/уничтожении виджета."""
-        if self.bus:
+        bus = getattr(self, "bus", None)
+        if bus:
             try:
-                if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                    self.bus.unsubscribe("log_message", self._on_log_message)
-                elif hasattr(self.bus, "event_posted"):
-                    self.bus.event_posted.disconnect(self.on_event)
+                if self._uses_topic_subscription and hasattr(bus, "unsubscribe"):
+                    bus.unsubscribe("log_message", self._on_log_message)
+                elif hasattr(bus, "event_posted"):
+                    bus.event_posted.disconnect(self.on_event)
             except (TypeError, RuntimeError, ValueError):
                 pass
         self._log_flush_timer.stop()

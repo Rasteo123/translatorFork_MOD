@@ -52,7 +52,7 @@ class DiffGateTests(unittest.TestCase):
     def _make_widget(self):
         # Minimal widget — we only exercise _update_row_status against spy items.
         w = ChapterListWidget()
-        self.addCleanup(w.deleteLater)
+        self.addCleanup(w.close)
         return w
 
     def _install_spy_row(self, widget, status_text, color_hex, tooltip):
@@ -164,8 +164,8 @@ class DiffGateTests(unittest.TestCase):
 
         first = widget._create_reorder_cell_widget(0)
         second = widget._create_reorder_cell_widget(1)
-        self.addCleanup(first.deleteLater)
-        self.addCleanup(second.deleteLater)
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
 
         self.assertEqual(
             style.calls,
@@ -188,7 +188,7 @@ class SelectiveUpdateChangedIdsTests(unittest.TestCase):
     def _make_widget_with_rows(self, n=3):
         from PyQt6.QtWidgets import QTableWidget
         widget = ChapterListWidget()
-        self.addCleanup(widget.deleteLater)
+        self.addCleanup(widget.close)
         widget.table = QTableWidget(0, 3)
 
         # _populate_row (called inside _full_redraw) reads app.engine.session_id;

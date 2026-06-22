@@ -22,7 +22,7 @@ class TaskDBWorkerLifecycleTests(unittest.TestCase):
             running_states_at_finished.append(worker.isRunning())
             self.app.quit()
 
-        worker.finished.connect(on_finished, QtCore.Qt.ConnectionType.DirectConnection)
+        worker.finished.connect(on_finished, QtCore.Qt.ConnectionType.QueuedConnection)
         worker.start()
         QtCore.QTimer.singleShot(2000, self.app.quit)
         self.app.exec()

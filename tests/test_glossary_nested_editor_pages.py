@@ -175,7 +175,7 @@ class GlossaryNestedEditorPageTests(unittest.TestCase):
 
     def setUp(self):
         self.manager = _GlossaryManagerHarness()
-        self.addCleanup(self.manager.deleteLater)
+        self.addCleanup(self.manager.close)
         self.pushed_pages = []
         self.manager.request_push.connect(self.pushed_pages.append)
 
@@ -208,11 +208,10 @@ class GlossaryNestedEditorPageTests(unittest.TestCase):
     def test_ai_correction_session_uses_original_glossary_owner_after_shell_reparent(self):
         self.app.engine = SimpleNamespace(task_manager=None)
         owner = _ShellGlossaryOwner()
-        self.addCleanup(owner.deleteLater)
+        self.addCleanup(owner.close)
         page = CorrectionSessionPage(object(), owner)
-        self.addCleanup(page.deleteLater)
         stack = QtWidgets.QStackedWidget()
-        self.addCleanup(stack.deleteLater)
+        self.addCleanup(stack.close)
         stack.addWidget(page)
 
         page.cb_context = _CheckStub(True)

@@ -16,7 +16,7 @@ class RedrawTuningTests(unittest.TestCase):
 
     def _make_widget(self):
         w = TaskManagementWidget()
-        self.addCleanup(w.deleteLater)
+        self.addCleanup(w.close)
         return w
 
     def test_set_session_mode_active_uses_500ms_coarse_timer(self):

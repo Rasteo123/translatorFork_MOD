@@ -47,7 +47,7 @@ class UiTopicSubscriptionTests(unittest.TestCase):
             self.assertIn("topic log", widget.log_view.toPlainText())
         finally:
             widget.close()
-            widget.deleteLater()
+            widget.close()
 
     def test_status_bar_uses_topic_subscriptions(self):
         bus = _TopicOnlyBus()
@@ -61,7 +61,7 @@ class UiTopicSubscriptionTests(unittest.TestCase):
             self.assertEqual(widget.total_tasks, 2)
         finally:
             widget.close()
-            widget.deleteLater()
+            widget.close()
 
     def test_task_management_widget_uses_topic_subscriptions(self):
         bus = _TopicOnlyBus()
@@ -74,7 +74,7 @@ class UiTopicSubscriptionTests(unittest.TestCase):
                 self.assertIn("session_finished", bus.subscriptions)
             finally:
                 widget.close()
-                widget.deleteLater()
+                widget.close()
         finally:
             if old_bus is None:
                 delattr(self.app, "event_bus")
