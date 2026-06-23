@@ -65,10 +65,9 @@ WORKER_IDLE_WAKE_TIMEOUT_SECONDS = 2.0
 #  ЕДИНЫЙ УНИВЕРСАЛЬНЫЙ КЛАСС-ВОРКЕР
 # ============================================================================
 
-class UniversalWorker(QObject):
+class UniversalWorker:
     
     def __init__(self, **kwargs):
-        super().__init__()
         
         app = QtWidgets.QApplication.instance()
         if not hasattr(app, 'event_bus'): raise RuntimeError("EventBus не найден.")

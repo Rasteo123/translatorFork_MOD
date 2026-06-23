@@ -1,5 +1,6 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,6 +12,7 @@ from PyQt6 import QtCore, QtWidgets
 from gemini_translator.ui.widgets.glossary_widget import GlossaryWidget  # noqa: F401
 
 from gemini_translator.ui.dialogs import glossary as glossary_module
+from gemini_translator.ui.dialogs.glossary_dialogs.ai_correction import CorrectionSessionPage
 from gemini_translator.ui.dialogs.glossary import GlossaryManagerPage
 from gemini_translator.ui.shell import ShellPage
 
@@ -18,6 +20,14 @@ from gemini_translator.ui.shell import ShellPage
 class _TableStub:
     def setCurrentItem(self, item):
         self.current_item = item
+
+
+class _CheckStub:
+    def __init__(self, checked=False):
+        self._checked = checked
+
+    def isChecked(self):
+        return self._checked
 
 
 class _GlossaryManagerHarness(ShellPage):
@@ -44,6 +54,30 @@ class _GlossaryManagerHarness(ShellPage):
 
     def _apply_patch_and_log_history(self, patch_list, source, old_glossary):
         self.applied.append((patch_list, source, old_glossary))
+
+
+def _init_shell_glossary_owner(self):
+    ShellPage.__init__(self)
+    self.direct_conflicts = {}
+    self.reverse_issues = {}
+    self.overlap_groups = {}
+    self.inverted_overlaps = {}
+    self.associated_project_path = None
+    self.associated_epub_path = None
+    self.logic = object()
+
+
+_ShellGlossaryOwner = type(
+    "GlossaryManagerPage",
+    (ShellPage,),
+    {
+        "__init__": _init_shell_glossary_owner,
+        "get_glossary": lambda self: [
+            {"original": "alpha", "rus": "альфа", "note": ""},
+            {"original": "beta", "rus": "бета", "note": "note"},
+        ],
+    },
+)
 
 
 class _FakeCorrectionSessionPage(ShellPage):
@@ -141,7 +175,7 @@ class GlossaryNestedEditorPageTests(unittest.TestCase):
 
     def setUp(self):
         self.manager = _GlossaryManagerHarness()
-        self.addCleanup(self.manager.deleteLater)
+        self.addCleanup(self.manager.close)
         self.pushed_pages = []
         self.manager.request_push.connect(self.pushed_pages.append)
 
@@ -170,6 +204,27 @@ class GlossaryNestedEditorPageTests(unittest.TestCase):
 
         self.assertEqual(self.manager.applied, [(patch_list, "AI-коррекция", self.manager.glossary)])
         self.assertEqual(back_requests, [True])
+
+    def test_ai_correction_session_uses_original_glossary_owner_after_shell_reparent(self):
+        self.app.engine = SimpleNamespace(task_manager=None)
+        owner = _ShellGlossaryOwner()
+        self.addCleanup(owner.close)
+        page = CorrectionSessionPage(object(), owner)
+        stack = QtWidgets.QStackedWidget()
+        self.addCleanup(stack.close)
+        stack.addWidget(page)
+
+        page.cb_context = _CheckStub(True)
+        page.cb_notes = _CheckStub(False)
+        page.cb_direct = _CheckStub(False)
+        page.cb_reverse = _CheckStub(False)
+        page.cb_overlaps = _CheckStub(False)
+        page.cb_frequency_filter = _CheckStub(False)
+
+        data_for_ai, *_ = page._get_data_and_estimate_tokens()
+
+        self.assertIsNotNone(data_for_ai)
+        self.assertIn("alpha", data_for_ai)
 
     def test_core_term_analyzer_is_pushed_and_applies_accepted_patch(self):
         with (

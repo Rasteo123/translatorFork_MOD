@@ -36,13 +36,9 @@ class _DummyTaskManager:
 class _FakeChunkAssembler:
     def __init__(self):
         self.cleaned_up = False
-        self.delete_later_called = False
 
     def cleanup(self):
         self.cleaned_up = True
-
-    def deleteLater(self):
-        self.delete_later_called = True
 
 
 class CoreTopicSubscriptionTests(unittest.TestCase):
@@ -83,5 +79,4 @@ class CoreTopicSubscriptionTests(unittest.TestCase):
         engine._cleanup_chunk_assembler()
 
         self.assertTrue(assembler.cleaned_up)
-        self.assertTrue(assembler.delete_later_called)
         self.assertIsNone(engine.chunk_assembler)

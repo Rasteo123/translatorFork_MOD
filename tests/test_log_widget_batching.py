@@ -33,7 +33,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertEqual(widget._pending_log_data, [])
             self.assertIn("one", widget.log_view.toPlainText())
         finally:
-            widget.deleteLater()
+            widget.close()
 
     def test_flush_inserts_multiple_messages_as_one_batch(self):
         widget = LogWidget(event_bus=None)
@@ -50,7 +50,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertIn("first", inserted_batches[0])
             self.assertIn("second", inserted_batches[0])
         finally:
-            widget.deleteLater()
+            widget.close()
 
     def test_large_backlog_drains_in_small_fast_chunks(self):
         # After being away from the tab, a big backlog must stream in smoothly:
@@ -71,7 +71,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertEqual(len(widget._pending_log_data), 100 - CATCHUP_FLUSH_BATCH_SIZE)
             self.assertEqual(scheduled_delays, [CATCHUP_FLUSH_INTERVAL_MS])
         finally:
-            widget.deleteLater()
+            widget.close()
 
     def test_catchup_returns_to_calm_cadence_for_final_small_chunk(self):
         # Once the backlog shrinks to one smooth chunk or less, drain the rest in
@@ -95,7 +95,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertEqual(widget._pending_log_data, [])
             self.assertEqual(scheduled_delays, [CATCHUP_FLUSH_INTERVAL_MS])
         finally:
-            widget.deleteLater()
+            widget.close()
 
     def test_small_live_backlog_flushes_in_one_calm_batch(self):
         # The normal live trickle (<= one chunk) never enters fast mode.
@@ -115,7 +115,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertEqual(widget._pending_log_data, [])
             self.assertEqual(scheduled_delays, [])  # nothing left → no reschedule
         finally:
-            widget.deleteLater()
+            widget.close()
 
     def test_show_event_with_large_backlog_starts_fast_catchup(self):
         widget = LogWidget(event_bus=None)
@@ -130,7 +130,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertEqual(scheduled_delays, [CATCHUP_FLUSH_INTERVAL_MS])
         finally:
             widget._log_flush_timer.stop()
-            widget.deleteLater()
+            widget.close()
 
     def test_hidden_widget_defers_flush_timer_until_shown(self):
         widget = LogWidget(event_bus=None)
@@ -150,7 +150,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
             self.assertEqual(scheduled_delays, [LOG_FLUSH_INTERVAL_MS])
         finally:
             widget._log_flush_timer.stop()
-            widget.deleteLater()
+            widget.close()
 
     def test_normal_flush_interval_is_throttled_for_text_layout(self):
         self.assertGreaterEqual(LOG_FLUSH_INTERVAL_MS, 750)
@@ -168,7 +168,7 @@ class LogWidgetBatchingTests(unittest.TestCase):
                 QTextEdit.LineWrapMode.NoWrap,
             )
         finally:
-            widget.deleteLater()
+            widget.close()
 
 
 if __name__ == "__main__":

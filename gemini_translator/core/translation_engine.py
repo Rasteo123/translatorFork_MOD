@@ -227,20 +227,16 @@ class TranslationEngine(QObject):
             pass
 
     def _cleanup_chunk_assembler(self):
-        assembler = self.chunk_assembler
-        self.chunk_assembler = None
-        if not assembler:
+        assembler = getattr(self, "chunk_assembler", None)
+        if assembler is None:
             return
+
+        self.chunk_assembler = None
 
         cleanup = getattr(assembler, "cleanup", None)
         try:
             if callable(cleanup):
                 cleanup()
-        except RuntimeError:
-            pass
-
-        try:
-            assembler.deleteLater()
         except RuntimeError:
             pass
 

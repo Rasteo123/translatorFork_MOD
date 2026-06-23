@@ -145,7 +145,7 @@ class ValidatorNestedPageTests(unittest.TestCase):
 
     def setUp(self):
         self.validator = _ValidatorHarness()
-        self.addCleanup(self.validator.deleteLater)
+        self.addCleanup(self.validator.close)
         self.pushed_pages = []
         self.validator.request_push.connect(self.pushed_pages.append)
 
@@ -228,7 +228,7 @@ class ValidatorNestedPageTests(unittest.TestCase):
 
     def test_session_consistency_checker_is_pushed_as_page(self):
         session = _InitialSetupHarness()
-        self.addCleanup(session.deleteLater)
+        self.addCleanup(session.close)
         pushed_pages = []
         session.request_push.connect(pushed_pages.append)
 

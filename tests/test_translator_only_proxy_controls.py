@@ -4,6 +4,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from gemini_translator.ui.dialogs.setup import InitialSetupDialog
+from gemini_translator.ui import theme_manager
 
 
 class _LabelStub:
@@ -69,7 +70,10 @@ class TranslatorOnlyProxyControlsTests(unittest.TestCase):
 
         self.assertEqual(harness.proxy_status_label.text, "Прокси: SOCKS5://127.0.0.1:1080")
         self.assertIn("Пользователь: alice", harness.proxy_status_label.tooltip)
-        self.assertEqual(harness.proxy_status_label.stylesheet, "color: #4CAF50;")
+        self.assertEqual(
+            harness.proxy_status_label.stylesheet,
+            f"color: {theme_manager.color('success')};",
+        )
 
     def test_update_proxy_display_renders_disabled_proxy_status(self):
         harness = _TranslatorOnlyProxyHarness()
@@ -78,7 +82,10 @@ class TranslatorOnlyProxyControlsTests(unittest.TestCase):
 
         self.assertEqual(harness.proxy_status_label.text, "Прокси: выключен")
         self.assertIn("без прокси", harness.proxy_status_label.tooltip)
-        self.assertEqual(harness.proxy_status_label.stylesheet, "color: #9aa4b2;")
+        self.assertEqual(
+            harness.proxy_status_label.stylesheet,
+            f"color: {theme_manager.color('text_muted')};",
+        )
 
     def test_activate_proxy_from_settings_emits_proxy_started_event(self):
         proxy_settings = {

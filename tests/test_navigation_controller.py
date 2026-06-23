@@ -34,7 +34,7 @@ class NavigationControllerPushTests(unittest.TestCase):
 
     def setUp(self):
         self.stack = QtWidgets.QStackedWidget()
-        self.addCleanup(self.stack.deleteLater)
+        self.addCleanup(self.stack.close)
         self.nav = NavigationController(self.stack)
         self.changes = []
         self.nav.stack_changed.connect(lambda: self.changes.append(self.nav.depth))
@@ -88,7 +88,7 @@ class NavigationControllerPopTests(unittest.TestCase):
 
     def setUp(self):
         self.stack = QtWidgets.QStackedWidget()
-        self.addCleanup(self.stack.deleteLater)
+        self.addCleanup(self.stack.close)
         self.nav = NavigationController(self.stack)
 
     def test_pop_returns_to_previous_page(self):

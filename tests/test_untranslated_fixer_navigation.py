@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,6 +10,7 @@ from PyQt6.QtWidgets import QTextEdit
 from gemini_translator.ui.dialogs.validation import TranslationValidatorDialog
 from gemini_translator.ui.dialogs.validation_dialogs.untranslated_fixer_dialog import (
     UntranslatedFixerDialog,
+    UntranslatedFixerPage,
 )
 
 
@@ -155,6 +157,48 @@ class UntranslatedFixerNavigationTests(unittest.TestCase):
 
         self.assertTrue(found)
         self.assertIn("】", text_edit.textCursor().selectedText())
+
+    def test_page_ai_translation_uses_original_validator_after_shell_reparent(self):
+        class _Parent(QtWidgets.QWidget):
+            settings_manager = object()
+
+        parent = _Parent()
+        page = UntranslatedFixerPage(
+            [{"term": "Level", "context": "<p>Level</p>", "location_info": "ch1"}],
+            parent,
+        )
+        self.addCleanup(page.deleteLater)
+        self.addCleanup(parent.deleteLater)
+
+        stack = QtWidgets.QStackedWidget()
+        self.addCleanup(stack.deleteLater)
+        stack.addWidget(page)
+        page.selected_indices = {0}
+
+        class _FakeAITranslationDialog:
+            def __init__(self, tasks_list, settings_manager, parent_widget):
+                self.tasks_list = tasks_list
+                self.settings_manager = settings_manager
+                self.parent_widget = parent_widget
+
+            def exec(self):
+                return True
+
+            def get_translated_results(self):
+                return ['<p data-id="0">Уровень</p>']
+
+        with (
+            patch(
+                "gemini_translator.ui.dialogs.validation_dialogs.untranslated_fixer_dialog.AITranslationDialog",
+                _FakeAITranslationDialog,
+            ),
+            patch(
+                "gemini_translator.ui.dialogs.validation_dialogs.untranslated_fixer_dialog.QMessageBox.information",
+            ),
+        ):
+            page._start_ai_translation()
+
+        self.assertEqual(page.original_data[0].get("new_context"), "Уровень")
 
 
 if __name__ == "__main__":

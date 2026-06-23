@@ -98,9 +98,9 @@ class GlossaryWidgetManagerNavigationTests(unittest.TestCase):
 
     def setUp(self):
         self.session = InitialSetupPage()
-        self.addCleanup(self.session.deleteLater)
+        self.addCleanup(self.session.close)
         self.widget = GlossaryWidget(self.session)
-        self.addCleanup(self.widget.deleteLater)
+        self.addCleanup(self.widget.close)
         self.widget.set_glossary([{"original": "alpha", "rus": "альфа", "note": "", "timestamp": 123.0}])
 
     def test_session_manager_is_pushed_as_page_and_applies_accepted_result(self):

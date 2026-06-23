@@ -47,7 +47,7 @@ class StatusBarThrottlingTests(unittest.TestCase):
             self.assertEqual(widget.in_progress_count, 1)
             self.assertEqual(widget.filtered_count, 1)
         finally:
-            widget.deleteLater()
+            widget.close()
 
 
 if __name__ == "__main__":
