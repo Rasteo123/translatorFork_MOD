@@ -56,6 +56,7 @@ except ImportError:
     LEVENSHTEIN_AVAILABLE = False
     
 # --- Импорты из нашего проекта ---
+from gemini_translator.ui import theme_manager
 from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path, extract_number_from_path_reversed, EpubCreator, estimate_epub_chapter_input_tokens, get_epub_chapter_sizes_with_cache, extract_epub_heading_text
 from ...utils.text import unify_paragraphs_for_ai
 from ...utils.project_manager import TranslationProjectManager
@@ -1507,7 +1508,7 @@ class TranslatedChaptersManagerDialog(QDialog):
         actions_layout.addWidget(self.btn_uncheck_all)
         main_layout.addLayout(actions_layout)
         self.selection_hint_label = QLabel("Галочки определяют, какие главы войдут в сборку. Shift по галочке выделяет диапазон.")
-        self.selection_hint_label.setStyleSheet("color: #666; font-style: italic;")
+        self.selection_hint_label.setStyleSheet(f"color: {theme_manager.color('text_secondary')}; font-style: italic;")
         main_layout.addWidget(self.selection_hint_label)
 
         # --- Группа выбора режима ---
@@ -1521,7 +1522,7 @@ class TranslatedChaptersManagerDialog(QDialog):
         self.update_original_radio.setToolTip("Сохраняет оригинальную структуру. Доп. файлы будут скрыты.\nАвтоматически обновляет заголовки глав на основе <h1> в переводе.")
         
         self.update_mode_info = QLabel("ℹ В режиме обновления порядок глав фиксирован оригиналом.\nЗаголовки в оглавлении будут заменены на найденные в тексте перевода (теги h1).")
-        self.update_mode_info.setStyleSheet("color: #666; font-style: italic; margin-left: 20px;")
+        self.update_mode_info.setStyleSheet(f"color: {theme_manager.color('text_secondary')}; font-style: italic; margin-left: 20px;")
         self.update_mode_info.setVisible(False)
 
         # Виджет выбора оригинала
@@ -1566,7 +1567,7 @@ class TranslatedChaptersManagerDialog(QDialog):
         self.btn_select_cover.clicked.connect(self._select_custom_cover)
         
         self.lbl_cover_status = QLabel("(Будет найдена автом.)")
-        self.lbl_cover_status.setStyleSheet("color: #666;")
+        self.lbl_cover_status.setStyleSheet(f"color: {theme_manager.color('text_secondary')};")
         
         self.custom_cover_path = None
         
@@ -1585,7 +1586,7 @@ class TranslatedChaptersManagerDialog(QDialog):
 
         # Кнопка запуска
         self.create_epub_btn = QPushButton("🚀 Собрать EPUB")
-        self.create_epub_btn.setStyleSheet("background-color: #38761d; color: #ffffff; font-weight: bold; padding: 5px;")
+        self.create_epub_btn.setStyleSheet(f"background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 5px;")
         self.create_epub_btn.clicked.connect(self.create_epub)
         main_layout.addWidget(self.create_epub_btn)
 
@@ -3386,7 +3387,7 @@ class EpubCleanupOptionsDialog(QDialog):
         
         header = QLabel("Диагностическая карта")
         header_font = QtGui.QFont(); header_font.setBold(True); header_font.setPointSize(12)
-        header.setFont(header_font); header.setStyleSheet("color: #d32f2f;")
+        header.setFont(header_font); header.setStyleSheet(f"color: {theme_manager.color('danger')};")
         layout.addWidget(header)
 
         scroll_area = QtWidgets.QScrollArea()
@@ -3650,7 +3651,7 @@ class EpubDeepCleanupOptionsDialog(QDialog):
             "при первой записи очищенного EPUB на диск."
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: #777;")
+        note.setStyleSheet(f"color: {theme_manager.color('text_secondary')};")
         layout.addWidget(note)
 
         rules_box = QGroupBox("Правила тегов")

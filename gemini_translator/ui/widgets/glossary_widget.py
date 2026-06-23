@@ -308,7 +308,6 @@ class GlossaryWidget(QWidget):
             return False
 
         self.commit_active_editor()
-        QApplication.processEvents()
         glossary_to_save = [entry.copy() for entry in self.get_glossary()]
 
         try:

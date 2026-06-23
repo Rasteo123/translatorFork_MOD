@@ -23,6 +23,7 @@ from ...widgets import (
 )
 from ...widgets.common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
 from ...shell import ShellPage
+from gemini_translator.ui import theme_manager
 
 # Алиасы для удобства
 QSpinBox = NoScrollSpinBox
@@ -131,22 +132,22 @@ class FilterTagWidget(QFrame):
         # 2. Спец-стиль для QLabel#separator (делаем его тоньше и полупрозрачным).
         if tag_type == 'whitelist':
             # Зеленоватый
-            self.setStyleSheet("""
-                QFrame { background-color: rgba(46, 204, 113, 40); border: 1px solid #2ECC71; border-radius: 4px; }
-                QLabel { color: #2ECC71; font-weight: bold; border: none; background: transparent; }
-                QLabel#separator { font-weight: normal; color: rgba(46, 204, 113, 0.6); }
-                QPushButton { background: transparent; color: #2ECC71; font-weight: bold; border: none; padding: 0px; }
-                QPushButton:hover { color: #fff; }
+            self.setStyleSheet(f"""
+                QFrame {{ background-color: rgba(46, 204, 113, 40); border: 1px solid {theme_manager.color('success')}; border-radius: 4px; }}
+                QLabel {{ color: {theme_manager.color('success')}; font-weight: bold; border: none; background: transparent; }}
+                QLabel#separator {{ font-weight: normal; color: rgba(46, 204, 113, 0.6); }}
+                QPushButton {{ background: transparent; color: {theme_manager.color('success')}; font-weight: bold; border: none; padding: 0px; }}
+                QPushButton:hover {{ color: {theme_manager.color('accent_text')}; }}
             """)
             prefix = "(+)"
         else:
             # Красноватый
-            self.setStyleSheet("""
-                QFrame { background-color: rgba(231, 76, 60, 40); border: 1px solid #E74C3C; border-radius: 4px; }
-                QLabel { color: #E74C3C; font-weight: bold; border: none; background: transparent; }
-                QLabel#separator { font-weight: normal; color: rgba(231, 76, 60, 0.6); }
-                QPushButton { background: transparent; color: #E74C3C; font-weight: bold; border: none; padding: 0px; }
-                QPushButton:hover { color: #fff; }
+            self.setStyleSheet(f"""
+                QFrame {{ background-color: rgba(231, 76, 60, 40); border: 1px solid {theme_manager.color('danger')}; border-radius: 4px; }}
+                QLabel {{ color: {theme_manager.color('danger')}; font-weight: bold; border: none; background: transparent; }}
+                QLabel#separator {{ font-weight: normal; color: rgba(231, 76, 60, 0.6); }}
+                QPushButton {{ background: transparent; color: {theme_manager.color('danger')}; font-weight: bold; border: none; padding: 0px; }}
+                QPushButton:hover {{ color: {theme_manager.color('accent_text')}; }}
             """)
             prefix = "(-)"
 
@@ -379,7 +380,7 @@ class GlossaryTermDialog(QDialog):
                 "Сохранение объединит дубликаты этого термина в одну запись."
             )
             summary.setWordWrap(True)
-            summary.setStyleSheet("color: #f1c40f;")
+            summary.setStyleSheet(f"color: {theme_manager.color('warning')};")
             layout.addWidget(summary)
 
             preview = QListWidget()
@@ -482,11 +483,11 @@ class AdvancedTagFilterDialog(QDialog):
         self.input_edit.returnPressed.connect(self._add_to_whitelist)
         
         self.btn_add_white = QPushButton("Требовать (+)")
-        self.btn_add_white.setStyleSheet("background-color: #2ECC71; color: white; font-weight: bold;")
+        self.btn_add_white.setStyleSheet(f"background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold;")
         self.btn_add_white.clicked.connect(self._add_to_whitelist)
         
         self.btn_add_black = QPushButton("Исключать (-)")
-        self.btn_add_black.setStyleSheet("background-color: #E74C3C; color: white; font-weight: bold;")
+        self.btn_add_black.setStyleSheet(f"background-color: {theme_manager.color('danger')}; color: {theme_manager.color('accent_text')}; font-weight: bold;")
         self.btn_add_black.clicked.connect(self._add_to_blacklist)
         
         input_layout.addWidget(self.input_edit)
@@ -502,7 +503,7 @@ class AdvancedTagFilterDialog(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         # Серый фон для контраста тегов
-        scroll.setStyleSheet("QScrollArea { background-color: #2b2b2b; border-radius: 4px; }") 
+        scroll.setStyleSheet(f"QScrollArea {{ background-color: {theme_manager.color('panel_bg')}; border-radius: 4px; }}")
         
         self.container = QWidget()
         self.container.setStyleSheet("background: transparent;")
@@ -634,6 +635,7 @@ class UntranslatedFixerPage(ShellPage):
 
     def __init__(self, data_list, parent=None, initial_source_filter='all'):
         super().__init__(parent)
+        self._validator_host = parent
         self.setWindowTitle("Помощник исправления недопереводов")
         # --- Геометрия окна ---
         available_geometry = self.screen().availableGeometry()
@@ -1053,16 +1055,16 @@ class UntranslatedFixerPage(ShellPage):
         # --- БЛОК УПРАВЛЕНИЯ ТЕГАМИ (Справа) ---
         # Зеленый счетчик (WhiteList)
         self.lbl_white_count = QLabel("0")
-        self.lbl_white_count.setStyleSheet("color: #2ECC71; font-weight: bold; font-size: 10pt;")
+        self.lbl_white_count.setStyleSheet(f"color: {theme_manager.color('success')}; font-weight: bold; font-size: 10pt;")
         self.lbl_white_count.setToolTip("Количество активных фильтров 'Требовать' (+)")
         
         # Разделитель
         sep_slash = QLabel("/")
-        sep_slash.setStyleSheet("color: gray;")
+        sep_slash.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         
         # Красный счетчик (BlackList)
         self.lbl_black_count = QLabel("0")
-        self.lbl_black_count.setStyleSheet("color: #E74C3C; font-weight: bold; font-size: 10pt;")
+        self.lbl_black_count.setStyleSheet(f"color: {theme_manager.color('danger')}; font-weight: bold; font-size: 10pt;")
         self.lbl_black_count.setToolTip("Количество активных фильтров 'Исключать' (-)")
         
         # Кнопка настройки
@@ -1179,10 +1181,10 @@ class UntranslatedFixerPage(ShellPage):
         cp_layout.addStretch()
         
         self.total_filtered_label = QLabel("Всего: 0 (Выбрано: 0)")
-        self.total_filtered_label.setStyleSheet("font-weight: bold; color: #aaa;")
+        self.total_filtered_label.setStyleSheet(f"font-weight: bold; color: {theme_manager.color('text_muted')};")
         
         self.btn_clear_selected = QPushButton("🗑️ Очистить текст (Выбранное)")
-        self.btn_clear_selected.setStyleSheet("background-color: #5a2d2d; color: white;")
+        self.btn_clear_selected.setStyleSheet(f"background-color: {theme_manager.color('danger')}; color: {theme_manager.color('accent_text')};")
         self.btn_clear_selected.clicked.connect(self._clear_selected_content)
         
         self.ai_translate_btn = QPushButton("🤖 Перевести выбранное...")
@@ -1190,7 +1192,7 @@ class UntranslatedFixerPage(ShellPage):
         self.ai_translate_btn.clicked.connect(self._start_ai_translation)
 
         self.btn_mark_retry = QPushButton("🔄 К переотправке (выбранное)")
-        self.btn_mark_retry.setStyleSheet("background-color: #58442e; color: white;")
+        self.btn_mark_retry.setStyleSheet(f"background-color: {theme_manager.color('warning')}; color: {theme_manager.color('accent_text')};")
         self.btn_mark_retry.setToolTip("Пометить главы выбранных строк к повторному переводу в основном окне проверки.")
         self.btn_mark_retry.clicked.connect(self._mark_selected_chapters_for_retry)
         
@@ -1484,28 +1486,28 @@ class UntranslatedFixerPage(ShellPage):
         
         menu = QMenu(self)
         # СТИЛИ МЕНЮ ДЛЯ РЕАКЦИИ НА НАВЕДЕНИЕ
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #2b2b2b;
-                border: 1px solid #555;
-            }
-            QMenu::item {
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {theme_manager.color('panel_bg')};
+                border: 1px solid {theme_manager.color('text_secondary')};
+            }}
+            QMenu::item {{
                 padding: 6px 25px 6px 20px;
-                color: #e0e0e0;
+                color: {theme_manager.color('text_primary')};
                 font-size: 10pt;
-            }
-            QMenu::item:selected {
-                background-color: #3498db; /* Ярко-синий при наведении */
-                color: #ffffff;
-            }
-            QMenu::separator {
+            }}
+            QMenu::item:selected {{
+                background-color: {theme_manager.color('info')};
+                color: {theme_manager.color('accent_text')};
+            }}
+            QMenu::separator {{
                 height: 1px;
-                background: #555;
+                background: {theme_manager.color('text_secondary')};
                 margin: 5px 0;
-            }
-            QMenu::item:disabled {
-                color: #666;
-            }
+            }}
+            QMenu::item:disabled {{
+                color: {theme_manager.color('text_secondary')};
+            }}
         """)
 
         edit_action = menu.addAction("Редактировать")
@@ -1809,8 +1811,18 @@ class UntranslatedFixerPage(ShellPage):
         dialog.exec()
 
     def _get_project_manager(self):
+        checked = set()
+        current_parent = getattr(self, '_validator_host', None)
+        while current_parent and id(current_parent) not in checked:
+            checked.add(id(current_parent))
+            project_manager = getattr(current_parent, 'project_manager', None)
+            if project_manager:
+                return project_manager
+            current_parent = current_parent.parent()
+
         current_parent = self.parent()
-        while current_parent:
+        while current_parent and id(current_parent) not in checked:
+            checked.add(id(current_parent))
             project_manager = getattr(current_parent, 'project_manager', None)
             if project_manager:
                 return project_manager
@@ -2028,10 +2040,12 @@ class UntranslatedFixerPage(ShellPage):
             tasks_list.append(full_html)
 
         # 3. Запускаем диалог
-        parent = self.parent()
-        if not (parent and hasattr(parent, 'settings_manager')): return
+        settings_owner = getattr(self, '_validator_host', None)
+        if not (settings_owner and hasattr(settings_owner, 'settings_manager')):
+            settings_owner = self.parent()
+        if not (settings_owner and hasattr(settings_owner, 'settings_manager')): return
         
-        dlg = AITranslationDialog(tasks_list, parent.settings_manager, self)
+        dlg = AITranslationDialog(tasks_list, settings_owner.settings_manager, self)
         
         # Если нажали "Применить" (Accepted)
         if dlg.exec():
@@ -2194,7 +2208,7 @@ class UntranslatedFixerDialog(QDialog, metaclass=_UntranslatedFixerDialogMeta):
     def __init__(self, data_list, parent=None, initial_source_filter='all'):
         super().__init__(parent)
         self.setWindowTitle("Помощник исправления недопереводов")
-        self.page = UntranslatedFixerPage(data_list, self, initial_source_filter=initial_source_filter)
+        self.page = UntranslatedFixerPage(data_list, parent, initial_source_filter=initial_source_filter)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.page)
@@ -2372,7 +2386,7 @@ class AITranslationDialog(QDialog):
             l.setSpacing(8)
             lbl = QLabel(title)
             # Цвет #ccc хорошо читается на темном фоне
-            lbl.setStyleSheet("font-size: 9pt; color: #ccc;") 
+            lbl.setStyleSheet(f"font-size: 9pt; color: {theme_manager.color('text_muted')};")
             l.addWidget(lbl)
             l.addWidget(spinbox)
             return w
@@ -2405,7 +2419,7 @@ class AITranslationDialog(QDialog):
         info_layout.setContentsMargins(0,0,0,0)
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.load_info_label = QLabel("~ ? зад/поток")
-        self.load_info_label.setStyleSheet("color: #888; font-size: 9pt; margin-left: 5px;")
+        self.load_info_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt; margin-left: 5px;")
         info_layout.addWidget(self.load_info_label)
         
         perf_layout.addWidget(info_container)
@@ -2418,7 +2432,7 @@ class AITranslationDialog(QDialog):
         self.btn_apply.setEnabled(False)
         self.btn_apply.setMinimumWidth(180)
         # Стартовый стиль: прозрачный
-        self.btn_apply.setStyleSheet("background-color: transparent; color: #777; border: 1px solid #444; border-radius: 4px; padding: 6px;")
+        self.btn_apply.setStyleSheet(f"background-color: transparent; color: {theme_manager.color('text_secondary')}; border: 1px solid {theme_manager.color('text_secondary')}; border-radius: 4px; padding: 6px;")
         
         self.start_stop_btn = QPushButton(f"🚀 Начать перевод")
         self.start_stop_btn.setMinimumWidth(150)
@@ -2453,10 +2467,10 @@ class AITranslationDialog(QDialog):
 
         if should_be_active:
             # Активная: Зеленая
-            self.btn_apply.setStyleSheet("background-color: #2ECC71; color: white; font-weight: bold; padding: 6px; border-radius: 4px;")
+            self.btn_apply.setStyleSheet(f"background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 6px; border-radius: 4px;")
         else:
             # Неактивная: Прозрачная с рамкой (под темную тему)
-            self.btn_apply.setStyleSheet("background-color: transparent; color: #777; border: 1px solid #444; border-radius: 4px; padding: 6px;")
+            self.btn_apply.setStyleSheet(f"background-color: transparent; color: {theme_manager.color('text_secondary')}; border: 1px solid {theme_manager.color('text_secondary')}; border-radius: 4px; padding: 6px;")
 
     def _on_external_model_changed(self):
         settings = self.model_settings_widget.get_settings()
@@ -2648,7 +2662,7 @@ class AITranslationDialog(QDialog):
 
         if active:
             self.start_stop_btn.setText("❌ Стоп")
-            self.start_stop_btn.setStyleSheet("background-color: #C0392B; color: #ffffff; font-weight: bold; padding: 6px;")
+            self.start_stop_btn.setStyleSheet(f"background-color: {theme_manager.color('danger')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 6px;")
             self.start_stop_btn.setEnabled(True)
             self.cancel_close_btn.setText("Прервать")
         else:

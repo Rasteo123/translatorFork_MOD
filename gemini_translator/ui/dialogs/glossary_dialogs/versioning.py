@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt
 
 # Импортируем утилиту для правильной сортировки глав
 from gemini_translator.utils.epub_tools import get_epub_chapter_order, extract_number_from_path
+from gemini_translator.ui import theme_manager
 
 class ChapterSelectorWidget(QWidget):
     """
@@ -232,9 +233,9 @@ class VersionEditDialog(QDialog):
         # Легенда цветов
         legend_layout = QHBoxLayout()
         lbl_conflict = QLabel("🟥 Конфликт")
-        lbl_conflict.setStyleSheet("color: #FF5555; font-weight: bold;")
+        lbl_conflict.setStyleSheet(f"color: {theme_manager.color('danger')}; font-weight: bold;")
         lbl_occupied = QLabel("🟧 Занято другими")
-        lbl_occupied.setStyleSheet("color: orange;")
+        lbl_occupied.setStyleSheet(f"color: {theme_manager.color('warning')}")
         legend_layout.addWidget(lbl_occupied)
         legend_layout.addWidget(lbl_conflict)
         legend_layout.addStretch()
@@ -250,7 +251,7 @@ class VersionEditDialog(QDialog):
         right_layout.addWidget(QLabel("<b>Базовый перевод:</b>"))
         self.base_rus_view = QLineEdit(self.base_data.get('rus', ''))
         self.base_rus_view.setReadOnly(True)
-        self.base_rus_view.setStyleSheet("color: gray; background-color: #2b2b2b;")
+        self.base_rus_view.setStyleSheet(f"color: {theme_manager.color('text_muted')}; background-color: {theme_manager.color('input_bg')};")
         right_layout.addWidget(self.base_rus_view)
         
         right_layout.addWidget(QLabel("<b>Базовое примечание:</b>"))
@@ -258,7 +259,7 @@ class VersionEditDialog(QDialog):
         self.base_note_view.setPlainText(self.base_data.get('note', ''))
         self.base_note_view.setReadOnly(True)
         self.base_note_view.setMaximumHeight(80)
-        self.base_note_view.setStyleSheet("color: gray; background-color: #2b2b2b;")
+        self.base_note_view.setStyleSheet(f"color: {theme_manager.color('text_muted')}; background-color: {theme_manager.color('input_bg')};")
         right_layout.addWidget(self.base_note_view)
         
         # Разделитель

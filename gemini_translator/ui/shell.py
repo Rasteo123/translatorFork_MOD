@@ -123,6 +123,10 @@ class MainShell(QtWidgets.QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Gemini EPUB Translator")
         self.resize(1100, 800)
+        # Always set translucent background to support macOS vibrancy correctly.
+        # When vibrancy is off, the solid background is drawn by Qt over the translucent layer.
+        # self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
 
         central = QtWidgets.QWidget()
         root = QtWidgets.QVBoxLayout(central)
@@ -130,13 +134,19 @@ class MainShell(QtWidgets.QMainWindow):
         root.setSpacing(0)
 
         self._nav_bar = QtWidgets.QWidget()
+        self._nav_bar.setObjectName("navBar")
         nav_layout = QtWidgets.QHBoxLayout(self._nav_bar)
-        nav_layout.setContentsMargins(8, 4, 8, 4)
+        nav_layout.setContentsMargins(8, 6, 8, 6)
+        nav_layout.setSpacing(8)
         self._back_button = QtWidgets.QPushButton("← Назад")
         self._back_button.clicked.connect(self._on_back_clicked)
         self._title_label = QtWidgets.QLabel("")
+        # Title sits on its own "tile" so it reads as a deliberate chip in every
+        # window instead of bare text floating on the gray window background.
+        self._title_label.setObjectName("navTitleChip")
         nav_layout.addWidget(self._back_button)
-        nav_layout.addWidget(self._title_label, 1)
+        nav_layout.addWidget(self._title_label)
+        nav_layout.addStretch(1)
 
         self._stack = QtWidgets.QStackedWidget()
 
@@ -156,5 +166,35 @@ class MainShell(QtWidgets.QMainWindow):
 
     def _sync_nav_bar(self) -> None:
         page = self.navigation.current_page()
-        self._title_label.setText(page.get_page_title() if page else "")
+        title = page.get_page_title() if page else ""
+        self._title_label.setText(title)
+        # Hide the chip entirely when there is no title (e.g. home) so an empty
+        # tile never shows.
+        self._title_label.setVisible(bool(title))
         self._back_button.setVisible(self.navigation.depth > 1)
+
+    def closeEvent(self, event) -> None:
+        if not self.isVisible():
+            event.accept()
+            return
+
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setWindowTitle("Выход")
+        msg_box.setText("Вы действительно хотите выйти из программы?")
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+
+        btn_exit = msg_box.addButton("Выйти", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        btn_cancel = msg_box.addButton("Отмена", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+
+        msg_box.exec()
+        if msg_box.clickedButton() == btn_cancel:
+            event.ignore()
+            return
+
+        page = self.navigation.current_page()
+        if hasattr(page, "_prepare_for_close"):
+            if not page._prepare_for_close():
+                event.ignore()
+                return
+
+        event.accept()

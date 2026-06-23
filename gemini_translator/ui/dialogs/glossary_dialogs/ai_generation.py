@@ -1944,8 +1944,8 @@ class GenerationSessionPage(ShellPage):
     
     def _create_settings_tab(self):
         """Создает вкладку с основными настройками."""
-        settings_tab = QWidget()
-        settings_layout = QVBoxLayout(settings_tab)
+        settings_container = QWidget()
+        settings_layout = QVBoxLayout(settings_container)
         
         # --- ОБЪЕДИНЕННЫЙ БЛОК 1: Основные настройки (Остается без изменений) ---
         main_settings_group = QGroupBox("Основные настройки")
@@ -2051,7 +2051,11 @@ class GenerationSessionPage(ShellPage):
         )
         self.sequential_mode_checkbox.toggled.connect(self._on_mode_changed)
 
-        return settings_tab
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll_area.setWidget(settings_container)
+        return scroll_area
 
 
     def _create_results_tab(self):

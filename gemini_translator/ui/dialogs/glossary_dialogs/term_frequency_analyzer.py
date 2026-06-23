@@ -20,6 +20,7 @@ from gemini_translator.utils.term_frequency_tools import (
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.widgets.common_widgets import NoScrollSpinBox
 from .custom_widgets import ExpandingTextEditDelegate
+from gemini_translator.ui import theme_manager
 
 class TermFrequencyAnalyzerPage(ShellPage):
     page_title = "Частотный анализ"
@@ -111,7 +112,7 @@ class TermFrequencyAnalyzerPage(ShellPage):
         self.freq_tab = QWidget(); freq_layout = QVBoxLayout(self.freq_tab)
         
         freq_label = QLabel("Самые частые термины по числу вхождений (Топ-500). Доступно редактирование перевода и примечаний.")
-        freq_label.setStyleSheet("color: grey;")
+        freq_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
         
         self.freq_table = self._create_table(editable=True)
         # Подключаем сигнал изменения для сохранения правок (для частых)
@@ -169,16 +170,16 @@ class TermFrequencyAnalyzerPage(ShellPage):
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         
         # Стилизация
-        table.setStyleSheet("""
-            QTableWidget {
-                background-color: #2c313c; 
-                alternate-background-color: #353b48;
-                color: #f0f0f0; 
-                border: 1px solid #4d5666;
-            }
-            QTableWidget::item:selected {
-                background-color: #4a6984; 
-            }
+        table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {theme_manager.color('panel_bg')};
+                alternate-background-color: {theme_manager.color('panel_alt_bg')};
+                color: {theme_manager.color('text_primary')};
+                border: 1px solid {theme_manager.color('text_muted')};
+            }}
+            QTableWidget::item:selected {{
+                background-color: {theme_manager.color('info')};
+            }}
         """)
         table.setAlternatingRowColors(True)
 

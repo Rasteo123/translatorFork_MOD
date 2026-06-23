@@ -28,6 +28,8 @@ from gemini_translator.ui.widgets.log_widget import LogWidget
 from gemini_translator.ui.widgets.preset_widget import PresetWidget
 from gemini_translator.ui.widgets.ancestor_utils import find_ancestor_by_class_name
 from gemini_translator.ui.shell import ShellPage
+from gemini_translator.ui.widgets.overlay_tab_widget import OverlayTabWidget
+from gemini_translator.ui import theme_manager
 
 # API и утилиты
 from gemini_translator.api import config as api_config
@@ -55,21 +57,21 @@ if TYPE_CHECKING:
 
 class NoteWipeResolutionDialog(QDialog):
     """
-    Интерцептор удалений. Показывает список терминов, у которых 
+    Интерцептор удалений. Показывает список терминов, у которых
     автоматика решила удалить примечания из-за конфликта грамматики.
     Позволяет пользователю подтвердить удаление, вернуть старое или написать новое.
     """
     def __init__(self, wiped_data_refs, parent=None):
         super().__init__(parent)
         self.wiped_data_refs = wiped_data_refs # Ссылки на словари из основного окна
-        
+
         self.setWindowTitle("⚠️ Подтверждение удаления примечаний")
         self.setMinimumSize(1000, 500)
         self._init_ui()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        
+
         warning_label = QLabel(
             "<h3 style='color: #E74C3C;'>Внимание: Возможная потеря контекста!</h3>"
             "У следующих терминов изменился перевод, и старые примечания могут ему противоречить грамматически.<br>"
@@ -83,18 +85,18 @@ class NoteWipeResolutionDialog(QDialog):
         self.table.setHorizontalHeaderLabels([
             "Удалить?", "Оригинал", "Новый перевод", "Было (Примечание)", "Стало (Редактируемо)"
         ])
-        
+
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        
+
         # Используем твой умный делегат для последней колонки
         from .custom_widgets import ExpandingTextEditDelegate
         self.table.setItemDelegateForColumn(4, ExpandingTextEditDelegate(self.table))
-        
+
         layout.addWidget(self.table)
         self._populate_table()
 
@@ -107,7 +109,7 @@ class NoteWipeResolutionDialog(QDialog):
 
     def _populate_table(self):
         self.table.setRowCount(len(self.wiped_data_refs))
-        
+
         for i, data in enumerate(self.wiped_data_refs):
             # Чекбокс подтверждения удаления (по умолчанию ВКЛЮЧЕН)
             checkbox_widget = QWidget()
@@ -123,7 +125,7 @@ class NoteWipeResolutionDialog(QDialog):
             orig_item = QTableWidgetItem(data["original"])
             orig_item.setFlags(orig_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(i, 1, orig_item)
-            
+
             trans_item = QTableWidgetItem(data["new_trans"])
             trans_item.setFlags(trans_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(i, 2, trans_item)
@@ -162,7 +164,7 @@ class NoteWipeResolutionDialog(QDialog):
         for i, data in enumerate(self.wiped_data_refs):
             checkbox = self.table.cellWidget(i, 0).layout().itemAt(0).widget()
             edit_item = self.table.item(i, 4)
-            
+
             if checkbox.isChecked() and not edit_item.text().strip():
                 # Пользователь подтвердил удаление
                 data["new_note"] = ""
@@ -170,7 +172,7 @@ class NoteWipeResolutionDialog(QDialog):
                 # Пользователь снял галочку или ввел свой текст
                 data["new_note"] = edit_item.text().strip()
                 data["is_note_wiped"] = False # Снимаем флаг удаления
-                
+
         super().accept()
 
 class CorrectionSessionPage(ShellPage):
@@ -181,7 +183,7 @@ class CorrectionSessionPage(ShellPage):
 
     def __init__(self, settings_manager=None, parent=None):
         super().__init__(parent)
-        
+
         if settings_manager is None:
             app = QtWidgets.QApplication.instance()
             if not hasattr(app, 'settings_manager'):
@@ -189,50 +191,51 @@ class CorrectionSessionPage(ShellPage):
             self.settings_manager = app.get_settings_manager()
         else:
             self.settings_manager = settings_manager
-        
+
         self.setWindowTitle("Настройка AI-корректора")
         self.setMinimumWidth(1200)
         self.setMinimumHeight(700)
-        
+
         # --- Геометрия окна ---
         available_geometry = self.screen().availableGeometry()
-        
+
         height = min(int(available_geometry.height() * 0.75), 650)
         width = min(int(available_geometry.width() * 0.65), 1000)
         self.setMinimumSize(width, height)
-       
-       
+
+
         height = max(int(available_geometry.height() * 0.75), 650)
         width = max(int(available_geometry.width() * 0.65), 1000)
-        
+
         self.resize(width, height)
         self.move(
             available_geometry.center().x() - self.width() // 2,
             available_geometry.center().y() - self.height() // 2
         )
-        
+
         self.setWindowFlags(
-            self.windowFlags() | 
-            Qt.WindowType.WindowMaximizeButtonHint | 
+            self.windowFlags() |
+            Qt.WindowType.WindowMaximizeButtonHint |
             Qt.WindowType.WindowCloseButtonHint
         )
-        
+
         # --- Состояние ---
         self._is_loaded = False
         self._ui_is_fully_loaded = False
         self.is_session_active = False
         self.partial_overlaps_included = False
         self.patterns_included = False # <-- НОВЫЙ ФЛАГ
-        self._cached_analysis_results = None 
+        self._cached_analysis_results = None
         self._cached_pattern_results = None # <-- НОВЫЙ КЭШ
         self._term_frequency_payload = {}
         self._term_frequency_map = {}
         self._frequency_worker = None
         self._frequency_project_manager = None
         self._frequency_epub_path = None
+        self._glossary_owner = self._locate_glossary_owner()
 
         # Сохраняем доступ к анализатору из родительского окна
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         self.morph_analyzer = None
         if main_window and hasattr(main_window, 'morph_analyzer'):
             self.morph_analyzer = main_window.morph_analyzer
@@ -242,39 +245,56 @@ class CorrectionSessionPage(ShellPage):
         app = QtWidgets.QApplication.instance()
         if app:
             self.engine = app.engine
-            
+
+    def _locate_glossary_owner(self):
+        parent = self.parent()
+        if parent and parent.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
+            return parent
+        return find_ancestor_by_class_name(self, 'MainWindow', 'GlossaryManagerPage')
+
+    def _get_glossary_owner(self):
+        if self._glossary_owner is None:
+            self._glossary_owner = self._locate_glossary_owner()
+        return self._glossary_owner
+
     def _update_start_button_state(self):
         if not self.is_session_active:
             has_keys = len(self.key_widget.get_active_keys()) > 0
             self.start_stop_btn.setEnabled(has_keys)
             # Dry run доступен, если UI загружен (данные готовы к сбору)
             self.dry_run_btn.setEnabled(self._ui_is_fully_loaded)
-    
+
     def _init_base_ui(self):
         main_layout = QVBoxLayout(self)
         self.loading_label = QLabel("<h2>Загрузка компонентов…</h2>")
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.loading_label, 1)
         self.main_content_widget = QWidget()
-        self.main_content_widget.setVisible(False)
-        main_layout.addWidget(self.main_content_widget, 1)
-        
+
+        self.content_scroll_area = QtWidgets.QScrollArea()
+        self.content_scroll_area.setWidgetResizable(True)
+        self.content_scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.content_scroll_area.setWidget(self.main_content_widget)
+        self.content_scroll_area.setVisible(False)
+
+        main_layout.addWidget(self.content_scroll_area, 1)
+
         bottom_panel_layout = QHBoxLayout()
         # --- НОВОЕ: Кнопка пробного запуска ---
         self.dry_run_btn = QPushButton("🧪 Пробный запуск")
         self.dry_run_btn.clicked.connect(self.perform_dry_run)
         self.dry_run_btn.setEnabled(False)
         bottom_panel_layout.addWidget(self.dry_run_btn)
-        
+
         bottom_panel_layout.addStretch()
         self.button_box = QDialogButtonBox()
         self.start_stop_btn = self.button_box.addButton("🚀 Запустить коррекцию", QDialogButtonBox.ButtonRole.ActionRole)
         self.cancel_close_btn = self.button_box.addButton("Отмена", QDialogButtonBox.ButtonRole.RejectRole)
         self.start_stop_btn.setEnabled(False)
-        
+
         self.start_stop_btn.clicked.connect(self._on_start_stop_clicked)
         self.cancel_close_btn.clicked.connect(self.reject)
-        
+
         bottom_panel_layout.addWidget(self.button_box)
         main_layout.addLayout(bottom_panel_layout)
 
@@ -287,7 +307,7 @@ class CorrectionSessionPage(ShellPage):
 
     def _async_load_and_populate(self):
         content_layout = QVBoxLayout(self.main_content_widget)
-        
+
         # 1. Верхняя панель: Ключи
         self.key_widget = KeyManagementWidget(self.settings_manager, self)
         distribution_group = self.key_widget.findChild(QWidget, "distribution_group")
@@ -299,12 +319,12 @@ class CorrectionSessionPage(ShellPage):
         middle_panel_layout = QHBoxLayout()
         self.model_settings_widget = ModelSettingsWidget(self)
         self.model_settings_widget.set_provider_event_source(self.key_widget)
-        
+
         def safe_hide_widget(object_name):
             widget_to_hide = self.model_settings_widget.findChild(QWidget, object_name)
             if widget_to_hide:
                 widget_to_hide.setVisible(False)
-        safe_hide_widget("right_column_widget") 
+        safe_hide_widget("right_column_widget")
         safe_hide_widget("rpm_row")
         safe_hide_widget("concurrent_row")
         middle_panel_layout.addWidget(self.model_settings_widget, 1)
@@ -315,7 +335,7 @@ class CorrectionSessionPage(ShellPage):
         log_group_layout.addWidget(self.log_widget)
         middle_panel_layout.addWidget(log_group, 1)
         content_layout.addLayout(middle_panel_layout)
-        
+
         # --- Нижняя панель (Промпт + Оптимизация СЛЕВА-НАПРАВО) ---
         prompt_settings_layout = QHBoxLayout()
 
@@ -336,16 +356,17 @@ class CorrectionSessionPage(ShellPage):
         # 4. Правая колонка: Оптимизация
         optimization_group = QGroupBox("Оптимизация запроса")
         optimization_group.setObjectName("ai_correction_optimization_group")
-        optimization_layout = QVBoxLayout(optimization_group) 
-        
+        optimization_layout = QVBoxLayout(optimization_group)
+
         # --- ТРИ ВКЛАДКИ ---
         opt_tabs = QtWidgets.QTabWidget()
-        
+        opt_tabs.setObjectName("correctionOptTabs")
+
         # === ВКЛАДКА 1: ДАННЫЕ (Адаптивная) ===
         tab_general = QWidget()
         layout_general = QVBoxLayout(tab_general)
         layout_general.setContentsMargins(5, 10, 5, 5)
-        
+
         # Создаем сетку и сохраняем ссылку на неё
         self.data_grid_layout = QGridLayout()
         self.data_grid_layout.setColumnStretch(0, 1)
@@ -371,7 +392,7 @@ class CorrectionSessionPage(ShellPage):
         self.cb_overlaps = QCheckBox("Наложения")
         self.cb_overlaps.setToolTip("Проблемы вхождения одного термина в другой.")
         self.cb_overlaps.setChecked(False)
-        
+
         layout_general.addLayout(self.data_grid_layout)
 
         self.frequency_group = QGroupBox("Частотный диапазон")
@@ -401,36 +422,36 @@ class CorrectionSessionPage(ShellPage):
 
         self.frequency_status_label = QLabel("Частотный анализ не запускался.")
         self.frequency_status_label.setWordWrap(True)
-        self.frequency_status_label.setStyleSheet("color: grey;")
+        self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
         frequency_layout.addWidget(self.frequency_status_label)
 
         layout_general.addWidget(self.frequency_group)
         layout_general.addStretch(1) # Пружина снизу
         opt_tabs.addTab(tab_general, "Данные")
-        
+
         # === ВКЛАДКА 2: ПАТТЕРНЫ ===
         tab_patterns = QWidget()
         layout_patterns = QVBoxLayout(tab_patterns)
         layout_patterns.setContentsMargins(5, 10, 5, 5)
-        
+
         pattern_grid = QGridLayout()
-        
+
         self.toggle_patterns_btn = QPushButton("Включить анализ")
         self.toggle_patterns_btn.setToolTip("Найти группы с общей структурой.")
         self.toggle_patterns_btn.setCheckable(True)
-        
+
         self.pattern_group_size_spinbox = NoScrollSpinBox(self)
         self.pattern_group_size_spinbox.setMinimum(2); self.pattern_group_size_spinbox.setMaximum(20); self.pattern_group_size_spinbox.setValue(3)
 
         pattern_grid.addWidget(self.toggle_patterns_btn, 0, 0, 1, 2)
         pattern_grid.addWidget(QLabel("Мин. группа:"), 1, 0)
         pattern_grid.addWidget(self.pattern_group_size_spinbox, 1, 1)
-        
+
         self.cb_hierarchical_patterns = QCheckBox("Иерархическая структура")
         self.cb_hierarchical_patterns.setToolTip("Группировать термины внутри паттернов по подгруппам для лучшего контекста.")
         self.cb_hierarchical_patterns.setChecked(True)
-        pattern_grid.addWidget(self.cb_hierarchical_patterns, 2, 0, 1, 2) 
-        
+        pattern_grid.addWidget(self.cb_hierarchical_patterns, 2, 0, 1, 2)
+
         layout_patterns.addLayout(pattern_grid)
         layout_patterns.addStretch(1)
 
@@ -442,14 +463,14 @@ class CorrectionSessionPage(ShellPage):
         layout_hidden.setContentsMargins(5, 10, 5, 5)
 
         overlap_grid = QGridLayout()
-        
+
         self.toggle_partial_btn = QPushButton("Включить анализ")
         self.toggle_partial_btn.setToolTip("Найти похожие оригиналы с разными переводами.")
         self.toggle_partial_btn.setCheckable(True)
-        
+
         self.overlap_len_spinbox = NoScrollSpinBox(self)
         self.overlap_len_spinbox.setMinimum(1); self.overlap_len_spinbox.setMaximum(20)
-        
+
         self.divergence_spinbox = NoScrollSpinBox(self)
         self.divergence_spinbox.setMinimum(5); self.divergence_spinbox.setMaximum(95); self.divergence_spinbox.setValue(30); self.divergence_spinbox.setSuffix(" %")
 
@@ -458,20 +479,20 @@ class CorrectionSessionPage(ShellPage):
         overlap_grid.addWidget(self.overlap_len_spinbox, 1, 1)
         overlap_grid.addWidget(QLabel("Расхождение:"), 2, 0)
         overlap_grid.addWidget(self.divergence_spinbox, 2, 1)
-        
+
         layout_hidden.addLayout(overlap_grid)
         layout_hidden.addStretch(1)
         opt_tabs.addTab(tab_hidden, "Скрытые")
 
         # Добавляем табы в layout группы
         optimization_layout.addWidget(opt_tabs)
-        
+
         # Информация о токенах - ВНИЗУ
         self.token_info_label = QLabel("Расчет…")
         self.token_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.token_info_label.setStyleSheet("font-weight: bold; font-size: 10pt; margin-top: 5px;")
         optimization_layout.addWidget(self.token_info_label)
-        
+
         prompt_settings_layout.addWidget(optimization_group, 1)
         content_layout.addLayout(prompt_settings_layout, 1)
 
@@ -485,16 +506,16 @@ class CorrectionSessionPage(ShellPage):
         self.cb_frequency_filter.stateChanged.connect(self._on_frequency_filter_toggled)
         self.freq_min_spinbox.valueChanged.connect(self._on_frequency_range_changed)
         self.freq_max_spinbox.valueChanged.connect(self._on_frequency_range_changed)
-        
+
         self.toggle_partial_btn.clicked.connect(self._on_toggle_partial_overlaps)
         self.overlap_len_spinbox.valueChanged.connect(self._on_overlap_settings_changed)
         self.divergence_spinbox.valueChanged.connect(self._on_overlap_settings_changed)
         self.toggle_patterns_btn.clicked.connect(self._on_toggle_patterns)
         self.pattern_group_size_spinbox.valueChanged.connect(self._on_pattern_settings_changed)
         self.key_widget.active_keys_changed.connect(self._update_start_button_state)
-        
+
         # Инициализация
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
             glossary_sample = main_window.get_glossary()[:50]
             cjk_count = sum(1 for entry in glossary_sample if LanguageDetector.is_cjk_text(entry.get('original', '')))
@@ -507,17 +528,17 @@ class CorrectionSessionPage(ShellPage):
 
         self.key_widget.provider_combo.currentIndexChanged.emit(self.key_widget.provider_combo.currentIndex())
         self.loading_label.setVisible(False)
-        self.main_content_widget.setVisible(True)
-        
+        self.content_scroll_area.setVisible(True)
+
         # ЗАПУСКАЕМ АДАПТИВНУЮ КОМПОНОВКУ
         self._repack_data_tab_layout()
         self._initialize_frequency_filter()
         self._update_start_button_state()
-        
+
         app = QtWidgets.QApplication.instance()
         if app and hasattr(app, 'event_bus'):
             app.event_bus.event_posted.connect(self._on_global_event)
-        
+
         self._ui_is_fully_loaded = True
         self.update_token_estimation()
     def perform_dry_run(self):
@@ -535,14 +556,14 @@ class CorrectionSessionPage(ShellPage):
 
         # 2. Подменяем настройки на Dry Run
         settings.update({
-            'provider': 'dry_run', 
-            'api_keys': ['dry_run_dummy_key'], 
-            'num_instances': 1, 
+            'provider': 'dry_run',
+            'api_keys': ['dry_run_dummy_key'],
+            'num_instances': 1,
             'rpm_limit': 1000
         })
 
         self.log_widget.clear()
-        
+
         # 3. Активируем UI режим сессии
         self._set_session_active(True)
         self.dry_run_btn.setText("Обработка…")
@@ -555,18 +576,18 @@ class CorrectionSessionPage(ShellPage):
             'source': 'CorrectionDialog',
             'data': {'settings': settings}
         })
-        
+
     def _prepare_task_context(self):
         """
-        Вспомогательный метод: собирает данные, проверяет лимиты, 
+        Вспомогательный метод: собирает данные, проверяет лимиты,
         генерирует промпт, создает виртуальный файл и ставит задачу в очередь.
         Возвращает dict settings, если все успешно, или None, если отмена/ошибка.
         """
         settings = self.get_settings()
-        
+
         # --- Шаг 1: Подготовка данных ---
         data_for_ai, estimated_tokens, found_blocks, context_was_added, _, _, _ = self._get_data_and_estimate_tokens()
-        if data_for_ai is None: 
+        if data_for_ai is None:
             return None
 
         if self.cb_frequency_filter.isChecked() and self._term_frequency_map:
@@ -578,11 +599,11 @@ class CorrectionSessionPage(ShellPage):
                     "Выбранный диапазон частот не включает ни одного термина. Измените границы фильтра."
                 )
                 return None
-        
+
         # --- Логика проверки контента ---
         is_full_context = self.cb_context.isChecked()
         if not is_full_context and not found_blocks:
-            QMessageBox.information(self, "Нет проблем", 
+            QMessageBox.information(self, "Нет проблем",
                                     "Вы отключили отправку всего глоссария, но не выбрали ни одной категории проблем (или проблем нет).\n"
                                     "Данных для отправки нет.")
             return None
@@ -609,14 +630,14 @@ class CorrectionSessionPage(ShellPage):
             cancel_button = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
             msg_box.setDefaultButton(cancel_button)
             msg_box.exec()
-            
+
             if msg_box.clickedButton() != continue_button:
                 return None
 
         # --- Сборка промпта и задачи ---
         final_prompt_template = self._build_final_prompt(found_blocks, context_was_added)
         settings['glossary_generation_prompt'] = final_prompt_template
-        
+
         if not self.engine.task_manager:
             QMessageBox.warning(self, "Критическая ошибка", "TaskManager не доступен.")
             return None
@@ -627,9 +648,9 @@ class CorrectionSessionPage(ShellPage):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка создания данных", f"Не удалось подготовить виртуальный файл:\n{e}")
             return None
-        
+
         task = ('glossary_batch_task', virtual_epub_path, (VIRTUAL_CHAPTER_PATH,))
-        
+
         # Очищаем очередь и добавляем задачу
         self.engine.task_manager.clear_all_queues()
         self.engine.task_manager.clear_glossary_results()
@@ -642,13 +663,13 @@ class CorrectionSessionPage(ShellPage):
         Адаптивно перестраивает сетку чекбоксов во вкладке 'Данные'.
         Скрытые (пустые) категории не занимают место в layout.
         """
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
 
         # 1. Определяем, какие виджеты должны быть показаны
         widgets_to_show = []
-        
+
         # Context и Notes всегда доступны, если глоссарий не пуст (но покажем всегда для простоты управления)
         widgets_to_show.append(self.cb_context)
         widgets_to_show.append(self.cb_notes)
@@ -684,8 +705,8 @@ class CorrectionSessionPage(ShellPage):
             col = index % columns
             self.data_grid_layout.addWidget(widget, row, col)
             widget.setVisible(True) # Убеждаемся, что он видим
- 
- 
+
+
     def refresh_data(self):
         """
         Публичный метод для принудительного обновления данных из родительского окна.
@@ -701,7 +722,7 @@ class CorrectionSessionPage(ShellPage):
         self.update_token_estimation()
 
     def _resolve_frequency_sources(self):
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return None, None
 
@@ -715,7 +736,7 @@ class CorrectionSessionPage(ShellPage):
         self._term_frequency_payload = {}
         self._term_frequency_map = {}
 
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         glossary = main_window.get_glossary() if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage') else []
 
         self.cb_frequency_filter.blockSignals(True)
@@ -727,7 +748,7 @@ class CorrectionSessionPage(ShellPage):
 
         if not self._frequency_epub_path or not os.path.exists(self._frequency_epub_path):
             self.frequency_group.setEnabled(False)
-            self.frequency_status_label.setStyleSheet("color: grey;")
+            self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
             self.frequency_status_label.setText("Частотный фильтр недоступен: для проекта не найден исходный EPUB.")
             return
 
@@ -741,12 +762,12 @@ class CorrectionSessionPage(ShellPage):
             self._apply_term_frequency_payload(cached_payload, from_cache=True)
             return
 
-        self.frequency_status_label.setStyleSheet("color: grey;")
+        self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
         self.frequency_status_label.setText("Частотный анализ запускается в фоне…")
         self._start_frequency_analysis()
 
     def _start_frequency_analysis(self):
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
         if not self._frequency_epub_path or not os.path.exists(self._frequency_epub_path):
@@ -758,7 +779,7 @@ class CorrectionSessionPage(ShellPage):
         self.cb_frequency_filter.setEnabled(False)
         self.freq_min_spinbox.setEnabled(False)
         self.freq_max_spinbox.setEnabled(False)
-        self.frequency_status_label.setStyleSheet("color: grey;")
+        self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
         self.frequency_status_label.setText("Частотный анализ: подготовка…")
 
         self._frequency_worker = GlossaryFrequencyWorker(self._frequency_epub_path, glossary, self)
@@ -768,7 +789,7 @@ class CorrectionSessionPage(ShellPage):
         self._frequency_worker.start()
 
     def _on_frequency_progress(self, current, total, filename):
-        self.frequency_status_label.setStyleSheet("color: grey;")
+        self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
         self.frequency_status_label.setText(
             f"Частотный анализ: {current}/{max(1, total)} — {filename}"
         )
@@ -788,7 +809,7 @@ class CorrectionSessionPage(ShellPage):
         self.cb_frequency_filter.setEnabled(False)
         self.freq_min_spinbox.setEnabled(False)
         self.freq_max_spinbox.setEnabled(False)
-        self.frequency_status_label.setStyleSheet("color: #E67E22;")
+        self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('warning')}")
         self.frequency_status_label.setText(f"Частотный анализ недоступен: {message}")
         self._frequency_worker = None
         self.update_token_estimation()
@@ -802,7 +823,7 @@ class CorrectionSessionPage(ShellPage):
             self.cb_frequency_filter.setEnabled(False)
             self.freq_min_spinbox.setEnabled(False)
             self.freq_max_spinbox.setEnabled(False)
-            self.frequency_status_label.setStyleSheet("color: grey;")
+            self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
             self.frequency_status_label.setText("Частотный анализ завершён, но терминов с данными не найдено.")
             self.update_token_estimation()
             return
@@ -832,7 +853,7 @@ class CorrectionSessionPage(ShellPage):
 
     def _update_frequency_status_label(self, from_cache=False):
         if not self._term_frequency_map:
-            self.frequency_status_label.setStyleSheet("color: grey;")
+            self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
             self.frequency_status_label.setText("Частотный анализ не запускался.")
             return
 
@@ -841,14 +862,14 @@ class CorrectionSessionPage(ShellPage):
         if self.cb_frequency_filter.isChecked():
             selected_terms = len(self._get_frequency_allowed_terms())
             source_text = "кэш" if from_cache else "обновлено"
-            self.frequency_status_label.setStyleSheet("color: #7FB3D5;")
+            self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('info')}")
             self.frequency_status_label.setText(
                 f"Частотные данные ({source_text}): диапазон {self.freq_min_spinbox.value()}–{self.freq_max_spinbox.value()} "
                 f"из {min_count}–{max_count} вхождений, в AI-корректор попадут {selected_terms} из {total_terms} терминов."
             )
         else:
             source_text = "кэша" if from_cache else "анализа"
-            self.frequency_status_label.setStyleSheet("color: grey;")
+            self.frequency_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
             self.frequency_status_label.setText(
                 f"Доступны частоты из {source_text}: {total_terms} терминов, диапазон {min_count}–{max_count} вхождений."
             )
@@ -888,7 +909,7 @@ class CorrectionSessionPage(ShellPage):
         allowed_terms = set()
         source_entries = glossary_entries
         if source_entries is None:
-            main_window = self.parent()
+            main_window = self._get_glossary_owner()
             if main_window and main_window.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
                 source_entries = main_window.get_glossary()
             else:
@@ -908,10 +929,10 @@ class CorrectionSessionPage(ShellPage):
         return allowed_terms
 
     def _get_data_and_estimate_tokens(self):
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return None, 0, None, False, 0, 0, 0
-    
+
         # Сброс реестра усыновленных терминов
         self.adopted_terms_registry = set()
 
@@ -920,17 +941,17 @@ class CorrectionSessionPage(ShellPage):
         all_reverse = main_window.reverse_issues
         all_overlaps = main_window.overlap_groups
         all_inv_overlaps = main_window.inverted_overlaps
-        
+
         cached_patterns = (self._cached_pattern_results or {}) if self.patterns_included else {}
         cached_hidden_data = (self._cached_analysis_results or {}) if self.partial_overlaps_included else {}
         raw_glossary = main_window.get_glossary()
         allowed_terms = None
         if self.cb_frequency_filter.isChecked() and self._term_frequency_map:
             allowed_terms = self._get_frequency_allowed_terms(raw_glossary)
-    
+
         processed_terms = set()
         found_blocks = {}
-    
+
         # 2.1 Прямые
         if self.cb_direct.isChecked() and all_direct:
             conflict_terms = sorted(list(all_direct.keys()))
@@ -939,7 +960,7 @@ class CorrectionSessionPage(ShellPage):
             if conflict_terms:
                 found_blocks['direct'] = conflict_terms
                 processed_terms.update(conflict_terms)
-        
+
         # 2.2 Обратные
         if self.cb_reverse.isChecked() and all_reverse:
             rev_terms = set()
@@ -947,16 +968,16 @@ class CorrectionSessionPage(ShellPage):
                 rev_terms.update(e['original'] for e in data.get('complete', []))
             if allowed_terms is not None:
                 rev_terms = {term for term in rev_terms if term in allowed_terms}
-            
+
             if rev_terms:
                 found_blocks['reverse'] = sorted(list(rev_terms))
                 processed_terms.update(rev_terms)
-    
+
         # === 2.3 НАЛОЖЕНИЯ (Подготовка) ===
-        
+
         final_overlap_blocks = []
-        mobile_overlaps = [] 
-        
+        mobile_overlaps = []
+
         if self.cb_overlaps.isChecked():
             # 1. Получаем отсортированные группы
             raw_overlap_blocks = self._analyze_overlaps_complex(
@@ -965,35 +986,35 @@ class CorrectionSessionPage(ShellPage):
                 processed_terms,
                 allowed_terms=allowed_terms,
             )
-            
+
             # 2. Разделяем: Связанные (остаются) vs Мобильные (кандидаты в паттерны)
             connected_overlaps = []
-            
+
             if raw_overlap_blocks:
                 for i, block in enumerate(raw_overlap_blocks):
                     is_entangled = False
                     my_cluster = block['full_cluster']
-                    
+
                     for j, other in enumerate(raw_overlap_blocks):
                         if i == j: continue
                         # Если есть пересечение с другой НЕ пустой группой
                         if not my_cluster.isdisjoint(other['full_cluster']) and len(other['unique_terms']) > 0:
                             is_entangled = True
                             break
-                    
+
                     if is_entangled:
                         connected_overlaps.append(block)
                     else:
                         mobile_overlaps.append(block)
-            
+
             # 3. Добавляем связанные сразу (они слишком запутаны для паттернов)
             for block in connected_overlaps:
                 final_overlap_blocks.append(block)
                 processed_terms.update(block['unique_terms'])
-        
+
         # === 2.4 ПАТТЕРНЫ (Complex Logic) ===
         actual_pattern_count = 0
-        
+
         if cached_patterns:
             # Вызываем новый метод для анализа, балансировки и сортировки
             # Он изменяет mobile_overlaps (удаляет поглощенные) и обновляет adopted_terms_registry
@@ -1003,15 +1024,15 @@ class CorrectionSessionPage(ShellPage):
                 processed_terms,
                 allowed_terms=allowed_terms,
             )
-            
+
             if ordered_patterns:
                 found_blocks['patterns'] = ordered_patterns
                 actual_pattern_count = len(ordered_patterns)
-                
+
                 # Обновляем processed_terms
                 for members in ordered_patterns.values():
                     processed_terms.update(members)
-        
+
         # 2.5 Остатки мобильных (те, что не вошли ни в один паттерн)
         if mobile_overlaps:
             for mob in mobile_overlaps:
@@ -1023,18 +1044,18 @@ class CorrectionSessionPage(ShellPage):
                 if mob['unique_terms']:
                     final_overlap_blocks.append(mob)
                     processed_terms.update(mob['unique_terms'])
-        
+
         # Финализируем наложения (если остались)
         if final_overlap_blocks:
             # Еще раз сортируем, так как состав мог измениться
             found_blocks['overlaps'] = self._sort_groups_by_gravity(final_overlap_blocks)
-        
+
         # 2.6 Скрытые (без изменений)
         actual_hidden_count = 0
         actual_neighbors_count = 0
         raw_hidden_conflicts = set()
         raw_context_neighbors = set()
-        
+
         if cached_hidden_data:
             threshold = self.divergence_spinbox.value() / 100.0
             for group_data in cached_hidden_data.values():
@@ -1043,22 +1064,22 @@ class CorrectionSessionPage(ShellPage):
                     group_terms &= allowed_terms
                 raw_context_neighbors.update(group_terms)
                 divergence = abs(group_data['original_dossier']['universal_similarity'] - group_data['translation_dossier']['universal_similarity'])
-                if divergence > threshold: 
+                if divergence > threshold:
                     raw_hidden_conflicts.update(group_terms)
-    
+
         final_hidden_conflicts = sorted(list(raw_hidden_conflicts - processed_terms))
-        
+
         if final_hidden_conflicts and self.partial_overlaps_included:
             found_blocks['hidden'] = []
             hidden_graph = defaultdict(set)
             hidden_set = set(final_hidden_conflicts)
-            
+
             for data in cached_hidden_data.values():
                 terms = list(data['terms'])
                 if len(terms) == 2 and terms[0] in hidden_set and terms[1] in hidden_set:
                     hidden_graph[terms[0]].add(terms[1])
                     hidden_graph[terms[1]].add(terms[0])
-            
+
             visited = set()
             for term in final_hidden_conflicts:
                 if term not in visited:
@@ -1073,13 +1094,13 @@ class CorrectionSessionPage(ShellPage):
                                 visited.add(neighbor)
                                 q.append(neighbor)
                     found_blocks['hidden'].append(sorted(component))
-            
+
             actual_hidden_count = len(final_hidden_conflicts)
             processed_terms.update(final_hidden_conflicts)
-            
+
         final_neighbors_set = raw_context_neighbors - processed_terms
         actual_neighbors_count = len(final_neighbors_set)
-    
+
         # --- Шаг 3: Вывод ---
         if self.cb_context.isChecked():
             glossary_to_format = [
@@ -1093,12 +1114,12 @@ class CorrectionSessionPage(ShellPage):
                 if e.get('original') in final_neighbors_set
                 and (allowed_terms is None or e.get('original') in allowed_terms)
             ]
-        
+
         glossary_multimap = defaultdict(list)
         for e in raw_glossary:
             if e.get('original'):
                 glossary_multimap[e['original']].append(e)
-        
+
         include_notes = self.cb_notes.isChecked()
         output_lines = []
         context_was_added = False
@@ -1131,20 +1152,20 @@ class CorrectionSessionPage(ShellPage):
                 if lines:
                     output_lines.extend(lines)
                     output_lines.append("")
-        
+
         if found_blocks.get('overlaps'):
             output_lines.append("\n--- OVERLAPS ---\n")
-            
+
             overlap_list = found_blocks['overlaps']
             for i, group in enumerate(overlap_list):
                 if i > 0: output_lines.append("")
                 output_lines.append(f'--- "{group["leader"]}" ---')
-                
+
                 matches = group.get('matches', {})
                 for term in group['unique_terms']:
                     lines = self._format_compact_group([term], glossary_multimap, include_notes)
                     output_lines.extend(lines)
-                    
+
                     if term in matches:
                         children = sorted(matches[term])
                         children_lines = self._format_compact_group(children, glossary_multimap, include_notes)
@@ -1175,11 +1196,11 @@ class CorrectionSessionPage(ShellPage):
         # if found_blocks.get('patterns'):
             # print(data_as_free_text)
         estimated_tokens = TokenCounter().estimate_tokens(data_as_free_text)
-        
+
         return (data_as_free_text, estimated_tokens, found_blocks, context_was_added,
                 actual_hidden_count, actual_neighbors_count, actual_pattern_count)
 
-                
+
 
     def _analyze_overlaps_complex(self, all_overlaps, all_inv_overlaps, processed_terms, allowed_terms=None):
         """
@@ -1203,12 +1224,12 @@ class CorrectionSessionPage(ShellPage):
                 'full_cluster': set(cluster),
                 'score': score
             })
-        
+
         # Сортируем: сначала самые жирные и важные группы
         candidates.sort(key=lambda x: x['score'], reverse=True)
-        
+
         final_groups = []
-        
+
         # 2. Жадное формирование + Усыновление
         for cand in candidates:
             # Вычисляем уникальные термины (вычитаем глобально обработанные)
@@ -1216,51 +1237,51 @@ class CorrectionSessionPage(ShellPage):
                 t for t in sorted(list(cand['full_cluster']))
                 if t not in processed_terms and (allowed_terms is None or t in allowed_terms)
             ]
-            
+
             if not unique_terms:
                 continue
 
             # Проверка на сиротство
             is_orphan = (len(unique_terms) == 1)
             adopted = False
-            
+
             if is_orphan:
                 orphan = unique_terms[0]
-                
+
                 # Ищем родителя среди УЖЕ созданных групп
                 for group in final_groups:
                     # Критерий: сирота является частью какого-то термина в группе
                     # или входит в полный кластер группы (родственные связи)
-                    
+
                     target_parent_term = None
-                    
+
                     # А. Проверка через полный кластер (самая надежная связь)
                     if orphan in group['full_cluster']:
                         # Привязываем к лидеру или первому термину
                         target_parent_term = group['unique_terms'][0]
-                    
+
                     # Б. Проверка подстроки среди уникальных терминов (визуальная связь)
                     if not target_parent_term:
                         for term in group['unique_terms']:
                             if orphan in term: # Mandara содержит Manda
                                 target_parent_term = term
                                 break
-                    
+
                     # Если нашли родителя
                     if target_parent_term:
                         if 'matches' not in group: group['matches'] = defaultdict(list)
                         group['matches'][target_parent_term].append(orphan)
-                        
+
                         # Добавляем в полный кластер группы для будущей гравитации
                         group['full_cluster'].add(orphan)
                         # Добавляем в список "усыновленных" для учета веса
                         if 'adopted_list' not in group: group['adopted_list'] = set()
                         group['adopted_list'].add(orphan)
-                        
+
                         processed_terms.add(orphan)
                         adopted = True
                         break # Сирота пристроен, дальше не ищем
-            
+
             if not adopted:
                 # Создаем новую полноценную группу
                 new_group = {
@@ -1276,7 +1297,7 @@ class CorrectionSessionPage(ShellPage):
 
         # 3. Отправляем на гравитационную сортировку
         return self._sort_groups_by_gravity(final_groups)
-        
+
     def _analyze_overlaps_with_gravity(self, all_overlaps, all_inv_overlaps, processed_terms):
         """
         Сложная логика обработки наложений:
@@ -1300,20 +1321,20 @@ class CorrectionSessionPage(ShellPage):
                 'full_cluster': set(cluster), # Для расчета связей
                 'score': score
             })
-        
+
         # Сортируем по убыванию важности (первичная сортировка)
         candidates.sort(key=lambda x: x['score'], reverse=True)
-        
+
         # --- 2. Жадное вычитание (формирование блоков) ---
         valid_groups = []
-        
+
         for cand in candidates:
             # Вычисляем уникальные термины (которые еще не были обработаны)
             unique_terms = [t for t in sorted(list(cand['full_cluster'])) if t not in processed_terms]
-            
+
             if not unique_terms:
                 continue
-                
+
             # Регистрируем группу
             group_data = {
                 'leader': cand['leader'],
@@ -1323,7 +1344,7 @@ class CorrectionSessionPage(ShellPage):
             }
             valid_groups.append(group_data)
             processed_terms.update(unique_terms)
-            
+
         # --- 3. Гравитационная сортировка ---
         return self._sort_groups_by_gravity(valid_groups)
 
@@ -1331,7 +1352,7 @@ class CorrectionSessionPage(ShellPage):
     def _reset_partial_overlap_button(self):
         # --- НОВОЕ: Сначала инвалидируем кэш ---
         self._cached_analysis_results = None
-        
+
         self.partial_overlaps_included = False
         self.toggle_partial_btn.setChecked(False)
         self.toggle_partial_btn.setText("Анализ скрытых конфликтов")
@@ -1341,7 +1362,7 @@ class CorrectionSessionPage(ShellPage):
     def _on_overlap_settings_changed(self):
         """При любом изменении настроек - принудительно сбрасываем состояние анализа."""
         self._reset_partial_overlap_button()
-    
+
     def _post_event(self, name: str, data: dict = None):
         """
         Просто и безопасно отправляет событие в шину из любого потока.
@@ -1358,7 +1379,7 @@ class CorrectionSessionPage(ShellPage):
             }
             # Просто вызываем emit. Qt сделает все остальное.
             app.event_bus.event_posted.emit(event)
-        
+
     def _on_toggle_partial_overlaps(self):
         # Если UI еще не загружен, ничего не делаем
         if not hasattr(self, 'toggle_partial_btn'): return
@@ -1371,7 +1392,7 @@ class CorrectionSessionPage(ShellPage):
             # Вызываем "безголовый" метод для реальной работы
             self._run_partial_overlap_analysis()
             self.toggle_partial_btn.setEnabled(True)
-        
+
         # Управляем состоянием ВКЛ/ВЫКЛ
         self.partial_overlaps_included = not self.partial_overlaps_included if not cache_was_invalid else True
         self.update_token_estimation()
@@ -1388,7 +1409,7 @@ class CorrectionSessionPage(ShellPage):
             # Вызываем "безголовый" метод для реальной работы
             self._run_pattern_analysis()
             self.toggle_patterns_btn.setEnabled(True)
-        
+
         # Управляем состоянием ВКЛ/ВЫКЛ
         self.patterns_included = not self.patterns_included if not cache_was_invalid else True
         self.update_token_estimation()
@@ -1397,18 +1418,18 @@ class CorrectionSessionPage(ShellPage):
     def _run_partial_overlap_analysis(self):
         """Безопасный 'безголовый' метод для запуска анализа скрытых конфликтов."""
         if self._cached_analysis_results is None:
-            main_window = self.parent()
+            main_window = self._get_glossary_owner()
             if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'): return
 
             # --- ИЗМЕНЕНИЕ: Не собираем base_conflicts, передаем пустой set() ---
             # Мы хотим найти ВСЕ возможные скрытые конфликты в кэш.
             # Фильтрация будет происходить динамически в _get_data_and_estimate_tokens
-            
+
             min_len = self.overlap_len_spinbox.value() if hasattr(self, 'overlap_len_spinbox') else 4
             self._cached_analysis_results = main_window.logic.find_partial_overlaps(
-                main_window.get_glossary(), 
+                main_window.get_glossary(),
                 set(), # <-- ПУСТОЙ НАБОР ИСКЛЮЧЕНИЙ
-                main_window.chinese_processor, 
+                main_window.chinese_processor,
                 min_overlap_len=min_len
             )
         self.partial_overlaps_included = True
@@ -1416,25 +1437,25 @@ class CorrectionSessionPage(ShellPage):
     def _run_pattern_analysis(self):
         """Безопасный 'безголовый' метод для запуска анализа паттернов."""
         if self._cached_pattern_results is None:
-            main_window = self.parent()
+            main_window = self._get_glossary_owner()
             if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'): return
 
             min_size = self.pattern_group_size_spinbox.value() if hasattr(self, 'pattern_group_size_spinbox') else 3
-            
+
             # ИСПОЛЬЗУЕМ НОВЫЙ МЕТОД
             # Он сразу вернет очищенные, схлопнутые и красивые паттерны
             self._cached_pattern_results = main_window.logic.analyze_patterns_smart(
-                main_window.get_glossary(), 
-                existing_conflicts_set=set(), 
+                main_window.get_glossary(),
+                existing_conflicts_set=set(),
                 min_group_size=min_size
             )
         self.patterns_included = True
-        
+
 
     def _reset_pattern_button(self):
         # --- НОВОЕ: Сначала инвалидируем кэш ---
         self._cached_pattern_results = None
-    
+
         self.patterns_included = False
         self.toggle_patterns_btn.setChecked(False)
         self.toggle_patterns_btn.setText("Анализ паттернов")
@@ -1456,14 +1477,14 @@ class CorrectionSessionPage(ShellPage):
         # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
         # Определяем стиль для активной кнопки ОДИН РАЗ, чтобы не повторяться
         # Используем селектор 'QPushButton', чтобы стиль не "протекал" в QToolTip
-        active_style = """
-            QPushButton {
-                background-color: #2ECC71;
-                color: white;
-            }
+        active_style = f"""
+            QPushButton {{
+                background-color: {theme_manager.color('success')};
+                color: {theme_manager.color('accent_text')};
+            }}
         """
         # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-    
+
         # Обновляем кнопку паттернов
         if self.patterns_included:
             self.toggle_patterns_btn.setText(f"✓ Включено ({pattern_count} паттернов)")
@@ -1471,7 +1492,7 @@ class CorrectionSessionPage(ShellPage):
         else:
             self.toggle_patterns_btn.setText("Анализ паттернов")
             self.toggle_patterns_btn.setStyleSheet("")
-    
+
         # Обновляем кнопку скрытых конфликтов
         if self.partial_overlaps_included:
             self.toggle_partial_btn.setText(f"✓ Включено (Конфл: {hidden_count}, Сосед: {neighbors_count})")
@@ -1479,16 +1500,16 @@ class CorrectionSessionPage(ShellPage):
         else:
             self.toggle_partial_btn.setText("Анализ скрытых конфликтов")
             self.toggle_partial_btn.setStyleSheet("")
-                
+
         settings = self.get_settings()
         model_name = settings.get('model_config', {}).get('name', 'unknown')
         model_config = api_config.all_models().get(model_name, {})
         limit = int(model_config.get("context_length", 128000) * 0.9)
-    
+
         self.token_info_label.setText(f"Запрос: <b>{tokens:,}</b> / {limit:,} токенов")
-        self.token_info_label.setStyleSheet("color: red;" if tokens > limit else "color: green;")
+        self.token_info_label.setStyleSheet(f"color: {theme_manager.color('danger')};" if tokens > limit else f"color: {theme_manager.color('success')};")
         self._update_start_button_state()
-    
+
     def _on_start_stop_clicked(self):
         if self.is_session_active:
             # Логика остановки
@@ -1505,7 +1526,7 @@ class CorrectionSessionPage(ShellPage):
             if not self.key_widget.get_active_keys():
                 QMessageBox.warning(self, "Нет ключей", "Не выбрано ни одного активного API ключа.")
                 return
-            
+
             # 1. Готовим задачу через общий метод
             settings = self._prepare_task_context()
             if not settings:
@@ -1514,9 +1535,9 @@ class CorrectionSessionPage(ShellPage):
             # 2. Сохраняем пресеты (только при реальном запуске)
             self.settings_manager.save_last_correction_prompt_text(self.prompt_widget.get_prompt())
             self.settings_manager.save_last_correction_prompt_preset_name(self.prompt_widget.get_current_preset_name())
-    
-            self._set_session_active(True) 
-            
+
+            self._set_session_active(True)
+
             # 3. Запускаем
             app = QtWidgets.QApplication.instance()
             app.event_bus.event_posted.emit({
@@ -1524,7 +1545,7 @@ class CorrectionSessionPage(ShellPage):
                 'source': 'CorrectionDialog',
                 'data': {'settings': settings}
             })
-    
+
     def _determine_realized_pattern(self, pattern_str, members):
         """
         Определяет, как лучше отобразить заголовок паттерна:
@@ -1534,7 +1555,7 @@ class CorrectionSessionPage(ShellPage):
         # Варианты написания
         spaced = pattern_str
         merged = pattern_str.replace(" ", "")
-        
+
         # 1. Приоритет: Полное совпадение (термин == паттерну)
         # Ищем, есть ли в группе термин, который совпадает с одним из вариантов (case-insensitive)
         for m in members:
@@ -1547,24 +1568,24 @@ class CorrectionSessionPage(ShellPage):
         # 2. Если полных совпадений нет, считаем частотность вхождения как подстроки
         count_spaced = 0
         count_merged = 0
-        
+
         for m in members:
             m_lower = m.lower()
             if merged.lower() in m_lower: count_merged += 1
             elif spaced.lower() in m_lower: count_spaced += 1
-            
+
         # Если слитное написание встречается чаще или равно (при условии наличия) — используем его
         if count_merged > 0 and count_merged >= count_spaced:
             return merged
-            
+
         return spaced
-    
+
     def _analyze_patterns_complex(self, cached_patterns, mobile_overlaps, processed_terms, allowed_terms=None):
         """
         Продвинутый анализ паттернов 11.0 (Super Glue Gravity):
         Усиленная гравитация для родственных заголовков, чтобы избежать разрывов контекста.
         """
-        main_window = self.parent()
+        main_window = self._get_glossary_owner()
         if not main_window or not cached_patterns:
             return []
 
@@ -1579,42 +1600,42 @@ class CorrectionSessionPage(ShellPage):
 
             raw_groups[pat_str] = {
                 'leader': pat_str,
-                'visual_members': set(),       
-                'gravity_pool': valid_members.copy(), 
+                'visual_members': set(),
+                'gravity_pool': valid_members.copy(),
                 'adopted': set(),
                 'len_leader': len(pat_str),
                 'initial_size': len(valid_members),
                 'clean_leader': pat_str.replace(" ", "").lower(),
-                'gravity_score': 0, 
+                'gravity_score': 0,
                 'internal_score': (len(pat_str) ** 2.0) * len(valid_members) # Усиливаем вес длины заголовка
             }
 
         # --- ЭТАП 1: Построение Глобальной Гравитации (Super Glue) ---
         all_keys = list(raw_groups.keys())
-        connections = defaultdict(float) 
+        connections = defaultdict(float)
 
         for i in range(len(all_keys)):
             key1 = all_keys[i]
             g1 = raw_groups[key1]
             l1 = g1['clean_leader']
-            
+
             for j in range(i + 1, len(all_keys)):
                 key2 = all_keys[j]
                 g2 = raw_groups[key2]
                 l2 = g2['clean_leader']
-                
+
                 # Базовый вес: Пересечение терминов
                 common = g1['gravity_pool'].intersection(g2['gravity_pool'])
                 weight = sum(len(t) for t in common)
-                
+
                 # --- SUPER GLUE: Бонусы за родство заголовков ---
-                
+
                 # 1. Прямое вхождение (Parent-Child)
                 # "Fire" in "Fireball" -> x10
                 if l1 in l2 or l2 in l1:
                     weight += 50.0 # Огромный константный бонус, чтобы гарантировать соседство
                     weight *= 5.0  # И мультипликатор для масштаба
-                
+
                 # 2. Общий суффикс/префикс (Siblings)
                 # "Fireball" и "Firestorm" (общий "Fire")
                 # Это сложно проверить быстро без токенизации, но можно проверить перекрытие множеств
@@ -1623,7 +1644,7 @@ class CorrectionSessionPage(ShellPage):
                     min_size = min(len(g1['gravity_pool']), len(g2['gravity_pool']))
                     if len(common) > min_size * 0.3:
                          weight *= 3.0
-                
+
                 if weight > 0:
                     g1['gravity_score'] += weight
                     g2['gravity_score'] += weight
@@ -1658,7 +1679,7 @@ class CorrectionSessionPage(ShellPage):
             # Сортируем по длине заголовка (Desc)
             candidates = [raw_groups[k] for k in contenders]
             candidates.sort(key=lambda x: x['len_leader'], reverse=True)
-            
+
             # Ищем "Дом" (полное совпадение)
             home_candidate = None
             term_clean = term.replace(" ", "").lower()
@@ -1666,7 +1687,7 @@ class CorrectionSessionPage(ShellPage):
                 if term_clean == cand['clean_leader']:
                     home_candidate = cand
                     break
-            
+
             if home_candidate:
                 self._assign_term_to_group(home_candidate['leader'], term, raw_groups, term_to_orphans_map)
                 continue
@@ -1674,23 +1695,23 @@ class CorrectionSessionPage(ShellPage):
             # --- НОВАЯ ЛОГИКА ВЕРСИИ 3.0: Прямой выбор лучшего кандидата ---
             # Вместо сложной логики "свержения" мы сразу выбираем лучшего кандидата
             # из ВСЕХ претендентов по вашему набору правил.
-            
-            # ВАЖНО: 'candidates' уже отсортированы по длине заголовка, 
+
+            # ВАЖНО: 'candidates' уже отсортированы по длине заголовка,
             # но мы пересортируем их по более сложному ключу для финального выбора.
-            
+
             final_winner = max(
                 candidates, # Используем ВЕСЬ список претендентов
                 key=lambda x: (
                     # 1. ПРИОРИТЕТ: Специфичность (Длина заголовка / Размер группы).
                     #    Чем выше это значение, тем более "экспертной" является группа.
                     (x['len_leader'] / (len(x['gravity_pool']) or 1)),
-                    
+
                     # 2. При равной специфичности - у кого длиннее заголовок.
                     x['len_leader'],
-                    
+
                     # 3. При прочих равных - у кого больше группа.
                     len(x['gravity_pool']),
-                    
+
                     # 4. Финальный критерий для стабильности - алфавитный порядок.
                     #    Используем отрицание для сортировки от 'z' к 'a'.
                     -ord(x['clean_leader'][0]) if x['clean_leader'] else 0
@@ -1712,11 +1733,11 @@ class CorrectionSessionPage(ShellPage):
 
         # --- ЭТАП 5: Сортировка ---
         sorted_groups = self._sort_by_iterative_rank_shifting(final_groups_list, connections, iterations=100)
-        
+
         result_ordered_dict = {}
         for grp in sorted_groups:
             result_ordered_dict[grp['leader']] = sorted(list(grp['visual_members']))
-            
+
         return result_ordered_dict
 
 
@@ -1744,7 +1765,7 @@ class CorrectionSessionPage(ShellPage):
             k1, k2 = list(key_pair)
             group_connections_count[k1] += 1
             group_connections_count[k2] += 1
-        
+
         current_order = sorted(
             groups,
             key=lambda g: (
@@ -1767,9 +1788,9 @@ class CorrectionSessionPage(ShellPage):
                 # Повторяем, пока вносятся какие-либо улучшения
                 while moved:
                     moved = False
-                    
+
                     # --- Прием 1: Long-Distance Castling (исправление разрывов) ---
-                    max_check_distance = min(n - 1, 2 + (i // 5)) 
+                    max_check_distance = min(n - 1, 2 + (i // 5))
                     for distance in range(max_check_distance, 1, -1):
                         if moved: break
                         for j in range(n - distance):
@@ -1788,48 +1809,48 @@ class CorrectionSessionPage(ShellPage):
                                 group_to_move = current_order.pop(j + distance)
                                 current_order.insert(j + 1, group_to_move)
                                 moved = True
-                    
-                    
+
+
                     if (i > int(iterations / 2) or elapsed >= 2) and (i % 7 == 0):
                         # --- Прием 2: Triangle Flip (размещение "мостов") ---
                         for j in range(n - 2):
                             g1, g2, g3 = current_order[j], current_order[j+1], current_order[j+2]
                             l1, l2, l3 = g1['leader'], g2['leader'], g3['leader']
-                            
+
                             # Условие: G3 связан с G1 и G2, но G1 и G2 не связаны
                             cond1 = frozenset([l1, l3]) in connections
                             cond2 = frozenset([l2, l3]) in connections
                             cond3 = frozenset([l1, l2]) not in connections
-                            
+
                             if cond1 and cond2 and cond3:
                                 # Меняем местами G2 и G3, чтобы G3 стал мостом
                                 current_order[j+1], current_order[j+2] = current_order[j+2], current_order[j+1]
                                 moved = True
                                 break # Список изменился, начинаем проверку заново
-                    
+
                     if moved: continue # Если была рокировка, начинаем проверку зановоif moved: continue # Если была рокировка, начинаем проверку заново
-                
+
                 continue # После хирургии переходим к следующей основной итерации
 
             # --- Основная логика: Магнитная Швартовка (v7.5) ---
             rank_map_before = {g['leader']: i for i, g in enumerate(current_order)}
-            
+
             groups_to_place = sorted(
                 current_order,
                 key=lambda g: -group_connections_count.get(g['leader'], 0)
             )
 
             placed_groups = []
-            
+
             for group_to_move in groups_to_place:
                 leader_to_move = group_to_move['leader']
-                
+
                 if not placed_groups:
                     placed_groups.append(group_to_move)
                     continue
-                
+
                 rank_map_placed = {g['leader']: i for i, g in enumerate(placed_groups)}
-                
+
                 connected_partners = []
                 for key_pair, strength in connections.items():
                     if leader_to_move in key_pair:
@@ -1837,7 +1858,7 @@ class CorrectionSessionPage(ShellPage):
                         if other_leader in rank_map_placed:
                             partner_rank = rank_map_placed[other_leader]
                             connected_partners.append({'rank': partner_rank, 'weight': strength, 'leader': other_leader})
-                
+
                 if not connected_partners:
                     ideal_rank = len(placed_groups)
                     temp_partners = []
@@ -1889,23 +1910,23 @@ class CorrectionSessionPage(ShellPage):
             # Пересечение полных кластеров (включая скрытые/исторические связи)
             intersection = g1['full_cluster'].intersection(g2['full_cluster'])
             weight = 0.0
-            
+
             leader1 = g1['leader']
             leader2 = g2['leader']
-            
+
             for term in intersection:
                 w = len(term)
-                
+
                 # --- БОНУС СИНЕРГИИ ---
                 # Если термин-мост содержит в себе ОБА паттерна, это мощнейшая связь.
                 # Пример: term="武装色霸气" физически соединяет паттерны "武装色" и "霸气".
                 if leader1 in term and leader2 in term:
                     w *= 3.0 # Утраиваем вес!
-                
+
                 # Штраф за усыновление (слабая связь)
                 is_adopted_1 = term in g1.get('adopted_list', set())
                 is_adopted_2 = term in g2.get('adopted_list', set())
-                
+
                 if is_adopted_1 or is_adopted_2:
                     weight += (w * 0.5)
                 else:
@@ -1913,22 +1934,22 @@ class CorrectionSessionPage(ShellPage):
             return weight
 
         unplaced = groups.copy()
-        
+
         # Находим самую значимую группу для начала
         unplaced.sort(key=lambda x: x['score'], reverse=True)
-        
+
         ordered = []
         current = unplaced.pop(0)
         ordered.append(current)
-        
+
         while unplaced:
             best_next = None
             max_weight = -1
             best_index = -1
-            
+
             for i, candidate in enumerate(unplaced):
                 weight = calc_weight(current, candidate)
-                
+
                 # Приоритет: Вес связи -> Изначальный Score
                 if weight > max_weight:
                     max_weight = weight
@@ -1938,16 +1959,16 @@ class CorrectionSessionPage(ShellPage):
                     if candidate['score'] > best_next['score']:
                         best_next = candidate
                         best_index = i
-            
+
             if max_weight > 0:
                 current = best_next
                 unplaced.pop(best_index)
             else:
                 # Разрыв цепи, берем следующую по важности
-                current = unplaced.pop(0) 
-            
+                current = unplaced.pop(0)
+
             ordered.append(current)
-            
+
         return ordered
 
 
@@ -1959,15 +1980,15 @@ class CorrectionSessionPage(ShellPage):
         - Выносит одиночек наверх.
         """
         lines = []
-        
+
         # Определяем умное имя для ГЛАВНОГО паттерна
         display_root_name = self._determine_realized_pattern(root_pattern, members)
-        
+
         # --- Helper: Функция плоского вывода ---
         def _add_flat_block(name, terms, display_title=None):
             final_title = display_title if display_title else self._determine_realized_pattern(name, terms)
             sorted_m = self._sort_members_with_leader(terms, name)
-            lines.append("") 
+            lines.append("")
             lines.append(f'--- Pattern: "{final_title}" ---')
             lines.extend(self._format_compact_group(sorted_m, glossary_multimap, include_notes))
 
@@ -1978,27 +1999,27 @@ class CorrectionSessionPage(ShellPage):
 
         # 2. Анализ подгрупп
         local_glossary = [{'original': m} for m in members]
-        main_window = self.parent()
-        
+        main_window = self._get_glossary_owner()
+
         sub_patterns = main_window.logic.analyze_patterns_with_substring(
             local_glossary, min_group_size=2, return_hierarchy=True, min_overlap_len=3
         )
-        
+
         # --- ФИЛЬТРАЦИЯ ДУБЛИРУЮЩИХ РОДИТЕЛЕЙ ---
         sorted_sub_keys = sorted(sub_patterns.keys(), key=len, reverse=True)
         valid_sub_patterns = []
-        
+
         root_members_set = set(members)
-        
+
         for p in sorted_sub_keys:
-            if p == root_pattern: continue 
-            
+            if p == root_pattern: continue
+
             # Если под-паттерн содержит ТЕ ЖЕ САМЫЕ термины, что и рут (или больше, что невозможно в данном контексте),
             # значит это просто "синоним" или более короткая версия заголовка. Она нам не нужна как подгруппа.
             sub_m_set = set(sub_patterns[p])
             if sub_m_set == root_members_set:
                 continue
-                
+
             valid_sub_patterns.append(p)
 
         # 3. Распределение (Жадное)
@@ -2012,7 +2033,7 @@ class CorrectionSessionPage(ShellPage):
             if valid_members:
                 grouped_terms[pattern] = valid_members
                 processed_members.update(valid_members)
-        
+
         leftovers = [m for m in members if m not in processed_members]
         if leftovers:
             grouped_terms["__BASE__"] = leftovers
@@ -2027,20 +2048,20 @@ class CorrectionSessionPage(ShellPage):
             if len(sub_mems) == 1:
                 promoted_singletons.extend(sub_mems)
                 keys_to_remove.append(sub_pat)
-        
+
         for k in keys_to_remove:
             del grouped_terms[k]
 
         # --- Проверка на вырождение ---
         real_subgroups = [k for k in grouped_terms.keys() if k != "__BASE__"]
-        
+
         if not real_subgroups and not promoted_singletons:
              _add_flat_block(root_pattern, members, display_title=display_root_name)
              return lines
 
         # --- ВЫВОД ПОЛНОЦЕННОЙ СЕМЬИ ---
         lines.append(f'\n---\n\n### PATTERN FAMILY: "{display_root_name}"')
-        
+
         # Вывод Одиночек
         if promoted_singletons:
             sorted_promoted = self._sort_members_with_leader(promoted_singletons, root_pattern)
@@ -2049,10 +2070,10 @@ class CorrectionSessionPage(ShellPage):
         # Вывод Базы
         if "__BASE__" in grouped_terms:
             base_members = self._sort_members_with_leader(grouped_terms["__BASE__"], root_pattern)
-            if promoted_singletons: lines.append("") 
+            if promoted_singletons: lines.append("")
             lines.extend(self._format_compact_group(base_members, glossary_multimap, include_notes))
             del grouped_terms["__BASE__"]
-            
+
         # Вывод Крупных Подгрупп
         for sub_pat in sorted(grouped_terms.keys()):
             sub_members = grouped_terms[sub_pat]
@@ -2061,24 +2082,24 @@ class CorrectionSessionPage(ShellPage):
 
             lines.append(f'\n>> SUB-GROUP: "{display_sub_name}"')
             lines.extend(self._format_compact_group(leader_sort, glossary_multimap, include_notes))
-        
+
         lines.append('\n---')
-            
+
         return lines
-        
+
     def _sort_members_with_leader(self, members_list, pattern_str):
         """
         Сортирует список: термин, совпадающий с паттерном (или его слитной версией), идет первым.
         """
         leader = None
         others = []
-        
+
         # Нормализация для поиска "слипшегося" лидера (Fire Ball -> fireball)
         pat_clean = pattern_str.replace(" ", "").lower()
-        
+
         for m in members_list:
             m_clean = m.replace(" ", "").lower()
-            
+
             # 1. Точное совпадение
             if m == pattern_str:
                 leader = m # Абсолютный приоритет
@@ -2087,19 +2108,19 @@ class CorrectionSessionPage(ShellPage):
                 leader = m
             else:
                 others.append(m)
-        
+
         # Если лидер был в others (из-за второго условия), убираем его оттуда
         if leader and leader in others:
             others.remove(leader)
-            
+
         others.sort()
-        
+
         if leader:
             return [leader] + others
         return others
-        
-        
-        
+
+
+
     def _format_term_group(self, title, term_list, glossary_map, include_notes):
         """Форматирует группу терминов в стандартный блок (Переводы, Примечания)."""
         lines = []
@@ -2107,14 +2128,14 @@ class CorrectionSessionPage(ShellPage):
             return lines
 
         lines.append(f'\n--- {title} ---')
-        
+
         # Сначала переводы
         translation_lines = []
         for term in term_list:
             entry = glossary_map.get(term)
             if entry and entry.get("rus"):
                 translation_lines.append(f'"{entry.get("original")}" = "{entry.get("rus")}"')
-        
+
         if translation_lines:
             lines.append("--- Translations ---")
             lines.extend(translation_lines)
@@ -2126,13 +2147,13 @@ class CorrectionSessionPage(ShellPage):
                 entry = glossary_map.get(term)
                 if entry and entry.get("note"):
                     note_lines.append(f'"{entry.get("rus")}" - "{entry.get("note")}"')
-            
+
             if note_lines:
                 lines.append("--- Notes ---")
                 lines.extend(note_lines)
-        
+
         return lines
-    
+
     def _format_compact_group(self, term_list, glossary_multimap, include_notes):
         """
         Форматирует группу терминов.
@@ -2146,18 +2167,18 @@ class CorrectionSessionPage(ShellPage):
         noise_chars = set(' .,;:!?"\'()[]{}-–—_=/\\|<>`~@#$%^&*+0123456789\t\n\r')
         structural_chars = set('/()[]+<>')
         cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
-        
+
         unique_terms = sorted(list(set(term_list)))
-        
+
         # Получаем доступ к реестру (безопасно)
         registry = getattr(self, 'adopted_terms_registry', set())
 
         for term in unique_terms:
             entries = glossary_multimap.get(term, [])
-            
+
             for entry in entries:
                 data_obj = {'rus': entry.get('rus', '')}
-                
+
                 if include_notes and entry.get('note'):
                     data_obj['note'] = entry.get('note')
 
@@ -2176,7 +2197,7 @@ class CorrectionSessionPage(ShellPage):
                             in_rus = char in rus_clean
                             if in_orig != in_rus:
                                 missing_structure.append(char)
-                        
+
                         if missing_structure:
                             warnings.append(f"Structural mismatch (check symbols: {' '.join(missing_structure)}).")
 
@@ -2185,7 +2206,7 @@ class CorrectionSessionPage(ShellPage):
 
                 json_key = json.dumps(term, ensure_ascii=False)
                 json_val = json.dumps(data_obj, ensure_ascii=False)
-                
+
                 # === ГЛАВНОЕ ИЗМЕНЕНИЕ: Визуализация структуры ===
                 prefix = "> " if term in registry else ""
                 lines.append(f'{prefix}{json_key}: {json_val},')
@@ -2199,31 +2220,31 @@ class CorrectionSessionPage(ShellPage):
         Все схемы и инструкции теперь загружаются из конфига.
         """
         base_prompt_template = self.prompt_widget.get_prompt()
-        
+
         # Мы не хотим, чтобы универсальный обработчик задач добавлял
         # свой контекстный глоссарий или примеры.
         # Добавляем их с новой строки для чистоты.
         base_prompt_template += "\n<suppress_glossary_injection/>\n<suppress_examples_injection/>"
-        
+
         include_notes = self.cb_notes.isChecked()
-        
+
         # Загружаем словарь текстов из конфига
         prompts = api_config.internal_prompts().get("correction_prompts", {})
         block_descs = prompts.get("block_descriptions", {})
         fmt_instr = prompts.get("format_instructions", {})
         schemas = fmt_instr.get("schemas", {}) # <-- Новая секция
         examples = prompts.get("examples", {})
-    
+
         description_parts = []
         description_parts.append(prompts.get("intro", "Data provided:"))
-        
+
         block_counter = 1
-        
+
         if context_was_added:
             desc = block_descs.get("context", "Context block.")
             description_parts.append(f'{block_counter}. {desc}')
             block_counter += 1
-    
+
         keys_to_check = ['conflicts', 'overlaps', 'patterns', 'hidden']
         for key in keys_to_check:
             if key in found_blocks and found_blocks[key]:
@@ -2232,36 +2253,36 @@ class CorrectionSessionPage(ShellPage):
                 block_counter += 1
 
         description_parts.append(fmt_instr.get("json_intro", "JSON Format:"))
-        
+
         if include_notes:
             # === СЛОЖНЫЙ РЕЖИМ (Rus + Note) ===
             # 1. Входная схема
             description_parts.append(schemas.get("input_with_notes", "`Input Schema`"))
-            
+
             # 2. Инструкции по валидации и нотам
             description_parts.append(fmt_instr.get("warning_hint", "Check warnings."))
             description_parts.append(fmt_instr.get("note_policy", "Keep metadata."))
-            
+
             # 3. Выходная схема
             description_parts.append(fmt_instr.get("task_goal", "Task:"))
             description_parts.append(schemas.get("output_with_notes", "`Output Schema`"))
-            
+
             example_json = examples.get("with_notes", "{}")
         else:
             # === ПРОСТОЙ РЕЖИМ (Rus only) ===
             # 1. Входная схема
             description_parts.append(schemas.get("input_simple", "`Input Simple Schema`"))
-            
+
             # 2. Выходная схема
             description_parts.append(fmt_instr.get("task_goal", "Task:"))
             description_parts.append(schemas.get("output_simple", "`Output Simple Schema`"))
-            
+
             example_json = examples.get("simple", "{}")
-        
+
         input_format_description = '\n'.join(description_parts)
         prompt_with_format = base_prompt_template.replace("{input_format_description}", input_format_description)
         final_prompt_for_session = prompt_with_format.replace("{example_json}", example_json)
-        
+
         return final_prompt_for_session
 
     def _create_virtual_epub(self, content_str: str, internal_chapter_path: str) -> str:
@@ -2279,15 +2300,15 @@ class CorrectionSessionPage(ShellPage):
                     zipfile.ZipFile(epub_file, 'w', zipfile.ZIP_DEFLATED) as zf:
                 # 3. Записываем нашу "главу" в этот виртуальный архив.
                 zf.writestr(internal_chapter_path, content_str.encode('utf-8'))
-            
+
             # 4. Файл уже создан в памяти. Просто возвращаем путь к нему.
             return virtual_path
-            
+
         except Exception as e:
             # Эта ошибка может возникнуть, если os_patch не сработал
             # или произошла проблема при записи в zip.
             raise IOError(f"Не удалось напрямую создать виртуальный EPUB в памяти: {e}")
-    
+
     @pyqtSlot(dict)
     def _on_global_event(self, event_data: dict):
         event_name = event_data.get('event')
@@ -2296,10 +2317,10 @@ class CorrectionSessionPage(ShellPage):
         if event_name == 'session_finished':
             # 1. Сначала деактивируем UI
             self._set_session_active(False)
-            
+
             # Сбрасываем текст кнопки Dry Run
             self.dry_run_btn.setText("🧪 Пробный запуск")
-            
+
             # 2. Затем выполняем "косметическую" синхронизацию стилей ключей
             try:
                 model_name = self.model_settings_widget.model_combo.currentText()
@@ -2313,10 +2334,10 @@ class CorrectionSessionPage(ShellPage):
             reason = event_data.get('data', {}).get('reason', '')
             if "Отменено" in reason or "Ошибка" in reason or "исчерпаны" in reason:
                 return
-            
+
             # 4. Обработка результата
             QtCore.QTimer.singleShot(0, self._process_results_from_db)
-    
+
     def _process_results_from_db(self):
         """
         Извлекает все строки-термины из БД, собирает из них единый патч,
@@ -2332,7 +2353,7 @@ class CorrectionSessionPage(ShellPage):
             with app.engine.task_manager._get_read_only_conn() as conn:
                 cursor = conn.execute("SELECT original, rus, note FROM glossary_results")
                 all_term_rows = cursor.fetchall()
-            
+
             # --- ЭТАП 2: Очистка (атомарная операция записи) ---
             with app.engine.task_manager._get_write_conn() as conn:
                 conn.execute("DELETE FROM glossary_results")
@@ -2351,11 +2372,11 @@ class CorrectionSessionPage(ShellPage):
                 original = term_row['original']
                 if not original:
                     continue
-                
+
                 term_data = {'rus': term_row['rus']}
                 if term_row['note']:
                     term_data['note'] = term_row['note']
-                
+
                 patch_dict[original] = term_data
 
         except Exception as e:
@@ -2364,23 +2385,23 @@ class CorrectionSessionPage(ShellPage):
                 app.engine.task_manager.clear_all_queues()
             QMessageBox.critical(self, "Ошибка обработки результата", f"Не удалось извлечь или обработать результат из базы данных:\n{e}")
             return
-        
+
         # 5. Передаем собранный патч на обработку
         self._handle_correction_patch(patch_dict)
-    
+
     def _handle_correction_patch(self, patch_dict: dict):
         """Принимает ГОТОВЫЙ словарь-патч и запускает диалог предпросмотра."""
         if not patch_dict:
             QMessageBox.information(self, "Результат", "AI-корректор не нашел терминов, требующих исправления.")
             return
-            
-        main_window = self.parent()
+
+        main_window = self._get_glossary_owner()
         if not main_window or main_window.__class__.__name__ not in ('MainWindow', 'GlossaryManagerPage'):
             return
 
         preview = CorrectionPreviewDialog(
-            main_window.get_glossary(), 
-            patch_dict, 
+            main_window.get_glossary(),
+            patch_dict,
             main_window.direct_conflicts,
             notes_were_included_in_prompt=self.cb_notes.isChecked(),
             morph_analyzer=self.morph_analyzer,
@@ -2390,25 +2411,25 @@ class CorrectionSessionPage(ShellPage):
             accepted_patch_list = preview.get_accepted_patch()
             if accepted_patch_list:
                 self.correction_accepted.emit(accepted_patch_list)
-                
+
                 # Считаем общее количество реальных изменений для сообщения
                 # (изменение = не просто удаление)
                 total_changes = sum(1 for p in accepted_patch_list if p.get('after'))
-                
+
                 QMessageBox.information(self, "Готово", f"Будет применено {total_changes} исправлений/добавлений.")
             else:
                 QMessageBox.information(self, "Нет изменений", "Вы не выбрали ни одного исправления.")
-    
+
     def _set_session_active(self, active):
         self.is_session_active = active
         self.key_widget.setEnabled(not active)
         self.model_settings_widget.setEnabled(not active)
         self.prompt_widget.setEnabled(not active)
         self.dry_run_btn.setEnabled(not active) # Блокируем Dry Run во время сессии
-        
+
         if active:
             self.start_stop_btn.setText("❌ Стоп")
-            self.start_stop_btn.setStyleSheet("background-color: #C0392B; color: #ffffff;")
+            self.start_stop_btn.setStyleSheet(f"background-color: {theme_manager.color('danger')}; color: {theme_manager.color('accent_text')};")
             self.start_stop_btn.setEnabled(True)
             self.cancel_close_btn.setText("Закрыть")
         else:
@@ -2416,12 +2437,28 @@ class CorrectionSessionPage(ShellPage):
             self.start_stop_btn.setStyleSheet("")
             self.cancel_close_btn.setText("Отмена")
             self._update_start_button_state()
-    
+
+    def _stop_frequency_worker(self):
+        """Stop the background frequency worker and wait for it to finish.
+
+        The worker is a QThread parented to this page, so it must never be left
+        running when the page is torn down: Qt aborts the process with
+        "QThread: Destroyed while thread is still running" otherwise.
+        """
+        worker = self._frequency_worker
+        if worker is not None and worker.isRunning():
+            worker.stop()
+            worker.wait(2000)
+        self._frequency_worker = None
+
+    def on_leave(self):
+        # The navigation shell calls this in NavigationController.pop() right
+        # before page.deleteLater() (Back / exit). Stop the frequency worker
+        # first so its parented QThread is not destroyed while still running.
+        self._stop_frequency_worker()
+
     def reject(self):
-        if self._frequency_worker and self._frequency_worker.isRunning():
-            self._frequency_worker.stop()
-            self._frequency_worker.wait(2000)
-            self._frequency_worker = None
+        self._stop_frequency_worker()
 
         if self.is_session_active:
             self._on_start_stop_clicked()
@@ -2433,7 +2470,7 @@ class CorrectionSessionPage(ShellPage):
             self._on_start_stop_clicked()
             return False
         return True
-    
+
     def get_settings(self):
         settings = self.model_settings_widget.get_settings()
         settings['provider'] = self.key_widget.get_selected_provider()
@@ -2503,13 +2540,13 @@ class CorrectionPreviewDialog(QDialog):
         self.patch_dict = patch_dict
         self.direct_conflicts = direct_conflicts
         self.settings_manager = getattr(parent, 'settings_manager', None)
-        
+
         self.main_window_ref = parent.parent() if parent and parent.parent() else None
-        
+
         self.notes_were_included = notes_were_included_in_prompt
         self.morph_analyzer = morph_analyzer
         self.pymorphy_available = morph_analyzer is not None
-        
+
         self.review_data = []
         self.display_data = []
         self.hidden_data = []
@@ -2571,7 +2608,7 @@ class CorrectionPreviewDialog(QDialog):
     def _determine_final_note(self, ai_note_str, old_note_str, old_trans_str, new_trans_str):
         """
         Центральная логика принятия решения по примечанию.
-        
+
         Правила:
         1. Если AI прислал текст -> Берем его.
         2. Если AI прислал пустоту -> Оставляем старое (Patching).
@@ -2587,12 +2624,12 @@ class CorrectionPreviewDialog(QDialog):
         # Удаляем ТОЛЬКО если ИИ был слеп к примечаниям, но своими действиями (сменой перевода) сделал старое примечание невалидным.
         is_trans_changed, _ = self._classify_translation_change([old_trans_str], new_trans_str)
         is_trans_changed = bool(is_trans_changed and new_trans_str)
-        
+
         if not self.notes_were_included and is_trans_changed:
             # Если возник конфликт грамматики
             if not self._is_note_compatible(old_trans_str, new_trans_str, candidate_note):
                 return "" # Принудительное удаление
-        
+
         return candidate_note
 
     def _refresh_existing_entry_state(self, data):
@@ -2641,13 +2678,13 @@ class CorrectionPreviewDialog(QDialog):
         self.display_data = []
         self.hidden_data = []
         self.new_terms_data = []
-        
+
         for original_term, new_data in self.patch_dict.items():
             if not original_term: continue
 
             new_trans = new_data.get('rus', '').strip()
             ai_provided_note = new_data.get('note', '').strip()
-            
+
             # Находим все существующие записи для этого термина
             old_entries = [e for e in self.original_glossary_list if e.get('original') == original_term]
             count_existing = len(old_entries)
@@ -2657,36 +2694,36 @@ class CorrectionPreviewDialog(QDialog):
                 # 1. Если термина нет вообще (Новый) -> Игнорируем (зачем нам термин без перевода?)
                 if count_existing == 0:
                     continue
-                
+
                 # 2. Если есть дубликаты/конфликты -> Игнорируем (непонятно, к кому применять note, опасно)
                 if count_existing > 1:
                     continue
-                
+
                 # 3. Если термин уникален (1 шт)
                 if count_existing == 1:
                     # Если ИИ прислал только ключ (ни перевода, ни примечания) -> Игнорируем
                     if not ai_provided_note:
                         continue
-                    
+
                     # Если есть примечание, но нет перевода -> Считаем, что перевод не меняется
                     # Подставляем старый перевод, чтобы логика ниже отработала корректно
                     new_trans = old_entries[0].get('rus', '').strip()
-            
+
             # --------------------------------------------------------
 
             # --- СЛУЧАЙ 1: Новый термин (Addition) ---
             if count_existing == 0:
                 # new_trans здесь гарантированно не пуст (проверка выше)
                 self.new_terms_data.append({
-                    "type": "addition", 
-                    "original": original_term, 
-                    "new_trans": new_trans, 
-                    "new_note": ai_provided_note, 
+                    "type": "addition",
+                    "original": original_term,
+                    "new_trans": new_trans,
+                    "new_note": ai_provided_note,
                     "is_new": True,
                     "_sort_order": self._next_sort_order()
                 })
                 continue
-            
+
             # --- СЛУЧАЙ 2: Разрешение конфликта (Resolution) ---
             if original_term in self.direct_conflicts or count_existing > 1:
                 best_old_entry = max(old_entries, key=lambda x: len(x.get('note', '')))
@@ -2694,12 +2731,12 @@ class CorrectionPreviewDialog(QDialog):
                 old_trans_str = best_old_entry.get('rus', '')
 
                 old_notes_combined = " | ".join(set(e.get('note', '').strip() for e in old_entries if e.get('note', '').strip()))
-                
+
                 data_payload = {
-                    "type": "resolution", 
-                    "original": original_term, 
-                    "old_entries": old_entries, 
-                    "new_trans": new_trans, 
+                    "type": "resolution",
+                    "original": original_term,
+                    "old_entries": old_entries,
+                    "new_trans": new_trans,
                     "new_note": "",
                     "old_note_for_recovery": old_notes_combined,
                     "_ai_note_input": ai_provided_note,
@@ -2710,17 +2747,17 @@ class CorrectionPreviewDialog(QDialog):
                 self.review_data.append(self._refresh_existing_entry_state(data_payload))
 
             # --- СЛУЧАЙ 3: Обновление (Update) ---
-            else: 
+            else:
                 old_data = old_entries[0]
                 old_trans = old_data.get('rus', '').strip()
                 old_note = old_data.get('note', '').strip()
 
                 data_payload = {
-                    "type": "update", 
-                    "original": original_term, 
-                    "old_trans": old_trans, 
-                    "new_trans": new_trans, 
-                    "old_note": old_note, 
+                    "type": "update",
+                    "original": original_term,
+                    "old_trans": old_trans,
+                    "new_trans": new_trans,
+                    "old_note": old_note,
                     "new_note": "",
                     "old_note_for_recovery": old_note,
                     "_ai_note_input": ai_provided_note,
@@ -2731,7 +2768,7 @@ class CorrectionPreviewDialog(QDialog):
                 self.review_data.append(self._refresh_existing_entry_state(data_payload))
 
         self._rebuild_visibility_lists()
-    
+
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
         info_label = QLabel(
@@ -2809,7 +2846,7 @@ class CorrectionPreviewDialog(QDialog):
         editor_header = QHBoxLayout()
         self.translation_target_label = QLabel("Термин: —")
         self.translation_status_label = QLabel("Выберите строку для редактирования.")
-        self.translation_status_label.setStyleSheet("color: #9AA0A6;")
+        self.translation_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
         editor_header.addWidget(self.translation_target_label)
         editor_header.addStretch()
         editor_header.addWidget(self.translation_status_label)
@@ -2841,11 +2878,11 @@ class CorrectionPreviewDialog(QDialog):
         self.preview_splitter.setCollapsible(1, True)
         self.preview_splitter.setSizes([560, 150])
         main_layout.addWidget(self.preview_splitter, 1)
-        
+
         bottom_panel = QHBoxLayout()
         select_all_btn = QPushButton("Выделить всё"); select_all_btn.clicked.connect(lambda: self._toggle_all_checkboxes(True))
         deselect_all_btn = QPushButton("Снять выделение"); deselect_all_btn.clicked.connect(lambda: self._toggle_all_checkboxes(False))
-        
+
         self.toggle_hidden_btn = QPushButton(f"Показать одинаковые ({len(self.hidden_data)})")
         self.toggle_hidden_btn.clicked.connect(self._toggle_hidden_visibility)
         self.toggle_hidden_btn.setToolTip(
@@ -2863,7 +2900,7 @@ class CorrectionPreviewDialog(QDialog):
         bottom_panel.addWidget(self.toggle_hidden_btn)
         bottom_panel.addWidget(self.toggle_new_terms_btn)
         bottom_panel.addStretch()
-        
+
         apply_btn = QPushButton("Применить выделенное"); apply_btn.clicked.connect(self._apply_and_accept)
         cancel_btn = QPushButton("Отмена"); cancel_btn.clicked.connect(self.reject)
         bottom_panel.addWidget(cancel_btn); bottom_panel.addWidget(apply_btn)
@@ -3097,13 +3134,13 @@ class CorrectionPreviewDialog(QDialog):
         has_selection = self._current_edit_data is not None
         if not has_selection:
             self.translation_status_label.setText("Выберите строку для редактирования.")
-            self.translation_status_label.setStyleSheet("color: #9AA0A6;")
+            self.translation_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
         elif self._translation_edit_dirty:
             self.translation_status_label.setText("Есть несохраненные изменения.")
-            self.translation_status_label.setStyleSheet("color: #F1C40F; font-weight: bold;")
+            self.translation_status_label.setStyleSheet(f"color: {theme_manager.color('warning')}; font-weight: bold;")
         else:
             self.translation_status_label.setText("Изменения сохранены.")
-            self.translation_status_label.setStyleSheet("color: #2ECC71;")
+            self.translation_status_label.setStyleSheet(f"color: {theme_manager.color('success')}")
 
         self.translation_editor.setEnabled(has_selection)
         self.translation_save_btn.setEnabled(has_selection and self._translation_edit_dirty)
@@ -3298,7 +3335,7 @@ class CorrectionPreviewDialog(QDialog):
             del table_signal_blocker
             self._suppress_table_navigation = previous_navigation_suppressed
 
-        resolution_color = QColor(255, 193, 7, 50) 
+        resolution_color = QColor(255, 193, 7, 50)
         hidden_color = QColor(108, 117, 125, 40)
         new_term_color = QColor(13, 202, 240, 40)
         bold_font = QFont(); bold_font.setBold(True)
@@ -3307,12 +3344,12 @@ class CorrectionPreviewDialog(QDialog):
             checkbox_widget = QWidget(); chk_layout = QHBoxLayout(checkbox_widget)
             chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter); chk_layout.setContentsMargins(0,0,0,0)
             checkbox = QCheckBox()
-            
+
             if 'user_checked' in data:
                 is_checked = data['user_checked']
             else:
                 is_checked = not data.get("is_hidden", False)
-            
+
             checkbox.setChecked(is_checked)
             chk_layout.addWidget(checkbox); self.table.setCellWidget(i, 0, checkbox_widget)
 
@@ -3321,7 +3358,7 @@ class CorrectionPreviewDialog(QDialog):
             new_note_item = QTableWidgetItem(data["new_note"])
             original_item.setFlags(original_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             new_note_item.setFlags(new_note_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            
+
             self.table.setItem(i, 1, original_item)
             self.table.setItem(i, 3, new_trans_item)
             self.table.setItem(i, 5, new_note_item)
@@ -3337,7 +3374,7 @@ class CorrectionPreviewDialog(QDialog):
             # --- ВИЗУАЛИЗАЦИЯ УДАЛЕНИЯ ---
             # Теперь мы просто читаем флаг из данных, так как расчет был сделан ранее
             is_note_wiped = data.get("is_note_wiped", False)
-            
+
             if is_note_wiped:
                 new_note_item.setText("[УДАЛЕНИЕ]")
                 new_note_item.setForeground(QColor("#E74C3C")) # Red
@@ -3385,7 +3422,7 @@ class CorrectionPreviewDialog(QDialog):
                 if not data.get("is_hidden"):
                     new_trans_item.setFont(bold_font)
                     new_note_item.setFont(bold_font)
-            
+
             for col in range(1, 6):
                 item = self.table.item(i, col)
                 if not item: item = QTableWidgetItem(""); self.table.setItem(i, col, item)
@@ -3412,7 +3449,7 @@ class CorrectionPreviewDialog(QDialog):
         return all_tags
 
     def _is_note_compatible(self, old_translation: str, new_translation: str, old_note: str) -> bool:
-        if not self.pymorphy_available or not old_translation or not new_translation or not old_note: return True 
+        if not self.pymorphy_available or not old_translation or not new_translation or not old_note: return True
         note_lower = old_note.lower()
         SYNONYMS = {'gender': ['род', 'рода', 'полу'], 'masc': ['мужской', 'муж', 'мужск', 'м'], 'femn': ['женский', 'жен', 'женск', 'ж'], 'neut': ['средний', 'ср', 'средн'], 'number': ['число', 'числа', 'ч'], 'sing': ['единственное', 'ед'], 'plur': ['множественное', 'мн']}
         def has_any_word(text, word_list): return bool(re.search(r'\b(' + '|'.join(re.escape(w) + r'\.?' for w in word_list) + r')\b', text))
@@ -3430,7 +3467,7 @@ class CorrectionPreviewDialog(QDialog):
             numbers = {'sing', 'plur'}
             if (old_tags & numbers) and (new_tags & numbers) and (old_tags & numbers) != (new_tags & numbers): return False
         return True
-        
+
     def _toggle_hidden_visibility(self):
         if not self._resolve_pending_translation_edit("переключением скрытых строк"):
             return
@@ -3462,17 +3499,17 @@ class CorrectionPreviewDialog(QDialog):
             return
 
         current_data = self._get_current_view_data()
-        
+
         # 1. Собираем данные, которые выбрал пользователь
         selected_data = []
         for i in range(self.table.rowCount()):
             container = self.table.cellWidget(i, 0)
             if not container or not container.layout(): continue
             checkbox = container.layout().itemAt(0).widget()
-            
+
             if isinstance(checkbox, QCheckBox) and checkbox.isChecked():
                 selected_data.append(current_data[i])
-        
+
         if not selected_data:
             self.accept() # Ничего не выбрано, просто закрываем
             return
@@ -3485,8 +3522,8 @@ class CorrectionPreviewDialog(QDialog):
             dialog = NoteWipeResolutionDialog(wiped_items_to_review, self)
             if not dialog.exec():
                 # Пользователь нажал "Отмена" в интерцепторе -> Отменяем всё применение
-                return 
-            
+                return
+
             # Если пользователь нажал Ок, словари в wiped_items_to_review уже обновлены
             # (флаги is_note_wiped сняты где надо, тексты заменены)
 
@@ -3496,28 +3533,28 @@ class CorrectionPreviewDialog(QDialog):
 
         for data in selected_data:
             original = data["original"]
-            
+
             new_data = {
                 "rus": data["new_trans"],
-                "note": data.get("new_note", "") 
+                "note": data.get("new_note", "")
             }
 
             if data["type"] == "resolution":
-                for old_entry in data["old_entries"]: 
+                for old_entry in data["old_entries"]:
                     self.accepted_patch.append({'before': old_entry, 'after': None})
                 new_resolved_entry = {'original': original, **new_data}
                 self.accepted_patch.append({'before': None, 'after': new_resolved_entry})
-                
+
             elif data["type"] == "update":
                 before_state = original_map.get(original)
                 after_state = (before_state or {}).copy()
                 after_state.update({'original': original, **new_data})
                 self.accepted_patch.append({'before': before_state, 'after': after_state})
-                
+
             elif data["type"] == "addition":
                 after_state = {'original': original, **new_data}
                 self.accepted_patch.append({'before': None, 'after': after_state})
-        
+
         self.accept()
 
     def get_accepted_patch(self):

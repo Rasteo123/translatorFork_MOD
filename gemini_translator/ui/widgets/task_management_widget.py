@@ -358,13 +358,15 @@ class TaskManagementWidget(QWidget):
 
     def closeEvent(self, event):
         """Отписываемся от шины при закрытии/уничтожении виджета."""
-        if self.bus:
+        bus = getattr(self, "bus", None)
+        if bus:
             try:
-                if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                    self.bus.unsubscribe("task_state_changed", self._on_task_state_changed)
-                    self.bus.unsubscribe("session_finished", self._on_session_finished)
-                elif hasattr(self.bus, "event_posted"):
-                    self.bus.event_posted.disconnect(self.on_event)
+                if self._uses_topic_subscription and hasattr(bus, "unsubscribe"):
+                    bus.unsubscribe("task_state_changed", self._on_task_state_changed)
+                    bus.unsubscribe("session_finished", self._on_session_finished)
+                elif hasattr(bus, "event_posted"):
+                    bus.event_posted.disconnect(self.on_event)
             except (TypeError, RuntimeError, ValueError):
                 pass
+        self._redraw_timer.stop()
         super().closeEvent(event)

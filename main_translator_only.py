@@ -39,7 +39,8 @@ def _bootstrap_application():
 
     app = app_main.ApplicationWithContext(sys.argv)
     app_main.install_window_title_branding(app)
-    app.setStyleSheet(app_main.DARK_STYLESHEET)
+    # Тема применяется в apply_saved_app_theme ниже (после settings_manager),
+    # без раннего тёмного дефолта — иначе светлая/авто-тема даёт тёмную вспышку.
 
     if sys.platform == "win32":
         app_main.asyncio.set_event_loop_policy(app_main.asyncio.WindowsSelectorEventLoopPolicy())

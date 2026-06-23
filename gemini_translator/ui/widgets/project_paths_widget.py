@@ -44,8 +44,8 @@ class ProjectPathsWidget(QWidget):
         self.header_card = QFrame(self)
         self.header_card.setObjectName("projectHeaderCard")
         header_layout = QVBoxLayout(self.header_card)
-        header_layout.setContentsMargins(12, 12, 12, 12)
-        header_layout.setSpacing(10)
+        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_layout.setSpacing(6)
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -132,8 +132,8 @@ class ProjectPathsWidget(QWidget):
         self.stats_card = QFrame(self.header_card)
         self.stats_card.setObjectName("projectStatsCard")
         stats_layout = QVBoxLayout(self.stats_card)
-        stats_layout.setContentsMargins(12, 12, 12, 12)
-        stats_layout.setSpacing(6)
+        stats_layout.setContentsMargins(11, 9, 11, 9)
+        stats_layout.setSpacing(5)
 
         stats_title = QLabel("Состояние")
         stats_title.setObjectName("projectCardTitle")
@@ -195,8 +195,8 @@ class ProjectPathsWidget(QWidget):
         card.setObjectName("projectPathCard")
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
+        layout.setContentsMargins(11, 9, 11, 9)
+        layout.setSpacing(5)
 
         title_label = QLabel(title)
         title_label.setObjectName("projectCardTitle")

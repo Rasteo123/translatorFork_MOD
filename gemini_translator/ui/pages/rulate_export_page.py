@@ -36,6 +36,7 @@ from pathlib import Path
 
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.dialogs.rulate_export import EPUBConverterThread, SimpleEpubReader
+from gemini_translator.ui import theme_manager
 
 
 class RulateExportPage(ShellPage):
@@ -98,7 +99,7 @@ class RulateExportPage(ShellPage):
 
         hint_label = QLabel("Shift+ЛКМ: диапазон, Ctrl+ЛКМ: точечный выбор")
         hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint_label.setStyleSheet("color: #7aa2f7; font-size: 11px;")
+        hint_label.setStyleSheet(f"color: {theme_manager.color('info')}; font-size: 11px;")
         left_layout.addWidget(hint_label)
 
         splitter.addWidget(left_widget)
@@ -117,7 +118,7 @@ class RulateExportPage(ShellPage):
             "3. Отправьте список в AI.\n"
             "4. Вставьте ответ и нажмите 'Применить'."
         )
-        rename_info.setStyleSheet("color: #9ece6a; font-style: italic;")
+        rename_info.setStyleSheet(f"color: {theme_manager.color('success')}; font-style: italic;")
         rename_layout.addWidget(rename_info)
 
         self.check_context = QCheckBox("Добавлять первые 3 строки текста для контекста")
@@ -133,7 +134,7 @@ class RulateExportPage(ShellPage):
         get_list_btn.clicked.connect(self.generate_rename_list)
         apply_ren_btn = QPushButton("2. Применить изменения")
         apply_ren_btn.setStyleSheet(
-            "background-color: #7aa2f7; color: #1a1b26; font-weight: bold;"
+            f"background-color: {theme_manager.color('info')}; color: {theme_manager.color('panel_bg')}; font-weight: bold;"
         )
         apply_ren_btn.clicked.connect(self.apply_renames)
         ren_btn_layout.addWidget(get_list_btn)
@@ -224,7 +225,7 @@ class RulateExportPage(ShellPage):
         self.convert_button = QPushButton("КОНВЕРТИРОВАТЬ ВЫБРАННОЕ")
         self.convert_button.setMinimumHeight(45)
         self.convert_button.setStyleSheet(
-            "font-weight: bold; background-color: #7aa2f7; color: #1a1b26;"
+            f"font-weight: bold; background-color: {theme_manager.color('info')}; color: {theme_manager.color('panel_bg')};"
         )
         self.convert_button.clicked.connect(self.start_conversion)
         self.convert_button.setEnabled(False)
@@ -238,7 +239,7 @@ class RulateExportPage(ShellPage):
 
         self.status_label = QLabel("Ожидание...")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setStyleSheet("color: #bb9af7;")
+        self.status_label.setStyleSheet(f"color: {theme_manager.color('info')};")
         main_layout.addWidget(self.status_label)
 
         main_layout.addWidget(QLabel("Предпросмотр результата:"))

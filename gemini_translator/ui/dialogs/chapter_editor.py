@@ -47,6 +47,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from gemini_translator.ui import theme_manager
 
 
 BLOCK_RE = re.compile(
@@ -333,7 +334,7 @@ class ChapterEditorDialog(QDialog):
         self.status_label = QLabel("Загрузка…")
         self.status_label.setStyleSheet("font-weight: bold;")
         self.meta_label = QLabel()
-        self.meta_label.setStyleSheet("color: #5a5a5a;")
+        self.meta_label.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         self.meta_label.setWordWrap(True)
 
         actions_layout.addWidget(self.btn_save)
@@ -426,7 +427,7 @@ class ChapterEditorDialog(QDialog):
         self.summary_label.setWordWrap(True)
         self.warning_label = QLabel()
         self.warning_label.setWordWrap(True)
-        self.warning_label.setStyleSheet("color: #8a4b08;")
+        self.warning_label.setStyleSheet(f"color: {theme_manager.color('warning')};")
         summary_layout.addWidget(self.summary_label)
         summary_layout.addWidget(self.warning_label)
         sidebar_layout.addWidget(summary_group)

@@ -17,6 +17,31 @@ try:
     from gemini_translator.ui.themes import DARK_STYLESHEET
 except ImportError:
     DARK_STYLESHEET = "" # Запасной вариант - пустая строка
+try:
+    from gemini_translator.ui import theme_manager
+except ImportError:
+    theme_manager = None  # standalone / frozen mode: fall back to literal colours
+
+_FALLBACK_COLORS = {
+    "text_muted": "#888888",
+    "text_secondary": "#666666",
+    "text_primary": "#f0f0f0",
+    "panel_bg": "#2b2b2b",
+    "input_bg": "#1e222a",
+    "border": "#4d5666",
+    "success": "#2ecc71",
+    "danger": "#e74c3c",
+    "warning": "#e67e22",
+    "info": "#7aa2f7",
+    "accent_text": "#ffffff",
+}
+
+def _tc(name: str) -> str:
+    """Return the active theme colour for *name*, or a fallback hex."""
+    if theme_manager is not None:
+        return theme_manager.color(name)
+    return _FALLBACK_COLORS.get(name, "#888888")
+
 # ============================================================================
 #  1. Стилизация и Конфигурация
 # ============================================================================
@@ -335,29 +360,29 @@ class CodeBlockWidget(QFrame):
         # --- Стили (добавлены стили для новой кнопки) ---
         self.setStyleSheet(f"""
             /* 1. Главный контейнер. ТЕПЕРЬ ОН ПРОЗРАЧНЫЙ. Отвечает только за рамку. */
-            #CodeBlockFrame {{ 
-                border: 1px solid #4d5666; 
+            #CodeBlockFrame {{
+                border: 1px solid {_tc('text_muted')};
                 border-radius: 5px;
                 /* background-color убран отсюда */
             }}
 
             /* 2. Заголовок. Получает свой УНИКАЛЬНЫЙ, более темный фон. */
-            #CodeBlockHeader {{ 
-                background-color: #313642; /* <-- Новый, более темный и нейтральный серый */
-                border-bottom: 1px solid #4d5666;
+            #CodeBlockHeader {{
+                background-color: {_tc('panel_bg')}; /* <-- Новый, более темный и нейтральный серый */
+                border-bottom: 1px solid {_tc('text_muted')};
                 /* Важно: скругляем верхние углы, чтобы соответствовать рамке */
                 border-top-left-radius: 4px;
                 border-top-right-radius: 4px;
             }}
-            #CodeBlockLangLabel {{ 
-                color: #c0c5ce; /* <-- Тот самый, менее синий текст */
-                font-weight: bold; 
-                background-color: transparent; 
+            #CodeBlockLangLabel {{
+                color: {_tc('text_muted')}; /* <-- Тот самый, менее синий текст */
+                font-weight: bold;
+                background-color: transparent;
             }}
-            
+
             /* 3. Контейнер с кодом. Имеет самый темный фон. */
             #CodeViewer {{
-                background-color: #1e222a;
+                background-color: {_tc('input_bg')};
                 border: none;
                 padding: {self.VERTICAL_PADDING}px 10px;
                 /* Важно: скругляем нижние углы */
@@ -367,12 +392,12 @@ class CodeBlockWidget(QFrame):
 
             /* 4. Кнопки (без изменений) */
             #CodeBlockCopyButton, #CodeBlockCollapseButton {{
-                font-size: 12pt; color: #d0d0d0; background-color: #454d5b;
-                border: 1px solid #5a6475; border-radius: 3px; padding: 0px;
+                font-size: 12pt; color: {_tc('text_primary')}; background-color: {_tc('panel_bg')};
+                border: 1px solid {_tc('text_secondary')}; border-radius: 3px; padding: 0px;
             }}
-            #CodeBlockCopyButton:hover, #CodeBlockCollapseButton:hover {{ background-color: #5a6475; }}
-            #CodeBlockCopyButton:pressed, #CodeBlockCollapseButton:pressed {{ background-color: #3daee9; }}
-            #CodeBlockCopyButton:disabled {{ color: #8fbc8f; background-color: #454d5b; }}
+            #CodeBlockCopyButton:hover, #CodeBlockCollapseButton:hover {{ background-color: {_tc('text_secondary')}; }}
+            #CodeBlockCopyButton:pressed, #CodeBlockCollapseButton:pressed {{ background-color: {_tc('info')}; }}
+            #CodeBlockCopyButton:disabled {{ color: {_tc('success')}; background-color: {_tc('panel_bg')}; }}
         """)
 
         self.code_view.document().documentLayout().documentSizeChanged.connect(self._update_code_view_height)
@@ -399,7 +424,7 @@ class CodeBlockWidget(QFrame):
         if self.is_collapsed:
             self.headerWidget().setStyleSheet("#CodeBlockHeader { border-bottom: none; }")
         else:
-            self.headerWidget().setStyleSheet("#CodeBlockHeader { border-bottom: 1px solid #4d5666; }")
+            self.headerWidget().setStyleSheet(f"#CodeBlockHeader {{ border-bottom: 1px solid {_tc('text_muted')}; }}")
 
     def headerWidget(self):
         # Вспомогательный метод для доступа к виджету заголовка
@@ -479,11 +504,11 @@ class HelpDialog(QDialog):
         dialog_layout.addLayout(btn_layout)
 
         # --- ФИНАЛЬНЫЕ СТИЛИ для диалога и нашей "карточки" ---
-        self.setStyleSheet("""
-            #TextContainer {
-                background-color: #373e4b;
+        self.setStyleSheet(f"""
+            #TextContainer {{
+                background-color: {_tc('panel_bg')};
                 border-radius: 5px;
-            }
+            }}
         """)
 
     def _update_browser_height(self, size, browser):

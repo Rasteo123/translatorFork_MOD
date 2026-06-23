@@ -32,6 +32,7 @@ from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
 from ..shell import ShellPage
 from .chapter_selection_dialog import ChapterSelectionDialog
+from gemini_translator.ui import theme_manager
 
 # Импорт для fuzzy matching (опционально)
 try:
@@ -300,7 +301,7 @@ class ConsistencyValidatorPage(ShellPage):
         # Основные кнопки управления
         self.start_btn = QPushButton("🚀 Начать анализ")
         self.start_btn.setStyleSheet(
-            "background-color: #4CAF50; color: white; font-weight: bold; padding: 6px 20px;")
+            f"background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 6px 20px;")
         toolbar_layout.addWidget(self.start_btn)
         
         self.stop_btn = QPushButton("⏹️ Остановить")
@@ -329,7 +330,7 @@ class ConsistencyValidatorPage(ShellPage):
         toolbar_layout.addWidget(self.select_chapters_btn)
 
         self.selected_chapters_label = QLabel("")
-        self.selected_chapters_label.setStyleSheet("color: #666;")
+        self.selected_chapters_label.setStyleSheet(f"color: {theme_manager.color('text_secondary')};")
         toolbar_layout.addWidget(self.selected_chapters_label)
 
         # Прогресс (компактный)
@@ -386,7 +387,7 @@ class ConsistencyValidatorPage(ShellPage):
         probs_header.addWidget(self.toggle_all_checkbox)
         
         self.batch_fix_btn = QPushButton("⚡ Исправить")
-        self.batch_fix_btn.setStyleSheet("background-color: #FF9800; color: white; padding: 4px 10px;")
+        self.batch_fix_btn.setStyleSheet(f"background-color: {theme_manager.color('warning')}; color: {theme_manager.color('accent_text')}; padding: 4px 10px;")
         self.batch_fix_btn.setEnabled(False)
         probs_header.addWidget(self.batch_fix_btn)
         
@@ -419,7 +420,7 @@ class ConsistencyValidatorPage(ShellPage):
         self.problem_info_box.setPlaceholderText("Выберите проблему для просмотра деталей...")
         # Используем цвета, совместимые с темной темой
         self.problem_info_box.setStyleSheet(
-            "background-color: #2b2b2b; color: #eeeeee; border-top: 1px solid #444; padding: 5px;"
+            f"background-color: {theme_manager.color('panel_bg')}; color: {theme_manager.color('text_primary')}; border-top: 1px solid {theme_manager.color('text_secondary')}; padding: 5px;"
         )
         problems_layout.addWidget(self.problem_info_box)
         
@@ -429,7 +430,7 @@ class ConsistencyValidatorPage(ShellPage):
         stats_layout.addWidget(self.stats_label)
         stats_layout.addStretch()
         self.size_info_label = QLabel("")
-        self.size_info_label.setStyleSheet("color: #777;")
+        self.size_info_label.setStyleSheet(f"color: {theme_manager.color('text_secondary')};")
         stats_layout.addWidget(self.size_info_label)
         problems_layout.addLayout(stats_layout)
         
@@ -456,7 +457,7 @@ class ConsistencyValidatorPage(ShellPage):
         
         self.apply_btn = QPushButton("✅ Применить")
         self.apply_btn.setEnabled(False)
-        self.apply_btn.setStyleSheet("background-color: #2196F3; color: white;")
+        self.apply_btn.setStyleSheet(f"background-color: {theme_manager.color('info')}; color: {theme_manager.color('accent_text')};")
         text_header.addWidget(self.apply_btn)
         
         self.skip_btn = QPushButton("⏭ Пропустить")
@@ -504,6 +505,7 @@ class ConsistencyValidatorPage(ShellPage):
         
         # Сплиттер настроек: Слева панели, Справа Лог
         settings_splitter = QSplitter(Qt.Orientation.Horizontal)
+        settings_splitter.setChildrenCollapsible(False)
         
         # Левая часть: Табы с настройками
         settings_left_tabs = QTabWidget()
@@ -516,6 +518,12 @@ class ConsistencyValidatorPage(ShellPage):
             distribution_group_widget=None
         )
         settings_left_tabs.addTab(self.key_management_widget, "API Ключи")
+        settings_left_tabs.setMinimumWidth(
+            max(
+                settings_left_tabs.minimumWidth(),
+                self.key_management_widget.minimumSizeHint().width(),
+            )
+        )
         
         # 2. Модель
         settings_container = self._create_model_settings_widget()
@@ -537,6 +545,8 @@ class ConsistencyValidatorPage(ShellPage):
         
         settings_splitter.addWidget(log_group)
         settings_splitter.setSizes([500, 700])
+        settings_splitter.setStretchFactor(0, 0)
+        settings_splitter.setStretchFactor(1, 1)
         
         settings_layout.addWidget(settings_splitter)
         self.main_tabs.addTab(settings_tab, "⚙️ Настройки и Логи")
@@ -584,7 +594,7 @@ class ConsistencyValidatorPage(ShellPage):
         
         # Инфо о чанке (Токены)
         self.chunk_info_label = QLabel("~0 токенов")
-        self.chunk_info_label.setStyleSheet("color: #666; font-size: 8pt;")
+        self.chunk_info_label.setStyleSheet(f"color: {theme_manager.color('text_secondary')}; font-size: 8pt;")
         extra_layout.addWidget(self.chunk_info_label)
         
         layout.addWidget(extra_group)
@@ -723,7 +733,7 @@ class ConsistencyValidatorPage(ShellPage):
         """Обновляет информацию о размере чанка в токенах."""
         selected_chapters = self._get_selected_chapters()
         if not selected_chapters:
-            self.chunk_info_label.setStyleSheet("color: #666; font-size: 8pt;")
+            self.chunk_info_label.setStyleSheet(f"color: {theme_manager.color('text_secondary')}; font-size: 8pt;")
             self.chunk_info_label.setText("Ничего не выбрано для анализа")
             return
             
@@ -775,9 +785,9 @@ class ConsistencyValidatorPage(ShellPage):
                 if max_input:
                      limit_text = f" / {max_input}"
                      if tokens_est > max_input:
-                         self.chunk_info_label.setStyleSheet("color: red; font-weight: bold; font-size: 8pt;")
+                         self.chunk_info_label.setStyleSheet(f"color: {theme_manager.color('danger')}; font-weight: bold; font-size: 8pt;")
                      else:
-                         self.chunk_info_label.setStyleSheet("color: #666; font-size: 8pt;")
+                         self.chunk_info_label.setStyleSheet(f"color: {theme_manager.color('text_secondary')}; font-size: 8pt;")
 
         self.chunk_info_label.setText(f"~{tokens_est}{limit_text} токенов/чанк")
 

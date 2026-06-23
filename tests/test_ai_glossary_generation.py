@@ -2,12 +2,17 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
+from PyQt6 import QtWidgets
+
 from gemini_translator.api import config as api_config
 from gemini_translator.ui.dialogs.glossary_dialogs import ai_generation as ai_generation_module
 from gemini_translator.ui.dialogs.glossary_dialogs.ai_generation import (
     GenerationSessionDialog,
+    GenerationSessionPage,
     SequentialTaskProvider,
 )
+from gemini_translator.ui.shell import ShellPage
+from gemini_translator.ui.widgets.overlay_tab_widget import OverlayTabWidget
 
 
 class _LineEditStub:
@@ -306,7 +311,62 @@ class _StatusBarStub:
         self.engine = engine
 
 
+class _ProviderComboStub:
+    def __init__(self):
+        self.currentIndexChanged = _SignalStub()
+
+    def currentIndex(self):
+        return 0
+
+
+class _GenerationLayoutHarness(GenerationSessionPage):
+    def __init__(self):
+        ShellPage.__init__(self)
+        self.bus = object()
+        self.engine = object()
+
+
 class AiGlossaryGenerationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_generation_page_layout_uses_plain_tabs_not_translator_overlay(self):
+        created_sections = []
+
+        def section_factory(name):
+            def _factory(page):
+                created_sections.append(name)
+                widget = QtWidgets.QWidget()
+                widget.setObjectName(name)
+                return widget
+            return _factory
+
+        def settings_factory(page):
+            page.key_widget = SimpleNamespace(
+                active_keys_changed=_SignalStub(),
+                provider_combo=_ProviderComboStub(),
+            )
+            page.glossary_widget = SimpleNamespace(glossary_changed=_SignalStub())
+            return section_factory("settings")(page)
+
+        with patch.object(GenerationSessionPage, "_create_settings_tab", settings_factory), \
+             patch.object(GenerationSessionPage, "_create_tasks_tab", section_factory("tasks")), \
+             patch.object(GenerationSessionPage, "_create_pipeline_tab", section_factory("pipeline")), \
+             patch.object(GenerationSessionPage, "_create_prompt_tab", section_factory("prompt")), \
+             patch.object(GenerationSessionPage, "_create_results_tab", section_factory("results")), \
+             patch.object(GenerationSessionPage, "_create_bottom_status_bar", lambda page: QtWidgets.QWidget()):
+            page = _GenerationLayoutHarness()
+            self.addCleanup(page.deleteLater)
+            page._init_ui()
+
+        self.assertIsInstance(page.tabs, QtWidgets.QTabWidget)
+        self.assertEqual(page.findChildren(OverlayTabWidget), [])
+        self.assertEqual(
+            created_sections,
+            ["settings", "tasks", "pipeline", "prompt", "results"],
+        )
+
     def _provider_for_finish_tests(self):
         bus = _EventBusStub()
         provider = SequentialTaskProvider(

@@ -36,6 +36,7 @@ from gemini_translator.ui.themes import (
     build_dark_stylesheet,
     extract_theme_colors,
 )
+from gemini_translator.ui import theme_manager
 
 # ---------------------------------------------------------------------------
 # Gemini EPUB Translator - Точка входа в приложение
@@ -446,20 +447,24 @@ def apply_saved_app_theme(app, settings_manager=None):
     if manager is None:
         app.setStyleSheet(DARK_STYLESHEET)
         return
-
-    theme_colors = {}
-    for loader_name in ("load_full_session_settings", "load_settings"):
-        loader = getattr(manager, loader_name, None)
-        if not callable(loader):
-            continue
-        try:
-            theme_colors = extract_theme_colors(loader())
-        except Exception:
-            theme_colors = {}
-        if theme_colors:
-            break
-
-    app.setStyleSheet(build_dark_stylesheet(theme_colors))
+    mode = theme_manager.load_mode(manager)
+    manual = theme_manager._manual_colors(manager)
+    theme_manager.apply(app, mode=mode, manual_colors=manual)
+    theme_manager.install(app, manager)
+    # Liquid Glass needs a shown window for the macOS vibrancy backdrop, so —
+    # if the user opted in — re-apply it once the UI is up, avoiding a
+    # frost-less transparent flash at startup.
+    if theme_manager.glass_enabled(manager):
+        QtCore.QTimer.singleShot(
+            900,
+            lambda: theme_manager.apply(
+                app,
+                mode=theme_manager.load_mode(manager),
+                manual_colors=theme_manager._manual_colors(manager),
+                glass=True,
+                glass_opacities=theme_manager.load_glass_opacities(manager),
+            ),
+        )
 
 
 def run_emergency_viewer():
@@ -874,15 +879,7 @@ class ApplicationWithContext(QtWidgets.QApplication):
 
 class EventBus(QtCore.QObject):
     import threading
-    class _TopicEmitter(QtCore.QObject):
-        event_posted = QtCore.pyqtSignal(dict)
-
     event_posted = QtCore.pyqtSignal(dict)
-    _subscribe_requested = QtCore.pyqtSignal(str, object, object, object)
-    _unsubscribe_requested = QtCore.pyqtSignal(str, object, object, object)
-    _unsubscribe_all_requested = QtCore.pyqtSignal(object, object, object)
-    # Новые атрибуты и методы для "шины с инерцией"
-    # Сигнал, который передает ключ измененных данных
     data_changed = QtCore.pyqtSignal(str)
     _data_store = {}
     _lock = threading.Lock()
@@ -892,9 +889,6 @@ class EventBus(QtCore.QObject):
         self._topic_subscribers = {}
         self._topic_lock = self.threading.Lock()
         self.event_posted.connect(self._dispatch_to_topics)
-        self._subscribe_requested.connect(self._subscribe_in_bus_thread)
-        self._unsubscribe_requested.connect(self._unsubscribe_in_bus_thread)
-        self._unsubscribe_all_requested.connect(self._unsubscribe_all_in_bus_thread)
 
     def subscribe(self, event_name: str, callback):
         """Подписывает callback только на конкретный тип события."""
@@ -903,27 +897,9 @@ class EventBus(QtCore.QObject):
     def _subscribe_impl(self, event_name: str, callback):
         with self._topic_lock:
             subscribers = self._topic_subscribers.setdefault(event_name, [])
-            if any(item[0] == callback for item in subscribers):
+            if any(item == callback for item in subscribers):
                 return
-            emitter = self._TopicEmitter()
-            if emitter.thread() != self.thread():
-                emitter.moveToThread(self.thread())
-            receiver = getattr(callback, "__self__", None)
-            connection_type = (
-                QtCore.Qt.ConnectionType.AutoConnection
-                if isinstance(receiver, QtCore.QObject)
-                else QtCore.Qt.ConnectionType.DirectConnection
-            )
-            emitter.event_posted.connect(callback, connection_type)
-            subscribers.append((callback, emitter))
-
-    @QtCore.pyqtSlot(str, object, object, object)
-    def _subscribe_in_bus_thread(self, event_name: str, callback, done, errors):
-        self._complete_thread_hop(
-            done,
-            errors,
-            lambda: self._subscribe_impl(event_name, callback),
-        )
+            subscribers.append(callback)
 
     def unsubscribe(self, event_name: str, callback):
         """Убирает callback из конкретной topic-подписки."""
@@ -934,27 +910,10 @@ class EventBus(QtCore.QObject):
             subscribers = self._topic_subscribers.get(event_name)
             if not subscribers:
                 return
-            remaining = []
-            for subscribed_callback, emitter in subscribers:
-                if subscribed_callback == callback:
-                    try:
-                        emitter.event_posted.disconnect(callback)
-                    except (TypeError, RuntimeError):
-                        pass
-                    emitter.deleteLater()
-                else:
-                    remaining.append((subscribed_callback, emitter))
-            subscribers[:] = remaining
+            if callback in subscribers:
+                subscribers.remove(callback)
             if not subscribers:
                 self._topic_subscribers.pop(event_name, None)
-
-    @QtCore.pyqtSlot(str, object, object, object)
-    def _unsubscribe_in_bus_thread(self, event_name: str, callback, done, errors):
-        self._complete_thread_hop(
-            done,
-            errors,
-            lambda: self._unsubscribe_impl(event_name, callback),
-        )
 
     def unsubscribe_all(self, callback):
         """Убирает callback из всех topic-подписок."""
@@ -964,55 +923,45 @@ class EventBus(QtCore.QObject):
         with self._topic_lock:
             empty_topics = []
             for event_name, subscribers in self._topic_subscribers.items():
-                remaining = []
-                for subscribed_callback, emitter in subscribers:
-                    if subscribed_callback == callback:
-                        try:
-                            emitter.event_posted.disconnect(callback)
-                        except (TypeError, RuntimeError):
-                            pass
-                        emitter.deleteLater()
-                    else:
-                        remaining.append((subscribed_callback, emitter))
-                subscribers[:] = remaining
+                if callback in subscribers:
+                    subscribers.remove(callback)
                 if not subscribers:
                     empty_topics.append(event_name)
             for event_name in empty_topics:
                 self._topic_subscribers.pop(event_name, None)
-
-    @QtCore.pyqtSlot(object, object, object)
-    def _unsubscribe_all_in_bus_thread(self, callback, done, errors):
-        self._complete_thread_hop(
-            done,
-            errors,
-            lambda: self._unsubscribe_all_impl(callback),
-        )
-
-    def _run_in_bus_thread(self, signal, *args):
-        done = self.threading.Event()
-        errors = []
-        signal.emit(*args, done, errors)
-        if not done.wait(timeout=5):
-            raise RuntimeError("Timed out while updating EventBus topic subscription.")
-        if errors:
-            raise errors[0]
-
-    def _complete_thread_hop(self, done, errors, operation):
-        try:
-            operation()
-        except Exception as exc:
-            errors.append(exc)
-        finally:
-            done.set()
 
     def _dispatch_to_topics(self, event: dict):
         event_name = event.get('event') if isinstance(event, dict) else None
         if not event_name:
             return
         with self._topic_lock:
-            emitters = [emitter for _callback, emitter in self._topic_subscribers.get(event_name, [])]
-        for emitter in emitters:
-            emitter.event_posted.emit(event)
+            entries = list(self._topic_subscribers.get(event_name, []))
+        for callback in entries:
+            try:
+                self._dispatch_callback(callback, event)
+            except Exception:
+                pass
+
+    def _dispatch_callback(self, callback, event: dict):
+        receiver = getattr(callback, "__self__", None)
+        method_name = getattr(callback, "__name__", "")
+        if (
+            isinstance(receiver, QtCore.QObject)
+            and method_name
+            and receiver.thread() is not QtCore.QThread.currentThread()
+        ):
+            try:
+                QtCore.QMetaObject.invokeMethod(
+                    receiver,
+                    method_name,
+                    QtCore.Qt.ConnectionType.QueuedConnection,
+                    QtCore.Q_ARG(dict, event),
+                )
+                return
+            except (RuntimeError, TypeError):
+                pass
+
+        callback(event)
 
     def emit_event(self, event: dict):
         """Совместимый способ отправки: topics + старый event_posted сигнал."""
@@ -1134,7 +1083,9 @@ if __name__ == "__main__":
 
     app = ApplicationWithContext(sys.argv)
     install_window_title_branding(app)
-    app.setStyleSheet(DARK_STYLESHEET)
+    # Тема (светлая/тёмная/авто) применяется в apply_saved_app_theme ниже,
+    # как только доступен settings_manager — без раннего тёмного дефолта,
+    # чтобы пользователи светлой/авто-темы не видели тёмной вспышки.
 
     # Инициализация ресурсов (один раз при старте процесса)
     if sys.platform == "win32":

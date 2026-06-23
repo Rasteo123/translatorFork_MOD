@@ -58,7 +58,11 @@ def _get_app_data_dir() -> str:
 
 CFG = Config()
 APP_DIR = _get_app_data_dir()
-os.makedirs(APP_DIR, exist_ok=True)
+try:
+    os.makedirs(APP_DIR, exist_ok=True)
+except OSError:
+    APP_DIR = os.path.join(tempfile.gettempdir(), "gemini_translator")
+    os.makedirs(APP_DIR, exist_ok=True)
 
 SESSION_FILE = os.path.join(APP_DIR, ".perplexity_session")
 ENDPOINT_FILE = os.path.join(APP_DIR, ".perplexity_server_endpoint.json")
@@ -77,9 +81,14 @@ audit_logger = logging.getLogger("PerplexityAudit")
 audit_logger.setLevel(logging.INFO)
 audit_logger.propagate = False
 if not audit_logger.handlers:
-    _fh = logging.FileHandler(REQUEST_LOG_FILE, encoding="utf-8")
-    _fh.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-    audit_logger.addHandler(_fh)
+    try:
+        _fh = logging.FileHandler(REQUEST_LOG_FILE, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Perplexity audit log unavailable at %s: %s", REQUEST_LOG_FILE, exc)
+        audit_logger.addHandler(logging.NullHandler())
+    else:
+        _fh.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+        audit_logger.addHandler(_fh)
 
 app = Flask(__name__)
 _api_semaphore = threading.Semaphore(CFG.concurrent_requests)

@@ -30,11 +30,16 @@ class ExpandingTextEdit(QtWidgets.QTextEdit):
     def resizeEvent(self, event: QtGui.QResizeEvent):
         """Перехватываем изменение размера, чтобы обновить компоновку."""
         super().resizeEvent(event)
+        
+        # Защита от Access Violation: если сигналы заблокированы (например, в destroyEditor перед удалением),
+        # мы не должны вызывать updateGeometry, так как виджет находится в процессе C++ деструкции (DeferredDelete).
+        if self.signalsBlocked():
+            return
+            
         # Этот вызов заставит sizeHint пересчитаться с новой шириной
         self.updateGeometry()
         # И сообщаем об этом, чтобы таблица тоже обновилась
         self.geometryChangeRequested.emit()
-
 
 class ExpandingTextEditDelegate(QtWidgets.QStyledItemDelegate):
     """
@@ -45,12 +50,24 @@ class ExpandingTextEditDelegate(QtWidgets.QStyledItemDelegate):
         editor = ExpandingTextEdit(parent)
         table = self.parent()
         if isinstance(table, QtWidgets.QTableWidget):
+            table_ref = weakref.ref(table)
             row = index.row()
-            # Соединяем сигнал от редактора с методом таблицы
-            editor.geometryChangeRequested.connect(lambda: table.resizeRowToContents(row))
+            # Соединяем сигнал от редактора с методом таблицы безопасно
+            editor.geometryChangeRequested.connect(
+                lambda: (tbl := table_ref()) and 
+                (0 <= row < tbl.rowCount()) and 
+                tbl.resizeRowToContents(row)
+            )
         
         editor.installEventFilter(self)
         return editor
+
+    def destroyEditor(self, editor, index):
+        if isinstance(editor, ExpandingTextEdit):
+            # Блокируем сигналы перед удалением, чтобы избежать Access Violation
+            # из-за geometryChangeRequested во время обработки DeferredDelete.
+            editor.blockSignals(True)
+        super().destroyEditor(editor, index)
 
     def setEditorData(self, editor, index):
         value = index.model().data(index, QtCore.Qt.ItemDataRole.EditRole)

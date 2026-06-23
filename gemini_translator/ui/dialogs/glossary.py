@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel,
     QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
     QFileDialog, QMessageBox, QWidget, QHBoxLayout, QComboBox,
-    QSplitter, QStyle, QGroupBox, QAbstractItemView, QGridLayout
+    QSplitter, QStyle, QGroupBox, QAbstractItemView, QGridLayout, QToolButton
 )
 
 # --- Импорты из модулей проекта ---
@@ -56,6 +56,7 @@ from ...utils.settings import SettingsManager
 from ...utils.language_tools import (
     LanguageDetector, ChineseTextProcessor, GlossaryLogic
 )
+from gemini_translator.ui import theme_manager
 
 
 # --- Универсальный импорт Pymorphy с проверкой версии ---
@@ -224,7 +225,7 @@ class GlossaryFilterDialog(QDialog):
 
         # 3. Режим Regex (перекрывает умный поиск)
         self.check_regex = QtWidgets.QCheckBox("Режим сырого Regex (отключает параметры слов)")
-        self.check_regex.setStyleSheet("color: grey;")
+        self.check_regex.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         self.check_regex.setChecked(current_regex)
         self.check_regex.toggled.connect(self._on_regex_toggled)
         options_layout.addWidget(self.check_regex)
@@ -354,6 +355,12 @@ class GlossaryManagerPage(ShellPage):
     result_ready = pyqtSignal(bool)   # emitted with accepted=True/False when the editor finishes
     ConflictTypeRole = Qt.ItemDataRole.UserRole + 1
     DB_ID_ROLE = Qt.ItemDataRole.UserRole + 2
+    TABLE_ACTION_BUTTON_SIZE = QtCore.QSize(24, 22)
+    TABLE_ACTION_ICON_SIZE = QtCore.QSize(14, 14)
+    TABLE_ACTION_BUTTON_SPACING = 4
+    TABLE_ACTION_WIDGET_MARGINS = 8
+    TABLE_ACTION_CELL_PADDING = 36
+    TABLE_ROW_HEIGHT = 36
 
     def __init__(self, parent=None, mode='standalone', project_path=None):
         super().__init__(parent)
@@ -526,7 +533,7 @@ class GlossaryManagerPage(ShellPage):
 
         if not PYMORPHY_AVAILABLE and PYMORPHY_RECOMMENDATION:
             pymorphy_warning_label = QLabel(PYMORPHY_RECOMMENDATION)
-            pymorphy_warning_label.setStyleSheet("background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 8px; border-radius: 4px;")
+            pymorphy_warning_label.setStyleSheet(f"background-color: {theme_manager.color('warning')}22; color: {theme_manager.color('warning')}; border: 1px solid {theme_manager.color('warning')}66; padding: 8px; border-radius: 4px;")
             pymorphy_warning_label.setOpenExternalLinks(True)
             pymorphy_warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             main_layout.addWidget(pymorphy_warning_label)
@@ -543,7 +550,7 @@ class GlossaryManagerPage(ShellPage):
         if self.launch_mode != 'child':
             load_widget = QWidget(); load_layout = QVBoxLayout(load_widget); load_layout.setContentsMargins(0,0,0,0)
             load_button = QPushButton("Открыть глоссарии…"); load_button.clicked.connect(self.load_files)
-            load_hint_label = QLabel("Поддерживает JSON (простой/полный) и TXT"); load_hint_label.setStyleSheet("color: grey; font-size: 9pt;")
+            load_hint_label = QLabel("Поддерживает JSON (простой/полный) и TXT"); load_hint_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
             load_layout.addWidget(load_button); load_layout.addWidget(load_hint_label)
             top_controls.addWidget(load_widget)
         
@@ -565,7 +572,7 @@ class GlossaryManagerPage(ShellPage):
             top_controls.addWidget(self.apply_button)
         elif self.launch_mode == 'child':
             self.apply_button = QPushButton("✅ ПРИМЕНИТЬ ИЗМЕНЕНИЯ"); 
-            self.apply_button.setStyleSheet("background-color: #2ECC71; color: white; font-weight: bold; padding: 6px;")
+            self.apply_button.setStyleSheet(f"background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 6px;")
             self.apply_button.clicked.connect(self.accept) # accept закроет окно и вернет результат вызывающему
             top_controls.addWidget(self.apply_button)
         
@@ -654,9 +661,11 @@ class GlossaryManagerPage(ShellPage):
         header.sectionClicked.connect(self._on_header_clicked)
         
         for i in range(3): header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
-        for i in range(3, 5): header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        for i in range(3, 5): header.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
+        self._update_action_column_widths()
         
-        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.verticalHeader().setDefaultSectionSize(self.TABLE_ROW_HEIGHT)
+        self.table.verticalHeader().setMinimumSectionSize(self.TABLE_ROW_HEIGHT)
         # self.table.setSortingEnabled(True)  <-- ЭТУ СТРОКУ УДАЛИТЬ ИЛИ ЗАКОММЕНТИРОВАТЬ
         
         self.table.itemChanged.connect(self.on_main_table_item_changed)
@@ -685,7 +694,7 @@ class GlossaryManagerPage(ShellPage):
         self.open_filtered_group_btn.setVisible(False) 
         self.open_filtered_group_btn.setStyleSheet(
             "background-color: rgba(26, 188, 156, 0.15); "  # Полупрозрачный фон (Teal)
-            "color: #1abc9c; "                               # Яркий текст
+            f"color: {theme_manager.color('success')}; "    # Яркий текст
             "font-weight: bold; "
             "border: 1px solid rgba(26, 188, 156, 0.5); "    # Тонкая рамка
             "border-radius: 4px; padding: 4px 8px;"
@@ -1067,13 +1076,13 @@ class GlossaryManagerPage(ShellPage):
             base_status_text = "Проблем не найдено." if not status_parts else "<b>Найдено:</b> " + ", ".join(status_parts)
             
             if self.is_analysis_dirty:
-                self.status_label.setText(f"{base_status_text} <b style='color: #E67E22;'>(!)</b>")
+                self.status_label.setText(f"{base_status_text} <b style='color: {theme_manager.color('warning')};'>(!)</b>")
                 self.status_label.setToolTip("Данные изменены. Рекомендуется перезапустить анализ.")
-                self.analyze_button.setStyleSheet("font-weight: bold; border-color: #E67E22;")
+                self.analyze_button.setStyleSheet(f"font-weight: bold; border-color: {theme_manager.color('warning')};")
             else:
                 self.status_label.setText(base_status_text)
                 self.status_label.setToolTip("")
-                self.status_label.setStyleSheet("color: green;" if not status_parts else "")
+                self.status_label.setStyleSheet(f"color: {theme_manager.color('success')};" if not status_parts else "")
                 self.analyze_button.setStyleSheet("")
         
         # --- НАЧАЛО НОВОГО БЛОКА: Проверка на пустые столбцы ---
@@ -1193,8 +1202,8 @@ class GlossaryManagerPage(ShellPage):
             # Меняем стиль кнопки
             if self.filter_state['text']:
                 self.search_button.setStyleSheet(
-                    "background-color: rgba(255, 215, 0, 0.15); " 
-                    "border: 1px solid rgba(255, 215, 0, 0.5); "
+                    f"background-color: {theme_manager.color('warning')}26; "
+                    f"border: 1px solid {theme_manager.color('warning')}80; "
                     "border-radius: 4px;"
                 )
                 mode_str = "Regex" if self.filter_state['is_regex'] else ("AND" if self.filter_state['match_all'] else "OR")
@@ -1394,8 +1403,7 @@ class GlossaryManagerPage(ShellPage):
         self._update_pagination_controls()
         self._save_project_view_state()
         self._apply_all_highlights()
-        self.table.resizeColumnToContents(3)
-        self.table.resizeColumnToContents(4)
+        self._update_action_column_widths()
 
         # --- Логика видимости кнопки группового редактирования ---
         # Показываем кнопку только если введен текст фильтра и есть результаты
@@ -1596,11 +1604,11 @@ class GlossaryManagerPage(ShellPage):
     
         # Добавляем предупреждение, если данные устарели
         if self.is_analysis_dirty:
-            self.status_label.setText(f"{base_status_text} <b style='color: #E67E22;'> (Данные могут быть неактуальны, рекомендуется перезапуск анализа)</b>")
-            self.analyze_button.setStyleSheet("font-weight: bold; border-color: #E67E22;")
+            self.status_label.setText(f"{base_status_text} <b style='color: {theme_manager.color('warning')};'> (Данные могут быть неактуальны, рекомендуется перезапуск анализа)</b>")
+            self.analyze_button.setStyleSheet(f"font-weight: bold; border-color: {theme_manager.color('warning')};")
         else:
             self.status_label.setText(base_status_text)
-            self.status_label.setStyleSheet("color: green;" if not status_parts else "")
+            self.status_label.setStyleSheet(f"color: {theme_manager.color('success')};" if not status_parts else "")
             self.analyze_button.setStyleSheet("")
     
         # --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Заменяем полный redraw на целевое обновление подсветки ---
@@ -2954,9 +2962,6 @@ class GlossaryManagerPage(ShellPage):
     
     def _create_row_buttons(self, row, item_dict):
         if not isinstance(item_dict, dict): return
-        
-        # Общий размер для всех кнопок
-        BTN_SIZE = QtCore.QSize(30, 26) 
 
         # ---------------------------------------------------------
         # КОЛОНКА 3: Генерация примечаний + Версионирование
@@ -2972,27 +2977,35 @@ class GlossaryManagerPage(ShellPage):
 
         # 1. Кнопка Pymorphy (Генерация)
         if PYMORPHY_AVAILABLE:
-            gen_btn = QPushButton("📝")
+            gen_btn = QToolButton()
+            gen_btn.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+            )
             gen_btn.setToolTip("Сгенерировать примечание")
-            gen_btn.setFixedSize(BTN_SIZE)
-            # Фиксируем размер кнопки
-            gen_btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+            self._configure_table_action_button(gen_btn)
             gen_btn.clicked.connect(lambda ch, r=row: self._on_generate_note_in_main_table_clicked(r))
             col3_layout.addWidget(gen_btn)
         
         # 2. Кнопка Версии
         if self.associated_project_path and self.associated_epub_path:
-            version_btn = QPushButton("🔀")
-            version_btn.setFixedSize(BTN_SIZE)
-            version_btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+            version_btn = QToolButton()
+            version_btn.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+            )
             
             term = item_dict.get('original', '')
             has_versions = self._check_if_term_has_versions(term)
             
             if has_versions:
-                version_btn.setStyleSheet("background-color: #9B59B6; color: white; font-weight: bold;")
+                self._configure_table_action_button(
+                    version_btn,
+                    f"background-color: {theme_manager.color('info')}; "
+                    f"color: {theme_manager.color('accent_text')}; "
+                    "font-weight: bold;",
+                )
                 version_btn.setToolTip("Управление версиями (ЕСТЬ АКТИВНЫЕ ПРАВИЛА)")
             else:
+                self._configure_table_action_button(version_btn)
                 version_btn.setToolTip("Создать версии (переопределения для глав)")
                 
             version_btn.clicked.connect(lambda ch, d=item_dict: self._open_versioning_dialog(d))
@@ -3010,10 +3023,10 @@ class GlossaryManagerPage(ShellPage):
         col4_layout.setContentsMargins(4, 2, 4, 2)
         col4_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        delete_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), "")
+        delete_btn = QToolButton()
+        delete_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
         delete_btn.setToolTip(f"Удалить термин '{item_dict.get('original','')}'")
-        delete_btn.setFixedSize(BTN_SIZE)
-        delete_btn.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        self._configure_table_action_button(delete_btn)
         
         db_id = item_dict.get('id')
         if db_id:
@@ -3022,6 +3035,52 @@ class GlossaryManagerPage(ShellPage):
         col4_layout.addWidget(delete_btn)
         
         self.table.setCellWidget(row, 4, col4_widget)
+
+    def _configure_table_action_button(self, button: QToolButton, extra_style: str = ""):
+        button.setFixedSize(self.TABLE_ACTION_BUTTON_SIZE)
+        button.setIconSize(self.TABLE_ACTION_ICON_SIZE)
+        button.setAutoRaise(True)
+        button.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        button.setStyleSheet(
+            "QToolButton {"
+            "background: transparent;"
+            "border: 1px solid transparent;"
+            "border-radius: 6px;"
+            "padding: 0px;"
+            f"min-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
+            f"max-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
+            f"min-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
+            f"max-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
+            f"{extra_style}"
+            "}"
+            "QToolButton:hover {"
+            f"background-color: {theme_manager.color('accent_hover_soft')};"
+            f"border-color: {theme_manager.color('border_strong')};"
+            "}"
+        )
+
+    def _action_column_width_for_buttons(self, button_count: int) -> int:
+        if button_count <= 0:
+            return self.TABLE_ACTION_CELL_PADDING
+        return (
+            self.TABLE_ACTION_BUTTON_SIZE.width() * button_count
+            + self.TABLE_ACTION_BUTTON_SPACING * max(0, button_count - 1)
+            + self.TABLE_ACTION_WIDGET_MARGINS
+            + self.TABLE_ACTION_CELL_PADDING
+        )
+
+    def _update_action_column_widths(self):
+        note_action_buttons = int(PYMORPHY_AVAILABLE) + int(
+            bool(self.associated_project_path and self.associated_epub_path)
+        )
+        self.table.setColumnWidth(
+            3,
+            self._action_column_width_for_buttons(note_action_buttons),
+        )
+        self.table.setColumnWidth(4, self._action_column_width_for_buttons(1))
         
     def _check_if_term_has_versions(self, term):
         """Быстрая проверка наличия версий в файле JSON без полной загрузки."""

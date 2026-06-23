@@ -18,6 +18,7 @@ from ..widgets.preset_widget import PresetWidget
 # Мы импортируем config напрямую, чтобы виджет был самодостаточным
 from ...api import config as api_config
 from ...utils import markdown_viewer
+from gemini_translator.ui import theme_manager
 
 CHATGPT_LOGIN_URL = "https://chatgpt.com/auth/login"
 CHATGPT_SIGNUP_URL = "https://chatgpt.com/auth/login?mode=signup"
@@ -146,7 +147,7 @@ class FreeDeepseekApiDialog(QDialog):
             "Вход DeepSeek и запуск локального proxy выполняются из этого окна."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888;")
+        hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         layout.addWidget(hint)
 
         path_layout = QHBoxLayout()
@@ -512,7 +513,7 @@ class ModelSettingsWidget(QGroupBox):
         self.rpm_spin.valueChanged.connect(lambda: self._update_control_style(self.rpm_spin, "rpm"))
         rpm_layout.addWidget(self.rpm_spin)
         self.rpm_recommendation_label = QLabel("(рек: ?)")
-        self.rpm_recommendation_label.setStyleSheet("color: #aaa; font-size: 9pt;")
+        self.rpm_recommendation_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         rpm_layout.addWidget(self.rpm_recommendation_label)
         
         left_layout.addWidget(self.rpm_row_widget, 1, 0, 1, 3)
@@ -529,7 +530,7 @@ class ModelSettingsWidget(QGroupBox):
         self.max_concurrent_spin.valueChanged.connect(lambda: self._update_control_style(self.max_concurrent_spin, "max_concurrent_requests"))
         concurrent_layout.addWidget(self.max_concurrent_spin)
         self.max_concurrent_recommendation_label = QLabel("(рек: ?)")
-        self.max_concurrent_recommendation_label.setStyleSheet("color: #aaa; font-size: 9pt;")
+        self.max_concurrent_recommendation_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         concurrent_layout.addWidget(self.max_concurrent_recommendation_label)
     
         left_layout.addWidget(self.concurrent_row_widget, 2, 0, 1, 3)
@@ -561,7 +562,7 @@ class ModelSettingsWidget(QGroupBox):
         rpd_layout.addWidget(self.rpd_spin)
         
         self.rpd_recommendation_label = QLabel("(рек: ?)")
-        self.rpd_recommendation_label.setStyleSheet("color: #aaa; font-size: 9pt;")
+        self.rpd_recommendation_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         rpd_layout.addWidget(self.rpd_recommendation_label)
         
         left_layout.addWidget(self.rpd_row_widget, 3, 0, 1, 3)
@@ -574,17 +575,18 @@ class ModelSettingsWidget(QGroupBox):
             "Отправлять температуру в API-запросах. Если выключено, используется дефолт модели/сервера."
         )
         self.temperature_spin = NoScrollDoubleSpinBox()
-        self.temperature_spin.setMinimumWidth(70); self.temperature_spin.setDecimals(1)
+        self.temperature_spin.setMinimumWidth(85); self.temperature_spin.setDecimals(1)
         self.temperature_spin.setRange(0.0, 2.0); self.temperature_spin.setSingleStep(0.1)
         self.temperature_spin.setValue(1.0)
         self.temperature_spin.setEnabled(False)
         self.temperature_spin.valueChanged.connect(self.update_temperature_indicator)
         self.temp_indicator = QLabel("Сбалансированный")
-        self.temp_indicator.setStyleSheet("color: green; font-size: 10px;")
+        self.temp_indicator.setStyleSheet(f"color: {theme_manager.color('success')}; font-size: 10px;")
         temp_layout.addWidget(self.temperature_override_checkbox)
         temp_layout.addWidget(self.temperature_spin)
         temp_layout.addWidget(self.temp_indicator)
-        left_layout.addLayout(temp_layout, 4, 1, 1, 2)
+        temp_layout.addStretch()
+        left_layout.addLayout(temp_layout, 4, 1, 1, 4)
     
         # --- Thinking (Row 5) ---
         left_layout.addWidget(QLabel("Thinking:"), 5, 0)
@@ -608,7 +610,7 @@ class ModelSettingsWidget(QGroupBox):
         self.thinking_level_combo.currentTextChanged.connect(self._emit_settings_changed)
 
         self.thinking_info_label = QLabel("(выключено)")
-        self.thinking_info_label.setStyleSheet("color: gray; font-size: 10px;")
+        self.thinking_info_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 10px;")
         
         thinking_layout.addWidget(self.thinking_checkbox)
         thinking_layout.addWidget(self.thinking_preset_combo)
@@ -617,7 +619,7 @@ class ModelSettingsWidget(QGroupBox):
         thinking_layout.addWidget(self.thinking_info_label)
         
         thinking_layout.addStretch()
-        left_layout.addLayout(thinking_layout, 5, 1, 1, 2)
+        left_layout.addLayout(thinking_layout, 5, 1, 1, 4)
     
         # --- System Instructions (Row 6) ---
         self.system_instruction_checkbox = QCheckBox("Сист. инструкции")
@@ -682,7 +684,7 @@ class ModelSettingsWidget(QGroupBox):
         self.use_jieba_glossary_checkbox = QCheckBox("Jieba для поиска в глоссарии")
         self.segment_text_checkbox = QCheckBox("Сегментировать CJK текст для перевода")
         self.cjk_options_label = QLabel("Выберите EPUB файл…")
-        self.cjk_options_label.setStyleSheet("color: gray; font-size: 9pt;")
+        self.cjk_options_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         self.use_jieba_glossary_checkbox.setEnabled(False)
         self.segment_text_checkbox.setEnabled(False)
         self.use_jieba_glossary_checkbox.stateChanged.connect(self._update_cjk_checkbox_styles)
@@ -711,7 +713,7 @@ class ModelSettingsWidget(QGroupBox):
         recalibrate_btn.clicked.connect(self.recalibrate_requested.emit)
         
         self.fuzzy_status_label = QLabel("Fuzzy-поиск: (требуется калибровка)\nПервый запуск будет долгим при значении 84 и ниже. Второй и далее - быстрыми.")
-        self.fuzzy_status_label.setStyleSheet("color: #aaa; font-size: 10px;")
+        self.fuzzy_status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 10px;")
     
         glossary_layout.addWidget(self.dynamic_glossary_checkbox, 0, 0)
         glossary_layout.addWidget(QLabel("Порог Fuzzy:"), 0, 1)
@@ -812,7 +814,7 @@ class ModelSettingsWidget(QGroupBox):
             "Runtime, браузерный профиль и Playwright определяются автоматически. Ручные пути для ChatGPT Web не требуются."
         )
         runtime_hint.setWordWrap(True)
-        runtime_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        runtime_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         workascii_layout.addWidget(runtime_hint, 0, 0, 1, 3)
 
         workascii_layout.addWidget(QLabel("Workspace name:"), 1, 0)
@@ -842,7 +844,7 @@ class ModelSettingsWidget(QGroupBox):
             "Используется сохраненный браузерный профиль ChatGPT. Формат промпта остается прежним, меняется только transport-обработчик."
         )
         workascii_hint.setWordWrap(True)
-        workascii_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        workascii_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         workascii_layout.addWidget(workascii_hint, 6, 0, 1, 3)
         workascii_hint.setText(
             "Используется сохраненный браузерный профиль ChatGPT. "
@@ -923,7 +925,7 @@ class ModelSettingsWidget(QGroupBox):
 
         debug_hint = QLabel("Конкретный JSONL-лог операции можно открыть прямо из окна лога.")
         debug_hint.setWordWrap(True)
-        debug_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        debug_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
 
         debug_layout.addWidget(self.debug_logging_checkbox, 0, 0, 1, 3)
         debug_layout.addWidget(QLabel("Фильтр операций:"), 1, 0)
@@ -1455,24 +1457,24 @@ class ModelSettingsWidget(QGroupBox):
 
         if not enabled:
             self.cjk_options_label.setText("Выберите EPUB файл для активации этих опций.")
-            self.cjk_options_label.setStyleSheet("color: gray; font-size: 9pt;")
+            self.cjk_options_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
             return
 
         if error:
             self.use_jieba_glossary_checkbox.setChecked(False)
             self.segment_text_checkbox.setChecked(False)
             self.cjk_options_label.setText("⚠️ Ошибка определения языка, опции доступны вручную.")
-            self.cjk_options_label.setStyleSheet("color: orange; font-size: 9pt;")
+            self.cjk_options_label.setStyleSheet(f"color: {theme_manager.color('warning')}; font-size: 9pt;")
         elif is_cjk_recommended:
             self.use_jieba_glossary_checkbox.setChecked(True)
             self.segment_text_checkbox.setChecked(False)
             self.cjk_options_label.setText("✅ Обнаружен CJK-текст. Рекомендуемые\nнастройки применены.")
-            self.cjk_options_label.setStyleSheet("color: green; font-size: 9pt;")
+            self.cjk_options_label.setStyleSheet(f"color: {theme_manager.color('success')}; font-size: 9pt;")
         else:
             self.use_jieba_glossary_checkbox.setChecked(False)
             self.segment_text_checkbox.setChecked(False)
             self.cjk_options_label.setText("ℹ️ CJK-текст не найден. Опции доступны\nдля ручного включения.")
-            self.cjk_options_label.setStyleSheet("color: gray; font-size: 9pt;")
+            self.cjk_options_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         
         self._update_cjk_checkbox_styles()
         
@@ -1588,11 +1590,12 @@ class ModelSettingsWidget(QGroupBox):
         recommendation = label.property("recommendation")
         if recommendation is None: return
         current_value = spin_box.value()
-        COLOR_LOWER, COLOR_HIGHER = "#A9CCE3", "#F5B7B1"
+        COLOR_LOWER = theme_manager.color('info')
+        COLOR_HIGHER = theme_manager.color('danger')
 
         if current_value == recommendation:
             spin_box.setStyleSheet("")
-            label.setStyleSheet("color: #aaa; font-size: 9pt;")
+            label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 9pt;")
         elif current_value < recommendation and recommendation != 0:
              # Для RPD и RPM меньше рекомендация -> синий (safe)
              # Но для 0 (безлимит) в рекомендации любое значение будет > 0 (красным)
@@ -1629,20 +1632,20 @@ class ModelSettingsWidget(QGroupBox):
             self._apply_model_default_temperature()
 
     def update_temperature_indicator(self, value):
-        if value <= 0.7: text, color = "Точный (для серьезных текстов)", "blue"
-        elif value <= 1.3: text, color = "Сбалансированный (универсальный)", "green"
-        else: text, color = "Креативный (для 'веселых' текстов)", "orange"
+        if value <= 0.7: text, color = "Точный (для серьезных текстов)", theme_manager.color('info')
+        elif value <= 1.3: text, color = "Сбалансированный (универсальный)", theme_manager.color('success')
+        else: text, color = "Креативный (для 'веселых' текстов)", theme_manager.color('warning')
         self.temp_indicator.setText(text)
         self.temp_indicator.setStyleSheet(f"color: {color}; font-size: 10px;")
 
     def _update_cjk_checkbox_styles(self):
         jieba_matches = (self.use_jieba_glossary_checkbox.isChecked() == self.is_cjk_recommended)
-        self.use_jieba_glossary_checkbox.setStyleSheet("color: green;" if jieba_matches else "color: #D35400;")
-        
+        self.use_jieba_glossary_checkbox.setStyleSheet(f"color: {theme_manager.color('success')};" if jieba_matches else f"color: {theme_manager.color('warning')};")
+
         recommended_segment = False
         if self.is_cjk_recommended: recommended_segment = self.segment_text_checkbox.isChecked()
         segment_matches = (self.segment_text_checkbox.isChecked() == recommended_segment) or self.is_cjk_recommended
-        self.segment_text_checkbox.setStyleSheet("color: green;" if segment_matches else "color: #D35400;")
+        self.segment_text_checkbox.setStyleSheet(f"color: {theme_manager.color('success')};" if segment_matches else f"color: {theme_manager.color('warning')};")
         
     def on_thinking_toggled(self, state):
         enabled = (state == QtCore.Qt.CheckState.Checked.value) if isinstance(state, int) else state
@@ -1659,7 +1662,7 @@ class ModelSettingsWidget(QGroupBox):
                 self.on_thinking_budget_changed(self.thinking_budget_spin.value())
             else: 
                 self.thinking_info_label.setText("(выключено)")
-                self.thinking_info_label.setStyleSheet("color: gray; font-size: 10px;")
+                self.thinking_info_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 10px;")
 
     def on_thinking_preset_changed(self, preset_text):
         values = {"Динам.": -1, "1024": 1024, "2048": 2048, "4096": 4096, "8192": 8192}
@@ -1667,9 +1670,9 @@ class ModelSettingsWidget(QGroupBox):
 
     def on_thinking_budget_changed(self, value):
         if not self.thinking_checkbox.isChecked(): return
-        if value == -1: text, color = "(динамический)", "green"
-        elif value == 0: text, color = "(отключен)", "red"
-        else: text, color = f"({value} токенов)", "blue"
+        if value == -1: text, color = "(динамический)", theme_manager.color('success')
+        elif value == 0: text, color = "(отключен)", theme_manager.color('danger')
+        else: text, color = f"({value} токенов)", theme_manager.color('info')
         self.thinking_info_label.setText(text); self.thinking_info_label.setStyleSheet(f"color: {color}; font-size: 10px;")
         
         

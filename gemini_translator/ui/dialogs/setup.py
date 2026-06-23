@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 # ---------------------------------------------------------------------------
 # Диалоги начальной настройки
@@ -19,6 +19,7 @@ import math  # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
 import traceback # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
 
 # --- Импорты из PyQt6 ---
+from ..widgets.overlay_tab_widget import OverlayTabWidget
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QListWidget, QPushButton, QDialogButtonBox, QLabel,
@@ -26,7 +27,8 @@ from PyQt6.QtWidgets import (
     QMessageBox, QStyle, QColorDialog,
     QTableWidget, QTableWidgetItem, QGroupBox, QFormLayout, QHBoxLayout, QHeaderView,
     QScrollArea, QWidget, QTabWidget, QGridLayout,
-    QPlainTextEdit, QComboBox, QSpinBox, QSplitter, QAbstractItemView, QFrame
+    QPlainTextEdit, QComboBox, QSpinBox, QSplitter, QAbstractItemView, QFrame,
+    QStackedWidget, QTabBar
 )
 
 from PyQt6.QtCore import QMimeData, pyqtSlot, pyqtSignal, QThread, QItemSelectionModel, QItemSelection
@@ -62,7 +64,9 @@ from ..themes import (
     build_dark_stylesheet,
     editable_theme_colors,
     extract_theme_colors,
+    sanitize_theme_colors,
 )
+from gemini_translator.ui import theme_manager
 from ..widgets import (
     KeyManagementWidget, TranslationOptionsWidget, ModelSettingsWidget,
     ProjectPathsWidget, GlossaryWidget, PresetWidget, ProjectActionsWidget,
@@ -89,7 +93,19 @@ import time # <-- НОВЫЙ ИМПОРТ
 BENCHMARK_GLOSSARY_SIZE = 100    # Увеличиваем количество терминов
 BENCHMARK_TEXT_SIZE = 10000     # Увеличиваем размер текста
 BASE_GLOSSARY_PROMPT_STATE_FILE = "base_glossary_prompt_state.json"
+TASK_LIST_MIN_HEIGHT = 420
+TASK_OPTIONS_MIN_HEIGHT = 400
+TASKS_TAB_MIN_HEIGHT = TASK_LIST_MIN_HEIGHT + TASK_OPTIONS_MIN_HEIGHT + 24
 # --- КОНЕЦ НОВЫХ КОНСТАНТ ---
+
+
+def _instance_attr(obj, name: str, default=None):
+    """Read Python-side attrs without touching uninitialized Qt wrapper state."""
+    try:
+        return vars(obj).get(name, default)
+    except Exception:
+        return default
+
 
 def _format_duration(seconds: float) -> str:
     """Formats a rough duration estimate for display."""
@@ -102,6 +118,46 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes} мин {secs} сек"
     return f"{secs} сек"
+
+
+def _create_tasks_tab_scroll_area(task_management_widget, translation_options_widget):
+    tasks_tab_container = QWidget()
+    tasks_tab_layout = QVBoxLayout(tasks_tab_container)
+    tasks_tab_layout.setContentsMargins(4, 4, 4, 4)
+    tasks_tab_layout.setSpacing(8)
+
+    tasks_splitter = QSplitter(QtCore.Qt.Orientation.Vertical)
+    tasks_splitter.setChildrenCollapsible(False)
+
+    task_management_widget.setMinimumHeight(TASK_LIST_MIN_HEIGHT)
+    task_management_widget.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Preferred,
+        QtWidgets.QSizePolicy.Policy.Expanding,
+    )
+    translation_options_widget.setMinimumHeight(
+        max(TASK_OPTIONS_MIN_HEIGHT, translation_options_widget.minimumSizeHint().height())
+    )
+
+    tasks_splitter.addWidget(task_management_widget)
+    tasks_splitter.addWidget(translation_options_widget)
+    tasks_splitter.setStretchFactor(0, 5)
+    tasks_splitter.setStretchFactor(1, 1)
+    tasks_splitter.setCollapsible(0, False)
+    tasks_splitter.setCollapsible(1, True)
+    tasks_splitter.setSizes([560, TASK_OPTIONS_MIN_HEIGHT])
+    tasks_splitter.setMinimumHeight(TASKS_TAB_MIN_HEIGHT)
+
+    tasks_tab_layout.addWidget(tasks_splitter, 1)
+    tasks_tab_container.setMinimumHeight(TASKS_TAB_MIN_HEIGHT)
+
+    tasks_scroll = QScrollArea()
+    tasks_scroll.setWidgetResizable(True)
+    tasks_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    tasks_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    tasks_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    tasks_scroll.setWidget(tasks_tab_container)
+
+    return tasks_scroll, tasks_splitter
 
 
 class PreflightEstimateDialog(QDialog):
@@ -165,7 +221,7 @@ class BaseGlossarySelectionDialog(QDialog):
 
         hint = QLabel("Выбор будет сохранён для этого проекта, чтобы окно не появлялось повторно.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888;")
+        hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         layout.addWidget(hint)
 
         self.button_box = QDialogButtonBox()
@@ -234,6 +290,7 @@ class ChapterTextPreviewDialog(QDialog):
         layout.addWidget(buttons)
 
 
+
 class InitialSetupPage(ShellPage):
     """
     Единый диалог для настройки перевода.
@@ -280,7 +337,9 @@ class InitialSetupPage(ShellPage):
         self.proxy_status_label = None
         self.proxy_button = None
         self.theme_color_buttons = {}
-        self._ui_theme_colors = editable_theme_colors(
+        # Only genuine custom overrides (preset-equal legacy auto-saves dropped),
+        # so an unmodified profile lets light/dark/auto drive the colours.
+        self._ui_theme_colors = theme_manager.custom_overrides(
             extract_theme_colors(self.settings_manager.load_full_session_settings())
             or extract_theme_colors(self.settings_manager.load_settings())
         )
@@ -375,7 +434,7 @@ class InitialSetupPage(ShellPage):
         """
         content_layout = QVBoxLayout(self.main_content_widget)
         content_layout.setContentsMargins(10, 10, 10, 0)
-        content_layout.setSpacing(8)
+        content_layout.setSpacing(0)
 
         # --- ШАГ 1: СОЗДАЕМ ВСЕ КАСТОМНЫЕ ВИДЖЕТЫ-КОМПОНЕНТЫ ---
         self.paths_widget = ProjectPathsWidget(self)
@@ -434,7 +493,7 @@ class InitialSetupPage(ShellPage):
         dist_controls_layout.addStretch()
 
         self.distribution_label = QLabel("…")
-        self.distribution_label.setStyleSheet("color: #90EE90; font-size: 10pt; font-weight: bold;")
+        self.distribution_label.setStyleSheet(f"color: {theme_manager.color('success')}; font-size: 10pt; font-weight: bold;")
         dist_controls_layout.addWidget(self.distribution_label)
 
         # Теперь создаем сам KeyManagementWidget
@@ -467,8 +526,8 @@ class InitialSetupPage(ShellPage):
         settings_layout.addWidget(self.appearance_group, 0)
         self.model_settings_widget.prettify_checkbox.setVisible(True)
         # --- ШАГ 3: СОБИРАЕМ QTabWidget ---
-        self.tabs_group = QTabWidget()
-        self.tabs_group.setDocumentMode(True)
+        self.tabs_group = OverlayTabWidget()
+        self.tabs_group.setDocumentMode(False)
         tabs_group = self.tabs_group
 
         # Вкладка 1: Настройки (Объединенная)
@@ -479,21 +538,11 @@ class InitialSetupPage(ShellPage):
         tabs_group.addTab(settings_scroll, "Настройки")
 
         # Вкладка 2: Список Задач + Оптимизация
-        tasks_tab_container = QWidget()
-        tasks_tab_layout = QVBoxLayout(tasks_tab_container)
-        tasks_tab_layout.setContentsMargins(4, 4, 4, 4)
-        tasks_tab_layout.setSpacing(8)
-        self.tasks_splitter = QSplitter(QtCore.Qt.Orientation.Vertical)
-        self.tasks_splitter.setChildrenCollapsible(False)
-        self.tasks_splitter.addWidget(self.task_management_widget)
-        self.tasks_splitter.addWidget(self.translation_options_widget)
-        self.tasks_splitter.setStretchFactor(0, 5)
-        self.tasks_splitter.setStretchFactor(1, 1)
-        self.tasks_splitter.setCollapsible(0, False)
-        self.tasks_splitter.setCollapsible(1, True)
-        self.tasks_splitter.setSizes([560, 150])
-        tasks_tab_layout.addWidget(self.tasks_splitter, 1)
-        tabs_group.addTab(tasks_tab_container, "Список Задач")
+        tasks_scroll, self.tasks_splitter = _create_tasks_tab_scroll_area(
+            self.task_management_widget,
+            self.translation_options_widget,
+        )
+        tabs_group.addTab(tasks_scroll, "Список Задач")
 
         # Остальные вкладки
         tabs_group.addTab(self.log_widget, "Логирование")
@@ -578,8 +627,7 @@ class InitialSetupPage(ShellPage):
         self.project_actions_widget.open_history_requested.connect(self._open_project_history)
         self.project_actions_widget.sync_project_requested.connect(self._run_project_sync)
 
-        self.translation_options_widget.settings_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=False))
-        self.translation_options_widget.task_size_spin.valueChanged.connect(self._refresh_auto_translate_runtime_context)
+        self.translation_options_widget.settings_changed.connect(self._on_translation_options_changed)
         self.task_management_widget.tasks_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=True))
 
         self.model_settings_widget.recalibrate_requested.connect(self._calibrate_cpu)
@@ -618,7 +666,6 @@ class InitialSetupPage(ShellPage):
         self.project_actions_widget.build_epub_requested.connect(self._open_epub_builder_standalone)
 
         self.model_settings_widget.settings_changed.connect(self._mark_settings_as_dirty)
-        self.translation_options_widget.settings_changed.connect(self._mark_settings_as_dirty)
         self.key_management_widget.active_keys_changed.connect(self._mark_settings_as_dirty)
         self.key_management_widget.provider_combo.currentIndexChanged.connect(self._mark_settings_as_dirty)
         self.instances_spin.valueChanged.connect(self._mark_settings_as_dirty)
@@ -629,6 +676,10 @@ class InitialSetupPage(ShellPage):
         self.auto_translate_widget.open_validator_requested.connect(self.open_translation_validator)
         self.auto_translate_widget.open_consistency_requested.connect(self.open_ai_consistency_checker)
         self._refresh_auto_translate_runtime_context()
+
+    def _on_translation_options_changed(self):
+        self._refresh_auto_translate_runtime_context()
+        self._mark_settings_as_dirty()
 
     def _on_main_tab_changed(self, index: int):
         if index == getattr(self, 'glossary_tab_index', -1):
@@ -889,6 +940,71 @@ class InitialSetupPage(ShellPage):
         hint_label.setObjectName("helperLabel")
         layout.addWidget(hint_label)
 
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Тема:"))
+        self.theme_mode_combo = QtWidgets.QComboBox()
+        self.theme_mode_combo.addItem("Авто (как в системе)", "auto")
+        self.theme_mode_combo.addItem("Светлая", "light")
+        self.theme_mode_combo.addItem("Тёмная", "dark")
+        self.theme_mode_combo.addItem("Своя", "custom")
+        current_mode = theme_manager.load_mode(self.settings_manager)
+        idx = self.theme_mode_combo.findData(current_mode)
+        if idx >= 0:
+            self.theme_mode_combo.setCurrentIndex(idx)
+        self.theme_mode_combo.currentIndexChanged.connect(
+            lambda _i: self._on_theme_mode_changed(self.theme_mode_combo.currentData())
+        )
+        mode_row.addWidget(self.theme_mode_combo, 1)
+        layout.addLayout(mode_row)
+
+        if theme_manager.glass_available():
+            glass_layout = QHBoxLayout()
+
+            self.glass_checkbox = QtWidgets.QCheckBox("Liquid Glass (вибрэнси macOS)")
+            self.glass_checkbox.setToolTip(
+                "Полупрозрачный фон с размытием за окном (только macOS). Экспериментально."
+            )
+            self.glass_checkbox.setChecked(
+                theme_manager.glass_enabled(self.settings_manager)
+            )
+            self.glass_checkbox.toggled.connect(self._on_glass_toggled)
+            glass_layout.addWidget(self.glass_checkbox)
+
+            self.glass_sliders_container = QtWidgets.QWidget()
+            glass_sliders_layout = QGridLayout(self.glass_sliders_container)
+            glass_sliders_layout.setContentsMargins(20, 0, 0, 0)
+
+            self.glass_opacities = theme_manager.load_glass_opacities(self.settings_manager)
+            self.opacity_sliders = {}
+
+            slider_configs = [
+                ("panel", "Панели", 0.55),
+                ("list", "Списки", 0.42),
+                ("input", "Поля ввода", 0.50),
+                ("tab", "Вкладки", 0.38)
+            ]
+
+            for i, (key, label, default_val) in enumerate(slider_configs):
+                row = i % 2
+                col = (i // 2) * 2
+
+                slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+                slider.setRange(0, 100)
+                slider.setMaximumWidth(120)
+                current_val = self.glass_opacities.get(key, default_val)
+                slider.setValue(int(current_val * 100))
+                slider.valueChanged.connect(lambda val, k=key: self._on_opacity_changed(k, val))
+                self.opacity_sliders[key] = slider
+
+                glass_sliders_layout.addWidget(QtWidgets.QLabel(label), row, col)
+                glass_sliders_layout.addWidget(slider, row, col + 1)
+
+            glass_layout.addWidget(self.glass_sliders_container)
+            glass_layout.addStretch(1)
+            layout.addLayout(glass_layout)
+
+            self.glass_sliders_container.setVisible(self.glass_checkbox.isChecked())
+
         form_layout = QFormLayout()
         form_layout.setContentsMargins(0, 0, 0, 0)
         form_layout.setSpacing(8)
@@ -919,17 +1035,26 @@ class InitialSetupPage(ShellPage):
         return group
 
     def _refresh_ui_theme_controls(self):
-        if not getattr(self, "theme_color_buttons", None):
+        theme_color_buttons = _instance_attr(self, "theme_color_buttons")
+        if not theme_color_buttons:
             return
 
-        colors = editable_theme_colors(getattr(self, "_ui_theme_colors", None))
+        # Swatches show the ACTIVE theme's base colours, overlaid with any
+        # explicit user picks — so they match what's actually on screen.
+        active = theme_manager.palette()
+        colors = {
+            "window_bg": active.get("window_bg", "#0f141b"),
+            "panel_bg": active.get("panel_bg", "#151c24"),
+            "accent": active.get("accent", "#d87a3a"),
+        }
+        colors.update(sanitize_theme_colors(_instance_attr(self, "_ui_theme_colors")))
         captions = {
             "window_bg": "Фон окна",
             "panel_bg": "Фон панелей",
             "accent": "Акцент",
         }
 
-        for color_key, button in self.theme_color_buttons.items():
+        for color_key, button in theme_color_buttons.items():
             color_value = colors[color_key]
             qcolor = QtGui.QColor(color_value)
             text_color = "#10161d" if qcolor.lightnessF() > 0.62 else "#ffffff"
@@ -948,24 +1073,89 @@ class InitialSetupPage(ShellPage):
             )
 
     def _apply_ui_theme_colors(self, theme_colors=None, mark_dirty=False):
-        next_colors = editable_theme_colors(theme_colors)
-        current_colors = editable_theme_colors(getattr(self, "_ui_theme_colors", None))
+        next_colors = sanitize_theme_colors(theme_colors)
+        current_colors = sanitize_theme_colors(_instance_attr(self, "_ui_theme_colors"))
         has_changed = next_colors != current_colors
 
         self._ui_theme_colors = dict(next_colors)
 
+        theme_mode_combo = _instance_attr(self, "theme_mode_combo")
+        if has_changed and self._ui_theme_colors and theme_mode_combo is not None:
+            idx = theme_mode_combo.findData("custom")
+            if idx >= 0 and theme_mode_combo.currentIndex() != idx:
+                theme_mode_combo.blockSignals(True)
+                theme_mode_combo.setCurrentIndex(idx)
+                theme_mode_combo.blockSignals(False)
+                theme_manager.save_mode(self.settings_manager, "custom")
+
         app = QtWidgets.QApplication.instance()
         if app is not None:
-            app.setStyleSheet(build_dark_stylesheet(self._ui_theme_colors))
+            mode = theme_manager.load_mode(self.settings_manager)
+            theme_manager.apply(
+                app,
+                mode=mode,
+                manual_colors=self._ui_theme_colors,
+                glass=theme_manager.glass_enabled(self.settings_manager),
+                glass_opacities=_instance_attr(self, "glass_opacities"),
+            )
 
         self._refresh_ui_theme_controls()
 
         if mark_dirty and has_changed:
             self._mark_settings_as_dirty()
 
+    def _on_theme_mode_changed(self, mode: str):
+        # Clear manual colors when switching to a preset theme
+        if mode != "custom":
+            self._ui_theme_colors = {}
+
+        theme_manager.save_mode(self.settings_manager, mode)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            theme_manager.apply(
+                app,
+                mode=mode,
+                manual_colors=None,
+                glass=theme_manager.glass_enabled(self.settings_manager),
+                glass_opacities=_instance_attr(self, "glass_opacities"),
+            )
+        self._refresh_ui_theme_controls()
+        self._mark_settings_as_dirty()
+
+    def _on_glass_toggled(self, on: bool):
+        glass_sliders_container = _instance_attr(self, "glass_sliders_container")
+        if glass_sliders_container is not None:
+            glass_sliders_container.setVisible(on)
+        theme_manager.save_glass(self.settings_manager, on)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            theme_manager.apply(
+                app,
+                mode=theme_manager.load_mode(self.settings_manager),
+                manual_colors=_instance_attr(self, "_ui_theme_colors"),
+                glass=on,
+                glass_opacities=_instance_attr(self, "glass_opacities"),
+            )
+        self._mark_settings_as_dirty()
+
+    def _on_opacity_changed(self, key: str, value: int):
+        self.glass_opacities[key] = value / 100.0
+        theme_manager.save_glass_opacities(self.settings_manager, self.glass_opacities)
+
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            theme_manager.apply(
+                app,
+                mode=theme_manager.load_mode(self.settings_manager),
+                manual_colors=_instance_attr(self, "_ui_theme_colors"),
+                glass=self.glass_checkbox.isChecked(),
+                glass_opacities=self.glass_opacities,
+            )
+        self._mark_settings_as_dirty()
+
     def _choose_ui_theme_color(self, color_key: str):
-        colors = editable_theme_colors(getattr(self, "_ui_theme_colors", None))
-        current_color = QtGui.QColor(colors.get(color_key, "#000000"))
+        active_palette = theme_manager.palette()
+        current_color = QtGui.QColor(active_palette.get(color_key, "#000000"))
         selected_color = QColorDialog.getColor(
             current_color,
             self,
@@ -974,6 +1164,8 @@ class InitialSetupPage(ShellPage):
         if not selected_color.isValid():
             return
 
+        # Keep the override sparse: add only the colour the user just picked.
+        colors = dict(getattr(self, "_ui_theme_colors", None) or {})
         colors[color_key] = selected_color.name()
         self._apply_ui_theme_colors(colors, mark_dirty=True)
 
@@ -1008,7 +1200,7 @@ class InitialSetupPage(ShellPage):
         num_chapters = len(self.html_files)
         if num_chapters == 0:
             self.distribution_label.setText("…")
-            self.distribution_label.setStyleSheet("color: grey;")
+            self.distribution_label.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
             return
 
         session_capacity = self._get_available_session_capacity()
@@ -1018,12 +1210,12 @@ class InitialSetupPage(ShellPage):
 
         if session_capacity == 0 or num_instances == 0:
             self.distribution_label.setText("Нет активной сессии")
-            self.distribution_label.setStyleSheet("color: orange; font-weight: bold;")
+            self.distribution_label.setStyleSheet(f"color: {theme_manager.color('warning')}; font-weight: bold;")
             return
 
         if num_instances > num_chapters:
             self.distribution_label.setText(f"Клиентов ({num_instances}) > глав ({num_chapters})")
-            self.distribution_label.setStyleSheet("color: orange; font-weight: bold;")
+            self.distribution_label.setStyleSheet(f"color: {theme_manager.color('warning')}; font-weight: bold;")
             return
 
         # Расчет среднего с округлением вверх
@@ -1031,7 +1223,7 @@ class InitialSetupPage(ShellPage):
 
         text = f"≈ {avg_chapters} глав / обработчик"
         self.distribution_label.setText(text)
-        self.distribution_label.setStyleSheet("color: #90EE90; font-size: 10pt; font-weight: bold;")
+        self.distribution_label.setStyleSheet(f"color: {theme_manager.color('success')}; font-size: 10pt; font-weight: bold;")
 
     def _post_event(self, name: str, data: dict = None):
         session_id = self.engine.session_id if self.engine and self.engine.session_id else None
@@ -1298,11 +1490,11 @@ class InitialSetupPage(ShellPage):
             if user:
                 tooltip_lines.append(f"Пользователь: {user}")
             label.setToolTip("\n".join(tooltip_lines))
-            label.setStyleSheet("color: #4CAF50;")
+            label.setStyleSheet(f"color: {theme_manager.color('success')};")
         else:
             label.setText("Прокси: выключен")
             label.setToolTip("Сетевые запросы идут без прокси.")
-            label.setStyleSheet("color: #9aa4b2;")
+            label.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
 
     def _activate_proxy_from_settings(self):
         if self.proxy_status_label is None:
@@ -1405,6 +1597,8 @@ class InitialSetupPage(ShellPage):
 
     def _mark_settings_as_dirty(self):
         """Слот, который устанавливает флаг 'грязного' состояния и обновляет заголовок окна."""
+        if not {"is_settings_dirty", "is_session_active", "local_set"} <= set(vars(self)):
+            return
         if self.is_settings_dirty or self.is_session_active:
             return
         if not self.local_set:
@@ -2899,11 +3093,22 @@ class InitialSetupPage(ShellPage):
 
     def _get_full_ui_settings(self):
         """Собирает полный 'слепок' настроек из всех релевантных виджетов (БЕЗ глоссария)."""
-        settings = self.get_settings()
+        settings = dict(self.settings_manager.load_full_session_settings())
+        settings.update(self.get_settings())
 
         settings.update(self.translation_options_widget.get_settings())
         settings['auto_translation'] = self.auto_translate_widget.get_settings()
-        settings[THEME_SETTINGS_KEY] = editable_theme_colors(getattr(self, '_ui_theme_colors', None))
+
+        # Preserve existing theme config
+        from gemini_translator.ui.themes import THEME_SETTINGS_KEY, sanitize_theme_colors
+        theme_conf = dict(settings.get(THEME_SETTINGS_KEY, {}))
+        # Clear old manual colors so we don't carry them over if they were reset
+        for key in ['window_bg', 'panel_bg', 'accent']:
+            theme_conf.pop(key, None)
+        # Apply current manual colors, which will be empty if user just switched themes
+        theme_conf.update(sanitize_theme_colors(getattr(self, '_ui_theme_colors', None)))
+        settings[THEME_SETTINGS_KEY] = theme_conf
+
         settings['active_keys_by_provider'] = {
             provider_id: sorted(list(keys))
             for provider_id, keys in self.key_management_widget.current_active_keys_by_provider.items()
@@ -3954,18 +4159,18 @@ class InitialSetupPage(ShellPage):
         if not dynamic_glossary_enabled:
             label.setText("Fuzzy-поиск: выключен (динамический глоссарий отключен)")
             label.setToolTip("Динамический глоссарий отключен, поэтому fuzzy-фильтрация не выполняется.")
-            label.setStyleSheet("color: #aaa; font-size: 10px;")
+            label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 10px;")
             return
 
         if fuzzy_threshold >= 100:
             label.setText("Fuzzy-поиск: выключен (точный поиск)")
             label.setToolTip("Порог 100% отключает нечеткий fuzzy-поиск. Используется быстрый точный поиск по глоссарию.")
-            label.setStyleSheet("color: #aaa; font-size: 10px;")
+            label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 10px;")
             return
 
         if self.cpu_performance_index is None or self.cpu_performance_index == 0:
             label.setText("Fuzzy-поиск: (требуется калибровка 🔄)")
-            label.setStyleSheet("color: #aaa;")
+            label.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
             return
 
         # --- Получаем все необходимые данные ---
@@ -4005,12 +4210,12 @@ class InitialSetupPage(ShellPage):
             label.setToolTip(f"При {num_clients} клиентах общая частота запросов составляет ~{int(total_application_rpm)} RPM.\n"
                              f"Интервал между запросами от приложения: ~{interval:.2f} сек.\n"
                              f"Время поиска в глоссарии (~{estimated_time:.2f} сек.) превышает этот интервал, что грозит тотальным зависанием.")
-            label.setStyleSheet("color: red; font-size: 10px; font-weight: bold;")
+            label.setStyleSheet(f"color: {theme_manager.color('danger')}; font-size: 10px; font-weight: bold;")
         else:
             label.setText(f"Fuzzy-поиск: ~{estimated_time:.2f} сек. (OK)")
             label.setToolTip(f"Время поиска в глоссарии (~{estimated_time:.2f} сек.) меньше интервала\n"
                              f"между запросами (~{interval:.2f} сек.), поэтому он не будет 'тормозить' перевод.")
-            label.setStyleSheet("color: green; font-size: 10px; font-weight: bold;")
+            label.setStyleSheet(f"color: {theme_manager.color('success')}; font-size: 10px; font-weight: bold;")
 
     def _process_project_folder(self, folder):
         """
@@ -6262,10 +6467,10 @@ class InitialSetupPage(ShellPage):
 
         if len(keys) != len(unique_keys):
             self.keys_count_label.setText(f"Ключей: {len(unique_keys)} (уникальных из {len(keys)})")
-            self.keys_count_label.setStyleSheet("color: orange; font-size: 10px;")
+            self.keys_count_label.setStyleSheet(f"color: {theme_manager.color('warning')}; font-size: 10px;")
         else:
             self.keys_count_label.setText(f"Ключей: {len(keys)}")
-            self.keys_count_label.setStyleSheet("color: blue; font-size: 10px;")
+            self.keys_count_label.setStyleSheet(f"color: {theme_manager.color('info')}; font-size: 10px;")
         self._update_distribution_info() # <--- ДОБАВЬ ЭТУ СТРОКУ
 
 
@@ -6402,6 +6607,8 @@ class InitialSetupDialog(QDialog, metaclass=_InitialSetupDialogMeta):
 
     def __init__(self, parent=None, prefill_data=None):
         super().__init__(parent)
+        # self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self._returning_to_main_menu = False
         # window flags copied from the old page __init__ verbatim so standalone
         # behaviour + macOS controls are preserved:

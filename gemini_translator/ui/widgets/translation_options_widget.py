@@ -18,6 +18,7 @@ from ...utils.epub_tools import (
 from ...utils.helpers import estimate_gemini_tokens
 from ...utils.language_tools import LanguageDetector
 from .common_widgets import NoScrollSpinBox
+from gemini_translator.ui import theme_manager
 
 
 class TranslationOptionsWidget(QGroupBox):
@@ -114,7 +115,7 @@ class TranslationOptionsWidget(QGroupBox):
             "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 "
             "\u0433\u043b\u0430\u0432\u044b \u0434\u043b\u044f \u0430\u043d\u0430\u043b\u0438\u0437\u0430."
         )
-        self.info_label.setStyleSheet("color: #aaa; font-size: 10px; font-weight: bold;")
+        self.info_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}; font-size: 10px; font-weight: bold;")
         self.info_label.setWordWrap(True)
         self.info_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -510,7 +511,7 @@ class TranslationOptionsWidget(QGroupBox):
                 "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 "
                 "\u0433\u043b\u0430\u0432\u044b \u0434\u043b\u044f \u0430\u043d\u0430\u043b\u0438\u0437\u0430."
             )
-            self.info_label.setStyleSheet("color: #aaa;")
+            self.info_label.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
             return
 
         current_target_size = self.task_size_spin.value()

@@ -2,6 +2,7 @@ from .common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComb
 from ...api import config as api_config
 from ..dialogs.misc import KeyInputDialog, DeleteKeysDialog, CustomListWidget
 from ...utils.settings import SettingsManager
+from gemini_translator.ui import theme_manager
 from PyQt6.QtCore import pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QGroupBox, QHBoxLayout,
@@ -201,21 +202,19 @@ class KeyManagementWidget(QWidget):
                 self.provider_combo.addItem(
                     p_data['display_name'], userData=p_id)
 
-        self.key_count_label = QLabel("Ключи: 0 (✅ 0 / ❌ 0)")
-        self.key_count_label.setObjectName("mutedLabel")
-
         self.server_button = QPushButton("Запустить сервер")
-        self.server_button.setStyleSheet("""
-            QPushButton { background-color: #2e7d32; color: white; font-weight: bold; padding: 10px; border-radius: 4px; }
-            QPushButton:hover { background-color: #388e3c; }
-            QPushButton:disabled { background-color: #1b5e20; color: #888; }
+        self.server_button.setStyleSheet(f"""
+            QPushButton {{ background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 10px; border-radius: 4px; }}
+            QPushButton:hover {{ background-color: {theme_manager.color('success')}; }}
+            QPushButton:disabled {{ background-color: {theme_manager.color('success')}; color: {theme_manager.color('text_muted')}; }}
         """)
         self.server_button.clicked.connect(self._toggle_server)
 
-        provider_layout.addWidget(self.provider_combo)
+        self.key_status_card = self._create_key_status_card()
+
+        provider_layout.addWidget(self.provider_combo, 1)
         provider_layout.addWidget(self.server_button)
-        provider_layout.addStretch(1)
-        provider_layout.addWidget(self.key_count_label)
+        provider_layout.addWidget(self.key_status_card, 0)
 
         left_panel_layout.addWidget(provider_group)
 
@@ -381,6 +380,56 @@ class KeyManagementWidget(QWidget):
             self.server_manager.server_status_changed.connect(
                 self._update_server_button)
 
+    def _create_key_status_card(self):
+        card = QtWidgets.QFrame(self)
+        card.setObjectName("keyStatusCard")
+        card.setMinimumWidth(260)
+
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(11, 8, 11, 8)
+        layout.setSpacing(10)
+
+        icon_label = QLabel("🔑")
+        icon_label.setObjectName("keyStatusIcon")
+        icon_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        icon_label.setFixedSize(34, 34)
+        layout.addWidget(icon_label, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+
+        title_label = QLabel("Ключи")
+        title_label.setObjectName("keyStatusTitle")
+        text_layout.addWidget(title_label)
+
+        self.key_total_value_label = QLabel("0")
+        self.key_total_value_label.setObjectName("keyStatusTotalValue")
+        text_layout.addWidget(self.key_total_value_label)
+
+        layout.addLayout(text_layout, 1)
+
+        for title, value_attr in (
+            ("Доступно", "key_available_value_label"),
+            ("Исчерпано", "key_exhausted_value_label"),
+        ):
+            metric_layout = QVBoxLayout()
+            metric_layout.setContentsMargins(0, 0, 0, 0)
+            metric_layout.setSpacing(1)
+
+            metric_title = QLabel(title)
+            metric_title.setObjectName("keyStatusMetricTitle")
+            metric_layout.addWidget(metric_title)
+
+            metric_value = QLabel("0")
+            metric_value.setObjectName("keyStatusMetricValue")
+            setattr(self, value_attr, metric_value)
+            metric_layout.addWidget(metric_value)
+
+            layout.addLayout(metric_layout)
+
+        return card
+
 
     def _toggle_server(self):
         if not self.server_manager:
@@ -503,7 +552,7 @@ class KeyManagementWidget(QWidget):
             QtCore.Qt.ItemDataRole.UserRole,
             self._provider_placeholder_key(provider_id),
         )
-        item.setForeground(QtGui.QColor("#90EE90"))
+        item.setForeground(QtGui.QColor(theme_manager.color("success")))
         item.setToolTip(tooltip_text)
         item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
         return item
@@ -599,7 +648,9 @@ class KeyManagementWidget(QWidget):
 
     def _update_key_counts(self):
         if not self._provider_requires_api_key():
-            self.key_count_label.setText("API-ключи не требуются")
+            self.key_total_value_label.setText("1")
+            self.key_available_value_label.setText("1")
+            self.key_exhausted_value_label.setText("0")
             return
         green_count, red_count = 0, 0
         provider_id = self.get_selected_provider()
@@ -613,8 +664,9 @@ class KeyManagementWidget(QWidget):
                     red_count += 1
 
         total_keys = green_count + red_count
-        self.key_count_label.setText(
-            f"Ключи: {total_keys} (✅{green_count}/❌{red_count})")
+        self.key_total_value_label.setText(str(total_keys))
+        self.key_available_value_label.setText(str(green_count))
+        self.key_exhausted_value_label.setText(str(red_count))
 
     def _apply_available_search_filter(self, text: str = ""):
         query = (text or "").strip().lower()
@@ -674,7 +726,7 @@ class KeyManagementWidget(QWidget):
                     for i in range(list_widget.count()):
                         item = list_widget.item(i)
                         if item and item.data(QtCore.Qt.ItemDataRole.UserRole) == key_to_update:
-                            item.setForeground(QtGui.QColor("#FFD700"))
+                            item.setForeground(QtGui.QColor(theme_manager.color("warning")))
                             item.setToolTip(
                                 f"Полный ключ: {key_to_update}\nСтатус: Временная пауза на {delay} сек.")
                             QtCore.QTimer.singleShot(
@@ -780,16 +832,16 @@ class KeyManagementWidget(QWidget):
         level = model_status.get('exhausted_level', 0)
 
         if not is_limit_active:
-            item.setForeground(QtGui.QColor("#90EE90"))
+            item.setForeground(QtGui.QColor(theme_manager.color("success")))
             item.setToolTip(f"Полный ключ: {key}\nСтатус для модели: Активен.")
         elif level == 1:
-            item.setForeground(QtGui.QColor("#FFD700"))
+            item.setForeground(QtGui.QColor(theme_manager.color("warning")))
             reset_time_str = self.settings_manager.get_key_reset_time_str(
                 key_info, self.current_model_id)
             item.setToolTip(
                 f"Полный ключ: {key}\nСтатус для модели: Временная пауза.\n{reset_time_str}")
         else:
-            item.setForeground(QtGui.QColor("#F08080"))
+            item.setForeground(QtGui.QColor(theme_manager.color("danger")))
             reset_time_str = self.settings_manager.get_key_reset_time_str(
                 key_info, self.current_model_id)
             item.setToolTip(
@@ -812,7 +864,7 @@ class KeyManagementWidget(QWidget):
                 item = self._create_key_list_item(key_info)
 
                 is_supposed_to_be_active = key in active_keys_for_provider
-                is_red_carded = item.foreground().color().name() == "#f08080"
+                is_red_carded = item.foreground().color().name() == theme_manager.color("danger")
 
                 if is_supposed_to_be_active and is_red_carded:
                     self.available_keys_list.addItem(item)
@@ -843,7 +895,7 @@ class KeyManagementWidget(QWidget):
         if dest == self.active_keys_list:
             good_keys, exhausted_keys = [], []
             for item in items_to_move:
-                if item.foreground().color().name() == "#f08080":
+                if item.foreground().color().name() == theme_manager.color("danger"):
                     exhausted_keys.append(item)
                 else:
                     good_keys.append(item)
@@ -910,7 +962,7 @@ class KeyManagementWidget(QWidget):
             full_key = item.data(QtCore.Qt.ItemDataRole.UserRole)
             if not self._provider_requires_api_key() and full_key == self._provider_placeholder_key():
                 item.setText("Встроенная браузерная сессия")
-                item.setForeground(QtGui.QColor("#90EE90"))
+                item.setForeground(QtGui.QColor(theme_manager.color("success")))
                 item.setToolTip(
                     "Этот сервис использует сохраненный браузерный профиль и не требует API-ключа."
                 )
@@ -918,7 +970,7 @@ class KeyManagementWidget(QWidget):
             key_info = self.settings_manager.get_key_info(full_key)
             if not key_info:
                 item.setText(f"…{full_key[-4:]} (удален?)")
-                item.setForeground(QtGui.QColor("gray"))
+                item.setForeground(QtGui.QColor(theme_manager.color("text_muted")))
                 item.setToolTip(
                     f"Полный ключ: {full_key}\nСтатус: Не найден в настройках.")
                 return
@@ -935,17 +987,17 @@ class KeyManagementWidget(QWidget):
             level = model_status.get('exhausted_level', 0)
 
             if not is_limit_active:
-                item.setForeground(QtGui.QColor("#90EE90"))
+                item.setForeground(QtGui.QColor(theme_manager.color("success")))
                 item.setToolTip(
                     f"Полный ключ: {full_key}\nСтатус для модели: Активен.")
             elif level == 1:
-                item.setForeground(QtGui.QColor("#FFD700"))
+                item.setForeground(QtGui.QColor(theme_manager.color("warning")))
                 reset_time_str = self.settings_manager.get_key_reset_time_str(
                     key_info, self.current_model_id)
                 item.setToolTip(
                     f"Полный ключ: {full_key}\nСтатус для модели: Временная пауза.\n{reset_time_str}")
             else:
-                item.setForeground(QtGui.QColor("#F08080"))
+                item.setForeground(QtGui.QColor(theme_manager.color("danger")))
                 reset_time_str = self.settings_manager.get_key_reset_time_str(
                     key_info, self.current_model_id)
                 item.setToolTip(
@@ -967,7 +1019,7 @@ class KeyManagementWidget(QWidget):
         items_to_move = []
         for i in range(self.available_keys_list.count()):
             item = self.available_keys_list.item(i)
-            if item.foreground().color().name() == "#90ee90":
+            if item.foreground().color().name() == theme_manager.color("success"):
                 items_to_move.append(item)
 
         if not items_to_move:
@@ -1177,28 +1229,28 @@ class KeyManagementWidget(QWidget):
 
         if is_running:
             self.server_button.setText("Остановить сервер")
-            self.server_button.setStyleSheet("""
-                QPushButton { background-color: #c62828; color: white; font-weight: bold; padding: 10px; border-radius: 4px; }
-                QPushButton:hover { background-color: #d32f2f; }
-                QPushButton:disabled { background-color: #5c1818; color: #888; }
+            self.server_button.setStyleSheet(f"""
+                QPushButton {{ background-color: {theme_manager.color('danger')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 10px; border-radius: 4px; }}
+                QPushButton:hover {{ background-color: {theme_manager.color('danger')}; }}
+                QPushButton:disabled {{ background-color: {theme_manager.color('danger')}; color: {theme_manager.color('text_muted')}; }}
             """)
             self.server_button.setToolTip(
                 "Сервер Perplexity запущен. Нажмите для остановки.")
         elif message == "error":
             self.server_button.setText("Ошибка сервера")
-            self.server_button.setStyleSheet("""
-                QPushButton { background-color: #546e7a; color: white; padding: 10px; border-radius: 4px; }
-                QPushButton:hover { background-color: #607d8b; }
-                QPushButton:disabled { background-color: #37474f; color: #888; }
+            self.server_button.setStyleSheet(f"""
+                QPushButton {{ background-color: {theme_manager.color('info')}; color: {theme_manager.color('accent_text')}; padding: 10px; border-radius: 4px; }}
+                QPushButton:hover {{ background-color: {theme_manager.color('info')}; }}
+                QPushButton:disabled {{ background-color: {theme_manager.color('panel_bg')}; color: {theme_manager.color('text_muted')}; }}
             """)
             self.server_button.setToolTip(
                 "Ошибка сервера Perplexity. Проверьте логи.")
         else:
             self.server_button.setText("Запустить сервер")
-            self.server_button.setStyleSheet("""
-                QPushButton { background-color: #2e7d32; color: white; font-weight: bold; padding: 10px; border-radius: 4px; }
-                QPushButton:hover { background-color: #388e3c; }
-                QPushButton:disabled { background-color: #1b5e20; color: #888; }
+            self.server_button.setStyleSheet(f"""
+                QPushButton {{ background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 10px; border-radius: 4px; }}
+                QPushButton:hover {{ background-color: {theme_manager.color('success')}; }}
+                QPushButton:disabled {{ background-color: {theme_manager.color('success')}; color: {theme_manager.color('text_muted')}; }}
             """)
             self.server_button.setToolTip(
                 "Сервер Perplexity остановлен. Нажмите для запуска.")

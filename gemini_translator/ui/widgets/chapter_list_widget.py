@@ -144,7 +144,7 @@ class BatchChapterOrderDialog(QDialog):
         if not item or not callable(self._preview_callback):
             return
         self._preview_callback(str(item.data(Qt.ItemDataRole.UserRole)))
-    
+
 class ChapterListWidget(QWidget):
     """
     Виджет для отображения списка глав/заданий для перевода и управления этим списком.
@@ -161,7 +161,7 @@ class ChapterListWidget(QWidget):
     split_batch_requested = pyqtSignal(list)
     batch_chapters_reorder_requested = pyqtSignal(object, list)
     chapter_preview_requested = pyqtSignal(str, str)
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._is_session_active = False
@@ -169,32 +169,32 @@ class ChapterListWidget(QWidget):
         self._reorder_down_icon = None
         self._init_ui()
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-    
+
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-    
+
         buttons_panel = QWidget()
         buttons_grid = QGridLayout(buttons_panel)
         buttons_grid.setSpacing(5)
         buttons_grid.setContentsMargins(0, 5, 0, 0)
-    
-        
+
+
         list_actions_layout = QHBoxLayout()
         list_actions_layout.setSpacing(5)
-        
+
         self.btn_duplicate = QPushButton("➕ Дублировать")
         self.btn_duplicate.setToolTip("Создать копии выделенных задач в списке")
         self.btn_duplicate.clicked.connect(self._emit_duplicate_request)
-    
+
         self.btn_remove = QPushButton("🗑️ Удалить")
         self.btn_remove.setToolTip("Удалить выделенные задачи из списка")
         self.btn_remove.clicked.connect(self._on_remove_selected)
-    
+
         self.btn_copy_originals = QPushButton("📋 Скопировать оригиналы")
         self.btn_copy_originals.setToolTip("Копирует оригинальное содержимое выбранных глав как перевод (для ручной доработки).")
         self.btn_copy_originals.clicked.connect(self._emit_copy_originals_request)
-    
+
         self.btn_reanimate = QPushButton("🩹 Реанимировать")
         self.btn_reanimate.setToolTip("Для 'проваленных' задач: сбросить ошибки и вернуть в очередь.\nДля остальных: сбросить историю ошибок.")
         self.btn_reanimate.clicked.connect(self._emit_reanimate_request)
@@ -213,49 +213,50 @@ class ChapterListWidget(QWidget):
             "Работает для одного выбранного пакета, который еще не взят в работу."
         )
         self.btn_edit_batch_order.clicked.connect(self._open_batch_reorder_dialog)
-    
+
         list_actions_layout.addWidget(self.btn_duplicate)
         list_actions_layout.addWidget(self.btn_remove)
         list_actions_layout.addWidget(self.btn_copy_originals)
         list_actions_layout.addWidget(self.btn_reanimate)
         list_actions_layout.addWidget(self.btn_split_batch)
         list_actions_layout.addWidget(self.btn_edit_batch_order)
-        
+
         buttons_grid.addLayout(list_actions_layout, 0, 1)
-    
+
         reorder_layout = QHBoxLayout()
         reorder_layout.setSpacing(5)
-        
+
         btn_move_top = QPushButton("⏫ Наверх")
         btn_move_top.setToolTip("Переместить выделенные задачи в самый верх списка")
         btn_move_top.clicked.connect(lambda: self._emit_reorder_request('top'))
-        
+
         btn_move_up = QPushButton("🔼 Вверх")
         btn_move_up.setToolTip("Переместить выделенные задачи на одну позицию вверх")
         btn_move_up.clicked.connect(lambda: self._emit_reorder_request('up'))
-        
+
         btn_move_down = QPushButton("🔽 Вниз")
         btn_move_down.setToolTip("Переместить выделенные задачи на одну позицию вниз")
         btn_move_down.clicked.connect(lambda: self._emit_reorder_request('down'))
-        
+
         btn_move_bottom = QPushButton("⏬ Подниз")
         btn_move_bottom.setToolTip("Переместить выделенные задачи в самый низ списка")
         btn_move_bottom.clicked.connect(lambda: self._emit_reorder_request('bottom'))
-        
+
         reorder_layout.addWidget(btn_move_top)
         reorder_layout.addWidget(btn_move_up)
         reorder_layout.addWidget(btn_move_down)
         reorder_layout.addWidget(btn_move_bottom)
-        
+
         buttons_grid.addLayout(reorder_layout, 0, 4)
-    
+
         buttons_grid.setColumnStretch(3, 1)
         main_layout.addWidget(buttons_panel)
-    
+
         self.table = QTableWidget()
+
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Задача", "Статус", "Порядок"])
-        
+
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -264,13 +265,13 @@ class ChapterListWidget(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    
+
         self.table.itemSelectionChanged.connect(self._on_selection_changed_for_buttons)
         self.table.itemDoubleClicked.connect(self._handle_item_double_click)
-    
-        
+
+
         main_layout.addWidget(self.table, 1)
-            
+
     def _get_reorder_icons(self):
         if self._reorder_up_icon is None or self._reorder_down_icon is None:
             style = self.style()
@@ -288,17 +289,30 @@ class ChapterListWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
+        btn_style = """
+        QPushButton {
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+        }
+        QPushButton:hover {
+            background: rgba(128, 128, 128, 0.2);
+        }
+        """
+
         up_icon, down_icon = self._get_reorder_icons()
         btn_up = QPushButton(up_icon, "")
-        btn_up.setFixedSize(24, 24)
+        btn_up.setFixedSize(20, 20)
+        btn_up.setStyleSheet(btn_style)
         # --- ИЗМЕНЕНИЕ: Используем 'self' для поиска строки ---
         btn_up.clicked.connect(lambda: self._emit_reorder_from_button('up', self.sender()))
 
         btn_down = QPushButton(down_icon, "")
-        btn_down.setFixedSize(24, 24)
+        btn_down.setFixedSize(20, 20)
+        btn_down.setStyleSheet(btn_style)
         # --- ИЗМЕНЕНИЕ: Используем 'self' для поиска строки ---
         btn_down.clicked.connect(lambda: self._emit_reorder_from_button('down', self.sender()))
-    
+
         layout.addWidget(btn_up)
         layout.addWidget(btn_down)
         return widget
@@ -312,7 +326,7 @@ class ChapterListWidget(QWidget):
         # Если таблица уже заблокирована, игнорируем повторные клики.
         if not self.table.isEnabled():
             return
-            
+
         self.table.setEnabled(False) # Делаем таблицу неактивной
 
         for row in range(self.table.rowCount()):
@@ -320,10 +334,10 @@ class ChapterListWidget(QWidget):
                 item = self.table.item(row, 0)
                 if item and item.data(QtCore.Qt.ItemDataRole.UserRole):
                     task_id = item.data(QtCore.Qt.ItemDataRole.UserRole)[0]
-                    
+
                     scrollbar = self.table.verticalScrollBar()
                     initial_scroll_value = scrollbar.value()
-                    
+
                     scroll_delta_in_rows = -1 if action == 'up' else 1
 
                     # === ШАГ 2: Запуск обновления данных ===
@@ -334,27 +348,27 @@ class ChapterListWidget(QWidget):
                     QtCore.QTimer.singleShot(
                         0, lambda: self._compensate_scroll(initial_scroll_value, scroll_delta_in_rows)
                     )
-                    
+
                 break
-    
+
     def _compensate_scroll(self, initial_value, delta_in_rows):
         """
         Применяет смещение к скроллбару и разблокирует таблицу ПОСЛЕ завершения анимации.
         """
         scrollbar = self.table.verticalScrollBar()
-        
+
         if hasattr(self, 'scroll_animation') and self.scroll_animation.state() == QtCore.QPropertyAnimation.State.Running:
             self.scroll_animation.stop()
 
         target_value = initial_value + delta_in_rows
         target_value = max(scrollbar.minimum(), min(target_value, scrollbar.maximum()))
-        
+
         self.scroll_animation = QtCore.QPropertyAnimation(scrollbar, b"value")
-        self.scroll_animation.setDuration(120) 
+        self.scroll_animation.setDuration(120)
         self.scroll_animation.setStartValue(scrollbar.value())
         self.scroll_animation.setEndValue(target_value)
         self.scroll_animation.setEasingCurve(QtCore.QEasingCurve.Type.InOutQuad)
-        
+
         # === ШАГ 4: Разблокировка после анимации ===
         # Мы подключаем разблокировку к сигналу finished() анимации.
         # Если анимация уже завершена, старый коннект удалится при создании новой.
@@ -362,15 +376,15 @@ class ChapterListWidget(QWidget):
             self.scroll_animation.finished.disconnect()
         except (TypeError, RuntimeError):
             pass # Если коннекта не было, ничего страшного
-            
+
         self.scroll_animation.finished.connect(lambda: self.table.setEnabled(True))
-        
+
         self.scroll_animation.start()
-        
+
         # На случай, если анимация не запустится (start_value == end_value)
         if scrollbar.value() == target_value:
              self.table.setEnabled(True)
-    
+
     def _on_selection_changed_for_buttons(self):
         """Обновляет состояние кнопок, зависящих от выделения."""
         has_selection = self.table.selectionModel().hasSelection()
@@ -378,27 +392,27 @@ class ChapterListWidget(QWidget):
         has_batches = self._selection_has_batch_tasks()
         single_batch_task = self._get_single_selected_batch_task()
         is_session_active = self._is_session_active
-    
+
         can_duplicate = has_selection and not has_chunks
         self.btn_duplicate.setEnabled(can_duplicate)
-    
+
         can_remove = not is_session_active and has_selection and not has_chunks
         self.btn_remove.setEnabled(can_remove)
-        
+
         can_copy = not is_session_active and has_selection
         self.btn_copy_originals.setEnabled(can_copy)
-        
+
         # Кнопка реанимации работает всегда, если что-то выделено
         self.btn_reanimate.setEnabled(has_selection)
         self.btn_split_batch.setEnabled(has_selection and has_batches and not has_chunks)
         self.btn_edit_batch_order.setEnabled(single_batch_task is not None and not has_chunks)
-    
+
     def _get_selected_ids_and_check_chunks(self):
         """Вспомогательный метод для получения выделения и проверки на чанки."""
         selected_rows = self.table.selectionModel().selectedRows()
         selected_ids = []
         has_chunks = False
-        
+
         # Получаем ID в порядке их отображения в таблице
         indices = sorted([index.row() for index in selected_rows])
         for i in indices:
@@ -458,7 +472,7 @@ class ChapterListWidget(QWidget):
                 continue
             normalized_items.append((task_tuple_with_uuid[:2], status, details if isinstance(details, dict) else {}))
         return normalized_items
-    
+
     def _emit_reorder_request(self, action):
         """Собирает ID выделенных задач и испускает сигнал."""
         selected_ids, _ = self._get_selected_ids_and_check_chunks()
@@ -528,27 +542,27 @@ class ChapterListWidget(QWidget):
             return
 
         self._emit_preview_request_for_payload(task_payload)
-    
+
     def _emit_duplicate_request(self):
         selected_ids, has_chunks = self._get_selected_ids_and_check_chunks()
         if selected_ids and not has_chunks:
             self.duplicate_requested.emit(selected_ids)
         elif has_chunks:
             QMessageBox.warning(self.parent(), "Действие запрещено", "Дублирование отдельных частей (чанков) главы не поддерживается.")
-    
-    
+
+
     def _on_remove_selected(self):
         selected_ids, has_chunks = self._get_selected_ids_and_check_chunks()
         if selected_ids and not has_chunks:
             self.remove_selected_requested.emit(selected_ids)
         elif has_chunks:
             QMessageBox.warning(self.parent(), "Действие запрещено", "Удаление отдельных частей (чанков) главы не поддерживается.")
-    
+
     def _emit_copy_originals_request(self):
         selected_ids, _ = self._get_selected_ids_and_check_chunks()
         if selected_ids:
             self.copy_originals_requested.emit()
-    
+
     def _emit_reanimate_request(self):
         selected_ids, _ = self._get_selected_ids_and_check_chunks()
         if selected_ids:
@@ -568,13 +582,13 @@ class ChapterListWidget(QWidget):
         if not self._selection_has_batch_tasks():
             return
         self.split_batch_requested.emit(selected_ids)
-    
-    
+
+
     def _restore_selection(self, ids_to_select):
         """Находит строки с указанными ID и выделяет их."""
         if not ids_to_select:
             return
-    
+
         selection = QtCore.QItemSelection()
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
@@ -584,12 +598,12 @@ class ChapterListWidget(QWidget):
                     start_index = self.table.model().index(row, 0)
                     end_index = self.table.model().index(row, self.table.columnCount() - 1)
                     selection.select(start_index, end_index)
-        
+
         if not selection.isEmpty():
             QtCore.QTimer.singleShot(0, lambda: self.table.selectionModel().select(
                 selection, QtCore.QItemSelectionModel.SelectionFlag.Select | QtCore.QItemSelectionModel.SelectionFlag.Rows
             ))
-        
+
     # ----------------------------------------------------
     # Публичные методы (API виджета)
     # ----------------------------------------------------
@@ -618,7 +632,7 @@ class ChapterListWidget(QWidget):
             # === КОНЕЦ БЛОКА ИЗМЕНЕНИЙ ===
             # --- Далее идет существующая логика "умного" обновления ---
             new_task_ids = [item[0][0] for item in tasks_data]
-            current_task_ids = [self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)[0] 
+            current_task_ids = [self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)[0]
                                 for row in range(self.table.rowCount()) if self.table.item(row, 0)]
             if current_task_ids == new_task_ids:
                 self._selective_update(tasks_data, changed_ids=changed_ids)
@@ -633,30 +647,30 @@ class ChapterListWidget(QWidget):
         finally:
             # Шаг 3: Восстанавливаем все в обратном порядке в блоке finally,
             # чтобы это выполнилось даже в случае ошибки.
-            
+
             # === НАЧАЛО БЛОКА ИЗМЕНЕНИЙ ===
             # Возвращаем исходный режим выделения
             self.table.setSelectionMode(original_selection_mode)
             # === КОНЕЦ БЛОКА ИЗМЕНЕНИЙ ===
 
             # Сначала разблокируем сигналы
-            self.table.blockSignals(False) 
-            
+            self.table.blockSignals(False)
+
             # И только потом, когда таблица снова "жива", восстанавливаем выделение.
             # Оборачиваем в QTimer.singleShot, чтобы дать Qt один цикл на "осознание"
             # изменений перед применением выделения. Это повышает надежность.
             QtCore.QTimer.singleShot(0, lambda: self._restore_selection(selected_ids_before_update))
-    
+
     def _surgical_update(self, tasks_data):
         """Применяет точечные изменения к таблице, чтобы она соответствовала tasks_data."""
         self.table.blockSignals(True)
-    
+
         new_data_map = {item[0][0]: item for item in tasks_data}
         new_task_ids = [item[0][0] for item in tasks_data]
-    
-        old_ids = [self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)[0] 
+
+        old_ids = [self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)[0]
                    for row in range(self.table.rowCount()) if self.table.item(row, 0) and self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)]
-    
+
         n, m = len(old_ids), len(new_task_ids)
         dp = [[0] * (m + 1) for _ in range(n + 1)]
         for i in range(n):
@@ -665,7 +679,7 @@ class ChapterListWidget(QWidget):
                     dp[i+1][j+1] = dp[i][j] + 1
                 else:
                     dp[i+1][j+1] = max(dp[i+1][j], dp[i][j+1])
-    
+
         i, j = n, m
         ops = []
         while i > 0 or j > 0:
@@ -678,9 +692,9 @@ class ChapterListWidget(QWidget):
             elif i > 0 and (j == 0 or dp[i][j-1] < dp[i-1][j]):
                 ops.append(('delete', i-1, -1))
                 i -= 1
-        
+
         ops.reverse()
-        
+
         # --- ЭТАП СОРТИРОВКИ (TRIAGE) ---
         # Подсчитываем количество структурных изменений (вставки и удаления).
         # Обновления (keep) дешевые, их не считаем критичными.
@@ -693,8 +707,8 @@ class ChapterListWidget(QWidget):
         is_chaos_too_high = (total_items > 0 and (structural_changes / total_items) > 0.2) or structural_changes > 300
 
         if is_chaos_too_high:
-            # Отменяем блокировку, так как full_redraw управляет ей сам 
-            self.table.blockSignals(False) 
+            # Отменяем блокировку, так как full_redraw управляет ей сам
+            self.table.blockSignals(False)
             self._full_redraw(tasks_data)
             return
 
@@ -711,13 +725,13 @@ class ChapterListWidget(QWidget):
             elif op == 'keep':
                 task_item_data = new_data_map[new_task_ids[new_idx]]
                 # Оптимизация: обновляем данные, только если они реально изменились
-                # (предполагается, что _populate_row внутри достаточно умён, 
+                # (предполагается, что _populate_row внутри достаточно умён,
                 # или update_only=True делает минимум работы)
                 self._populate_row(current_row, task_item_data, update_only=True)
                 current_row += 1
-        
+
         self.table.blockSignals(False)
-    
+
     def _populate_row(self, row, task_item_data, update_only=False):
         """Заполняет или обновляет одну строку таблицы."""
         task_tuple_with_uuid, status, details = task_item_data
@@ -730,7 +744,7 @@ class ChapterListWidget(QWidget):
         if len(payload_list_for_ui_role) > 1 and hasattr(payload_list_for_ui_role[1], 'getvalue'):
             payload_list_for_ui_role[1] = session_id_for_ui
         task_tuple_for_ui_role = (task_id, tuple(payload_list_for_ui_role))
-        
+
         display_text, tooltip_text = self._get_display_texts(task_payload)
 
         # --- ОБНОВЛЕНИЕ/СОЗДАНИЕ ЯЧЕЙКИ ЗАДАЧИ (СТОЛБЕЦ 0) ---
@@ -757,17 +771,17 @@ class ChapterListWidget(QWidget):
         # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: "УМНАЯ" ПРОВЕРКА СТАТУСА ---
         # 1. Получаем текст, который ДОЛЖЕН БЫТЬ
         new_display_text, _ = self._get_status_display_info(status, details, task_payload)
-        
+
         # 2. Сравниваем с тем, что ЕСТЬ СЕЙЧАС
         if status_item.text() != new_display_text:
             # 3. И только если они отличаются, вызываем "тяжелую" перерисовку
             self._update_row_status(row, status, details)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-    
+
         if not update_only:
             # Виджет с кнопками создаем только при полной вставке строки
             self.table.setCellWidget(row, 2, self._create_reorder_cell_widget(row))
-    
+
     def _full_redraw(self, tasks_data):
         """Выполняет полную перерисовку таблицы с нуля, используя _populate_row."""
         self.table.blockSignals(True)
@@ -775,12 +789,12 @@ class ChapterListWidget(QWidget):
         if not tasks_data:
             self.table.blockSignals(False)
             return
-    
+
         self.table.setRowCount(len(tasks_data))
         for i, task_item in enumerate(tasks_data):
             self._populate_row(i, task_item)
-            
-    
+
+
         self.table.blockSignals(False)
 
 
@@ -797,7 +811,7 @@ class ChapterListWidget(QWidget):
                 continue
             self._update_row_status(i, status, details)
         self.table.blockSignals(False)
-    
+
     def _selection_has_batch_tasks(self):
         selected_rows = self.table.selectionModel().selectedRows()
         for index in selected_rows:
@@ -817,17 +831,17 @@ class ChapterListWidget(QWidget):
             return display_text, tooltip_text
 
         task_type = task_payload[0]
-        
+
         try:
             # --- Пакеты (Glossary и EPUB) ---
             if task_type in ("glossary_batch_task", "epub_batch"):
                 content_data = task_payload[2] if len(task_payload) > 2 else []
-                
+
                 prefix = "✨ Пакет глоссария" if task_type == "glossary_batch_task" else "📦 Пакет"
                 display_text = f"{prefix} из {len(content_data)} глав"
                 if content_data:
                     display_text += f" (начиная с '{os.path.basename(str(content_data[0]))}')"
-                
+
                 tooltip_header = "Главы для генерации глоссария:\n" if task_type == "glossary_batch_task" else "Содержимое пакета:\n"
                 tooltip_text = tooltip_header + "\n".join(map(str, content_data))
 
@@ -835,7 +849,7 @@ class ChapterListWidget(QWidget):
             elif task_type == "epub":
                 epub_path = str(task_payload[1]) if len(task_payload) > 1 else "???"
                 chapter_path = str(task_payload[2]) if len(task_payload) > 2 else "???"
-                
+
                 original_filename = os.path.basename(epub_path)
                 display_text = f"📄 HTML: {os.path.basename(chapter_path)}"
                 tooltip_text = f"EPUB: {original_filename}\nHTML: {chapter_path}"
@@ -846,7 +860,7 @@ class ChapterListWidget(QWidget):
                 chapter_path = str(task_payload[2]) if len(task_payload) > 2 else "???"
                 chunk_index = task_payload[4] if len(task_payload) > 4 else -1
                 total_chunks = task_payload[5] if len(task_payload) > 5 else -1
-                
+
                 original_filename = os.path.basename(epub_path)
                 display_text = f"쪼 ЧАНК {chunk_index + 1}/{total_chunks} из '{os.path.basename(chapter_path)}'"
                 tooltip_text = f"EPUB: {original_filename}\nHTML: {chapter_path}"
@@ -857,7 +871,7 @@ class ChapterListWidget(QWidget):
                 title = task_payload[3] if len(task_payload) > 3 and task_payload[3] else "Прямой перевод"
                 # task_payload[2] - это сам текст
                 text_content = task_payload[2] if len(task_payload) > 2 else ""
-                
+
                 display_text = f"✨ {title}"
                 # Показываем первые 100 символов в подсказке
                 tooltip_text = text_content[:100] + ('...' if len(text_content) > 100 else '')
@@ -871,13 +885,13 @@ class ChapterListWidget(QWidget):
             # Защитный блок на случай, если payload придет поврежденным
             display_text = f"Ошибка отображения задачи ({task_type})"
             tooltip_text = f"Некорректный payload: {task_payload}\nОшибка: {e}"
-            
+
         return display_text, tooltip_text
-    
+
     def _get_status_display_info(self, status, details, task_payload):
         """Возвращает (текст_статуса, цвет_hex) для заданного состояния."""
         is_glossary_task = task_payload and task_payload[0] == 'glossary_batch_task'
-        
+
         final_status_key = status
         if status == 'success' and is_glossary_task:
             final_status_key = 'glossary_success'
@@ -900,9 +914,9 @@ class ChapterListWidget(QWidget):
             'held': ("స్త Заморожено", "#7F8C8D"),
             'completion': ("✍️ До-генерация…", "#F39C12")
         }
-        
+
         return status_map.get(final_status_key, (f"❓ {final_status_key}", "#FFFFFF"))
-        
+
     def _update_row_status(self, row, status, details={}):
         status_item = self.table.item(row, 1)
         item_task = self.table.item(row, 0)
@@ -939,29 +953,30 @@ class ChapterListWidget(QWidget):
         brush = QtGui.QBrush(QtGui.QColor(color_hex))
         item_task.setForeground(brush)
         status_item.setForeground(brush)
-    
+
     def set_retry_button_visible(self, visible):
         """Управляет видимостью кнопки 'Выбрать ошибочные'."""
         self.retry_failed_btn.setVisible(visible)
-    
+
     def set_copy_originals_visible(self, visible: bool):
         """Управляет видимостью кнопки 'Скопировать оригиналы'."""
         self.btn_copy_originals.setVisible(visible)
-        
+
     def set_session_mode(self, is_session_active):
         """Переключает режим виджета для активной сессии."""
         self._is_session_active = is_session_active
-        
+
         self.btn_copy_originals.setEnabled(not is_session_active)
-    
+
         # Принудительно вызываем обновление кнопок, так как режим сессии изменился
         self._on_selection_changed_for_buttons()
-            
+
     def closeEvent(self, event):
         """Отписываемся от шины при закрытии/уничтожении виджета."""
-        if self.bus:
+        bus = getattr(self, "bus", None)
+        if bus:
             try:
-                self.bus.event_posted.disconnect(self.on_event)
+                bus.event_posted.disconnect(self.on_event)
             except (TypeError, RuntimeError):
                 pass
         super().closeEvent(event)

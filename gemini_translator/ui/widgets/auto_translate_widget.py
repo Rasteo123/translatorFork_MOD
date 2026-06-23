@@ -23,6 +23,7 @@ from ...api import config as api_config
 from ...core.consistency_engine import FAST_PROOFREAD_MODE
 from ...utils.settings import SettingsManager
 from .common_widgets import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
+from gemini_translator.ui import theme_manager
 
 
 AUTO_TRANSLATION_DEFAULTS = {
@@ -207,7 +208,7 @@ class AutoTranslateWidget(QWidget):
             "Сам генератор открывается теми же существующими инструментами."
         )
         glossary_hint.setWordWrap(True)
-        glossary_hint.setStyleSheet("color: #9aa4b2;")
+        glossary_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         glossary_layout.addWidget(glossary_hint, 2, 0, 1, 3)
         content_layout.addWidget(glossary_group)
 
@@ -221,7 +222,7 @@ class AutoTranslateWidget(QWidget):
             "не меняя общие настройки всей программы."
         )
         translation_intro.setWordWrap(True)
-        translation_intro.setStyleSheet("color: #9aa4b2;")
+        translation_intro.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         self.translation_mode_combo = NoScrollComboBox()
         self.translation_mode_combo.addItem("Как в общих настройках", userData="inherit")
         self.translation_mode_combo.addItem("Всегда пакетами", userData="batch")
@@ -262,7 +263,7 @@ class AutoTranslateWidget(QWidget):
             "автовкладка пересчитает в символьный лимит по общей токен-оценке проекта."
         )
         self.translation_profile_hint.setWordWrap(True)
-        self.translation_profile_hint.setStyleSheet("color: #9aa4b2;")
+        self.translation_profile_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         self.translation_profile_hint.setText(
             "0 in batch limit inherits the common task size. Non-zero values are Gemini input tokens and are used directly."
         )
@@ -272,23 +273,23 @@ class AutoTranslateWidget(QWidget):
         self.translation_summary_frame.setObjectName("autoTranslationSummaryFrame")
         self.translation_summary_frame.setFrameShape(QFrame.Shape.StyledPanel)
         self.translation_summary_frame.setStyleSheet(
-            "QFrame#autoTranslationSummaryFrame {"
-            "border: 1px solid #49566b;"
-            "border-radius: 8px;"
-            "background-color: rgba(73, 86, 107, 0.18);"
-            "}"
+            f"QFrame#autoTranslationSummaryFrame {{"
+            f"border: 1px solid {theme_manager.color('text_muted')};"
+            f"border-radius: 8px;"
+            f"background-color: rgba(73, 86, 107, 0.18);"
+            f"}}"
         )
         translation_summary_layout = QVBoxLayout(self.translation_summary_frame)
         translation_summary_layout.setContentsMargins(10, 8, 10, 8)
         translation_summary_layout.setSpacing(4)
         self.translation_summary_title = QLabel("Итог профиля")
-        self.translation_summary_title.setStyleSheet("font-weight: 600; color: #d7e3f4;")
+        self.translation_summary_title.setStyleSheet(f"font-weight: 600; color: {theme_manager.color('text_primary')};")
         self.translation_summary_label = QLabel()
         self.translation_summary_label.setWordWrap(True)
-        self.translation_summary_label.setStyleSheet("color: #d7e3f4;")
+        self.translation_summary_label.setStyleSheet(f"color: {theme_manager.color('text_primary')};")
         self.translation_summary_note = QLabel()
         self.translation_summary_note.setWordWrap(True)
-        self.translation_summary_note.setStyleSheet("color: #9aa4b2;")
+        self.translation_summary_note.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         translation_summary_layout.addWidget(self.translation_summary_title)
         translation_summary_layout.addWidget(self.translation_summary_label)
         translation_summary_layout.addWidget(self.translation_summary_note)
@@ -302,7 +303,7 @@ class AutoTranslateWidget(QWidget):
             "Спец-пакеты для обхода content filter по-прежнему собираются своим сценарием."
         )
         translation_hint.setWordWrap(True)
-        translation_hint.setStyleSheet("color: #9aa4b2;")
+        translation_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         translation_layout.addWidget(translation_hint, 3, 0, 1, 3)
         content_layout.addWidget(translation_group)
 
@@ -331,7 +332,7 @@ class AutoTranslateWidget(QWidget):
             "если перевод не расширился хотя бы примерно в x1.8, глава считается подозрительной."
         )
         validator_hint.setWordWrap(True)
-        validator_hint.setStyleSheet("color: #9aa4b2;")
+        validator_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         validator_layout.addWidget(validator_hint, 3, 0, 1, 2)
         content_layout.addWidget(validator_group)
 
@@ -362,7 +363,7 @@ class AutoTranslateWidget(QWidget):
             "Redirect применяется к следующему автоперезапуску после перепаковки."
         )
         filter_hint.setWordWrap(True)
-        filter_hint.setStyleSheet("color: #9aa4b2;")
+        filter_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         filter_layout.addWidget(filter_hint, 6, 0, 1, 2)
         content_layout.addWidget(filter_group)
 
@@ -382,7 +383,7 @@ class AutoTranslateWidget(QWidget):
             "все равно остались в статусе ошибки после завершения сессии."
         )
         network_hint.setWordWrap(True)
-        network_hint.setStyleSheet("color: #9aa4b2;")
+        network_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         network_layout.addWidget(network_hint, 2, 0, 1, 2)
         content_layout.addWidget(network_group)
 
@@ -442,7 +443,7 @@ class AutoTranslateWidget(QWidget):
             "какие уровни уверенности будут автоматически исправляться и сохраняться."
         )
         consistency_hint.setWordWrap(True)
-        consistency_hint.setStyleSheet("color: #9aa4b2;")
+        consistency_hint.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         consistency_layout.addWidget(consistency_hint, 7, 0, 1, 2)
         content_layout.addWidget(consistency_group)
 
@@ -451,7 +452,7 @@ class AutoTranslateWidget(QWidget):
             "Сетевые ретраи и паузы уже частично живут в ядре, поэтому здесь хранится именно orchestration-слой."
         )
         footer_label.setWordWrap(True)
-        footer_label.setStyleSheet("color: #7f8c8d; padding: 4px 2px;")
+        footer_label.setStyleSheet(f"color: {theme_manager.color('text_secondary')}; padding: 4px 2px;")
         content_layout.addWidget(footer_label)
         content_layout.addStretch()
 

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal
 from ...utils import markdown_viewer
+from gemini_translator.ui import theme_manager
 
 # --- НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ КЛАСС ДЛЯ СПИСКОВ ---
 class CustomListWidget(QListWidget):
@@ -91,7 +92,7 @@ class DeleteKeysDialog(QDialog):
         layout.addWidget(self.delete_provider_btn)
         
         self.delete_all_btn = QPushButton(f"Удалить ВСЕ ключи ({num_total})")
-        self.delete_all_btn.setStyleSheet("background-color: #58181F; color: #FADBD8;")
+        self.delete_all_btn.setStyleSheet(f"background-color: {theme_manager.color('danger')}; color: {theme_manager.color('accent_text')};")
         self.delete_all_btn.clicked.connect(lambda: self._set_choice_and_accept('all'))
         self.delete_all_btn.setEnabled(num_total > 0)
         layout.addWidget(self.delete_all_btn)
@@ -244,7 +245,7 @@ class StartupToolDialog(QDialog):
 
         label = QLabel(description)
         label.setWordWrap(True)
-        label.setStyleSheet("color: #666;")
+        label.setStyleSheet(f"color: {theme_manager.color('text_secondary')};")
         label.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop)
 
         layout.addWidget(button)
@@ -304,7 +305,7 @@ class StartupToolDialog(QDialog):
             proxy_text = f"{proxy_type}://{host}:{port}"
             self.proxy_label.setText(proxy_text)
             self.proxy_label.setToolTip(f"Тип: {proxy_type}\nПользователь: {user}\nПароль: {password}")
-            self.proxy_label.setStyleSheet("color: #4CAF50;")
+            self.proxy_label.setStyleSheet(f"color: {theme_manager.color('success')};")
         else:
             self.proxy_label.setText("")
             self.proxy_label.setToolTip("")
@@ -521,7 +522,7 @@ class EnhancedProjectHistoryDialog(QDialog):
         layout.addWidget(self.search_edit)
 
         self.status_label = QLabel("Показаны недавние проекты.")
-        self.status_label.setStyleSheet("color: #888;")
+        self.status_label.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
         layout.addWidget(self.status_label)
 
         self.list_widget = QListWidget()

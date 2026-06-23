@@ -1,0 +1,7 @@
+- [x] Task 1: Highlight top menu tabs in macOS redesign
+- [x] Task 2: Change active keys color to success theme color
+- [x] Task 3: Add scroll area to AI glossary correction dialog
+- [x] Task 4: Fix "Add all green keys" button logic
+- [x] Task 5: Fix temperature spinbox size and text truncation
+- [x] Task 6: Add scroll area to AI glossary generation dialog
+- [x] Task 7: Remember selected theme between sessions, default to dark

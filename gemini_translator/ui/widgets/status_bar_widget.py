@@ -3,6 +3,7 @@
 from collections import Counter
 
 from PyQt6 import QtCore, QtWidgets
+from gemini_translator.ui import theme_manager
 
 
 STATUS_FLUSH_INTERVAL_MS = 100
@@ -60,15 +61,15 @@ class StatusBarWidget(QtWidgets.QWidget):
         self.color_bar_layout.setSpacing(0)
 
         self.part_success = QtWidgets.QLabel()
-        self.part_success.setStyleSheet("background-color: #2ECC71;")
+        self.part_success.setStyleSheet(f"background-color: {theme_manager.color('success')};")
         self.part_in_progress = QtWidgets.QLabel()
-        self.part_in_progress.setStyleSheet("background-color: #3498DB;")
+        self.part_in_progress.setStyleSheet(f"background-color: {theme_manager.color('info')};")
         self.part_filtered = QtWidgets.QLabel()
-        self.part_filtered.setStyleSheet("background-color: #9B59B6;")
+        self.part_filtered.setStyleSheet(f"background-color: {theme_manager.color('info')};")
         self.part_error = QtWidgets.QLabel()
-        self.part_error.setStyleSheet("background-color: #E74C3C;")
+        self.part_error.setStyleSheet(f"background-color: {theme_manager.color('danger')};")
         self.part_pending = QtWidgets.QLabel()
-        self.part_pending.setStyleSheet("background-color: #373e4b;")
+        self.part_pending.setStyleSheet(f"background-color: {theme_manager.color('panel_bg')};")
 
         for part in [
             self.part_success,
@@ -81,15 +82,15 @@ class StatusBarWidget(QtWidgets.QWidget):
 
         self.progress_bar_text = QtWidgets.QProgressBar()
         self.progress_bar_text.setStyleSheet(
-            """
-            QProgressBar {
+            f"""
+            QProgressBar {{
                 background-color: transparent;
-                border: 1px solid #4d5666;
+                border: 1px solid {theme_manager.color('text_muted')};
                 border-radius: 5px;
                 text-align: center;
-                color: #f0f0f0;
-            }
-            QProgressBar::chunk { background-color: transparent; }
+                color: {theme_manager.color('text_primary')};
+            }}
+            QProgressBar::chunk {{ background-color: transparent; }}
         """
         )
         self.progress_bar_text.setTextVisible(True)
@@ -250,15 +251,18 @@ class StatusBarWidget(QtWidgets.QWidget):
 
     def closeEvent(self, event):
         """Отписываемся от шины при закрытии/уничтожении виджета."""
-        if self.bus:
+        bus = getattr(self, "bus", None)
+        if bus:
             try:
-                if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                    self.bus.unsubscribe("session_started", self._on_session_started)
-                    self.bus.unsubscribe("session_finished", self._on_session_finished)
-                    self.bus.unsubscribe("task_state_changed", self._on_task_state_changed)
-                elif hasattr(self.bus, "event_posted"):
-                    self.bus.event_posted.disconnect(self.on_event)
+                if self._uses_topic_subscription and hasattr(bus, "unsubscribe"):
+                    bus.unsubscribe("session_started", self._on_session_started)
+                    bus.unsubscribe("session_finished", self._on_session_finished)
+                    bus.unsubscribe("task_state_changed", self._on_task_state_changed)
+                elif hasattr(bus, "event_posted"):
+                    bus.event_posted.disconnect(self.on_event)
             except (TypeError, RuntimeError, ValueError):
                 pass
         self._status_flush_timer.stop()
+        if hasattr(self, "temp_message_timer"):
+            self.temp_message_timer.stop()
         super().closeEvent(event)
