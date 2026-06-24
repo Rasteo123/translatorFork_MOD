@@ -9284,6 +9284,14 @@ class MainWindow(QMainWindow):
         if p: self.load_book(p)
 
 if __name__ == "__main__":
+    if sys.platform == 'win32':
+        import ctypes
+        myappid = 'siberianteam.translatorfork.1.0'
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
