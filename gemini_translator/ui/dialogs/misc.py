@@ -368,6 +368,7 @@ class ProjectHistoryDialog(QDialog):
         layout.addWidget(QLabel("Выберите проект для загрузки:"))
 
         self.list_widget = QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
        
         self.list_widget.itemDoubleClicked.connect(self.accept)
         layout.addWidget(self.list_widget)
@@ -526,6 +527,7 @@ class EnhancedProjectHistoryDialog(QDialog):
         layout.addWidget(self.status_label)
 
         self.list_widget = QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
         self.list_widget.itemSelectionChanged.connect(self._update_delete_button_state)
         self.list_widget.itemDoubleClicked.connect(self.accept)
         layout.addWidget(self.list_widget)

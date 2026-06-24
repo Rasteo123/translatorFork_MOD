@@ -666,6 +666,7 @@ class GenerationSessionPage(ShellPage):
         layout.addLayout(actions_row)
 
         self.pipeline_table = QTableWidget(0, 8)
+        self.pipeline_table.setAlternatingRowColors(True)
         self.pipeline_table.setHorizontalHeaderLabels(
             ["#", "Название", "Слияние", "T", "Режим", "Пакет", "Новых", "Статус"]
         )

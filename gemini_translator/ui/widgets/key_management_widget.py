@@ -390,11 +390,11 @@ class KeyManagementWidget(QWidget):
     def _create_key_status_card(self):
         card = QtWidgets.QFrame(self)
         card.setObjectName("keyStatusCard")
-        card.setMinimumWidth(260)
+        card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
 
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(11, 8, 11, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
 
         icon_label = QLabel("🔑")
         icon_label.setObjectName("keyStatusIcon")
@@ -414,7 +414,7 @@ class KeyManagementWidget(QWidget):
         self.key_total_value_label.setObjectName("keyStatusTotalValue")
         text_layout.addWidget(self.key_total_value_label)
 
-        layout.addLayout(text_layout, 1)
+        layout.addLayout(text_layout)
 
         for title, value_attr in (
             ("Доступно", "key_available_value_label"),
@@ -892,6 +892,8 @@ class KeyManagementWidget(QWidget):
         self.active_empty_label.setVisible(self.active_keys_list.count() == 0)
 
     def _move_items(self, source, dest, all_items=False, filter_func=None):
+        if getattr(self, '_is_session_active', False):
+            return
         if not self._provider_requires_api_key():
             return
         items_to_move = [source.item(i) for i in range(
@@ -1140,6 +1142,8 @@ class KeyManagementWidget(QWidget):
 
 
     def _handle_delete_from_pool(self):
+        if getattr(self, '_is_session_active', False):
+            return
         if not self._provider_requires_api_key():
             return
         selected_items = self.available_keys_list.selectedItems()
@@ -1274,3 +1278,24 @@ class KeyManagementWidget(QWidget):
         else:
             QMessageBox.warning(
                 self, "Ошибка", "Не удалось сохранить изменения в файле настроек.")
+
+    def set_session_mode(self, is_session_active):
+        """Переводит виджет в режим активной сессии (блокирует элементы управления)."""
+        self._is_session_active = is_session_active
+        from PyQt6.QtWidgets import QPushButton, QLineEdit, QComboBox, QAbstractItemView
+        
+        for widget in self.findChildren(QPushButton):
+            widget.setEnabled(not is_session_active)
+        for widget in self.findChildren(QLineEdit):
+            widget.setEnabled(not is_session_active)
+        for widget in self.findChildren(QComboBox):
+            widget.setEnabled(not is_session_active)
+            
+        if hasattr(self, 'key_table'):
+            if is_session_active:
+                if not hasattr(self, '_original_edit_triggers'):
+                    self._original_edit_triggers = self.key_table.editTriggers()
+                self.key_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            else:
+                if hasattr(self, '_original_edit_triggers'):
+                    self.key_table.setEditTriggers(self._original_edit_triggers)

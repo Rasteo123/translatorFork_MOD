@@ -1265,3 +1265,10 @@ class AutoTranslateWidget(QWidget):
     def _save_last_state(self):
         self.settings_manager.save_last_auto_translation_settings(self.get_settings())
         self.settings_manager.save_last_auto_translation_preset_name(self.loaded_preset_name)
+
+    def set_session_mode(self, is_session_active):
+        """Переводит виджет в режим активной сессии (блокирует элементы управления)."""
+        from PyQt6.QtWidgets import QPushButton, QLineEdit, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox
+        for cls in (QPushButton, QLineEdit, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox):
+            for widget in self.findChildren(cls):
+                widget.setEnabled(not is_session_active)

@@ -85,6 +85,11 @@ LIGHT_STYLE = """
                         font-size: 11px; border: 1px solid #ccc; border-radius: 4px; }
     QListWidget { border: 1px solid #ccc; border-radius: 4px; }
     QStatusBar { font-size: 11px; }
+    QScrollArea { border: none; background-color: transparent; }
+    QCalendarWidget QWidget { background-color: #fafafa; color: #000; }
+    QCalendarWidget QAbstractItemView:enabled { background-color: #ffffff; color: #000; selection-background-color: #3399ff; selection-color: #ffffff; }
+    QDateTimeEdit { border-radius: 8px; border: 1px solid #ccc; padding: 3px; }
+    QDateTimeEdit:focus { outline: none; border: 1px solid #aaa; }
 """
 
 DARK_STYLE = """
@@ -97,9 +102,13 @@ DARK_STYLE = """
                   background-color: #2d2d2d; color: #d4d4d4; }
     QPushButton:hover { background-color: #3a3a3a; }
     QPushButton:disabled { color: #666; }
-    QLineEdit, QSpinBox, QDateTimeEdit, QComboBox { background-color: #2d2d2d; color: #d4d4d4;
+    QLineEdit, QSpinBox, QComboBox { background-color: #2d2d2d; color: #d4d4d4;
                                           border: 1px solid #555; border-radius: 3px;
                                           padding: 3px; }
+    QDateTimeEdit { background-color: #2d2d2d; color: #d4d4d4;
+                    border: 1px solid #555; border-radius: 8px;
+                    padding: 3px; }
+    QDateTimeEdit:focus { outline: none; border: 1px solid #888; }
     QProgressBar { border: 1px solid #555; border-radius: 4px; text-align: center;
                    background-color: #2d2d2d; color: #d4d4d4; }
     QProgressBar::chunk { background-color: #388e3c; border-radius: 3px; }
@@ -115,5 +124,9 @@ DARK_STYLE = """
     QStatusBar { font-size: 11px; color: #888; }
     QMenu { background-color: #2d2d2d; color: #d4d4d4; border: 1px solid #555; }
     QMenu::item:selected { background-color: #094771; }
+    QScrollArea { border: none; background-color: transparent; }
+    QCalendarWidget QWidget { background-color: #2d2d2d; color: #d4d4d4; }
+    QCalendarWidget QAbstractItemView:enabled { background-color: #1e1e1e; color: #d4d4d4; selection-background-color: #094771; selection-color: #ffffff; }
+    QCalendarWidget QAbstractItemView:disabled { color: #666666; }
 """
 

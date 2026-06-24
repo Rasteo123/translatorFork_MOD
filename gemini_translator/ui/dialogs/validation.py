@@ -213,6 +213,7 @@ class LargeTextInputDialog(QDialog):
         examples_layout.addWidget(QLabel("<b>Кликабельные примеры:</b>"))
         
         self.examples_list = QtWidgets.QListWidget()
+        self.examples_list.setAlternatingRowColors(True)
         self.examples_list.setSpacing(5)
         self._populate_examples_list()
         self.examples_list.itemClicked.connect(self._on_example_clicked)
@@ -745,6 +746,7 @@ class AIRepairReviewPage(ShellPage):
         self.splitter = QSplitter(Qt.Orientation.Vertical)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["Применить", "Тип", "Файл", "Строка/блок", "Было", "Стало"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -2736,6 +2738,7 @@ class TranslationValidatorPage(ShellPage):
         
         
         self.table_results = QTableWidget()
+        self.table_results.setAlternatingRowColors(True)
         self.table_results.setMinimumHeight(180)
         self.table_results.setItemDelegateForColumn(0, ChapterStatusDelegate(self.table_results))
         self.table_results.setColumnCount(4); self.table_results.setHorizontalHeaderLabels(["Исходный файл в EPUB", "Проблемы", "Длина (Ориг|Перевод)", "Статус"])

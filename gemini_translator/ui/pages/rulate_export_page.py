@@ -82,6 +82,7 @@ class RulateExportPage(ShellPage):
         left_layout.addWidget(QLabel("Список глав (двойной клик для переименования):"))
 
         self.chapters_list_widget = QListWidget()
+        self.chapters_list_widget.setAlternatingRowColors(True)
         self.chapters_list_widget.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
@@ -180,6 +181,7 @@ class RulateExportPage(ShellPage):
         vol_layout.addLayout(vol_input_layout)
 
         self.volume_table = QTableWidget()
+        self.volume_table.setAlternatingRowColors(True)
         self.volume_table.setColumnCount(2)
         self.volume_table.setHorizontalHeaderLabels(["С главы", "Том"])
         self.volume_table.horizontalHeader().setSectionResizeMode(

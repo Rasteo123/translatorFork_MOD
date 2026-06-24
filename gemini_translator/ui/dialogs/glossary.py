@@ -649,6 +649,7 @@ class GlossaryManagerPage(ShellPage):
         
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.table = QTableWidget(columnCount=5)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(["Ориг. термин", "Перевод", "Примечание", "", ""])
         
         header = self.table.horizontalHeader()
@@ -674,6 +675,7 @@ class GlossaryManagerPage(ShellPage):
         
         history_widget = QWidget(); history_layout = QVBoxLayout(history_widget)
         history_layout.addWidget(QLabel("<b>История изменений:</b>")); self.history_table = QTableWidget(columnCount=2)
+        self.history_table.setAlternatingRowColors(True)
         self.history_table.setHorizontalHeaderLabels(["Действие", "Описание"]); self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         history_layout.addWidget(self.history_table); splitter.addWidget(history_widget)
         splitter.setSizes([600, 200]); main_layout.addWidget(splitter)

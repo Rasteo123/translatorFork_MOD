@@ -14,10 +14,10 @@ from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel,
     QWidget, QGroupBox, QCheckBox, QHBoxLayout, QGridLayout, QTableWidget,
     QHeaderView, QTableWidgetItem, QMessageBox, QAbstractItemView, QSlider,
-    QSplitter
+    QSplitter, QMenu
 )
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QKeySequence
 
 # --- Импорты из вашего проекта ---
 
@@ -81,6 +81,7 @@ class NoteWipeResolutionDialog(QDialog):
         layout.addWidget(warning_label)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels([
             "Удалить?", "Оригинал", "Новый перевод", "Было (Примечание)", "Стало (Редактируемо)"
@@ -2556,6 +2557,7 @@ class CorrectionPreviewDialog(QDialog):
         self._sort_order_counter = 0
         self._current_edit_data = None
         self._translation_saved_value = ""
+        self._note_saved_value = ""
         self._translation_edit_dirty = False
         self._updating_translation_editor = False
         self._suppress_table_navigation = False
@@ -2634,12 +2636,14 @@ class CorrectionPreviewDialog(QDialog):
 
     def _refresh_existing_entry_state(self, data):
         data["new_trans"] = str(data.get("new_trans", "") or "").strip()
-        data["new_note"] = self._determine_final_note(
-            data.get("_ai_note_input", ""),
-            data.get("_note_reference_old_note", ""),
-            data.get("_note_reference_old_trans", ""),
-            data["new_trans"]
-        )
+        
+        if not data.get("_user_edited_note"):
+            data["new_note"] = self._determine_final_note(
+                data.get("_ai_note_input", ""),
+                data.get("_note_reference_old_note", ""),
+                data.get("_note_reference_old_trans", ""),
+                data["new_trans"]
+            )
 
         if data["type"] == "resolution":
             old_trans_values = [entry.get("rus", "").strip() for entry in data["old_entries"]]
@@ -2774,7 +2778,7 @@ class CorrectionPreviewDialog(QDialog):
         info_label = QLabel(
             "AI предлагает следующие изменения. Проверьте и выберите, какие из них применить.<br>"
             "<b>Жирным шрифтом</b> выделены изменения. <span style='color:red; font-weight:bold;'>[УДАЛЕНИЕ]</span> означает автоматическое или ручное удаление примечания.<br>"
-            "Поле <b>\"Стало (Перевод)\"</b> можно быстро поправить вручную через редактор под таблицей."
+            "Поля <b>\"Стало (Перевод)\"</b> и <b>\"Стало (Примечание)\"</b> можно быстро поправить вручную через редакторы под таблицей."
         )
         main_layout.addWidget(info_label)
 
@@ -2829,6 +2833,7 @@ class CorrectionPreviewDialog(QDialog):
         self.preview_splitter.setChildrenCollapsible(False)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["Применить?", "Оригинал", "Было (Перевод)", "Стало (Перевод)", "Было (Примечание)", "Стало (Примечание)"])
         header = self.table.horizontalHeader()
@@ -2838,9 +2843,15 @@ class CorrectionPreviewDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self._remember_selected_row)
         self.table.currentCellChanged.connect(self._on_table_current_cell_changed)
+        
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
+        self._original_table_key_press = self.table.keyPressEvent
+        self.table.keyPressEvent = self._table_key_press
+
         self.preview_splitter.addWidget(self.table)
 
-        self.editor_group = QGroupBox("Ручная правка: Стало (Перевод)")
+        self.editor_group = QGroupBox("Ручная правка")
         editor_layout = QVBoxLayout(self.editor_group)
 
         editor_header = QHBoxLayout()
@@ -2852,11 +2863,31 @@ class CorrectionPreviewDialog(QDialog):
         editor_header.addWidget(self.translation_status_label)
         editor_layout.addLayout(editor_header)
 
+        editors_layout = QHBoxLayout()
+        
+        trans_vbox = QVBoxLayout()
+        trans_label = QLabel("Стало (Перевод):")
+        trans_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
+        trans_vbox.addWidget(trans_label)
         self.translation_editor = QtWidgets.QPlainTextEdit()
         self.translation_editor.setPlaceholderText("Выберите строку выше, чтобы вручную поправить перевод.")
-        self.translation_editor.setMinimumHeight(90)
+        self.translation_editor.setMinimumHeight(60)
         self.translation_editor.textChanged.connect(self._on_translation_editor_text_changed)
-        editor_layout.addWidget(self.translation_editor)
+        trans_vbox.addWidget(self.translation_editor)
+
+        note_vbox = QVBoxLayout()
+        note_label = QLabel("Стало (Примечание):")
+        note_label.setStyleSheet(f"color: {theme_manager.color('text_muted')}")
+        note_vbox.addWidget(note_label)
+        self.note_editor = QtWidgets.QPlainTextEdit()
+        self.note_editor.setPlaceholderText("Выберите строку выше, чтобы вручную поправить примечание.")
+        self.note_editor.setMinimumHeight(60)
+        self.note_editor.textChanged.connect(self._on_translation_editor_text_changed)
+        note_vbox.addWidget(self.note_editor)
+
+        editors_layout.addLayout(trans_vbox)
+        editors_layout.addLayout(note_vbox)
+        editor_layout.addLayout(editors_layout)
 
         editor_actions = QHBoxLayout()
         self.translation_cancel_btn = QPushButton("Отменить")
@@ -3112,6 +3143,23 @@ class CorrectionPreviewDialog(QDialog):
 
         self._select_row(next_row)
 
+    def _show_table_context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item: return
+        menu = QMenu(self)
+        copy_action = menu.addAction("Копировать текст")
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if action == copy_action:
+            QApplication.clipboard().setText(item.text())
+
+    def _table_key_press(self, event):
+        if event.matches(QKeySequence.StandardKey.Copy):
+            item = self.table.currentItem()
+            if item:
+                QApplication.clipboard().setText(item.text())
+                return
+        self._original_table_key_press(event)
+
     def _get_current_view_data(self):
         """Возвращает список данных, соответствующих текущему отображению таблицы."""
         return self.display_data + \
@@ -3143,6 +3191,7 @@ class CorrectionPreviewDialog(QDialog):
             self.translation_status_label.setStyleSheet(f"color: {theme_manager.color('success')}")
 
         self.translation_editor.setEnabled(has_selection)
+        self.note_editor.setEnabled(has_selection)
         self.translation_save_btn.setEnabled(has_selection and self._translation_edit_dirty)
         self.translation_cancel_btn.setEnabled(has_selection and self._translation_edit_dirty)
         self.translation_next_btn.setEnabled(has_selection and self.table.rowCount() > 0)
@@ -3171,9 +3220,11 @@ class CorrectionPreviewDialog(QDialog):
         data = current_data[row] if 0 <= row < len(current_data) else None
         self._current_edit_data = data
         self._translation_saved_value = data.get("new_trans", "") if data else ""
+        self._note_saved_value = data.get("new_note", "") if data else ""
 
         self._updating_translation_editor = True
         self.translation_editor.setPlainText(self._translation_saved_value if data else "")
+        self.note_editor.setPlainText(self._note_saved_value if data else "")
         self._updating_translation_editor = False
 
         if data:
@@ -3199,8 +3250,13 @@ class CorrectionPreviewDialog(QDialog):
     def _on_translation_editor_text_changed(self):
         if self._updating_translation_editor:
             return
-        current_value = self.translation_editor.toPlainText().strip()
-        self._translation_edit_dirty = current_value != self._translation_saved_value
+        current_trans = self.translation_editor.toPlainText().strip()
+        current_note = self.note_editor.toPlainText().strip()
+        
+        trans_dirty = current_trans != self._translation_saved_value
+        note_dirty = current_note != self._note_saved_value
+        
+        self._translation_edit_dirty = trans_dirty or note_dirty
         if self._translation_edit_dirty and hasattr(self, 'auto_scroll_btn') and self.auto_scroll_btn.isChecked():
             self.auto_scroll_btn.setChecked(False)
         self._update_translation_editor_state()
@@ -3211,6 +3267,7 @@ class CorrectionPreviewDialog(QDialog):
 
         self._updating_translation_editor = True
         self.translation_editor.setPlainText(self._translation_saved_value)
+        self.note_editor.setPlainText(self._note_saved_value)
         self._updating_translation_editor = False
         self._translation_edit_dirty = False
         self._update_translation_editor_state()
@@ -3220,6 +3277,8 @@ class CorrectionPreviewDialog(QDialog):
             return True
 
         new_translation = self.translation_editor.toPlainText().strip()
+        new_note = self.note_editor.toPlainText().strip()
+        
         if not new_translation:
             QMessageBox.warning(
                 self,
@@ -3228,7 +3287,7 @@ class CorrectionPreviewDialog(QDialog):
             )
             return False
 
-        if new_translation == self._translation_saved_value:
+        if new_translation == self._translation_saved_value and new_note == self._note_saved_value:
             self._translation_edit_dirty = False
             self._update_translation_editor_state()
             return True
@@ -3238,6 +3297,9 @@ class CorrectionPreviewDialog(QDialog):
         self._save_checkbox_states()
 
         edited_data["new_trans"] = new_translation
+        edited_data["new_note"] = new_note
+        edited_data["_user_edited_note"] = True
+        
         if edited_data["type"] != "addition":
             self._refresh_existing_entry_state(edited_data)
 
@@ -3246,6 +3308,7 @@ class CorrectionPreviewDialog(QDialog):
         self._populate_table()
 
         self._translation_saved_value = edited_data["new_trans"]
+        self._note_saved_value = edited_data["new_note"]
         self._translation_edit_dirty = False
 
         if restore_selection:
@@ -3278,7 +3341,7 @@ class CorrectionPreviewDialog(QDialog):
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setWindowTitle("Несохраненные изменения")
-        msg.setText("В поле \"Стало (Перевод)\" есть несохраненная ручная правка.")
+        msg.setText("Есть несохраненная ручная правка.")
         msg.setInformativeText(f"Сохранить ее перед {action_text}?")
         save_btn = msg.addButton("Сохранить", QMessageBox.ButtonRole.AcceptRole)
         discard_btn = msg.addButton("Не сохранять", QMessageBox.ButtonRole.DestructiveRole)

@@ -649,6 +649,7 @@ class EpubHtmlSelectorDialog(QDialog):
     
         # --- СПИСОК ГЛАВ ---
         self.list_widget = QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         content_layout.addWidget(self.list_widget, 1)
     
@@ -1426,6 +1427,7 @@ class TranslatedChaptersManagerDialog(QDialog):
         
         # 1. Таблица
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["№", "Оригинал / Тип", "Файл перевода"])
         header = self.table.horizontalHeader()
@@ -3116,6 +3118,7 @@ class EpubDuplicateReviewDialog(QDialog):
         tab_layout.addWidget(summary)
 
         table = QTableWidget()
+        table.setAlternatingRowColors(True)
         table.setColumnCount(6)
         table.setHorizontalHeaderLabels(["Удалить", "Глава", "Позиция", "Блоков", "Серия", "Почему"])
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -3497,6 +3500,7 @@ class EpubDeepCleanupTagRulesDialog(QDialog):
         layout.addLayout(table_buttons)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Тег", "Действие", "Сохранить контент"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)

@@ -32,6 +32,7 @@ class ProxySettingsDialog(QDialog):
         main_layout.addWidget(self.saved_proxies_label)
 
         self.proxies_table = QTableWidget()
+        self.proxies_table.setAlternatingRowColors(True)
         self.proxies_table.setColumnCount(4)  # Тип, Хост, Порт, Пользователь
         self.proxies_table.setHorizontalHeaderLabels(["Тип", "Хост", "Порт", "Пользователь"])
         header = self.proxies_table.horizontalHeader()

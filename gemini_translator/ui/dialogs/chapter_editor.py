@@ -402,6 +402,7 @@ class ChapterEditorDialog(QDialog):
         self.mode_tabs.addTab(side_by_side_widget, "Оригинал + перевод")
 
         self.block_table = QTableWidget(0, 5)
+        self.block_table.setAlternatingRowColors(True)
         self.block_table.setHorizontalHeaderLabels(["#", "Тег", "Исходник", "Перевод", "Изм."])
         self.block_table.verticalHeader().setVisible(False)
         self.block_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -434,7 +435,9 @@ class ChapterEditorDialog(QDialog):
 
         self.sidebar_tabs = QTabWidget()
         self.issues_list = QListWidget()
+        self.issues_list.setAlternatingRowColors(True)
         self.search_results_list = QListWidget()
+        self.search_results_list.setAlternatingRowColors(True)
         self.sidebar_tabs.addTab(self.issues_list, "Проблемы")
         self.sidebar_tabs.addTab(self.search_results_list, "Поиск")
         sidebar_layout.addWidget(self.sidebar_tabs, 1)
@@ -1043,6 +1046,7 @@ class ChapterEditorDialog(QDialog):
         layout = QVBoxLayout(dialog)
 
         snapshots_list = QListWidget()
+        snapshots_list.setAlternatingRowColors(True)
         preview = QPlainTextEdit()
         preview.setReadOnly(True)
         preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)

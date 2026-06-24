@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSystemTrayIcon,
     QTextEdit,
@@ -88,51 +89,64 @@ class RanobeUploaderApp(QMainWindow):
     # ── Построение интерфейса ──
 
     def _build_ui(self):
+        main_central = QWidget()
+        self.setCentralWidget(main_central)
+        main_layout = QVBoxLayout(main_central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         central = QWidget()
-        self.setCentralWidget(central)
+        scroll.setWidget(central)
+        main_layout.addWidget(scroll)
+
         layout = QVBoxLayout(central)
         layout.setSpacing(6)
 
-        # Toolbar
-        toolbar = QToolBar()
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+        # Верхнее меню (кнопки вместо тулбара)
+        top_menu_layout = QHBoxLayout()
 
-        self.act_return_to_menu = QAction("← В меню", self)
-        self.act_return_to_menu.triggered.connect(self._return_to_menu)
-        toolbar.addAction(self.act_return_to_menu)
-        toolbar.addSeparator()
+        top_menu_layout.addWidget(QLabel("Тема:"))
+        self.theme_mode_combo = QComboBox()
+        self.theme_mode_combo.addItem("Авто (как в системе)", "auto")
+        self.theme_mode_combo.addItem("Светлая", "light")
+        self.theme_mode_combo.addItem("Тёмная", "dark")
+        self.theme_mode_combo.addItem("Своя", "custom")
+        self.theme_mode_combo.currentIndexChanged.connect(
+            lambda _i: self._on_theme_mode_changed(self.theme_mode_combo.currentData())
+        )
+        top_menu_layout.addWidget(self.theme_mode_combo)
 
-        self.act_dark = QAction("🌙 Тёмная тема", self, checkable=True)
-        self.act_dark.toggled.connect(self._toggle_theme)
-        toolbar.addAction(self.act_dark)
+        btn_export_log = QPushButton("📋 Экспорт лога")
+        btn_export_log.clicked.connect(self._export_log)
+        top_menu_layout.addWidget(btn_export_log)
 
-        act_export_log = QAction("📋 Экспорт лога", self)
-        act_export_log.triggered.connect(self._export_log)
-        toolbar.addAction(act_export_log)
-
-        act_open_log_dir = QAction("📂 Папка логов", self)
-        act_open_log_dir.triggered.connect(
+        btn_open_log_dir = QPushButton("📂 Папка логов")
+        btn_open_log_dir.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR.resolve())))
         )
-        toolbar.addAction(act_open_log_dir)
+        top_menu_layout.addWidget(btn_open_log_dir)
+
+        top_menu_layout.addStretch()
 
         # ── Feature 1: Профили ──
-        toolbar.addSeparator()
-        toolbar.addWidget(QLabel(" Профиль: "))
+        top_menu_layout.addWidget(QLabel(" Профиль: "))
         self.profile_combo = QComboBox()
         self.profile_combo.setMinimumWidth(150)
         self.profile_combo.addItem("(Текущий)")
         self.profile_combo.currentIndexChanged.connect(self._on_profile_selected)
-        toolbar.addWidget(self.profile_combo)
+        top_menu_layout.addWidget(self.profile_combo)
 
         self.btn_save_profile = QPushButton("Сохранить профиль")
         self.btn_save_profile.clicked.connect(self._save_profile)
-        toolbar.addWidget(self.btn_save_profile)
+        top_menu_layout.addWidget(self.btn_save_profile)
 
         self.btn_delete_profile = QPushButton("Удалить профиль")
         self.btn_delete_profile.clicked.connect(self._delete_profile)
-        toolbar.addWidget(self.btn_delete_profile)
+        top_menu_layout.addWidget(self.btn_delete_profile)
+
+        layout.addLayout(top_menu_layout)
 
         # StatusBar
         self.statusBar().showMessage("Готов")
@@ -150,9 +164,6 @@ class RanobeUploaderApp(QMainWindow):
 
         self.btn_login = QPushButton("Войти в RanobeLib")
         self.btn_login.clicked.connect(self._start_login)
-        self.btn_login.setStyleSheet(
-            "background-color: #FFA500; font-weight: bold; padding: 6px 16px;"
-        )
         url_row.addWidget(self.btn_login)
         layout.addLayout(url_row)
 
@@ -189,9 +200,6 @@ class RanobeUploaderApp(QMainWindow):
             "Бесплатные главы скачиваются без входа в аккаунт."
         )
         self.btn_login_rulate.clicked.connect(self._start_login_rulate)
-        self.btn_login_rulate.setStyleSheet(
-            "background-color: #FFA500; padding: 5px 10px;"
-        )
         rulate_url_row.addWidget(self.btn_login_rulate)
         rulate_layout.addLayout(rulate_url_row)
 
@@ -209,16 +217,10 @@ class RanobeUploaderApp(QMainWindow):
 
         self.btn_fetch_rulate = QPushButton("Получить список глав")
         self.btn_fetch_rulate.clicked.connect(self._fetch_rulate_chapters)
-        self.btn_fetch_rulate.setStyleSheet(
-            "background-color: #87CEEB; font-weight: bold; padding: 6px 16px;"
-        )
         rulate_opts_row.addWidget(self.btn_fetch_rulate)
 
         self.btn_download_rulate = QPushButton("Скачать выбранные главы")
         self.btn_download_rulate.clicked.connect(self._download_rulate_chapters)
-        self.btn_download_rulate.setStyleSheet(
-            "background-color: #90EE90; font-weight: bold; padding: 6px 16px;"
-        )
         self.btn_download_rulate.setEnabled(False)
         rulate_opts_row.addWidget(self.btn_download_rulate)
 
@@ -312,9 +314,6 @@ class RanobeUploaderApp(QMainWindow):
         file_row = QHBoxLayout()
         self.btn_file = QPushButton("5. Выбрать файл (.epub / .zip / .txt / .html)")
         self.btn_file.clicked.connect(self._select_file)
-        self.btn_file.setStyleSheet(
-            "background-color: #ADD8E6; font-weight: bold; padding: 6px 16px;"
-        )
         file_row.addWidget(self.btn_file)
         self.lbl_info = QLabel("Файл не выбран (или скачайте из Rulate)")
         file_row.addWidget(self.lbl_info)
@@ -387,18 +386,14 @@ class RanobeUploaderApp(QMainWindow):
         self.btn_start = QPushButton("СТАРТ ЗАГРУЗКИ НА RANOBELIB")
         self.btn_start.clicked.connect(self._start_upload)
         self.btn_start.setEnabled(False)
-        self.btn_start.setStyleSheet(
-            "background-color: #90EE90; min-height: 40px; font-weight: bold; font-size: 14px;"
-        )
+        self.btn_start.setMinimumHeight(40)
         self.btn_stop = QPushButton("СТОП")
         self.btn_stop.clicked.connect(self._stop_upload)
         self.btn_stop.setEnabled(False)
-        self.btn_stop.setStyleSheet(
-            "background-color: #FFB6C1; min-height: 40px; font-size: 14px;"
-        )
+        self.btn_stop.setMinimumHeight(40)
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
-        layout.addLayout(btn_row)
+        main_layout.addLayout(btn_row)
 
         # Шорткаты
         QShortcut(QKeySequence("Ctrl+A"), self).activated.connect(self._select_all)
@@ -593,10 +588,22 @@ class RanobeUploaderApp(QMainWindow):
 
     # ── Тема ──
 
-    def _toggle_theme(self, dark: bool):
-        self._is_dark = dark
+    def _on_theme_mode_changed(self, mode: str):
+        if mode == "auto":
+            from PyQt6.QtWidgets import QApplication
+            try:
+                from gemini_translator.ui import theme_manager
+                is_dark = theme_manager.system_is_dark(QApplication.instance())
+            except ImportError:
+                is_dark = False
+        elif mode in ("dark", "custom"):
+            is_dark = True
+        else:
+            is_dark = False
+            
+        self._is_dark = is_dark
         self._apply_theme()
-        self.settings.setValue("dark_theme", dark)
+        self.settings.setValue("theme_mode", mode)
 
     def _apply_theme(self):
         self.setStyleSheet(DARK_STYLE if self._is_dark else LIGHT_STYLE)
@@ -635,9 +642,18 @@ class RanobeUploaderApp(QMainWindow):
         self.interval_spin.setValue(self.settings.value("interval", 1440, type=int))
         self.chk_paid.setChecked(self.settings.value("paid", False, type=bool))
         self.spin_price.setValue(self.settings.value("price", 10, type=int))
-        self._is_dark = self.settings.value("dark_theme", False, type=bool)
-        self.act_dark.setChecked(self._is_dark)
-        self._apply_theme()
+        theme_mode = self.settings.value("theme_mode", "light")
+        if isinstance(theme_mode, bool) or theme_mode in ("true", "false", True, False):
+            is_dark_old = self.settings.value("dark_theme", False, type=bool)
+            theme_mode = "dark" if is_dark_old else "light"
+        
+        idx = self.theme_mode_combo.findData(theme_mode)
+        if idx >= 0:
+            self.theme_mode_combo.setCurrentIndex(idx)
+        else:
+            self.theme_mode_combo.setCurrentIndex(self.theme_mode_combo.findData("light"))
+            
+        self._on_theme_mode_changed(theme_mode)
         rulate_url = self.settings.value("rulate_url", "")
         if rulate_url:
             self.rulate_url_input.setText(rulate_url)
@@ -657,7 +673,7 @@ class RanobeUploaderApp(QMainWindow):
         self.settings.setValue("interval", self.interval_spin.value())
         self.settings.setValue("paid", self.chk_paid.isChecked())
         self.settings.setValue("price", self.spin_price.value())
-        self.settings.setValue("dark_theme", self._is_dark)
+        self.settings.setValue("theme_mode", self.theme_mode_combo.currentData())
         self.settings.setValue("rulate_url", self.rulate_url_input.text())
         self.settings.setValue("skip_uploaded", self.chk_skip_uploaded.isChecked())
 

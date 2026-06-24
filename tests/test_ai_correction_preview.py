@@ -108,6 +108,27 @@ class CorrectionPreviewDialogTests(unittest.TestCase):
         self.assertTrue(dialog._save_current_translation_edit())
         self.assertEqual(pending_prompts, [])
 
+    def test_manual_note_save_preserves_user_edit_and_skips_determination(self):
+        dialog = CorrectionPreviewDialog(
+            original_glossary_list=[
+                {"original": "Wei", "rus": "Vey", "note": "Character"}
+            ],
+            patch_dict={
+                "Wei": {"rus": "Senior Vey", "note": "AI Note"}
+            },
+            direct_conflicts={},
+        )
+        self.addCleanup(dialog.close)
+
+        dialog._select_row(0)
+        dialog.note_editor.setPlainText("User Note")
+        self.assertTrue(dialog._translation_edit_dirty)
+
+        self.assertTrue(dialog._save_current_translation_edit())
+        
+        edited_data = dialog.review_data[0]
+        self.assertEqual(edited_data["new_note"], "User Note")
+        self.assertTrue(edited_data.get("_user_edited_note"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,6 +99,7 @@ class GlossaryWidget(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Оригинал", "Перевод", "Примечание (Контекст)"])
         header = self.table.horizontalHeader()
@@ -846,9 +847,32 @@ class GlossaryWidget(QWidget):
         self.add_row_btn.setEnabled(enabled)
         self.remove_row_btn.setEnabled(enabled)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed if enabled else QAbstractItemView.EditTrigger.NoEditTriggers)
+
+    def set_session_mode(self, is_session_active):
+        """Переводит виджет в режим активной сессии (блокирует элементы управления)."""
+        from PyQt6.QtWidgets import QPushButton, QLineEdit, QComboBox, QAbstractItemView
         
+        for widget in self.findChildren(QPushButton):
+            if widget in (getattr(self, 'first_page_button', None), getattr(self, 'prev_page_button', None), 
+                          getattr(self, 'next_page_button', None), getattr(self, 'last_page_button', None)):
+                continue
+            widget.setEnabled(not is_session_active)
+            
+        for widget in self.findChildren(QLineEdit):
+            widget.setEnabled(not is_session_active)
+        for widget in self.findChildren(QComboBox):
+            widget.setEnabled(not is_session_active)
+            
+        if hasattr(self, 'table'):
+            if is_session_active:
+                if not hasattr(self, '_original_edit_triggers'):
+                    self._original_edit_triggers = self.table.editTriggers()
+                self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            else:
+                if hasattr(self, '_original_edit_triggers'):
+                    self.table.setEditTriggers(self._original_edit_triggers)
         
-        
+
 class GlossaryCleanupDialog(QDialog):
     """
     Диалог пост-обработки.
@@ -1145,5 +1169,3 @@ class GlossaryCleanupDialog(QDialog):
                     return False 
         
         return True
-        
-###

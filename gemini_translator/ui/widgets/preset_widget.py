@@ -366,3 +366,16 @@ class PresetWidget(QWidget):
             self.load_last_session_state()
         
         
+
+    def set_session_mode(self, is_session_active):
+        """Переводит виджет в режим активной сессии (блокирует элементы управления)."""
+        from PyQt6.QtWidgets import QPushButton, QLineEdit, QComboBox
+        for widget in self.findChildren(QPushButton):
+            widget.setEnabled(not is_session_active)
+        for widget in self.findChildren(QLineEdit):
+            widget.setEnabled(not is_session_active)
+        for widget in self.findChildren(QComboBox):
+            widget.setEnabled(not is_session_active)
+            
+        if hasattr(self, 'prompt_edit'):
+            self.prompt_edit.setReadOnly(is_session_active)

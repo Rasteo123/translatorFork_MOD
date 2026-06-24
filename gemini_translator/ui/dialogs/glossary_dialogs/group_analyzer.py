@@ -88,6 +88,7 @@ class GroupAnalysisPage(ShellPage):
         
         # --- Таблица результатов ---
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Выбрать", "Слово (Маркер)", "Записей", "Примеры терминов"])
         header = self.table.horizontalHeader()
