@@ -42,7 +42,7 @@ jobs:
       - name: Package Windows
         if: matrix.os == 'windows-latest'
         run: |
-          Compress-Archive -Path dist\translatorFork_MOD.exe -DestinationPath GeminiTranslator-Windows.zip
+          iscc windows_installer.iss
 
       - name: Package macOS
         if: matrix.os == 'macos-latest'
@@ -61,8 +61,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: GeminiTranslator-Windows
-          path: GeminiTranslator-Windows.zip
+          name: GeminiTranslator-Windows-Installer
+          path: installer_output/GeminiTranslator-Setup.exe
 
       - name: Upload macOS Artifact (DMG)
         if: matrix.os == 'macos-latest'
@@ -100,6 +100,7 @@ jobs:
           mkdir release_assets
           find artifacts -type f -name "*.zip" -exec mv {} release_assets/ \;
           find artifacts -type f -name "*.dmg" -exec mv {} release_assets/ \;
+          find artifacts -type f -name "*.exe" -exec mv {} release_assets/ \;
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

@@ -5810,7 +5810,7 @@ $xml = "<toast><visual><binding template='ToastText02'><text id='1'>{safe_title}
 $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
 $doc.LoadXml($xml)
 $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
-$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\WindowsPowerShell\v1.0\powershell.exe")
+$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("SiberianTeam.GeminiTranslator")
 $notifier.Show($toast)
 """
                 try:
