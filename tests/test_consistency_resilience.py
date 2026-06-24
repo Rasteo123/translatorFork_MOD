@@ -51,6 +51,7 @@ class _ConsistencyDialogHarness:
     on_error = ConsistencyValidatorDialog.on_error
     _restore_batch_fix_problem_map = ConsistencyValidatorDialog._restore_batch_fix_problem_map
     _on_batch_fix_error = ConsistencyValidatorDialog._on_batch_fix_error
+    _release_power_inhibitor = ConsistencyValidatorDialog._release_power_inhibitor
 
     def __init__(
         self,

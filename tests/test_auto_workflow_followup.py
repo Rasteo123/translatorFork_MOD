@@ -845,6 +845,7 @@ class _AutoConsistencyFollowupHarness:
         self.selected_file = "C:/project/book.epub"
         self.key_management_widget = _KeyManagementWidgetStub()
         self.start_btn = _ButtonStub()
+        self.prevent_sleep_checkbox = _CheckStateStub()
         self.logs = []
         self._auto_followup_running = False
         self._auto_consistency_worker = None
