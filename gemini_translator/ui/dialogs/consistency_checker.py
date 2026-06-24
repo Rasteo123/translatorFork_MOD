@@ -459,6 +459,7 @@ class ConsistencyValidatorPage(ShellPage):
         
         # Таблица
         self.problems_table = QTableWidget(0, 8)
+        self.problems_table.setAlternatingRowColors(True)
         self.problems_table.setHorizontalHeaderLabels([
             "V", "ID", "Тип", "Глава", "Цитата", "Описание", "Как исправить", "Уверенность"
         ])

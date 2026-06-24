@@ -258,6 +258,7 @@ class ChapterListWidget(QWidget):
         main_layout.addWidget(buttons_panel)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
 
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Задача", "Статус", "Порядок"])

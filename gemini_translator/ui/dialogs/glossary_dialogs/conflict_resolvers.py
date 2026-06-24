@@ -79,6 +79,7 @@ class ComplexOverlapResolverPage(ShellPage):
         self.left_label = QLabel()
         left_layout.addWidget(self.left_label)
         self.left_list = QListWidget()
+        self.left_list.setAlternatingRowColors(True)
         self.left_list.currentItemChanged.connect(self.on_group_changed)
         left_layout.addWidget(self.left_list)
         
@@ -472,6 +473,7 @@ class ComplexOverlapResolverPage(ShellPage):
             sub_layout = QVBoxLayout(sub_group)
             
             self.sub_terms_table = QTableWidget()
+            self.sub_terms_table.setAlternatingRowColors(True)
             self.sub_terms_table.itemChanged.connect(self._on_sub_table_item_changed)
             delegate = ExpandingTextEditDelegate(self.sub_terms_table)
             self.sub_terms_table.setItemDelegate(delegate)
@@ -688,6 +690,7 @@ class ReverseConflictResolverPage(ShellPage):
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(QLabel("<b>Проблемные переводы:</b>"))
         self.translations_list = QListWidget()
+        self.translations_list.setAlternatingRowColors(True)
         self.translations_list.currentItemChanged.connect(self.on_group_changed)
         self.translations_list.itemClicked.connect(self.on_item_clicked)
         left_layout.addWidget(self.translations_list)
@@ -923,6 +926,7 @@ class ReverseConflictResolverPage(ShellPage):
         
     def _create_table_widget(self, headers):
         table = QTableWidget()
+        table.setAlternatingRowColors(True)
         table.setColumnCount(len(headers))
         table.setHorizontalHeaderLabels(headers)
         delegate = ExpandingTextEditDelegate(table)
@@ -1299,6 +1303,7 @@ class DirectConflictResolverDialog(QDialog):
         layout.addLayout(top_bar)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         delegate = ExpandingTextEditDelegate(self.table)
         self.table.setItemDelegateForColumn(3, delegate)
         self.table.setItemDelegateForColumn(4, delegate)

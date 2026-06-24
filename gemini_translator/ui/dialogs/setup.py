@@ -211,6 +211,7 @@ class BaseGlossarySelectionDialog(QDialog):
         layout.addWidget(intro)
 
         self.list_widget = QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
         for option in glossary_options:
             item = QListWidgetItem(f"{option['name']} ({option['count']} записей)")
             item.setData(QtCore.Qt.ItemDataRole.UserRole, option['id'])

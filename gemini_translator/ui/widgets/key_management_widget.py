@@ -390,11 +390,11 @@ class KeyManagementWidget(QWidget):
     def _create_key_status_card(self):
         card = QtWidgets.QFrame(self)
         card.setObjectName("keyStatusCard")
-        card.setMinimumWidth(260)
+        card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
 
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(11, 8, 11, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
 
         icon_label = QLabel("🔑")
         icon_label.setObjectName("keyStatusIcon")
@@ -414,7 +414,7 @@ class KeyManagementWidget(QWidget):
         self.key_total_value_label.setObjectName("keyStatusTotalValue")
         text_layout.addWidget(self.key_total_value_label)
 
-        layout.addLayout(text_layout, 1)
+        layout.addLayout(text_layout)
 
         for title, value_attr in (
             ("Доступно", "key_available_value_label"),

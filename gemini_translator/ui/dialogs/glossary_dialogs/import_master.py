@@ -299,6 +299,7 @@ class ImporterWizardDialog(QDialog):
         preview_group = QGroupBox("Шаг 2: Предпросмотр результата")
         preview_layout = QVBoxLayout(preview_group)
         self.preview_table = QTableWidget(); self.preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.preview_table.setAlternatingRowColors(True)
         preview_layout.addWidget(self.preview_table, 1)
         main_layout.addWidget(preview_group, 1)
 
@@ -470,6 +471,7 @@ class MultiImportManagerDialog(QDialog):
         main_layout.addWidget(info_label)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Файл", "Статус", "Действия"])
         header = self.table.horizontalHeader()

@@ -126,6 +126,7 @@ class CoreTermAnalyzerPage(ShellPage):
         left_layout.addWidget(QLabel("<b>Общие паттерны:</b>"))
 
         self.left_list = QListWidget()
+        self.left_list.setAlternatingRowColors(True)
         # ВАЖНО: Мы больше не используем currentItemChanged, т.к. на виджете будут кнопки
         left_layout.addWidget(self.left_list)
         return left_panel
@@ -261,6 +262,7 @@ class CoreTermAnalyzerPage(ShellPage):
         table_layout.setContentsMargins(2, 6, 2, 2) # Было: (2, 2, 2, 2)
 
         self.members_table = QTableWidget()
+        self.members_table.setAlternatingRowColors(True)
         self.members_table.setItemDelegate(ExpandingTextEditDelegate(self.members_table))
         self.members_table.setColumnCount(4)
         self.members_table.setHorizontalHeaderLabels(["Оригинал", "Перевод", "Примечание", "Действия"])
@@ -311,7 +313,7 @@ class CoreTermAnalyzerPage(ShellPage):
         count = len(data['members'])
 
         main_button = QPushButton(f"'{pattern_str}' ({count} терм.)")
-        main_button.setStyleSheet("text-align: left; font-weight: bold; border: none; padding: 2px;")
+        main_button.setStyleSheet("text-align: left; font-weight: bold; border: none; padding: 2px; background-color: transparent;")
         main_button.setFlat(True)
         main_button.clicked.connect(lambda ch, t=lcs_tuple: self._display_group_for_editing(t))
         layout.addWidget(main_button)

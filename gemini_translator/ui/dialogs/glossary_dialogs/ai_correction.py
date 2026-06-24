@@ -81,6 +81,7 @@ class NoteWipeResolutionDialog(QDialog):
         layout.addWidget(warning_label)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels([
             "Удалить?", "Оригинал", "Новый перевод", "Было (Примечание)", "Стало (Редактируемо)"
@@ -2832,6 +2833,7 @@ class CorrectionPreviewDialog(QDialog):
         self.preview_splitter.setChildrenCollapsible(False)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["Применить?", "Оригинал", "Было (Перевод)", "Стало (Перевод)", "Было (Примечание)", "Стало (Примечание)"])
         header = self.table.horizontalHeader()

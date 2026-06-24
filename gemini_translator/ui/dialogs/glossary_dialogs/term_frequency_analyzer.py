@@ -159,6 +159,7 @@ class TermFrequencyAnalyzerPage(ShellPage):
 
     def _create_table(self, editable=False):
         table = QTableWidget()
+        table.setAlternatingRowColors(True)
         table.setColumnCount(4)
         table.setHorizontalHeaderLabels(["Оригинал", "Перевод", "Примечание", "Частота"])
         header = table.horizontalHeader()
@@ -169,18 +170,6 @@ class TermFrequencyAnalyzerPage(ShellPage):
         
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         
-        # Стилизация
-        table.setStyleSheet(f"""
-            QTableWidget {{
-                background-color: {theme_manager.color('panel_bg')};
-                alternate-background-color: {theme_manager.color('panel_alt_bg')};
-                color: {theme_manager.color('text_primary')};
-                border: 1px solid {theme_manager.color('text_muted')};
-            }}
-            QTableWidget::item:selected {{
-                background-color: {theme_manager.color('info')};
-            }}
-        """)
         table.setAlternatingRowColors(True)
 
         if editable:

@@ -384,6 +384,7 @@ class GlossaryTermDialog(QDialog):
             layout.addWidget(summary)
 
             preview = QListWidget()
+            preview.setAlternatingRowColors(True)
             preview.setMaximumHeight(110)
             for entry in existing_entries:
                 preview.addItem(
@@ -1103,6 +1104,7 @@ class UntranslatedFixerPage(ShellPage):
         
         # --- ТАБЛИЦА ---
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(5)
         # Меняем заголовок последней колонки
         self.table.setHorizontalHeaderLabels(["✅", "Термин / Локация", "Контекст (редактируемый)", "Инфо", "Действ."])

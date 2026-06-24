@@ -122,6 +122,7 @@ class ResidueAnalyzerPage(ShellPage):
         left_panel = QWidget(); left_layout = QVBoxLayout(left_panel)
         self.left_label = QLabel(); left_layout.addWidget(self.left_label)
         self.left_list = QListWidget(); self.left_list.currentItemChanged.connect(self._on_item_selected)
+        self.left_list.setAlternatingRowColors(True)
         left_layout.addWidget(self.left_list)
         
         self.toggle_view_btn = QPushButton("Переключить вид")
@@ -331,6 +332,7 @@ class ResidueAnalyzerPage(ShellPage):
     def _create_sub_entries_group(self, title, sub_entries):
         group = QGroupBox(title); layout = QVBoxLayout(group)
         table = QTableWidget(); table.setColumnCount(5)
+        table.setAlternatingRowColors(True)
         table.setHorizontalHeaderLabels(["Тип", "Оригинал/Фрагмент", "Перевод", "Примечание", "Действия"])
         delegate = ExpandingTextEditDelegate(table); header = table.horizontalHeader()
         for i in [1,2,3]: header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)

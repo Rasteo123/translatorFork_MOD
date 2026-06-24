@@ -46,6 +46,7 @@ class ChapterSelectorWidget(QWidget):
 
         # Список
         self.list_widget = QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.itemChanged.connect(self._on_item_changed) # Следим за изменениями для подсветки
         layout.addWidget(self.list_widget)

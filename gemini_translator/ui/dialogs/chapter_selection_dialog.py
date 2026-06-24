@@ -53,6 +53,7 @@ class ChapterSelectionDialog(QDialog):
         
         # Список глав
         self.chapter_list = QListWidget()
+        self.chapter_list.setAlternatingRowColors(True)
         self.chapter_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.chapter_list.itemChanged.connect(self._update_stats)
         layout.addWidget(self.chapter_list)

@@ -99,6 +99,7 @@ class GlossaryWidget(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Оригинал", "Перевод", "Примечание (Контекст)"])
         header = self.table.horizontalHeader()

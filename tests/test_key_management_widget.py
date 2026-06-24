@@ -198,6 +198,21 @@ class KeyManagementWidgetProviderModeTests(unittest.TestCase):
         self.assertEqual(states_by_text["Активный"], "active")
         self.assertEqual(states_by_text["Пауза"], "paused")
         self.assertEqual(states_by_text["Исчерпан"], "exhausted")
+    def test_key_status_card_layout_policies(self):
+        widget = KeyManagementWidget(_KeySettingsStub())
+        self.addCleanup(widget.close)
+
+        card = widget.findChild(QtWidgets.QFrame, "keyStatusCard")
+        self.assertIsNotNone(card)
+        # Должен быть Minimum, Minimum (без фикс. ширины 260)
+        self.assertEqual(card.sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Policy.Minimum)
+        self.assertEqual(card.sizePolicy().verticalPolicy(), QtWidgets.QSizePolicy.Policy.Minimum)
+        # Убеждаемся, что minimumWidth не задан жестко
+        self.assertEqual(card.minimumWidth(), 0)
+
+        layout = card.layout()
+        # Проверяем, что первый столбец не имеет принудительного растяжения (stretch 0)
+        self.assertEqual(layout.stretch(1), 0)
 
 
 if __name__ == "__main__":
