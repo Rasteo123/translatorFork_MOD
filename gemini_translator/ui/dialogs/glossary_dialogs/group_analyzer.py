@@ -96,6 +96,7 @@ class GroupAnalysisPage(ShellPage):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) 
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents) 
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)          
+        header.sectionResized.connect(lambda l, o, n: self.table.resizeRowsToContents())
         
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
@@ -217,6 +218,8 @@ class GroupAnalysisPage(ShellPage):
             ex_item = QTableWidgetItem(examples_str)
             ex_item.setToolTip(examples_str) # Полный текст при наведении
             self.table.setItem(i, 3, ex_item)
+
+        self.table.resizeRowsToContents()
 
     def _open_child_editor(self):
         """Собирает термины по индексам и открывает дочерний менеджер."""

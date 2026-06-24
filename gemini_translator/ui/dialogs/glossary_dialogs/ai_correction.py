@@ -97,6 +97,7 @@ class NoteWipeResolutionDialog(QDialog):
         # Используем твой умный делегат для последней колонки
         from .custom_widgets import ExpandingTextEditDelegate
         self.table.setItemDelegateForColumn(4, ExpandingTextEditDelegate(self.table))
+        header.sectionResized.connect(lambda l, o, n: self.table.resizeRowsToContents())
 
         layout.addWidget(self.table)
         self._populate_table()
@@ -2838,6 +2839,7 @@ class CorrectionPreviewDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Применить?", "Оригинал", "Было (Перевод)", "Стало (Перевод)", "Было (Примечание)", "Стало (Примечание)"])
         header = self.table.horizontalHeader()
         for i in range(6): header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch if i > 0 else QHeaderView.ResizeMode.ResizeToContents)
+        header.sectionResized.connect(lambda l, o, n: self.table.resizeRowsToContents())
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
