@@ -367,7 +367,14 @@ class KeyManagementWidget(QWidget):
         right_panel_layout.addWidget(self.active_keys_group, 1)
 
         key_splitter.addWidget(right_panel_container)
-        key_splitter.setSizes([1000, 1, 1000])
+        
+        left_panel_widget.setMinimumWidth(300)
+        right_panel_container.setMinimumWidth(250)
+        
+        key_splitter.setStretchFactor(0, 1)
+        key_splitter.setStretchFactor(1, 0)
+        key_splitter.setStretchFactor(2, 1)
+        key_splitter.setSizes([500, 50, 500])
 
         main_layout.addWidget(key_splitter)
 

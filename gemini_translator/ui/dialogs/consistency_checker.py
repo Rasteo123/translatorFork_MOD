@@ -13,14 +13,57 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QLabel, QHeaderView, QSplitter, QTextEdit,
     QProgressBar, QMessageBox, QWidget, QComboBox, QSpinBox,
     QGroupBox, QCheckBox, QApplication, QDialogButtonBox, QTabWidget,
-    QFrame
+    QFrame, QStyledItemDelegate, QStyle, QStyleOptionButton
 )
 import json
 import shutil
 from pathlib import Path
 from datetime import datetime
-from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QEvent
 from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption
+
+class CenteredCheckboxDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        self.initStyleOption(option, index)
+        
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        opt = QStyleOptionViewItem(option)
+        opt.features &= ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        from PyQt6.QtCore import Qt
+        opt.checkState = Qt.CheckState.Unchecked
+        
+        style = option.widget.style() if option.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, option.widget)
+
+        
+        checked = index.data(Qt.ItemDataRole.CheckStateRole)
+        if checked is not None:
+            check_box_style_option = QStyleOptionButton()
+            check_box_style_option.state |= QStyle.StateFlag.State_Enabled
+            if checked == Qt.CheckState.Checked.value or checked == Qt.CheckState.Checked:
+                check_box_style_option.state |= QStyle.StateFlag.State_On
+            else:
+                check_box_style_option.state |= QStyle.StateFlag.State_Off
+                
+            checkbox_rect = style.subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, check_box_style_option, option.widget)
+            
+            x = option.rect.x() + (option.rect.width() - checkbox_rect.width()) // 2
+            y = option.rect.y() + (option.rect.height() - checkbox_rect.height()) // 2
+            check_box_style_option.rect = QRect(x, y, checkbox_rect.width(), checkbox_rect.height())
+            
+            style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorCheckBox, check_box_style_option, painter, option.widget)
+
+    def editorEvent(self, event, model, option, index):
+        if event.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick):
+            if event.button() == Qt.MouseButton.LeftButton:
+                checked = index.data(Qt.ItemDataRole.CheckStateRole)
+                if checked is not None:
+                    is_checked = checked == Qt.CheckState.Checked.value or checked == Qt.CheckState.Checked
+                    new_state = Qt.CheckState.Unchecked if is_checked else Qt.CheckState.Checked
+                    model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
+                    return True
+        return super().editorEvent(event, model, option, index)
+
 
 from ...core.consistency_engine import (
     DEEP_CONSISTENCY_MODE,
@@ -411,6 +454,7 @@ class ConsistencyValidatorPage(ShellPage):
         self.problems_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.problems_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.problems_table.setAlternatingRowColors(True)
+        self.problems_table.setItemDelegateForColumn(0, CenteredCheckboxDelegate(self.problems_table))
         problems_layout.addWidget(self.problems_table)
         
         # Поле деталей (внизу списка проблем)
@@ -544,9 +588,9 @@ class ConsistencyValidatorPage(ShellPage):
         log_layout.addWidget(self.log_text)
         
         settings_splitter.addWidget(log_group)
-        settings_splitter.setSizes([500, 700])
-        settings_splitter.setStretchFactor(0, 0)
-        settings_splitter.setStretchFactor(1, 1)
+        settings_splitter.setSizes([750, 450])
+        settings_splitter.setStretchFactor(0, 3)
+        settings_splitter.setStretchFactor(1, 2)
         
         settings_layout.addWidget(settings_splitter)
         self.main_tabs.addTab(settings_tab, "⚙️ Настройки и Логи")
@@ -1232,6 +1276,7 @@ class ConsistencyValidatorPage(ShellPage):
             # Колонка 0: Чекбокс
             check_item = QTableWidgetItem()
             check_item.setCheckState(Qt.CheckState.Checked)
+            check_item.setFlags(check_item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
             signals_were_blocked = self.problems_table.blockSignals(True)
             try:
                 self.problems_table.setItem(row, 0, check_item)
