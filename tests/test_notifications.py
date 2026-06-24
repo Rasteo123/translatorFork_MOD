@@ -15,6 +15,9 @@ def test_notification_settings_toggle(monkeypatch):
         called.append("subprocess")
         
     class MockTrayIcon:
+        class MessageIcon:
+            Information = 1
+            
         def __init__(self, parent=None):
             pass
         def setIcon(self, icon):
