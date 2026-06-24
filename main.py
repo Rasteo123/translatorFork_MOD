@@ -1089,6 +1089,21 @@ if __name__ == "__main__":
 
     app = ApplicationWithContext(sys.argv)
     
+    # --- ЛОКАЛИЗАЦИЯ СТАНДАРТНЫХ ЭЛЕМЕНТОВ QT ---
+    # Загружаем русскую локализацию для контекстных меню (ПКМ) и диалогов Qt (QMessageBox, QInputDialog и т.д.)
+    from PyQt6.QtCore import QTranslator, QLibraryInfo, QLocale
+    
+    # Локализация базовых компонентов (кнопки, меню)
+    qtbase_translator = QTranslator(app)
+    qt_translations_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if qtbase_translator.load("qtbase_ru", qt_translations_path):
+        app.installTranslator(qtbase_translator)
+        
+    # Локализация остальных компонентов
+    qt_translator = QTranslator(app)
+    if qt_translator.load("qt_ru", qt_translations_path):
+        app.installTranslator(qt_translator)
+    
     # Фикс дублирования иконки в Dock на macOS
     if sys.platform == "darwin":
         app.setDesktopFileName("com.siberianteam.translatorfork")

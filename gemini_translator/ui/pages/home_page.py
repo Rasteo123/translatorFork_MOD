@@ -161,6 +161,7 @@ class HomePage(ShellPage):
                 small_index += 1
                 grid.addWidget(card, row, col)
         outer.addLayout(grid)
+        outer.addStretch(1)
 
     def check_for_updates(self):
         self.btn_check_update.setEnabled(False)

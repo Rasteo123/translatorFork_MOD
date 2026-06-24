@@ -38,6 +38,17 @@ def _bootstrap_application():
     app_main.os_patch.PatientLock.register_vip_thread(main_id)
 
     app = app_main.ApplicationWithContext(sys.argv)
+    
+    # --- ЛОКАЛИЗАЦИЯ СТАНДАРТНЫХ ЭЛЕМЕНТОВ QT ---
+    from PyQt6.QtCore import QTranslator, QLibraryInfo
+    qtbase_translator = QTranslator(app)
+    qt_translations_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if qtbase_translator.load("qtbase_ru", qt_translations_path):
+        app.installTranslator(qtbase_translator)
+    qt_translator = QTranslator(app)
+    if qt_translator.load("qt_ru", qt_translations_path):
+        app.installTranslator(qt_translator)
+
     app_main.install_window_title_branding(app)
     # Тема применяется в apply_saved_app_theme ниже (после settings_manager),
     # без раннего тёмного дефолта — иначе светлая/авто-тема даёт тёмную вспышку.
