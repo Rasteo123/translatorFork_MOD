@@ -1165,6 +1165,13 @@ if __name__ == "__main__":
 
         shell.show()
         exit_code = app.exec()
+        
+        # Гарантируем, что старое окно будет скрыто и уничтожено перед созданием нового
+        # в случае перезагрузки (EXIT_CODE_REBOOT)
+        if shell:
+            shell.hide()
+            shell.deleteLater()
+
         if exit_code != EXIT_CODE_REBOOT:
             break
 

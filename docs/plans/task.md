@@ -1,4 +1,6 @@
-# Tasks
-
-- `[x]` Fix `_AutoConsistencyFollowupHarness` missing `prevent_sleep_checkbox` error in `tests/test_auto_workflow_followup.py`
-- `[x]` Fix `_ConsistencyDialogHarness` missing `_release_power_inhibitor` error in `tests/test_consistency_resilience.py`
+- [x] Task 1: Обертка для уведомлений и QSystemTrayIcon в MainWindow (с тестами)
+- [x] Task 2: Интеграция в события MainWindow (Трансляция и т.д.)
+- [x] Task 3: Галочка в EpubSetupDialog (с тестами)
+- [x] Task 4: Уведомления и Галочка в AIGenerationDialog (Глоссарий)
+- [x] Task 5: Уведомления и Галочка в ConsistencyDialog
+- [x] Task 6: Финальная проверка тестов и spec compliance
