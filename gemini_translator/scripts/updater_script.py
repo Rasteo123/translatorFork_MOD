@@ -21,6 +21,11 @@ def main():
         if update_file.endswith('.exe'):
             # For Windows: run the installer silently
             print(f"Running installer: {update_file}")
+            # MAGICAL FIX FOR WINDOWS: Remove Mark of the Web (Zone.Identifier) to bypass SmartScreen
+            try:
+                subprocess.call(['powershell', '-Command', f"Unblock-File -LiteralPath '{update_file}'"])
+            except Exception:
+                pass
             subprocess.Popen([update_file, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/FORCECLOSEAPPLICATIONS'])
         elif update_file.endswith('.zip') and sys.platform == "darwin":
             # For macOS: Extract the zip and replace the .app bundle
