@@ -9,36 +9,41 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import pyqtSlot
 from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QTextBrowser, QTextEdit, QVBoxLayout, QWidget
 
+from gemini_translator.ui import theme_manager
+
 
 LOG_STYLES = [
     {
         'keywords': ['[FILTER]', '[API BLOCK]', 'CONTENT FILTER', 'ЗАБЛОКИРОВАНА', '🛡️ ФИЛЬТР', 'CONTENT_FILTER'],
-        'color': "#9B59B6",
+        'light_color': "#7d3c98",
+        'dark_color': "#c77dff",
         'bold': True
     },
     {
         'keywords': ['[VALIDATION]', 'ВАЛИДАЦИЯ', 'VALIDATION FAILED', 'НЕ ПРОШЕЛ ВАЛИДАЦИЮ', '📋 ВАЛИДАЦИЯ', 'VALIDATION'],
-        'color': "#1ABC9C",
+        'light_color': "#117a65",
+        'dark_color': "#2dd4bf",
         'bold': True
     },
     {
         'keywords': ['[WARN]', '[WARNING]', 'ПРЕДУПРЕЖДЕНИЕ', '❗️', 'NETWORK', 'PARTIAL_GENERATION'],
-        'color': "#F39C12",
+        'palette_key': "warning",
         'bold': False
     },
     {
         'keywords': ['[SUCCESS]', 'УСПЕШНО', 'ГОТОВО', '✅', 'СЕССИЯ УСПЕШНО ЗАВЕРШЕНА'],
-        'color': "#2ECC71",
+        'palette_key': "success",
         'bold': True
     },
     {
         'keywords': ['[CANCELLED]', '[SKIP]', 'ОТМЕНЕНО', '[INFO]', 'СЕССИЯ ОСТАНОВЛЕНА', 'CANCEL'],
-        'color': "#3498DB",
+        'palette_key': "info",
         'bold': False
     },
     {
         'keywords': ['[RATE LIMIT]', 'QUOTA EXCEEDED', 'QUOTA_EXCEEDED', 'ИСЧЕРПАН', 'TEMPORARY_LIMIT'],
-        'color': "#E91E63",
+        'light_color': "#c2185b",
+        'dark_color': "#ff6aa2",
         'bold': True
     },
     {
@@ -46,12 +51,13 @@ LOG_STYLES = [
             '[FAIL]', '[ERROR]', '[FATAL]', '[CRITICAL]', 'ОШИБКА', '❌ ОШИБКА', 'ОКОНЧАТЕЛЬНЫЙ ПРОВАЛ',
             'GEOBLOCK', 'MODEL_NOT_FOUND', 'API_ERROR'
         ],
-        'color': "#E74C3C",
+        'palette_key': "danger",
         'bold': True
     },
     {
         'keywords': ['▶▶▶', '■■■', '[MANAGER]', "[TASK]"],
-        'color': "#BDC3C7",
+        'light_color': "#5b6470",
+        'dark_color': "#b8c2cc",
         'bold': True
     }
 ]
@@ -67,6 +73,35 @@ LOG_FLUSH_INTERVAL_MS = 1000
 # one-time burst that self-terminates once drained; the live trickle stays calm.
 CATCHUP_FLUSH_BATCH_SIZE = 25
 CATCHUP_FLUSH_INTERVAL_MS = 60
+
+
+def _color_luminance(color: str) -> float:
+    normalized = color.strip()
+    if len(normalized) != 7 or not normalized.startswith("#"):
+        return 0.0
+    try:
+        red = int(normalized[1:3], 16)
+        green = int(normalized[3:5], 16)
+        blue = int(normalized[5:7], 16)
+    except ValueError:
+        return 0.0
+    return ((0.2126 * red) + (0.7152 * green) + (0.0722 * blue)) / 255.0
+
+
+def _log_palette_is_light(palette: dict) -> bool:
+    return _color_luminance(str(palette.get("window_bg") or "#000000")) >= 0.5
+
+
+def _resolve_log_color(style_rule: dict, palette: dict) -> str | None:
+    palette_key = style_rule.get("palette_key")
+    if palette_key:
+        color = palette.get(palette_key)
+        if isinstance(color, str) and color:
+            return color
+
+    if _log_palette_is_light(palette):
+        return style_rule.get("light_color") or style_rule.get("color")
+    return style_rule.get("dark_color") or style_rule.get("color")
 
 
 class LogWidget(QWidget):
@@ -238,10 +273,11 @@ class LogWidget(QWidget):
         color = None
         bold = False
         msg_upper = message.upper()
+        palette = theme_manager.palette()
 
         for style_rule in LOG_STYLES:
             if any(keyword in msg_upper for keyword in style_rule['keywords']):
-                color = style_rule['color']
+                color = _resolve_log_color(style_rule, palette)
                 bold = style_rule.get('bold', False)
                 break
 

@@ -48,6 +48,13 @@ class GlossaryWidgetSortingTests(unittest.TestCase):
         self.assertEqual(widget.table.item(0, 0).text(), "Alpha")
         self.assertEqual(widget.table.item(1, 0).text(), "bravo")
 
+    def test_table_rows_match_manager_editor_baseline_height(self):
+        widget = GlossaryWidget()
+        self.addCleanup(widget.close)
+
+        self.assertGreaterEqual(widget.table.verticalHeader().defaultSectionSize(), 36)
+        self.assertGreaterEqual(widget.table.verticalHeader().minimumSectionSize(), 36)
+
     def test_save_project_glossary_writes_project_file_and_marks_state_saved(self):
         widget = GlossaryWidget()
         self.addCleanup(widget.close)

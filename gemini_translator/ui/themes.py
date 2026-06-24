@@ -176,8 +176,11 @@ def build_theme_palette(theme_colors: Any = None) -> dict[str, str]:
         "scroll_handle_hover": scroll_handle_hover,
         "splitter_bg": splitter_bg,
         "success": success,
+        "success_soft_bg": _rgba(success, 0.14),
         "warning": warning,
+        "warning_soft_bg": _rgba(warning, 0.14),
         "danger": danger,
+        "danger_soft_bg": _rgba(danger, 0.14),
         "info": info,
     }
 
@@ -323,16 +326,30 @@ QLabel#projectStateLabel[ready="true"] {
     color: #8fddb6;
 }
 
-QLabel#legendChip[state="ok"] {
-    color: #8fddb6;
+QLabel#keyLegendChip {
+    background-color: __CHIP_BG__;
+    border: 1px solid __BORDER_STRONG__;
+    border-radius: 8px;
+    padding: 5px 12px;
+    font-weight: 600;
 }
 
-QLabel#legendChip[state="warm"] {
-    color: #f5cf7e;
+QLabel#keyLegendChip[state="active"] {
+    background-color: __SUCCESS_SOFT_BG__;
+    border-color: __SUCCESS__;
+    color: __SUCCESS__;
 }
 
-QLabel#legendChip[state="bad"] {
-    color: #ef9a9a;
+QLabel#keyLegendChip[state="paused"] {
+    background-color: __WARNING_SOFT_BG__;
+    border-color: __WARNING__;
+    color: __WARNING__;
+}
+
+QLabel#keyLegendChip[state="exhausted"] {
+    background-color: __DANGER_SOFT_BG__;
+    border-color: __DANGER__;
+    color: __DANGER__;
 }
 
 /* Tabs */
@@ -624,6 +641,26 @@ QPushButton#pathActionButton {
     font-weight: 600;
 }
 
+QPushButton#ghostActionButton:hover,
+QPushButton#compactActionButton:hover,
+QPushButton#projectUtilityButton:hover,
+QPushButton#pathActionButton:hover,
+QPushButton#contextToggleButton:hover {
+    background-color: __ACCENT_HOVER_SOFT__;
+    border-color: __ACCENT__;
+    color: __TEXT_PRIMARY__;
+}
+
+QPushButton#ghostActionButton:pressed,
+QPushButton#compactActionButton:pressed,
+QPushButton#projectUtilityButton:pressed,
+QPushButton#pathActionButton:pressed,
+QPushButton#contextToggleButton:pressed {
+    background-color: __ACCENT_SOFT_BG__;
+    border-color: __ACCENT__;
+    color: __TEXT_PRIMARY__;
+}
+
 QPushButton#contextToggleButton {
     background-color: __INPUT_BG__;
     padding: 7px 12px;
@@ -633,6 +670,40 @@ QPushButton#contextToggleButton:checked {
     background-color: __ACCENT_SOFT_BG__;
     border: 1px solid __ACCENT__;
     color: __TEXT_PRIMARY__;
+}
+
+QPushButton#ghostActionButton:disabled,
+QPushButton#ghostActionButton:disabled:hover,
+QPushButton#ghostActionButton:disabled:pressed,
+QPushButton#compactActionButton:disabled,
+QPushButton#compactActionButton:disabled:hover,
+QPushButton#compactActionButton:disabled:pressed,
+QPushButton#projectUtilityButton:disabled,
+QPushButton#projectUtilityButton:disabled:hover,
+QPushButton#projectUtilityButton:disabled:pressed,
+QPushButton#pathActionButton:disabled,
+QPushButton#pathActionButton:disabled:hover,
+QPushButton#pathActionButton:disabled:pressed,
+QPushButton#contextToggleButton:disabled,
+QPushButton#contextToggleButton:disabled:hover,
+QPushButton#contextToggleButton:disabled:pressed {
+    background-color: __INPUT_DISABLED_BG__;
+    color: __TEXT_MUTED__;
+    border-color: __BORDER__;
+}
+
+QPushButton#reorderButton {
+    background-color: __INPUT_BG__;
+    color: __TEXT_PRIMARY__;
+    border: 1px solid __BORDER__;
+    border-radius: 4px;
+    font-size: 12px;
+    padding: 0px;
+}
+
+QPushButton#reorderButton:hover {
+    background-color: __ACCENT_HOVER_SOFT__;
+    border-color: __BORDER_STRONG__;
 }
 
 /* Lists and tables */

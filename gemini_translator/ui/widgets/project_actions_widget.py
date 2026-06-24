@@ -39,8 +39,7 @@ class ProjectActionsWidget(QWidget):
         subtitle_label.setObjectName("helperLabel")
         text_layout.addWidget(subtitle_label)
 
-        card_layout.addLayout(text_layout)
-        card_layout.addStretch(1)
+        card_layout.addLayout(text_layout, 1)
 
         self.build_epub_btn = QPushButton("Собрать EPUB")
         self.build_epub_btn.setObjectName("projectUtilityButton")

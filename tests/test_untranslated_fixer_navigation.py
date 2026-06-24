@@ -175,28 +175,26 @@ class UntranslatedFixerNavigationTests(unittest.TestCase):
         stack.addWidget(page)
         page.selected_indices = {0}
 
-        class _FakeAITranslationDialog:
+        from PyQt6.QtCore import pyqtSignal
+        class _FakeAITranslationPage(QtWidgets.QWidget):
+            result_ready = pyqtSignal(list)
             def __init__(self, tasks_list, settings_manager, parent_widget):
-                self.tasks_list = tasks_list
-                self.settings_manager = settings_manager
-                self.parent_widget = parent_widget
-
-            def exec(self):
-                return True
-
-            def get_translated_results(self):
-                return ['<p data-id="0">Уровень</p>']
+                super().__init__()
 
         with (
             patch(
-                "gemini_translator.ui.dialogs.validation_dialogs.untranslated_fixer_dialog.AITranslationDialog",
-                _FakeAITranslationDialog,
+                "gemini_translator.ui.dialogs.validation_dialogs.untranslated_fixer_dialog.AITranslationPage",
+                _FakeAITranslationPage,
             ),
             patch(
                 "gemini_translator.ui.dialogs.validation_dialogs.untranslated_fixer_dialog.QMessageBox.information",
             ),
+            patch.object(page, "request_push") as mock_push
         ):
             page._start_ai_translation()
+            mock_push.emit.assert_called_once()
+            fake_page = mock_push.emit.call_args[0][0]
+            fake_page.result_ready.emit(['<p data-id="0">Уровень</p>'])
 
         self.assertEqual(page.original_data[0].get("new_context"), "Уровень")
 

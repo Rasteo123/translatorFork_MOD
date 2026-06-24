@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import QSizePolicy, QTableWidget
 from PyQt6.QtCore import Qt, pyqtSignal
 
 
+EXPANDING_TEXT_EDITOR_MIN_HEIGHT = 36
+
       
 class ExpandingTextEdit(QtWidgets.QTextEdit):
     """
@@ -25,7 +27,10 @@ class ExpandingTextEdit(QtWidgets.QTextEdit):
         # -10 - это запас на внутренние отступы виджета.
         doc.setTextWidth(self.viewport().width())
         # Возвращаем размер с идеальной высотой + небольшой отступ
-        return QtCore.QSize(self.width(), int(doc.size().height()) + 5)
+        return QtCore.QSize(
+            self.width(),
+            max(EXPANDING_TEXT_EDITOR_MIN_HEIGHT, int(doc.size().height()) + 5),
+        )
 
     def resizeEvent(self, event: QtGui.QResizeEvent):
         """Перехватываем изменение размера, чтобы обновить компоновку."""

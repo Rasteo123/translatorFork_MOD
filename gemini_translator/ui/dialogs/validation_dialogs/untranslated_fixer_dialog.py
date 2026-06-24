@@ -637,29 +637,6 @@ class UntranslatedFixerPage(ShellPage):
         super().__init__(parent)
         self._validator_host = parent
         self.setWindowTitle("Помощник исправления недопереводов")
-        # --- Геометрия окна ---
-        available_geometry = self.screen().availableGeometry()
-        
-        height = min(int(available_geometry.height() * 0.75), 650)
-        width = min(int(available_geometry.width() * 0.65), 1000)
-        self.setMinimumSize(width, height)
-       
-       
-        height = max(int(available_geometry.height() * 0.75), 650)
-        width = max(int(available_geometry.width() * 0.65), 1000)
-        
-        self.resize(width, height)
-        self.move(
-            available_geometry.center().x() - self.width() // 2,
-            available_geometry.center().y() - self.height() // 2
-        )
-
-        self.setWindowFlags(
-            self.windowFlags() | 
-            Qt.WindowType.WindowMaximizeButtonHint | 
-            Qt.WindowType.WindowCloseButtonHint
-        )
-        
         
         self.original_data = data_list
         self.changes = []
@@ -2045,11 +2022,9 @@ class UntranslatedFixerPage(ShellPage):
             settings_owner = self.parent()
         if not (settings_owner and hasattr(settings_owner, 'settings_manager')): return
         
-        dlg = AITranslationDialog(tasks_list, settings_owner.settings_manager, self)
+        page = AITranslationPage(tasks_list, settings_owner.settings_manager, self)
         
-        # Если нажали "Применить" (Accepted)
-        if dlg.exec():
-            results = dlg.get_translated_results()
+        def on_result(results):
             if not results: return
             
             updated_count = 0
@@ -2080,6 +2055,9 @@ class UntranslatedFixerPage(ShellPage):
             self.update_table_view(save_ui=False)
             
             QMessageBox.information(self, "Готово", f"Успешно обновлено строк: {updated_count}")
+
+        page.result_ready.connect(on_result)
+        self.request_push.emit(page)
 
 
     def accept(self):
@@ -2249,14 +2227,16 @@ def build_translation_tasks_from_data_items(data_items, batch_size=50):
     return tasks_list
 
 
-class AITranslationDialog(QDialog):
+class AITranslationPage(ShellPage):
     """
-    Адаптированный диалог для сессии перевода недопереведенных фрагментов.
+    Адаптированная страница для сессии перевода недопереведенных фрагментов.
     Версия 6.0: 
     - Горизонтальная компоновка настроек (Label -> Spinbox).
     - Адаптация под темную тему (цвета текста, прозрачная кнопка).
     - Синхронизация с моделью.
     """
+    result_ready = pyqtSignal(list)
+    finished = pyqtSignal(int)
     def __init__(
         self,
         tasks_payloads,
@@ -2289,30 +2269,7 @@ class AITranslationDialog(QDialog):
         self.translated_results = []
         self.is_session_active = False
 
-        self.setWindowTitle(f"AI-ассистент перевода ({len(self.tasks_payloads)} пакетов)")
-        
-        # --- Геометрия окна ---
-        available_geometry = self.screen().availableGeometry()
-        
-        height = min(int(available_geometry.height() * 0.75), 650)
-        width = min(int(available_geometry.width() * 0.65), 1000)
-        self.setMinimumSize(width, height)
-       
-       
-        height = max(int(available_geometry.height() * 0.75), 650)
-        width = max(int(available_geometry.width() * 0.65), 1000)
-        
-        self.resize(width, height)
-        self.move(
-            available_geometry.center().x() - self.width() // 2,
-            available_geometry.center().y() - self.height() // 2
-        )
-
-        self.setWindowFlags(
-            self.windowFlags() | 
-            Qt.WindowType.WindowMaximizeButtonHint | 
-            Qt.WindowType.WindowCloseButtonHint
-        )
+        self.page_title = f"AI-ассистент перевода ({len(self.tasks_payloads)} пакетов)"
         
         self._init_ui()
         self.bus.event_posted.connect(self._on_global_event)
@@ -2395,19 +2352,19 @@ class AITranslationDialog(QDialog):
         self.threads_spin = QSpinBox()
         self.threads_spin.setRange(1, 20); self.threads_spin.setValue(1)
         self.threads_spin.setToolTip("Количество потоков (воркеров).")
-        self.threads_spin.setFixedWidth(60) # Фиксируем ширину для аккуратности
+        self.threads_spin.setMinimumWidth(70)
         
         # RPM
         self.rpm_spin = QSpinBox()
         self.rpm_spin.setRange(1, 1000); self.rpm_spin.setValue(10)
         self.rpm_spin.setToolTip("Лимит запросов в минуту (на один ключ).")
-        self.rpm_spin.setFixedWidth(60)
+        self.rpm_spin.setMinimumWidth(70)
         
         # Concurrent
         self.concurrent_spin = QSpinBox()
         self.concurrent_spin.setRange(1, 50); self.concurrent_spin.setValue(1)
         self.concurrent_spin.setToolTip("Параллельных запросов внутри одного потока.")
-        self.concurrent_spin.setFixedWidth(60)
+        self.concurrent_spin.setMinimumWidth(70)
         
         perf_layout.addWidget(create_param_widget("Потоки:", self.threads_spin))
         perf_layout.addWidget(create_param_widget("RPM:", self.rpm_spin))
@@ -2689,4 +2646,16 @@ class AITranslationDialog(QDialog):
 
     def get_translated_results(self):
         return self.translated_results
+
+    def accept(self):
+        self.result_ready.emit(self.get_translated_results())
+        self.finished.emit(1)
+        self.request_back.emit()
+
+    def reject(self):
+        self.result_ready.emit([])
+        self.finished.emit(0)
+        self.request_back.emit()
+
+AITranslationDialog = AITranslationPage
 ####

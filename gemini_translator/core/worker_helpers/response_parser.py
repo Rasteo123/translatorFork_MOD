@@ -1,7 +1,8 @@
 import os
 import copy
+import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment, NavigableString
 
 from gemini_translator.utils.epub_json import (
     TRANSLATION_PAYLOAD_VERSION,
@@ -34,6 +35,176 @@ class ResponseParser:
                 length += len(prev_element)
         return length
 
+    def _find_media_placeholder_comment(self, soup, placeholder):
+        marker = placeholder.strip()
+        if marker.startswith("<!--") and marker.endswith("-->"):
+            marker = marker[4:-3].strip()
+
+        return soup.find(
+            string=lambda item: isinstance(item, Comment) and item.strip() == marker
+        )
+
+    def _find_target_text_node(self, text_nodes, target_char):
+        curr_len = 0
+        last_node = None
+        for node in text_nodes:
+            last_node = node
+            node_len = len(node)
+            if curr_len + node_len >= target_char:
+                return node, max(0, min(node_len, target_char - curr_len))
+            curr_len += node_len
+
+        if last_node is not None:
+            return last_node, len(last_node)
+        return None, 0
+
+    def _parse_first_tag(self, html_fragment):
+        fragment_soup = BeautifulSoup(html_fragment, 'html.parser')
+        return fragment_soup.find(True)
+
+    def _nearest_text_split_index(self, text, offset):
+        text_len = len(text)
+        offset = max(0, min(text_len, offset))
+        if offset in (0, text_len):
+            return offset
+
+        candidates = set()
+        for match in re.finditer(r"\s+", text):
+            candidates.add(match.start())
+            candidates.add(match.end())
+        for match in re.finditer(r"[.!?,;:…。！？。，；：]+[\s]*", text):
+            candidates.add(match.end())
+
+        if not candidates:
+            return offset
+
+        return min(candidates, key=lambda index: (abs(index - offset), index))
+
+    def _insert_inline_media_at_text_position(self, target_node, target_offset, restored_tag):
+        if not isinstance(target_node, NavigableString):
+            target_node.insert_before(restored_tag)
+            return
+
+        text = str(target_node)
+        split_at = self._nearest_text_split_index(text, target_offset)
+        if split_at <= 0:
+            target_node.insert_before(restored_tag)
+            return
+        if split_at >= len(text):
+            target_node.insert_after(restored_tag)
+            return
+
+        before_text = NavigableString(text[:split_at])
+        after_text = NavigableString(text[split_at:])
+        target_node.replace_with(after_text)
+        after_text.insert_before(restored_tag)
+        restored_tag.insert_before(before_text)
+
+    def _insert_media_as_body_sibling(self, soup, current_block, target_node, target_offset, restored_tag, rel_pos):
+        body = soup.body or soup
+        anchor = current_block or target_node
+        if not anchor:
+            body.append(restored_tag)
+            return
+
+        if rel_pos in {'START', 'SOLO'}:
+            anchor.insert_before(restored_tag)
+            return
+        if rel_pos == 'END':
+            anchor.insert_after(restored_tag)
+            return
+
+        target_len = len(target_node or "")
+        if target_offset > (target_len / 2):
+            anchor.insert_after(restored_tag)
+        else:
+            anchor.insert_before(restored_tag)
+
+    def _restore_lost_media_by_position(self, soup, lost_media, original_content_for_map_building):
+        orig_with_ph = self.prompt_builder._replace_media_with_placeholders(original_content_for_map_building)
+        soup_orig = BeautifulSoup(orig_with_ph, 'html.parser')
+        total_orig_len = len(soup_orig.get_text())
+
+        text_nodes = [
+            node for node in soup.find_all(string=True)
+            if not isinstance(node, Comment)
+        ]
+        total_trans_len = sum(len(node) for node in text_nodes)
+
+        lost_ordered = sorted(
+            lost_media,
+            key=lambda item: int(re.search(r"MEDIA_(\d+)", item[0]).group(1)),
+            reverse=True,
+        )
+
+        if total_orig_len <= 0 or total_trans_len <= 0:
+            body = soup.body or soup
+            for _placeholder, data in reversed(lost_ordered):
+                restored_tag = self._parse_first_tag(data['tag_str'])
+                if restored_tag:
+                    body.append(restored_tag)
+            return
+
+        block_tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li']
+
+        for placeholder, data in lost_ordered:
+            placeholder_node = self._find_media_placeholder_comment(soup_orig, placeholder)
+            pos_ratio = 0
+            if placeholder_node:
+                pos_ratio = self._get_text_length_before(placeholder_node, soup_orig) / total_orig_len
+
+            target_char = int(total_trans_len * pos_ratio)
+            target_node, target_offset = self._find_target_text_node(text_nodes, target_char)
+            if not target_node:
+                continue
+
+            current_block = target_node.find_parent(block_tags)
+            expected_parent = data.get('parent_tag', 'body')
+            rel_pos = data.get('rel_pos', 'MIDDLE')
+            restored_tag = self._parse_first_tag(data['tag_str'])
+            if not restored_tag:
+                continue
+
+            if expected_parent in {'body', 'html', '[document]'}:
+                self._insert_media_as_body_sibling(
+                    soup, current_block, target_node, target_offset, restored_tag, rel_pos
+                )
+                self.log("  -> Медиа восстановлено рядом с ближайшим текстовым блоком.")
+                continue
+
+            best_anchor = current_block
+            if current_block and current_block.name != expected_parent:
+                prev_sib = current_block.find_previous_sibling()
+                next_sib = current_block.find_next_sibling()
+                if prev_sib and prev_sib.name == expected_parent:
+                    best_anchor = prev_sib
+                elif next_sib and next_sib.name == expected_parent:
+                    best_anchor = next_sib
+
+            if not best_anchor:
+                (soup.body or soup).append(restored_tag)
+                self.log("  -> Медиа восстановлено в конец <body>.")
+                continue
+
+            if rel_pos in {'START', 'SOLO'}:
+                best_anchor.insert(0, restored_tag)
+                self.log(f"  -> Медиа восстановлено в НАЧАЛО <{best_anchor.name}>.")
+            elif rel_pos == 'END':
+                best_anchor.append(restored_tag)
+                self.log(f"  -> Медиа восстановлено в КОНЕЦ <{best_anchor.name}>.")
+            elif best_anchor == current_block:
+                insert_point = target_node
+                if target_node.parent != best_anchor:
+                    insert_point = target_node.parent
+                if isinstance(insert_point, NavigableString):
+                    self._insert_inline_media_at_text_position(insert_point, target_offset, restored_tag)
+                else:
+                    insert_point.insert_before(restored_tag)
+                self.log(f"  -> Медиа восстановлено ВНУТРИ <{best_anchor.name}>.")
+            else:
+                best_anchor.append(restored_tag)
+                self.log(f"  -> Медиа восстановлено в соседний <{best_anchor.name}>.")
+
     def _restore_media_from_placeholders(self, translated_content, original_content_for_map_building):
         if not self.prompt_builder:
             return translated_content
@@ -51,9 +222,14 @@ class ResponseParser:
                     lost_media.append((placeholder, data))
             
             if lost_media:
-                # (Здесь можно применить ту же логику снайпера, что и для ссылок ниже.
-                # Для краткости я опускаю дублирование кода, так как принцип идентичен)
                 self.log(f"[WARN] Обнаружено {len(lost_media)} потерянных медиа.")
+                soup = BeautifulSoup(restored_content, 'html.parser')
+                self._restore_lost_media_by_position(
+                    soup,
+                    lost_media,
+                    original_content_for_map_building,
+                )
+                restored_content = str(soup)
 
         # === ЭТАП 2: ССЫЛКИ (СНАЙПЕРСКИЙ РЕЖИМ) ===
         if not link_map:

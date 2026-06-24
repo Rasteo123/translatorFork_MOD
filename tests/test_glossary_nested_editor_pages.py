@@ -185,7 +185,7 @@ class GlossaryNestedEditorPageTests(unittest.TestCase):
         page.result_ready.emit(True)
         self.assertEqual(back_requests, [True])
 
-    def test_ai_correction_session_is_pushed_and_applies_patch_result(self):
+    def test_ai_correction_session_stays_open_after_applying_patch_result(self):
         with (
             patch.object(glossary_module, "CorrectionSessionDialog", side_effect=AssertionError("modal path used")),
             patch.object(glossary_module, "CorrectionSessionPage", _FakeCorrectionSessionPage, create=True),
@@ -203,6 +203,10 @@ class GlossaryNestedEditorPageTests(unittest.TestCase):
         page.correction_accepted.emit(patch_list)
 
         self.assertEqual(self.manager.applied, [(patch_list, "AI-коррекция", self.manager.glossary)])
+        self.assertEqual(back_requests, [])
+
+        page.result_ready.emit(False)
+
         self.assertEqual(back_requests, [True])
 
     def test_ai_correction_session_uses_original_glossary_owner_after_shell_reparent(self):

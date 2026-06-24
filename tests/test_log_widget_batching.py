@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtWidgets import QTextEdit
 
+from gemini_translator.ui import themes
 from gemini_translator.ui.widgets.log_widget import (
     CATCHUP_FLUSH_BATCH_SIZE,
     CATCHUP_FLUSH_INTERVAL_MS,
@@ -19,6 +20,43 @@ class LogWidgetBatchingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def _build_log_html_for_palette(self, message, theme_colors):
+        previous_palette = getattr(self.app, "_theme_palette", None)
+        self.app._theme_palette = themes.build_theme_palette(theme_colors)
+        widget = LogWidget(event_bus=None)
+        try:
+            return widget._build_log_html({"message": message})
+        finally:
+            if previous_palette is None:
+                try:
+                    delattr(self.app, "_theme_palette")
+                except AttributeError:
+                    pass
+            else:
+                self.app._theme_palette = previous_palette
+            widget.close()
+
+    def test_light_theme_uses_readable_manager_color(self):
+        html = self._build_log_html_for_palette(
+            "[MANAGER] Отправка приказа на грациозное завершение",
+            themes.LIGHT_DEFAULT_THEME_COLORS,
+        )
+
+        self.assertIn("color: #5b6470;", html)
+        self.assertNotIn("color: #BDC3C7;", html)
+
+    def test_light_theme_warning_uses_theme_warning_color(self):
+        html = self._build_log_html_for_palette(
+            "[WARN] Воркер переведен в режим завершения",
+            themes.LIGHT_DEFAULT_THEME_COLORS,
+        )
+
+        self.assertIn(
+            f"color: {themes.build_theme_palette(themes.LIGHT_DEFAULT_THEME_COLORS)['warning']};",
+            html,
+        )
+        self.assertNotIn("color: #F39C12;", html)
 
     def test_append_message_queues_until_flush(self):
         widget = LogWidget(event_bus=None)

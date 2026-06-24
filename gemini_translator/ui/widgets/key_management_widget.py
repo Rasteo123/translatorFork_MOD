@@ -225,12 +225,12 @@ class KeyManagementWidget(QWidget):
         legend_layout.setContentsMargins(0, 0, 0, 0)
         legend_layout.setSpacing(6)
         for text, state in (
-            ("Активный", "ok"),
-            ("Пауза", "warm"),
-            ("Исчерпан", "bad"),
+            ("Активный", "active"),
+            ("Пауза", "paused"),
+            ("Исчерпан", "exhausted"),
         ):
             chip = QLabel(text)
-            chip.setObjectName("legendChip")
+            chip.setObjectName("keyLegendChip")
             chip.setProperty("state", state)
             legend_layout.addWidget(chip)
         legend_layout.addStretch(1)

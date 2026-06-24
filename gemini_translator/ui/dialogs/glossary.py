@@ -1681,15 +1681,11 @@ class GlossaryManagerPage(ShellPage):
         Создает, настраивает и показывает диалог AI-коррекции.
         Версия 3.0: Убрана ошибочная предварительная проверка. Диалог открывается всегда.
         """
-        current_glossary = self.get_glossary() # Захватываем состояние "до" для истории
-
-
         self.correction_page = CorrectionSessionPage(self.settings_manager, self)
 
         def apply_correction_result(patch_list, page=self.correction_page):
+            current_glossary = self.get_glossary()
             self._apply_patch_and_log_history(patch_list, "AI-коррекция", current_glossary)
-            page.request_back.emit()
-            self.correction_page = None
 
         def close_correction_page(_accepted, page=self.correction_page):
             page.request_back.emit()

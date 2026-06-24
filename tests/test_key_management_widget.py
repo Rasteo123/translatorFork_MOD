@@ -188,6 +188,17 @@ class KeyManagementWidgetProviderModeTests(unittest.TestCase):
         self.assertEqual(widget.key_exhausted_value_label.text(), "1")
         self.assertFalse(widget.findChildren(QtWidgets.QLabel, "keyStatusDetail"))
 
+    def test_key_legend_chips_use_real_key_status_states(self):
+        widget = KeyManagementWidget(_KeySettingsStub())
+        self.addCleanup(widget.close)
+
+        chips = widget.findChildren(QtWidgets.QLabel, "keyLegendChip")
+        states_by_text = {chip.text(): chip.property("state") for chip in chips}
+
+        self.assertEqual(states_by_text["Активный"], "active")
+        self.assertEqual(states_by_text["Пауза"], "paused")
+        self.assertEqual(states_by_text["Исчерпан"], "exhausted")
+
 
 if __name__ == "__main__":
     unittest.main()

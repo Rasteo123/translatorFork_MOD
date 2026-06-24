@@ -26,6 +26,7 @@ from collections import defaultdict
 PROJECT_GLOSSARY_FILENAME = "project_glossary.json"
 PROJECT_GLOSSARY_AUTOSAVE_FILENAME = "project_glossary.autosave.json"
 PROJECT_GLOSSARY_STATE_FILENAME = "project_glossary_state.json"
+GLOSSARY_TABLE_ROW_HEIGHT = 36
 
 
 def sorted_glossary_entries(entries: list[dict]) -> list[dict]:
@@ -107,7 +108,8 @@ class GlossaryWidget(QWidget):
 
         # --- НАЧАЛО ОПЕРАЦИИ ---
         # 1. Устанавливаем быструю, фиксированную высоту по умолчанию.
-        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.verticalHeader().setDefaultSectionSize(GLOSSARY_TABLE_ROW_HEIGHT)
+        self.table.verticalHeader().setMinimumSectionSize(GLOSSARY_TABLE_ROW_HEIGHT)
         
         # 2. Подключаем "умный" делегат, который будет расширять ячейки ТОЛЬКО при редактировании.
         delegate = ExpandingTextEditDelegate(self.table)
