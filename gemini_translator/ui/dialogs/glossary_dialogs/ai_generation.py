@@ -2737,9 +2737,11 @@ class GenerationSessionPage(ShellPage):
             # Удаление произойдет только в методе accept() (кнопка "Применить").
             self._perform_safe_recovery_save()
             
-            main_window = self.window().parent()
-            if hasattr(main_window, 'show_notification'):
-                main_window.show_notification("Глоссарий", "Генерация глоссария завершена.")
+            from PyQt6.QtWidgets import QApplication
+            for w in QApplication.topLevelWidgets():
+                if hasattr(w, 'show_notification'):
+                    w.show_notification("Глоссарий", "Генерация глоссария завершена.")
+                    break
             
             return
     
