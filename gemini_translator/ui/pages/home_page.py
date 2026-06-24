@@ -11,8 +11,13 @@ stays a real button (``.click()`` works).
 from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
-
+import os
+import sys
+import subprocess
+import requests
+import tempfile
 from gemini_translator.ui.shell import ShellPage
+from gemini_translator.utils.updater import UpdateChecker
 
 # (icon, title, description, tool_id, is_large)
 _TOOLS = [
@@ -125,6 +130,14 @@ class HomePage(ShellPage):
         outer.setContentsMargins(26, 22, 26, 22)
         outer.setSpacing(16)
 
+        top_row = QtWidgets.QHBoxLayout()
+        self.btn_check_update = QtWidgets.QPushButton("Проверить обновления")
+        self.btn_check_update.setFixedSize(160, 30)
+        self.btn_check_update.clicked.connect(self.check_for_updates)
+        top_row.addWidget(self.btn_check_update)
+        top_row.addStretch()
+        outer.addLayout(top_row)
+
         heading = QtWidgets.QLabel("Выберите основной инструмент для запуска")
         heading.setObjectName("homeHeading")
         heading.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -148,4 +161,110 @@ class HomePage(ShellPage):
                 small_index += 1
                 grid.addWidget(card, row, col)
         outer.addLayout(grid)
+
+    def check_for_updates(self):
+        self.btn_check_update.setEnabled(False)
+        self.btn_check_update.setText("Проверка...")
+        
+        self.updater_thread = UpdateChecker(self)
+        self.updater_thread.update_available.connect(self.on_update_available)
+        self.updater_thread.no_update.connect(self.on_no_update)
+        self.updater_thread.error_occurred.connect(self.on_update_error)
+        self.updater_thread.start()
+        
+    def on_no_update(self):
+        self.btn_check_update.setEnabled(True)
+        self.btn_check_update.setText("Проверить обновления")
+        QtWidgets.QMessageBox.information(self, "Обновление", "У вас установлена последняя версия программы.")
+        
+    def on_update_error(self, err):
+        self.btn_check_update.setEnabled(True)
+        self.btn_check_update.setText("Проверить обновления")
+        QtWidgets.QMessageBox.warning(self, "Ошибка", f"Не удалось проверить обновления: {err}")
+        
+    def on_update_available(self, version, description, download_url):
+        self.btn_check_update.setEnabled(True)
+        self.btn_check_update.setText("Проверить обновления")
+        
+        msg = QtWidgets.QMessageBox(self)
+        msg.setWindowTitle("Доступно обновление")
+        msg.setText(f"Доступна новая версия: {version}\n\n{description}")
+        
+        btn_install_now = msg.addButton("Скачать и установить", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        btn_install_later = msg.addButton("Скачать сейчас и установить при следующем запуске приложения", QtWidgets.QMessageBox.ButtonRole.ActionRole)
+        btn_ignore = msg.addButton("Игнорировать", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        
+        msg.exec()
+        
+        if msg.clickedButton() == btn_ignore:
+            return
+        
+        install_now = (msg.clickedButton() == btn_install_now)
+        
+        # Запускаем загрузку
+        self.download_update(download_url, install_now)
+        
+    def download_update(self, url, install_now):
+        if not url:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Ссылка на скачивание не найдена.")
+            return
+            
+        progress = QtWidgets.QProgressDialog("Загрузка обновления...", "Отмена", 0, 100, self)
+        progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        progress.show()
+        
+        try:
+            r = requests.get(url, stream=True, timeout=10)
+            total_size = int(r.headers.get('content-length', 0))
+            
+            temp_dir = tempfile.gettempdir()
+            filename = url.split('/')[-1]
+            filepath = os.path.join(temp_dir, filename)
+            
+            with open(filepath, 'wb') as f:
+                downloaded = 0
+                for data in r.iter_content(chunk_size=4096):
+                    if progress.wasCanceled():
+                        return
+                    downloaded += len(data)
+                    f.write(data)
+                    if total_size:
+                        progress.setValue(int(100 * downloaded / total_size))
+                        
+            progress.setValue(100)
+            
+            if install_now:
+                self.launch_updater(filepath)
+            else:
+                QtWidgets.QMessageBox.information(self, "Успех", "Обновление скачано и будет установлено при следующем запуске (или вручную).")
+                
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось скачать обновление: {e}")
+
+    def launch_updater(self, filepath):
+        import subprocess
+        
+        # Определяем путь к updater_script
+        if getattr(sys, 'frozen', False):
+            # PyInstaller environment
+            base_dir = os.path.dirname(sys.executable)
+            updater_exe = os.path.join(base_dir, "updater_script")
+            if sys.platform == "win32":
+                updater_exe += ".exe"
+                
+            if not os.path.exists(updater_exe):
+                # Fallback to direct run of installer if updater not bundled properly
+                if filepath.endswith('.exe'):
+                    subprocess.Popen([filepath, '/VERYSILENT', '/SUPPRESSMSGBOXES', '/FORCECLOSEAPPLICATIONS'])
+                else:
+                    subprocess.Popen(['open', filepath])
+                sys.exit(0)
+            else:
+                subprocess.Popen([updater_exe, filepath, sys.executable])
+                sys.exit(0)
+        else:
+            # Development environment
+            updater_script = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "updater_script.py")
+            subprocess.Popen([sys.executable, updater_script, filepath, sys.executable])
+            sys.exit(0)
         outer.addStretch(1)

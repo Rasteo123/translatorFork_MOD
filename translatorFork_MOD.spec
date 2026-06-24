@@ -53,7 +53,7 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         exe,
         name='GeminiTranslator.app',
-        icon=None,
+        icon='gemini_translator/GT_mac.icns',
         bundle_identifier='com.siberianteam.translatorfork',
         info_plist={
             'NSPrincipalClass': 'NSApplication',
@@ -61,5 +61,6 @@ if sys.platform == 'darwin':
             'NSUserNotificationAlertStyle': 'alert',
             'CFBundleName': 'GeminiTranslator',
             'CFBundleDisplayName': 'GeminiTranslator',
+            'LSUIElement': False,
         }
     )

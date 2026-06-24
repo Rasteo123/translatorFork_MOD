@@ -1088,6 +1088,11 @@ if __name__ == "__main__":
     os_patch.PatientLock.register_vip_thread(main_id)
 
     app = ApplicationWithContext(sys.argv)
+    
+    # Фикс дублирования иконки в Dock на macOS
+    if sys.platform == "darwin":
+        app.setDesktopFileName("com.siberianteam.translatorfork")
+        
     install_window_title_branding(app)
     # Тема (светлая/тёмная/авто) применяется в apply_saved_app_theme ниже,
     # как только доступен settings_manager — без раннего тёмного дефолта,

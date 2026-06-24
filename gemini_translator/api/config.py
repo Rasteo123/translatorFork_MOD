@@ -22,6 +22,9 @@ except Exception:
 # cache=shared: позволяет разным потокам видеть одну и ту же базу данных.
 SESSION_ID = os.path.basename(os.getcwd()).replace(" ", "_").replace(".", "_")
 SHARED_DB_URI = f'file:{SESSION_ID}_vfm_session?mode=memory&cache=shared'
+
+# Конфигурация для автообновлений
+GITHUB_REPO = "Rasteo123/translatorFork_MOD"
 # --- ЭТАП 1: УНИВЕРСАЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ПУТЯМИ ---
 
 def get_executable_dir() -> Path | None:
