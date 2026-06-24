@@ -110,13 +110,13 @@ class ExpandingTextEditDelegate(QtWidgets.QStyledItemDelegate):
         doc.setDefaultFont(option.font)
         doc.setTextWidth(option.rect.width() - 10)
         height = int(doc.size().height()) + 10
-        return QtCore.QSize(option.rect.width(), height)
+        return QtCore.QSize(option.rect.width(), max(EXPANDING_TEXT_EDITOR_MIN_HEIGHT, height))
     
-    # Метод updateEditorGeometry теперь не нужен, так как его работу
-    # выполняет сигнал-слот. Его можно удалить или оставить пустым.
     def updateEditorGeometry(self, editor: QtWidgets.QWidget, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex):
-        # Просто вызываем стандартную реализацию
-        super().updateEditorGeometry(editor, option, index)
+        # Принудительно устанавливаем размер редактора равным размеру ячейки,
+        # чтобы он занимал всю доступную высоту строки (даже если строк несколько),
+        # а не центрировался QStyledItemDelegate на основе неполного sizeHint.
+        editor.setGeometry(option.rect)
 
     def eventFilter(self, editor, event):
         if event.type() == QtCore.QEvent.Type.KeyPress:

@@ -108,11 +108,7 @@ class CoreTermAnalyzerPage(ShellPage):
         self._populate_left_list()
         if self.left_list.count() > 0:
             # Выбираем первый элемент, чтобы правая панель не была пустой
-            first_item = self.left_list.item(0)
-            widget = self.left_list.itemWidget(first_item)
-            button = widget.findChild(QPushButton)
-            if button:
-                button.click()
+            self.left_list.setCurrentRow(0)
 
         # --- Шаг 4: Подмена виджетов ---
         self.loading_label.setVisible(False)
@@ -127,9 +123,15 @@ class CoreTermAnalyzerPage(ShellPage):
 
         self.left_list = QListWidget()
         self.left_list.setAlternatingRowColors(True)
-        # ВАЖНО: Мы больше не используем currentItemChanged, т.к. на виджете будут кнопки
+        self.left_list.currentItemChanged.connect(self._on_left_list_item_changed)
         left_layout.addWidget(self.left_list)
         return left_panel
+
+    def _on_left_list_item_changed(self, current, previous):
+        if current:
+            lcs_tuple = current.data(Qt.ItemDataRole.UserRole)
+            if lcs_tuple:
+                self._display_group_for_editing(lcs_tuple)
 
     def _create_right_panel(self):
         """Создает правую панель с переключателем состояний (до/после анализа)."""
@@ -269,6 +271,7 @@ class CoreTermAnalyzerPage(ShellPage):
         header = self.members_table.horizontalHeader()
         for i in range(3): header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.sectionResized.connect(lambda l, o, n: self.members_table.resizeRowsToContents())
         self.members_table.itemChanged.connect(self._on_sub_table_item_changed)
 
         table_layout.addWidget(self.members_table, 1) # stretch = 1 внутри группы
@@ -289,6 +292,7 @@ class CoreTermAnalyzerPage(ShellPage):
 
         for lcs_tuple, data in sorted_patterns:
             list_item = QListWidgetItem(self.left_list)
+            list_item.setData(Qt.ItemDataRole.UserRole, lcs_tuple)
             # Виджет теперь создается новым, более простым методом
             widget = self._create_pattern_widget(lcs_tuple, data)
             widget.adjustSize()
@@ -312,11 +316,9 @@ class CoreTermAnalyzerPage(ShellPage):
         pattern_str = " ".join(lcs_tuple)
         count = len(data['members'])
 
-        main_button = QPushButton(f"'{pattern_str}' ({count} терм.)")
-        main_button.setStyleSheet("text-align: left; font-weight: bold; border: none; padding: 2px; background-color: transparent;")
-        main_button.setFlat(True)
-        main_button.clicked.connect(lambda ch, t=lcs_tuple: self._display_group_for_editing(t))
-        layout.addWidget(main_button)
+        main_label = QLabel(f"<b>'{pattern_str}'</b> ({count} терм.)")
+        main_label.setStyleSheet("padding: 2px; background-color: transparent;")
+        layout.addWidget(main_label)
 
         if data['pattern_exists_as_term'] and data['pattern_translation']:
             translation_label = QLabel(f"→ {data['pattern_translation']}")
@@ -557,7 +559,8 @@ class CoreTermAnalyzerPage(ShellPage):
             actions_layout.setContentsMargins(0, 0, 0, 0); actions_layout.setSpacing(2)
 
             if self.pymorphy_available:
-                gen_btn = QPushButton("📝"); gen_btn.setToolTip("Сгенерировать примечание")
+                gen_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
+                gen_btn.setToolTip("Сгенерировать примечание")
                 gen_btn.setFixedSize(24, 24); gen_btn.clicked.connect(lambda ch, r=row: self._generate_note_for_member(r))
                 actions_layout.addWidget(gen_btn)
 
@@ -676,7 +679,8 @@ class CoreTermAnalyzerPage(ShellPage):
         actions_widget = QWidget(); actions_layout = QHBoxLayout(actions_widget)
         actions_layout.setContentsMargins(0,0,0,0); actions_layout.setSpacing(2)
         if self.pymorphy_available:
-            gen_btn = QPushButton("📝"); gen_btn.setFixedSize(24, 24)
+            gen_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
+            gen_btn.setFixedSize(24, 24)
             gen_btn.clicked.connect(lambda ch, r=row: self._generate_note_for_member(r))
             actions_layout.addWidget(gen_btn)
         del_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), "")

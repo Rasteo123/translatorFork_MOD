@@ -451,7 +451,7 @@ class ComplexOverlapResolverPage(ShellPage):
                 note_label_layout.addStretch()
                 
                 if self.pymorphy_available:
-                    gen_note_btn = QPushButton("📝")
+                    gen_note_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
                     gen_note_btn.setToolTip("Сгенерировать примечание")
                     gen_note_btn.setFixedSize(24, 24)
                     gen_note_btn.clicked.connect(self._on_generate_note_for_main_term_clicked)
@@ -506,7 +506,7 @@ class ComplexOverlapResolverPage(ShellPage):
                 actions_layout.setSpacing(2)
 
                 if self.pymorphy_available:
-                    gen_btn = QPushButton("📝")
+                    gen_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
                     gen_btn.setToolTip("Сгенерировать примечание")
                     gen_btn.setFixedSize(24, 24)
                     gen_btn.clicked.connect(lambda checked=False, r=i: self._on_generate_note_in_sub_table_clicked(r))
@@ -968,7 +968,8 @@ class ReverseConflictResolverPage(ShellPage):
             actions_layout = QHBoxLayout(actions_widget)
             actions_layout.setContentsMargins(0, 0, 0, 0); actions_layout.setSpacing(2)
             if self.morph:
-                gen_btn = QPushButton("📝"); gen_btn.setToolTip("Сгенерировать примечание")
+                gen_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
+                gen_btn.setToolTip("Сгенерировать примечание")
                 gen_btn.setFixedSize(24, 24)
                 gen_btn.clicked.connect(lambda ch, r=i: self._on_generate_note_clicked(r))
                 actions_layout.addWidget(gen_btn)
@@ -1251,7 +1252,7 @@ class DirectConflictResolverDialog(QDialog):
         note_label_layout.setContentsMargins(0,0,0,0)
         note_label_layout.addWidget(QLabel("Примечание:"))
         if self.morph:
-            gen_note_btn = QPushButton("📝")
+            gen_note_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
             gen_note_btn.setToolTip("Сгенерировать примечание на основе перевода в поле слева")
             gen_note_btn.setFixedSize(24, 24)
             gen_note_btn.clicked.connect(self._wizard_generate_note)
@@ -1354,7 +1355,8 @@ class DirectConflictResolverDialog(QDialog):
             actions_layout = QHBoxLayout(actions_widget)
             actions_layout.setContentsMargins(0,0,0,0)
             if self.morph:
-                gen_note_btn = QPushButton("📝"); gen_note_btn.setFixedSize(24, 24)
+                gen_note_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
+                gen_note_btn.setFixedSize(24, 24)
                 gen_note_btn.setToolTip("Сгенерировать примечание")
                 gen_note_btn.clicked.connect(lambda ch, r=i: self.generate_note_for_table(r))
                 actions_layout.addWidget(gen_note_btn)
