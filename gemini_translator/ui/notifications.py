@@ -34,6 +34,10 @@ class NotificationManager:
             
             if cls._tray_icon and cls._tray_icon.isSystemTrayAvailable():
                 cls._tray_icon.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 5000)
+                try:
+                    subprocess.Popen(['osascript', '-e', 'beep'])
+                except Exception:
+                    pass
             else:
                 # Fallback to osascript if UI is not fully initialized or tray fails
                 safe_msg = str(message).replace('"', '\\"')
