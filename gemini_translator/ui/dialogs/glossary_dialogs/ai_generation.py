@@ -2100,6 +2100,11 @@ class GenerationSessionPage(ShellPage):
         scroll_area.setWidget(settings_container)
         return scroll_area
 
+    def _on_notifications_toggled(self, checked):
+        from PyQt6.QtCore import QSettings
+        settings = QSettings("SiberianTeam", "TranslatorFork")
+        settings.setValue("notifications_enabled", checked)
+
 
     def _create_results_tab(self):
         """Создает вкладку с результатами и логом внутри сплиттера."""
