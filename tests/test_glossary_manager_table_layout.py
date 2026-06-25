@@ -5,7 +5,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("GT_DISABLE_LOCAL_MODEL_DISCOVERY", "1")
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from main import EventBus
 from gemini_translator.ui.themes import LIGHT_DEFAULT_THEME_COLORS, build_stylesheet
@@ -79,6 +79,31 @@ class GlossaryManagerTableLayoutTests(unittest.TestCase):
                     page.TABLE_ACTION_BUTTON_SIZE.width(),
                 )
                 self.assertLessEqual(button.height(), cell_widget.height())
+
+    def test_manager_loads_glossary_as_single_vertical_list(self):
+        page = GlossaryManagerPage(mode="child")
+        self.addCleanup(page.close)
+        page.set_glossary(
+            [
+                {
+                    "original": f"Term {index:03d}",
+                    "rus": f"Термин {index:03d}",
+                    "note": "",
+                }
+                for index in range(125)
+            ],
+            run_analysis=False,
+        )
+
+        self.assertEqual(page.table.rowCount(), 125)
+        self.assertEqual(page.total_pages, 1)
+        self.assertEqual(page.page_info_label.text(), "Всего: 125")
+        self.assertFalse(page.first_page_button.isVisible())
+        self.assertFalse(page.next_page_button.isVisible())
+        self.assertEqual(
+            page.table.horizontalScrollBarPolicy(),
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
 
 
 if __name__ == "__main__":

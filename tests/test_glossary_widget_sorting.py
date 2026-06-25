@@ -30,7 +30,7 @@ class GlossaryWidgetSortingTests(unittest.TestCase):
             ["Alpha", "beta", "zeta", ""],
         )
 
-    def test_set_glossary_resets_main_widget_to_first_page(self):
+    def test_set_glossary_loads_all_rows_in_one_vertical_list(self):
         widget = GlossaryWidget()
         self.addCleanup(widget.close)
         widget.items_per_page = 2
@@ -44,9 +44,12 @@ class GlossaryWidgetSortingTests(unittest.TestCase):
         ])
 
         self.assertEqual(widget.current_page, 0)
-        self.assertEqual(widget.table.rowCount(), 2)
+        self.assertEqual(widget.table.rowCount(), 4)
         self.assertEqual(widget.table.item(0, 0).text(), "Alpha")
         self.assertEqual(widget.table.item(1, 0).text(), "bravo")
+        self.assertEqual(widget.table.item(2, 0).text(), "Charlie")
+        self.assertEqual(widget.table.item(3, 0).text(), "delta")
+        self.assertFalse(widget.pagination_widget.isVisible())
 
     def test_table_rows_match_manager_editor_baseline_height(self):
         widget = GlossaryWidget()
@@ -86,7 +89,7 @@ class GlossaryWidgetSortingTests(unittest.TestCase):
                 ["Alpha", "delta"],
             )
 
-    def test_project_view_state_restores_last_page(self):
+    def test_project_view_state_keeps_single_page_and_saves_scroll_position(self):
         entries = [
             {"original": "Alpha", "rus": "a"},
             {"original": "bravo", "rus": "b"},
@@ -102,6 +105,7 @@ class GlossaryWidgetSortingTests(unittest.TestCase):
             widget.items_per_page = 2
             widget.set_glossary(entries, emit_signal=False)
             widget.current_page = 2
+            widget.table.verticalScrollBar().setValue(7)
             widget._save_project_view_state()
 
             restored_widget = GlossaryWidget()
@@ -111,9 +115,9 @@ class GlossaryWidgetSortingTests(unittest.TestCase):
             restored_widget.set_glossary(entries, emit_signal=False)
             restored_widget.restore_project_view_state()
 
-            self.assertEqual(restored_widget.current_page, 2)
-            self.assertEqual(restored_widget.table.rowCount(), 1)
-            self.assertEqual(restored_widget.table.item(0, 0).text(), "echo")
+            self.assertEqual(restored_widget.current_page, 0)
+            self.assertEqual(restored_widget.table.rowCount(), 5)
+            self.assertEqual(restored_widget.table.item(4, 0).text(), "echo")
 
 
 if __name__ == "__main__":

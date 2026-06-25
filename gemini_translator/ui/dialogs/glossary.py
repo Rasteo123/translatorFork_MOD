@@ -456,10 +456,11 @@ class GlossaryManagerPage(ShellPage):
         self._saved_to_project_in_session = False
         self._dialog_result_closing = False
 
-        # --- Состояние пагинации ---
-        self.items_per_page = 100
+        # --- Состояние единого вертикального списка ---
+        self.items_per_page = 0
         self.current_page = 0
         self.total_items = 0
+        self._pending_vertical_scroll_value = None
         
         # --- Состояние сортировки ---
         self.sort_column_index = 0 
@@ -651,6 +652,8 @@ class GlossaryManagerPage(ShellPage):
         self.table = QTableWidget(columnCount=5)
         self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(["Ориг. термин", "Перевод", "Примечание", "", ""])
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         
         header = self.table.horizontalHeader()
         
@@ -707,9 +710,17 @@ class GlossaryManagerPage(ShellPage):
         
         self.first_page_button = QPushButton("<< В начало"); self.first_page_button.clicked.connect(self._go_to_first_page)
         self.prev_page_button = QPushButton("< Назад"); self.prev_page_button.clicked.connect(self._go_to_prev_page)
-        self.page_info_label = QLabel("Страница 1 / 1"); self.page_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_info_label = QLabel("Всего: 0"); self.page_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.next_page_button = QPushButton("Вперед >"); self.next_page_button.clicked.connect(self._go_to_next_page)
         self.last_page_button = QPushButton("В конец >>"); self.last_page_button.clicked.connect(self._go_to_last_page)
+        self.page_navigation_controls = [
+            self.first_page_button,
+            self.prev_page_button,
+            self.next_page_button,
+            self.last_page_button,
+        ]
+        for button in self.page_navigation_controls:
+            button.setVisible(False)
         
         pagination_layout.addWidget(self.first_page_button); pagination_layout.addWidget(self.prev_page_button)
         pagination_layout.addWidget(self.page_info_label); pagination_layout.addWidget(self.next_page_button); pagination_layout.addWidget(self.last_page_button); 
@@ -1165,10 +1176,7 @@ class GlossaryManagerPage(ShellPage):
     
     @property
     def total_pages(self) -> int:
-        """Вычисляет общее количество страниц."""
-        if self.total_items == 0:
-            return 1
-        return (self.total_items + self.items_per_page - 1) // self.items_per_page
+        return 1
 
     def _get_sort_clause(self) -> str:
         """Возвращает строку для SQL-запроса ORDER BY."""
@@ -1352,7 +1360,7 @@ class GlossaryManagerPage(ShellPage):
         """
         Загружает данные для текущей страницы с учетом активного ФИЛЬТРА.
         """
-        print(f"DEBUG: Loading page {self.current_page + 1}...")
+        print("DEBUG: Loading full glossary list...")
         self.table.blockSignals(True)
         
         filter_clause, filter_params = self._get_filter_sql()
@@ -1364,11 +1372,7 @@ class GlossaryManagerPage(ShellPage):
             cursor = conn.execute(count_query, filter_params)
             self.total_items = cursor.fetchone()[0]
 
-        # Коррекция текущей страницы
-        if self.total_items > 0 and self.current_page >= self.total_pages:
-            self.current_page = max(0, self.total_pages - 1)
-        elif self.total_items == 0:
-            self.current_page = 0
+        self.current_page = 0
         
         self.table.clearContents()
         self.table.setRowCount(0)
@@ -1384,7 +1388,8 @@ class GlossaryManagerPage(ShellPage):
             self.table.blockSignals(False)
             return
 
-        offset = self.current_page * self.items_per_page
+        offset = 0
+        limit = max(self.total_items, 1)
         sort_clause = self._get_sort_clause()
         
         with conn:
@@ -1392,7 +1397,7 @@ class GlossaryManagerPage(ShellPage):
             # ВАЖНО: LIMIT/OFFSET идут после ORDER BY
             query = f"SELECT * FROM glossary_editor_state {filter_clause} {sort_clause} LIMIT ? OFFSET ?"
             # Параметры: сначала от фильтра, потом лимит и оффсет
-            all_params = filter_params + [self.items_per_page, offset]
+            all_params = filter_params + [limit, offset]
             
             cursor = conn.execute(query, all_params)
             page_data = [dict(row) for row in cursor.fetchall()]
@@ -1403,6 +1408,10 @@ class GlossaryManagerPage(ShellPage):
         
         self.table.blockSignals(False)
         self._update_pagination_controls()
+        pending_scroll_value = self._pending_vertical_scroll_value
+        if pending_scroll_value is not None:
+            self._pending_vertical_scroll_value = None
+            self.table.verticalScrollBar().setValue(pending_scroll_value)
         self._save_project_view_state()
         self._apply_all_highlights()
         self._update_action_column_widths()
@@ -1420,18 +1429,10 @@ class GlossaryManagerPage(ShellPage):
 
     def _update_pagination_controls(self):
         """Обновляет состояние кнопок и текста навигации."""
-        total_pg = self.total_pages
-        current_pg = self.current_page + 1
-        
-        self.page_info_label.setText(f"Страница {current_pg} / {total_pg}")
-        
-        is_not_first = self.current_page > 0
-        self.first_page_button.setEnabled(is_not_first)
-        self.prev_page_button.setEnabled(is_not_first)
-        
-        is_not_last = self.current_page < total_pg - 1
-        self.next_page_button.setEnabled(is_not_last)
-        self.last_page_button.setEnabled(is_not_last)
+        self.page_info_label.setText(f"Всего: {self.total_items}")
+
+        for button in getattr(self, "page_navigation_controls", ()):
+            button.setEnabled(False)
 
     def _go_to_first_page(self):
         self.table.setCurrentItem(None)
@@ -1440,19 +1441,18 @@ class GlossaryManagerPage(ShellPage):
 
     def _go_to_prev_page(self):
         self.table.setCurrentItem(None)
-        self.current_page = max(0, self.current_page - 1)
+        self.current_page = 0
         self._load_current_page()
 
     def _go_to_next_page(self):
         self.table.setCurrentItem(None)
-        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        self.current_page = 0
         self._load_current_page()
 
     def _go_to_last_page(self):
         self.table.setCurrentItem(None)
-        if self.total_pages > 0:
-            self.current_page = self.total_pages - 1
-            self._load_current_page()
+        self.current_page = 0
+        self._load_current_page()
 
     def _find_page_for_id(self, db_id: str) -> int:
         """Находит номер страницы для ID с учетом сортировки И ФИЛЬТРА."""
@@ -1501,7 +1501,7 @@ class GlossaryManagerPage(ShellPage):
             cursor = conn.execute(rank_query, filter_params + [target_val])
             rank = cursor.fetchone()[0]
             
-            return rank // self.items_per_page
+            return 0
             
     def _apply_highlights_chunk(self):
         CHUNK_SIZE = 100
@@ -3562,7 +3562,11 @@ class GlossaryManagerPage(ShellPage):
         except Exception:
             state = {}
 
-        state['current_page'] = int(self.current_page)
+        state['current_page'] = 0
+        try:
+            state['vertical_scroll_value'] = int(self.table.verticalScrollBar().value())
+        except Exception:
+            state['vertical_scroll_value'] = 0
         try:
             with open(state_path, 'w', encoding='utf-8') as f:
                 json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
@@ -3577,11 +3581,12 @@ class GlossaryManagerPage(ShellPage):
         try:
             with open(state_path, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-            target_page = int((state or {}).get('current_page', 0))
+            scroll_value = int((state or {}).get('vertical_scroll_value', 0))
         except Exception:
             return
 
-        self.current_page = max(0, target_page)
+        self.current_page = 0
+        self._pending_vertical_scroll_value = max(0, scroll_value)
 
     def _save_auto_backup(self):
         """Создает SQLite-дамп текущего состояния глоссария в папке проекта."""

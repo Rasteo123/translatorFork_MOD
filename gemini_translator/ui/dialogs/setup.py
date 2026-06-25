@@ -102,6 +102,7 @@ import time # <-- НОВЫЙ ИМПОРТ
 BENCHMARK_GLOSSARY_SIZE = 100    # Увеличиваем количество терминов
 BENCHMARK_TEXT_SIZE = 10000     # Увеличиваем размер текста
 BASE_GLOSSARY_PROMPT_STATE_FILE = "base_glossary_prompt_state.json"
+QUEUE_AUTOSAVE_SETTING_KEY = "queue_autosave_enabled"
 TASK_LIST_MIN_HEIGHT = 420
 TASK_OPTIONS_MIN_HEIGHT = 400
 TASKS_TAB_MIN_HEIGHT = TASK_LIST_MIN_HEIGHT + TASK_OPTIONS_MIN_HEIGHT + 24
@@ -533,10 +534,7 @@ class InitialSetupPage(ShellPage):
         # model_settings_widget уже является QGroupBox, просто добавляем его
         # stretch=0, чтобы она занимала только необходимый минимум высоты
         settings_layout.addWidget(self.model_settings_widget, 0)
-        self.session_behavior_group = self._create_session_behavior_group()
-        settings_layout.addWidget(self.session_behavior_group, 0)
-        self.appearance_group = self._create_appearance_group()
-        settings_layout.addWidget(self.appearance_group, 0)
+        self.program_settings_tab = self._create_program_settings_tab()
         self.model_settings_widget.prettify_checkbox.setVisible(True)
         # --- ШАГ 3: СОБИРАЕМ QTabWidget ---
         self.tabs_group = OverlayTabWidget()
@@ -549,6 +547,12 @@ class InitialSetupPage(ShellPage):
         settings_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         settings_scroll.setWidget(settings_tab)
         tabs_group.addTab(settings_scroll, "Настройки")
+
+        program_scroll = QScrollArea()
+        program_scroll.setWidgetResizable(True)
+        program_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        program_scroll.setWidget(self.program_settings_tab)
+        tabs_group.addTab(program_scroll, "Программа")
 
         # Вкладка 2: Список Задач + Оптимизация
         tasks_scroll, self.tasks_splitter = _create_tasks_tab_scroll_area(
@@ -951,6 +955,89 @@ class InitialSetupPage(ShellPage):
     # --------------------------------------------------------------------
     # МЕТОДЫ СОЗДАНИЯ ЭЛЕМЕНТОВ UI
     # --------------------------------------------------------------------
+
+    def _create_program_settings_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
+
+        self.session_behavior_group = self._create_session_behavior_group()
+        layout.addWidget(self.session_behavior_group, 0)
+
+        self.queue_persistence_group = self._create_queue_persistence_group()
+        layout.addWidget(self.queue_persistence_group, 0)
+
+        self.appearance_group = self._create_appearance_group()
+        layout.addWidget(self.appearance_group, 0)
+        layout.addStretch(1)
+        return tab
+
+    def _load_queue_autosave_enabled(self) -> bool:
+        for loader_name in ("load_full_session_settings", "load_settings"):
+            loader = getattr(self.settings_manager, loader_name, None)
+            if not callable(loader):
+                continue
+            try:
+                settings = loader()
+            except Exception:
+                continue
+            if isinstance(settings, dict) and QUEUE_AUTOSAVE_SETTING_KEY in settings:
+                return bool(settings.get(QUEUE_AUTOSAVE_SETTING_KEY))
+        return True
+
+    def _save_queue_autosave_enabled(self, enabled: bool) -> None:
+        loader = getattr(self.settings_manager, "load_full_session_settings", None)
+        saver = getattr(self.settings_manager, "save_full_session_settings", None)
+        if not callable(loader) or not callable(saver):
+            loader = getattr(self.settings_manager, "load_settings", None)
+            saver = getattr(self.settings_manager, "save_settings", None)
+        if not callable(loader) or not callable(saver):
+            return
+
+        try:
+            settings = loader()
+            settings = dict(settings) if isinstance(settings, dict) else {}
+            settings[QUEUE_AUTOSAVE_SETTING_KEY] = bool(enabled)
+            saver(settings)
+        except Exception as exc:
+            print(f"[WARN] Не удалось сохранить настройку автосохранения очереди: {exc}")
+
+    def _create_queue_persistence_group(self) -> QGroupBox:
+        group = QGroupBox("Очередь задач")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
+        self.queue_autosave_checkbox = QCheckBox("Сохранять очередь задач для восстановления")
+        self.queue_autosave_checkbox.setToolTip(
+            "Если включено, активная очередь периодически сохраняется в queue_snapshot.db проекта.\n"
+            "После сбоя или перезапуска приложение сможет предложить восстановление очереди."
+        )
+        self.queue_autosave_checkbox.setChecked(self._load_queue_autosave_enabled())
+        self.queue_autosave_checkbox.toggled.connect(self._on_queue_autosave_toggled)
+        layout.addWidget(self.queue_autosave_checkbox)
+
+        hint_label = QLabel(
+            "Ручное сохранение и загрузка очереди через кнопку управления очередью остаются доступны независимо от этого переключателя."
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setObjectName("helperLabel")
+        layout.addWidget(hint_label)
+
+        return group
+
+    def _on_queue_autosave_toggled(self, checked: bool):
+        self._save_queue_autosave_enabled(checked)
+        if not checked and hasattr(self, '_snapshot_save_timer'):
+            self._snapshot_save_timer.stop()
+            self._snapshot_save_requested = False
+        self._mark_settings_as_dirty()
+
+    def _is_queue_autosave_enabled(self) -> bool:
+        checkbox = _instance_attr(self, "queue_autosave_checkbox")
+        if checkbox is not None:
+            return bool(checkbox.isChecked())
+        return self._load_queue_autosave_enabled()
 
     def _create_appearance_group(self) -> QGroupBox:
         group = QGroupBox("Внешний вид интерфейса")
@@ -1714,6 +1801,7 @@ class InitialSetupPage(ShellPage):
             'last_prompt_preset': self.preset_widget.get_current_preset_name(),
             'auto_translation': self.auto_translate_widget.get_settings(),
             PREVENT_SLEEP_SETTING_KEY: self.prevent_sleep_checkbox.isChecked(),
+            QUEUE_AUTOSAVE_SETTING_KEY: self._is_queue_autosave_enabled(),
             THEME_SETTINGS_KEY: editable_theme_colors(getattr(self, '_ui_theme_colors', None)),
         })
         # Добавьте сюда другие настройки, если они должны сохраняться
@@ -2277,6 +2365,11 @@ class InitialSetupPage(ShellPage):
         return os.path.join(self.output_folder, "queue_snapshot.db")
 
     def _schedule_snapshot_save(self):
+        if not self._is_queue_autosave_enabled():
+            self._snapshot_save_requested = False
+            if hasattr(self, '_snapshot_save_timer'):
+                self._snapshot_save_timer.stop()
+            return
         if self._snapshot_restore_in_progress:
             return
         if not (self.is_session_active or (self.engine and self.engine.session_id)):
@@ -2297,10 +2390,13 @@ class InitialSetupPage(ShellPage):
         ):
             self._write_snapshot_ui_settings(snapshot_path, self._get_full_ui_settings())
         self._snapshot_autosave_worker = None
-        if self._snapshot_save_requested and self.is_session_active:
+        if self._snapshot_save_requested and self.is_session_active and self._is_queue_autosave_enabled():
             self._snapshot_save_timer.start()
 
     def _save_snapshot_async(self, force=False):
+        if not self._is_queue_autosave_enabled():
+            self._snapshot_save_requested = False
+            return
         snapshot_path = self._get_snapshot_path()
         if not snapshot_path or not self.selected_file:
             return
@@ -3203,6 +3299,7 @@ class InitialSetupPage(ShellPage):
             for provider_id, keys in self.key_management_widget.current_active_keys_by_provider.items()
             if keys
         }
+        settings[QUEUE_AUTOSAVE_SETTING_KEY] = self._is_queue_autosave_enabled()
 
         # Удаляем данные, которые не должны сохраняться как "настройки"
         settings.pop('selected_chapters', None)
@@ -3232,6 +3329,8 @@ class InitialSetupPage(ShellPage):
         self.auto_translate_widget.blockSignals(True)
         if hasattr(self, 'prevent_sleep_checkbox'):
             self.prevent_sleep_checkbox.blockSignals(True)
+        if hasattr(self, 'queue_autosave_checkbox'):
+            self.queue_autosave_checkbox.blockSignals(True)
 
         try:
             if THEME_SETTINGS_KEY in settings:
@@ -3258,6 +3357,8 @@ class InitialSetupPage(ShellPage):
 
             if hasattr(self, 'prevent_sleep_checkbox'):
                 self.prevent_sleep_checkbox.setChecked(bool(settings.get(PREVENT_SLEEP_SETTING_KEY, False)))
+            if hasattr(self, 'queue_autosave_checkbox'):
+                self.queue_autosave_checkbox.setChecked(bool(settings.get(QUEUE_AUTOSAVE_SETTING_KEY, True)))
 
             model_name = settings.get('model')
             model_id = api_config.all_models().get(model_name, {}).get('id')
@@ -3303,6 +3404,8 @@ class InitialSetupPage(ShellPage):
             self.auto_translate_widget.blockSignals(False)
             if hasattr(self, 'prevent_sleep_checkbox'):
                 self.prevent_sleep_checkbox.blockSignals(False)
+            if hasattr(self, 'queue_autosave_checkbox'):
+                self.queue_autosave_checkbox.blockSignals(False)
 
         self._refresh_auto_translate_runtime_context()
         self._update_distribution_info_from_widget()

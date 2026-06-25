@@ -93,6 +93,12 @@ class _CheckBoxStub:
     def isChecked(self):
         return self._checked
 
+    def setChecked(self, checked):
+        self._checked = bool(checked)
+
+    def blockSignals(self, _blocked):
+        return None
+
 
 class _SetupSettingsHarness:
     _get_ui_state_for_saving = InitialSetupDialog._get_ui_state_for_saving
@@ -104,6 +110,7 @@ class _SetupSettingsHarness:
     _refresh_dirty_window_title = InitialSetupDialog._refresh_dirty_window_title
     _prepare_for_close = InitialSetupDialog._prepare_for_close
     _return_to_main_menu_from_button = InitialSetupDialog._return_to_main_menu_from_button
+    _is_queue_autosave_enabled = InitialSetupDialog._is_queue_autosave_enabled
 
     def __init__(self, settings_manager=None):
         self.settings_manager = settings_manager or _SettingsManagerStub()
@@ -135,6 +142,7 @@ class _SetupSettingsHarness:
         self.instances_spin = _SpinBoxStub(3)
         self.glossary_widget = _DictWidgetStub([])
         self.prevent_sleep_checkbox = _CheckBoxStub(True)
+        self.queue_autosave_checkbox = _CheckBoxStub(False)
         self.selected_file = None
         self.output_folder = None
         self.html_files = []
@@ -185,6 +193,7 @@ class SetupSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(state["num_instances"], 3)
         self.assertEqual(state["ui_theme_colors"]["accent"], "#ff8800")
         self.assertTrue(state["prevent_sleep_during_translation"])
+        self.assertFalse(state["queue_autosave_enabled"])
 
     def test_collect_global_ui_settings_merges_legacy_and_full_session(self):
         settings_manager = _SettingsManagerStub(
@@ -240,6 +249,7 @@ class SetupSettingsPersistenceTests(unittest.TestCase):
         self.assertEqual(settings_manager.saved_full_session["provider"], "workascii_chatgpt")
         self.assertEqual(settings_manager.saved_full_session["ui_theme_colors"]["accent"], "#ff8800")
         self.assertTrue(settings_manager.saved_full_session["prevent_sleep_during_translation"])
+        self.assertFalse(settings_manager.saved_full_session["queue_autosave_enabled"])
         self.assertTrue(settings_manager.saved_full_session["auto_translation"]["filter_redirect_enabled"])
         self.assertEqual(
             settings_manager.saved_full_session["auto_translation"]["filter_redirect_provider"],

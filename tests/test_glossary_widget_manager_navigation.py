@@ -91,6 +91,18 @@ class FakeGenerationSessionPage(ShellPage):
         self.initial_ui_settings = dict(initial_ui_settings)
 
 
+class FakeGeneratedTermsReviewDialog:
+    def __init__(self, new_entries, parent=None):
+        self.new_entries = [entry.copy() for entry in new_entries]
+        self.parent = parent
+
+    def exec(self):
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    def reviewed_entries(self):
+        return [entry.copy() for entry in self.new_entries]
+
+
 class GlossaryWidgetManagerNavigationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -137,6 +149,7 @@ class GlossaryWidgetManagerNavigationTests(unittest.TestCase):
         with (
             patch.object(ai_generation_module, "GenerationSessionDialog", side_effect=AssertionError("modal path used")),
             patch.object(ai_generation_module, "GenerationSessionPage", FakeGenerationSessionPage, create=True),
+            patch.object(glossary_widget_module, "GeneratedTermsReviewDialog", FakeGeneratedTermsReviewDialog),
             patch.object(glossary_widget_module.QMessageBox, "information"),
         ):
             self.widget._open_ai_generation_dialog()
@@ -152,7 +165,10 @@ class GlossaryWidgetManagerNavigationTests(unittest.TestCase):
 
         back_requests = []
         page.request_back.connect(lambda: back_requests.append(True))
-        with patch.object(glossary_widget_module.QMessageBox, "exec", return_value=None):
+        with (
+            patch.object(glossary_widget_module, "GeneratedTermsReviewDialog", FakeGeneratedTermsReviewDialog),
+            patch.object(glossary_widget_module.QMessageBox, "exec", return_value=None),
+        ):
             page.generation_finished.emit(
                 [{"original": "beta", "rus": "бета", "note": "", "timestamp": 456.0}],
                 {"chapter.xhtml"},

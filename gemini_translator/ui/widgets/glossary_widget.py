@@ -69,6 +69,139 @@ def glossary_snapshot(entries) -> list[dict]:
         )
     return snapshot
 
+
+def glossary_entry_key(entry) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("original", "") or "").strip().casefold()
+
+
+class GeneratedTermsReviewDialog(QDialog):
+    """Editable review list for AI-generated terms before they enter the project glossary."""
+
+    def __init__(self, new_entries: list[dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Новые термины AI")
+        self.resize(820, 520)
+        self._new_entries = [entry.copy() for entry in new_entries if isinstance(entry, dict)]
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        header_layout = QHBoxLayout()
+        icon_label = QLabel()
+        icon = QApplication.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileDialogListView)
+        icon_label.setPixmap(icon.pixmap(28, 28))
+        header_layout.addWidget(icon_label)
+
+        title = QLabel(
+            f"<b>Новые термины: {len(self._new_entries)}</b><br>"
+            "Проверьте список, отредактируйте перевод или снимите галочку с лишних строк."
+        )
+        title.setWordWrap(True)
+        header_layout.addWidget(title, 1)
+        layout.addLayout(header_layout)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setAlternatingRowColors(True)
+        self.table.setHorizontalHeaderLabels(["Добавить", "Оригинал", "Перевод", "Примечание"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setWordWrap(True)
+        self.table.verticalHeader().setDefaultSectionSize(GLOSSARY_TABLE_ROW_HEIGHT)
+        self.table.verticalHeader().setMinimumSectionSize(GLOSSARY_TABLE_ROW_HEIGHT)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+
+        self.table.setRowCount(len(self._new_entries))
+        for row, entry in enumerate(self._new_entries):
+            include_item = QTableWidgetItem()
+            include_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            include_item.setCheckState(Qt.CheckState.Checked)
+            self.table.setItem(row, 0, include_item)
+
+            original_item = QTableWidgetItem(normalize_glossary_field(entry.get("original")))
+            translation_item = QTableWidgetItem(
+                normalize_glossary_field(entry.get("rus") or entry.get("translation"))
+            )
+            note_item = QTableWidgetItem(normalize_glossary_field(entry.get("note")))
+            self.table.setItem(row, 1, original_item)
+            self.table.setItem(row, 2, translation_item)
+            self.table.setItem(row, 3, note_item)
+
+        layout.addWidget(self.table, 1)
+
+        actions = QHBoxLayout()
+        select_all_btn = QPushButton("Выбрать все")
+        select_all_btn.clicked.connect(lambda: self._set_all_checked(True))
+        clear_all_btn = QPushButton("Снять все")
+        clear_all_btn.clicked.connect(lambda: self._set_all_checked(False))
+        actions.addWidget(select_all_btn)
+        actions.addWidget(clear_all_btn)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        self.button_box = QDialogButtonBox()
+        apply_button = self.button_box.addButton("Применить выбранные", QDialogButtonBox.ButtonRole.AcceptRole)
+        apply_button.setDefault(True)
+        cancel_button = self.button_box.addButton("Отмена", QDialogButtonBox.ButtonRole.RejectRole)
+        cancel_button.setText("Отмена")
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def _set_all_checked(self, checked: bool):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item:
+                item.setCheckState(state)
+
+    def accept(self):
+        current = self.table.currentItem()
+        if current:
+            self.table.closePersistentEditor(current)
+        self.table.setFocus()
+        super().accept()
+
+    def reviewed_entries(self) -> list[dict]:
+        reviewed = []
+        seen_keys = set()
+        for row in range(self.table.rowCount()):
+            include_item = self.table.item(row, 0)
+            if not include_item or include_item.checkState() != Qt.CheckState.Checked:
+                continue
+
+            original = self.table.item(row, 1).text().strip() if self.table.item(row, 1) else ""
+            rus = self.table.item(row, 2).text().strip() if self.table.item(row, 2) else ""
+            note = self.table.item(row, 3).text().strip() if self.table.item(row, 3) else ""
+            if not original:
+                continue
+
+            key = original.casefold()
+            if key in seen_keys:
+                continue
+
+            source = self._new_entries[row].copy() if row < len(self._new_entries) else {}
+            source["original"] = original
+            source["rus"] = rus
+            source["note"] = note
+            if "timestamp" not in source:
+                source["timestamp"] = time.time()
+            reviewed.append(source)
+            seen_keys.add(key)
+        return reviewed
+
+
 class GlossaryWidget(QWidget):
     """
     Виджет для управления глоссарием проекта, включая таблицу и кнопки управления.
@@ -82,9 +215,9 @@ class GlossaryWidget(QWidget):
         self.current_epub_path = None
         self.project_path = None
         self._saved_glossary_snapshot = []
-        # --- АТРИБУТЫ ДЛЯ ПАГИНАЦИИ ---
+        # --- АТРИБУТЫ ДЛЯ ЕДИНОГО ВЕРТИКАЛЬНОГО СПИСКА ---
         self._full_glossary_data = []
-        self.items_per_page = 100
+        self.items_per_page = 0
         self.current_page = 0
         self.total_items = 0
         
@@ -118,10 +251,13 @@ class GlossaryWidget(QWidget):
         # --- КОНЕЦ ОПЕРАЦИИ ---
 
         self.table.setWordWrap(True)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         main_layout.addWidget(self.table)
 
-        # --- ПАНЕЛЬ ПАГИНАЦИИ (переехала сюда) ---
+        # --- ПАНЕЛЬ ПАГИНАЦИИ (оставлена для совместимости, но больше не показывается) ---
         pagination_widget = QWidget()
+        self.pagination_widget = pagination_widget
         pagination_layout = QHBoxLayout(pagination_widget)
         pagination_layout.setContentsMargins(0, 5, 0, 5)
         self.first_page_button = QPushButton("<< В начало")
@@ -141,6 +277,7 @@ class GlossaryWidget(QWidget):
         pagination_layout.addWidget(self.next_page_button)
         pagination_layout.addWidget(self.last_page_button)
         pagination_layout.addStretch()
+        pagination_widget.setVisible(False)
         main_layout.addWidget(pagination_widget)
         # --- КОНЕЦ ПАНЕЛИ ПАГИНАЦИИ ---
 
@@ -348,7 +485,11 @@ class GlossaryWidget(QWidget):
         except Exception:
             state = {}
 
-        state["current_page"] = int(self.current_page)
+        state["current_page"] = 0
+        try:
+            state["vertical_scroll_value"] = int(self.table.verticalScrollBar().value())
+        except Exception:
+            state["vertical_scroll_value"] = 0
         try:
             with open(state_path, "w", encoding="utf-8") as handle:
                 json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
@@ -367,12 +508,23 @@ class GlossaryWidget(QWidget):
             return
 
         try:
-            target_page = int((state or {}).get("current_page", 0))
+            scroll_value = int((state or {}).get("vertical_scroll_value", 0))
         except (TypeError, ValueError):
-            target_page = 0
+            scroll_value = 0
 
-        self.current_page = max(0, target_page)
-        self._load_current_page()
+        if scroll_value <= 0:
+            try:
+                legacy_page = int((state or {}).get("current_page", 0))
+            except (TypeError, ValueError):
+                legacy_page = 0
+            if legacy_page > 0 and self.table.rowCount() > 0:
+                target_row = min(legacy_page * 100, self.table.rowCount() - 1)
+                target_item = self.table.item(target_row, 0)
+                if target_item:
+                    QTimer.singleShot(0, lambda item=target_item: self.table.scrollToItem(item))
+                return
+
+        QTimer.singleShot(0, lambda value=scroll_value: self.table.verticalScrollBar().setValue(value))
 
     def _handle_glossary_changed(self):
         self._update_project_save_controls()
@@ -449,7 +601,7 @@ class GlossaryWidget(QWidget):
         }
         
         # Вставляем в начало текущей страницы для визуального удобства
-        start_index = self.current_page * self.items_per_page
+        start_index = 0
         self._full_glossary_data.insert(start_index, new_entry)
         
         # Перезагружаем таблицу, чтобы увидеть новую пустую строку
@@ -468,7 +620,7 @@ class GlossaryWidget(QWidget):
         selected_rows_on_page = sorted(list(set(index.row() for index in self.table.selectedIndexes())), reverse=True)
         if not selected_rows_on_page: return
 
-        start_index = self.current_page * self.items_per_page
+        start_index = 0
         
         self.table.blockSignals(True)
         # Удаляем из полного списка по реальным индексам
@@ -498,7 +650,7 @@ class GlossaryWidget(QWidget):
         if index_in_full_list is None:
             # Fallback на старую логику только для крайних случаев
             row = item.row()
-            index_in_full_list = self.current_page * self.items_per_page + row
+            index_in_full_list = row
 
         col = item.column()
 
@@ -519,9 +671,9 @@ class GlossaryWidget(QWidget):
                 self._sort_full_glossary_data()
                 new_index = self._find_entry_index(entry)
                 if new_index is not None:
-                    self.current_page = new_index // self.items_per_page
+                    self.current_page = 0
                     self._load_current_page()
-                    new_row = new_index % self.items_per_page
+                    new_row = new_index
                     if 0 <= new_row < self.table.rowCount():
                         self.table.selectRow(new_row)
                         target_item = self.table.item(new_row, 0)
@@ -543,8 +695,7 @@ class GlossaryWidget(QWidget):
     # --- МЕТОДЫ ПАГИНАЦИИ ---
     @property
     def total_pages(self) -> int:
-        if self.total_items == 0: return 1
-        return (self.total_items + self.items_per_page - 1) // self.items_per_page
+        return 1
 
     def _load_current_page(self):
         self.table.blockSignals(True)
@@ -553,11 +704,9 @@ class GlossaryWidget(QWidget):
         self.table.setRowCount(0)
         self.total_items = len(self._full_glossary_data)
         
-        if self.total_items > 0 and self.current_page >= self.total_pages:
-            self.current_page = self.total_pages - 1
-
-        start_index = self.current_page * self.items_per_page
-        end_index = start_index + self.items_per_page
+        self.current_page = 0
+        start_index = 0
+        end_index = self.total_items
         
         page_data = self._full_glossary_data[start_index:end_index] # Срез ссылок на словари
         
@@ -616,7 +765,7 @@ class GlossaryWidget(QWidget):
     def _update_pagination_controls(self):
         total_pg = self.total_pages
         current_pg = self.current_page + 1
-        self.page_info_label.setText(f"Страница {current_pg} / {total_pg} (Всего: {self.total_items})")
+        self.page_info_label.setText(f"Всего: {self.total_items}")
         is_not_first = self.current_page > 0
         self.first_page_button.setEnabled(is_not_first)
         self.prev_page_button.setEnabled(is_not_first)
@@ -633,25 +782,23 @@ class GlossaryWidget(QWidget):
 
     def _go_to_prev_page(self):
         self.commit_active_editor()
-        self.current_page = max(0, self.current_page - 1)
+        self.current_page = 0
         self._save_project_view_state()
         # Разрываем стек вызовов.
         QTimer.singleShot(0, self._load_current_page)
 
     def _go_to_next_page(self):
         self.commit_active_editor()
-        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        self.current_page = 0
         self._save_project_view_state()
         # Разрываем стек вызовов.
         QTimer.singleShot(0, self._load_current_page)
 
     def _go_to_last_page(self):
         self.commit_active_editor()
-        if self.total_pages > 0:
-            self.current_page = self.total_pages - 1
-            self._save_project_view_state()
-            # Разрываем стек вызовов.
-            QTimer.singleShot(0, self._load_current_page)
+        self.current_page = 0
+        self._save_project_view_state()
+        QTimer.singleShot(0, self._load_current_page)
         
     # --- Остальные методы (без изменений) ---
     def set_simplified_mode(self):
@@ -796,20 +943,73 @@ class GlossaryWidget(QWidget):
             parent_dialog.is_blocked_by_child_dialog = False
             refresh_parent_after_generation()
     
+    def _merge_reviewed_new_entries(self, generated_glossary, original_new_keys, reviewed_entries):
+        merged_glossary = []
+        key_to_index = {}
+
+        for entry in generated_glossary:
+            key = glossary_entry_key(entry)
+            if key in original_new_keys:
+                continue
+            clean_entry = entry.copy() if isinstance(entry, dict) else {}
+            if key:
+                key_to_index[key] = len(merged_glossary)
+            merged_glossary.append(clean_entry)
+
+        for entry in reviewed_entries:
+            if not isinstance(entry, dict):
+                continue
+            key = glossary_entry_key(entry)
+            if not key:
+                continue
+
+            clean_entry = entry.copy()
+            if "timestamp" not in clean_entry:
+                clean_entry["timestamp"] = time.time()
+
+            existing_index = key_to_index.get(key)
+            if existing_index is not None:
+                merged_glossary[existing_index].update(clean_entry)
+            else:
+                key_to_index[key] = len(merged_glossary)
+                merged_glossary.append(clean_entry)
+
+        return merged_glossary
+
     @pyqtSlot(list, set)
     def _on_generation_dialog_finished(self, final_glossary_from_ai, updated_generated_chapters_map):
         if final_glossary_from_ai is None: return 
         glossary_before = self.get_glossary()
-        before_dict = {term.get('original', '').lower(): term for term in glossary_before if term.get('original')}
-        after_dict = {term.get('original', '').lower(): term for term in final_glossary_from_ai if term.get('original')}
+        before_dict = {glossary_entry_key(term): term for term in glossary_before if glossary_entry_key(term)}
+        after_dict = {glossary_entry_key(term): term for term in final_glossary_from_ai if glossary_entry_key(term)}
         before_keys, after_keys = set(before_dict.keys()), set(after_dict.keys())
+        new_keys = after_keys - before_keys
+        final_glossary_to_apply = final_glossary_from_ai
+
+        if new_keys:
+            new_entries = [
+                term.copy()
+                for term in final_glossary_from_ai
+                if glossary_entry_key(term) in new_keys
+            ]
+            review_dialog = GeneratedTermsReviewDialog(new_entries, self)
+            if review_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            final_glossary_to_apply = self._merge_reviewed_new_entries(
+                final_glossary_from_ai,
+                new_keys,
+                review_dialog.reviewed_entries(),
+            )
+            after_dict = {glossary_entry_key(term): term for term in final_glossary_to_apply if glossary_entry_key(term)}
+            after_keys = set(after_dict.keys())
+
         added_count, deleted_count, changed_count = len(after_keys - before_keys), len(before_keys - after_keys), 0
         common_keys = before_keys & after_keys
         for key in common_keys:
             if before_dict[key] != after_dict[key]:
                 changed_count += 1
         total_changes = added_count + deleted_count + changed_count
-        self.set_glossary(final_glossary_from_ai)
+        self.set_glossary(final_glossary_to_apply)
         if total_changes == 0: return
         summary_parts = []
         if added_count > 0: summary_parts.append(f"<b>Добавлено: {added_count}</b>")
