@@ -12,7 +12,11 @@ import zipfile
 import threading
 import random
 from ..utils.language_tools import SmartGlossaryFilter, GlossaryRegexService, get_chinese_script_variants
-from ..utils.epub_tools import normalize_epub_chapter_heading_to_h1
+from ..utils.epub_tools import (
+    TASK_SIZE_UNIT_CHARS,
+    normalize_epub_chapter_heading_to_h1,
+    normalize_task_size_unit,
+)
 from ..utils.helpers import estimate_gemini_tokens
 from ..api import config as api_config
 # --- ДОБАВЛЯЕМ ИМПОРТ BEAUTIFULSOUP ---
@@ -518,6 +522,7 @@ class TaskPreparer:
         self.use_batching = settings.get('use_batching', False)
         self.use_chunking = settings.get('chunking', False)
         self.task_input_size_limit = settings.get('task_size_limit', 30000)
+        self.task_size_unit = normalize_task_size_unit(settings.get('task_size_unit'))
         self.max_chapters_per_batch = self._normalize_max_chapters_per_batch(
             settings.get('max_chapters_per_batch', settings.get('batch_chapter_limit_override', 0))
         )
@@ -538,6 +543,8 @@ class TaskPreparer:
         )
 
     def _chunk_target_chars_for_token_limit(self, html_fragment):
+        if self.task_size_unit == TASK_SIZE_UNIT_CHARS:
+            return max(api_config.min_chunk_size(), int(self.task_input_size_limit))
         token_count = estimate_gemini_tokens(html_fragment)
         if token_count <= 0:
             return self.task_input_size_limit

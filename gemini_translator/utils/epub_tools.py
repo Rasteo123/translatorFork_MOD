@@ -21,6 +21,23 @@ from .helpers import estimate_gemini_tokens
 EPUB_HEADING_TAGS = ("h1", "h2", "h3")
 CHAPTER_SIZE_CACHE_METRIC = "gemini_input_tokens"
 CHAPTER_SIZE_CACHE_VERSION = 2
+TASK_SIZE_UNIT_TOKENS = "tokens"
+TASK_SIZE_UNIT_CHARS = "chars"
+
+
+def normalize_task_size_unit(value):
+    value = str(value or TASK_SIZE_UNIT_TOKENS).strip().lower()
+    if value in {
+        TASK_SIZE_UNIT_CHARS,
+        "char",
+        "characters",
+        "symbols",
+        "symbol",
+        "bytes",
+        "legacy_chars",
+    }:
+        return TASK_SIZE_UNIT_CHARS
+    return TASK_SIZE_UNIT_TOKENS
 
 
 def _normalize_epub_heading_text(text):
@@ -645,6 +662,12 @@ def calculate_potential_output_size(html_content, is_cjk):
  
 def estimate_epub_chapter_input_tokens(html_content):
     return estimate_gemini_tokens(html_content or "")
+
+
+def estimate_epub_chapter_input_size(html_content, task_size_unit=TASK_SIZE_UNIT_TOKENS):
+    if normalize_task_size_unit(task_size_unit) == TASK_SIZE_UNIT_CHARS:
+        return len(html_content or "")
+    return estimate_epub_chapter_input_tokens(html_content)
 
 
 

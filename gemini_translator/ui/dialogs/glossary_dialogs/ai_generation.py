@@ -28,7 +28,7 @@ from gemini_translator.ui.shell import ShellPage
 from gemini_translator.utils.language_tools import LanguageDetector
 # Импорты для работы движка
 from gemini_translator.api import config as api_config
-from gemini_translator.utils.epub_tools import estimate_epub_chapter_input_tokens
+from gemini_translator.utils.epub_tools import estimate_epub_chapter_input_size
 from gemini_translator.utils.glossary_tools import GlossaryAggregator, ContextManager
 from gemini_translator.utils.power_inhibitor import (
     PREVENT_SLEEP_SETTING_KEY,
@@ -1935,8 +1935,9 @@ class GenerationSessionPage(ShellPage):
         try:
             with zipfile.ZipFile(self.epub_path, 'r') as zf:
                 for chapter in self.html_files:
-                    real_chapter_sizes[chapter] = estimate_epub_chapter_input_tokens(
-                        zf.read(chapter).decode('utf-8', 'ignore')
+                    real_chapter_sizes[chapter] = estimate_epub_chapter_input_size(
+                        zf.read(chapter).decode('utf-8', 'ignore'),
+                        settings.get('task_size_unit'),
                     )
         except Exception as e:
             QMessageBox.critical(self, "Ошибка чтения файла", f"Не удалось прочитать главы из EPUB: {e}")

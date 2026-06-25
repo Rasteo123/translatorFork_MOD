@@ -183,14 +183,22 @@ def load_project_glossary(project_folder: str, glossary_path: str | None = None)
     raise CliError(f"Unsupported glossary format: {path}")
 
 
-def _chapter_sizes(epub_path: str, chapters: list[str], project_manager=None) -> dict[str, int]:
+def _chapter_sizes(
+    epub_path: str,
+    chapters: list[str],
+    project_manager=None,
+    task_size_unit: str | None = None,
+) -> dict[str, int]:
     from .utils.epub_tools import (
-        estimate_epub_chapter_input_tokens,
+        TASK_SIZE_UNIT_CHARS,
+        estimate_epub_chapter_input_size,
         get_epub_chapter_sizes_with_cache,
+        normalize_task_size_unit,
     )
 
+    task_size_unit = normalize_task_size_unit(task_size_unit)
     sizes = {}
-    if project_manager is not None:
+    if project_manager is not None and task_size_unit != TASK_SIZE_UNIT_CHARS:
         sizes.update(get_epub_chapter_sizes_with_cache(project_manager, epub_path) or {})
 
     missing = [chapter for chapter in chapters if int(sizes.get(chapter, 0) or 0) <= 0]
@@ -198,9 +206,8 @@ def _chapter_sizes(epub_path: str, chapters: list[str], project_manager=None) ->
         with zipfile.ZipFile(epub_path, "r") as archive:
             for chapter in missing:
                 try:
-                    sizes[chapter] = estimate_epub_chapter_input_tokens(
-                        archive.read(chapter).decode("utf-8", "ignore")
-                    )
+                    content = archive.read(chapter).decode("utf-8", "ignore")
+                    sizes[chapter] = estimate_epub_chapter_input_size(content, task_size_unit)
                 except Exception:
                     sizes[chapter] = 0
     return {chapter: int(sizes.get(chapter, 0) or 0) for chapter in chapters}
@@ -510,7 +517,7 @@ def build_session_settings(settings_manager, project_manager, chapters: list[str
 def build_task_plan(epub_path: str, chapters: list[str], settings: dict, project_manager=None) -> TaskPlan:
     from .utils.glossary_tools import TaskPreparer
 
-    sizes = _chapter_sizes(epub_path, chapters, project_manager)
+    sizes = _chapter_sizes(epub_path, chapters, project_manager, settings.get("task_size_unit"))
     preparer = TaskPreparer(settings, sizes)
     if settings.get("sequential_translation"):
         chapter_chains = build_sequential_chapter_chains(

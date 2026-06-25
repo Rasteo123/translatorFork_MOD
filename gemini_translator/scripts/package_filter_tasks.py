@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QCheckBox, QDialogButtonBox, QMessageBox
 )
 from PyQt6.QtCore import Qt
-from ..utils.epub_tools import extract_number_from_path
+from ..utils.epub_tools import TASK_SIZE_UNIT_CHARS, extract_number_from_path, normalize_task_size_unit
 from ..ui.widgets.common_widgets import NoScrollSpinBox
 
 class FilterPackagingDialog(QDialog):
@@ -19,11 +19,12 @@ class FilterPackagingDialog(QDialog):
     Диалог для умной подготовки отфильтрованных глав к повторному переводу
     путем их "разбавления" успешно переведенными главами для пакетной обработки.
     """
-    def __init__(self, filtered_chapters, successful_chapters, recommended_size, epub_path, real_chapter_sizes, parent=None): # <-- ДОБАВЛЕН real_chapter_sizes
+    def __init__(self, filtered_chapters, successful_chapters, recommended_size, epub_path, real_chapter_sizes, parent=None, task_size_unit=None): # <-- ДОБАВЛЕН real_chapter_sizes
         super().__init__(parent)
         self.filtered_chapters = sorted(filtered_chapters, key=extract_number_from_path)
         self.successful_chapters = sorted(successful_chapters, key=extract_number_from_path)
         self.recommended_size = recommended_size
+        self.task_size_unit = normalize_task_size_unit(task_size_unit)
         self.epub_path = epub_path
         self.real_chapter_sizes = real_chapter_sizes # <-- ДОБАВЛЕНА ЭТА СТРОКА
         self.result = None
@@ -46,7 +47,8 @@ class FilterPackagingDialog(QDialog):
         grid_layout = QGridLayout(settings_group)
 
         grid_layout.addWidget(QLabel("Рекомендуемый размер задачи:"), 0, 0, 1, 2)
-        size_info_label = QLabel(f"<b>{self.recommended_size:,}</b> токенов")
+        unit_label = "символов" if self.task_size_unit == TASK_SIZE_UNIT_CHARS else "токенов"
+        size_info_label = QLabel(f"<b>{self.recommended_size:,}</b> {unit_label}")
         size_info_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         grid_layout.addWidget(size_info_label, 0, 2)
 
@@ -138,6 +140,7 @@ class FilterPackagingDialog(QDialog):
             "use_batching": True,
             "chunking": False,
             "task_size_limit": self.recommended_size,
+            "task_size_unit": self.task_size_unit,
         }
         preparer = TaskPreparer(settings, self.real_chapter_sizes)
         filtered_set = set(self.filtered_chapters)
@@ -184,7 +187,8 @@ class FilterPackagingDialog(QDialog):
                 'file_path': self.epub_path,
                 'use_batching': True, # В этом диалоге мы всегда готовим пакеты
                 'chunking': False,
-                'task_size_limit': self.recommended_size
+                'task_size_limit': self.recommended_size,
+                'task_size_unit': self.task_size_unit,
             }
             preparer = TaskPreparer(settings, self.real_chapter_sizes)
             final_payloads = preparer.prepare_tasks(data)
