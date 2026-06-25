@@ -136,6 +136,61 @@ def _is_split_chapter_heading(heading):
     return has_sequence_number and (has_head_class or has_break)
 
 
+def _leading_same_level_heading_sequence(soup):
+    try:
+        from bs4 import Comment, Declaration, NavigableString, ProcessingInstruction
+    except ImportError:
+        return []
+
+    root = soup.body or soup
+    if not root:
+        return []
+    if root.find("h1"):
+        return []
+
+    sequence = []
+    sequence_name = ""
+    ignored_nodes = (Comment, Declaration, ProcessingInstruction)
+
+    for child in root.children:
+        if isinstance(child, ignored_nodes):
+            continue
+
+        if isinstance(child, NavigableString):
+            if str(child).strip():
+                break
+            continue
+
+        child_name = str(getattr(child, "name", "") or "").lower()
+        if child_name not in {"h2", "h3"}:
+            break
+
+        if not sequence_name:
+            sequence_name = child_name
+        elif child_name != sequence_name:
+            break
+
+        sequence.append(child)
+
+    return sequence if len(sequence) >= 2 else []
+
+
+def _combine_heading_sequence_text(headings):
+    parts = [extract_epub_heading_text(heading) for heading in headings]
+    return _normalize_epub_heading_text(" ".join(part for part in parts if part))
+
+
+def _replace_heading_sequence_with_h1(soup, headings, title):
+    replacement = soup.new_tag("h1")
+    heading_id = headings[0].attrs.get("id")
+    if heading_id:
+        replacement["id"] = heading_id
+    replacement.string = title
+    headings[0].replace_with(replacement)
+    for heading in headings[1:]:
+        heading.decompose()
+
+
 def normalize_epub_chapter_heading_to_h1(html_content):
     """
     Normalize split EPUB chapter headings to a plain h1.
@@ -155,19 +210,28 @@ def normalize_epub_chapter_heading_to_h1(html_content):
 
     soup = BeautifulSoup(html_content, "html.parser")
     heading = soup.find(_is_split_chapter_heading)
-    if not heading:
+    if heading:
+        title = extract_epub_heading_text(heading)
+        if not title:
+            return html_content
+
+        replacement = soup.new_tag("h1")
+        heading_id = heading.attrs.get("id")
+        if heading_id:
+            replacement["id"] = heading_id
+        replacement.string = title
+        heading.replace_with(replacement)
+        return str(soup)
+
+    heading_sequence = _leading_same_level_heading_sequence(soup)
+    if not heading_sequence:
         return html_content
 
-    title = extract_epub_heading_text(heading)
+    title = _combine_heading_sequence_text(heading_sequence)
     if not title:
         return html_content
 
-    replacement = soup.new_tag("h1")
-    heading_id = heading.attrs.get("id")
-    if heading_id:
-        replacement["id"] = heading_id
-    replacement.string = title
-    heading.replace_with(replacement)
+    _replace_heading_sequence_with_h1(soup, heading_sequence, title)
     return str(soup)
 
 

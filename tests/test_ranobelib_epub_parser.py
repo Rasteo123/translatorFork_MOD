@@ -14,7 +14,24 @@ if RANOBELIB_DIR not in sys.path:
 
 from parsers import FileParser
 from models import ChapterData
-from workers import RulateDownloadWorker
+from workers import (
+    QIDIAN_RULATE_PROFILE_DIR,
+    RANOBELIB_GENRES,
+    RANOBELIB_TAGS,
+    RulateToRanobeCreateWorker,
+    RulateDownloadWorker,
+    _clean_rulate_media_title,
+    _find_cached_chromium_executable,
+    _is_browser_missing_error,
+    _normalize_allowed_catalog_items,
+    _normalize_rulate_cover_url,
+    _normalize_rulate_media_payload,
+    _parse_ranobelib_catalog_response,
+    _prepare_ranobelib_author_payload,
+    _ranobelib_title_status_value,
+    _rulate_edit_info_url,
+    _rulate_public_book_url,
+)
 
 
 def _write_epub(path, chapter_bodies):
@@ -129,3 +146,228 @@ def test_rulate_worker_applies_full_site_titles_to_downloaded_chapters():
 
     assert chapters[0].title == "Очень длинное необрезанное название главы с сайта Rulate"
     assert chapters[1].title == "Второе длинное необрезанное название главы с сайта Rulate"
+
+
+def test_rulate_to_ranobelib_uses_qidian_rulate_cookie_profile():
+    if "QIDIAN_RULATE_PROFILE_DIR" not in os.environ:
+        assert ".qidian_rulate_creator" in str(QIDIAN_RULATE_PROFILE_DIR)
+        assert "rulate_profile" in str(QIDIAN_RULATE_PROFILE_DIR)
+
+
+def test_clean_rulate_media_title_removes_site_suffix():
+    assert _clean_rulate_media_title("Моя новелла | Rulate") == "Моя новелла"
+    assert _clean_rulate_media_title("Книга Моя новелла / читать онлайн") == "Моя новелла"
+
+
+def test_normalize_rulate_media_payload_for_ranobelib_create():
+    payload = _normalize_rulate_media_payload(
+        {
+            "title": "Моя новелла | Rulate",
+            "description": "Описание: первая строка\n\n\nвторая строка",
+            "cover_url": "/uploads/cover.webp",
+            "author": " Автор ",
+            "alt_names": ["My Novel", "My Novel"],
+            "original_source_url": "https://www.qidian.com/book/1041604040/",
+            "status": "Завершён",
+            "year": "2021 год",
+        },
+        "https://tl.rulate.ru/book/123",
+    )
+
+    assert payload["title_ru"] == "Моя новелла"
+    assert payload["original_title"] == "My Novel"
+    assert payload["title_en"] == "My Novel"
+    assert payload["alt_names"] == "My Novel"
+    assert payload["alt_hieroglyph_title"] == ""
+    assert payload["description"] == "первая строка\n\nвторая строка"
+    assert payload["cover_url"] == "https://tl.rulate.ru/uploads/cover.webp"
+    assert payload["source_url"] == "https://www.qidian.com/book/1041604040/"
+    assert payload["rulate_url"] == "https://tl.rulate.ru/book/123"
+    assert payload["rulate_edit_url"] == "https://tl.rulate.ru/book/123/edit/info"
+    assert payload["author"] == "Автор"
+    assert payload["status_value"] == "2"
+    assert payload["year"] == "2021"
+    assert payload["rulate_genres"] == []
+    assert payload["rulate_tags"] == []
+
+
+def test_normalize_rulate_media_payload_filters_noise_and_logo_cover():
+    payload = _normalize_rulate_media_payload(
+        {
+            "title": "Ночной страж Дафэна",
+            "original_title": "a: --- Продолжается Завершён Брошен",
+            "alt_names": ["大奉打更人"],
+            "cover_url": "https://tl.rulate.ru/i/logo/rulate-24.png",
+        },
+        "https://tl.rulate.ru/book/204281/edit/info",
+    )
+
+    assert payload["alt_hieroglyph_title"] == "大奉打更人"
+    assert "Продолжается" not in payload["original_title"]
+    assert payload["alt_names"] == "大奉打更人"
+    assert payload["cover_url"] == ""
+    assert _normalize_rulate_cover_url("/uploads/book-cover.webp", payload["source_url"]).endswith(
+        "/uploads/book-cover.webp"
+    )
+
+
+def test_normalize_rulate_media_payload_splits_concatenated_rulate_catalog(monkeypatch):
+    monkeypatch.setattr(
+        "workers._load_rulate_allowed_tags",
+        lambda: ["умный гг", "система", "магия"],
+    )
+    payload = _normalize_rulate_media_payload(
+        {
+            "title": "Каталог",
+            "genres": ["комедияфэнтезиприключениябоевые искусстваповседневность"],
+            "tags": ["умный ггсистемамагия"],
+        },
+        "https://tl.rulate.ru/book/123/edit/info",
+    )
+
+    assert payload["rulate_genres"] == [
+        "комедия",
+        "фэнтези",
+        "приключения",
+        "боевые искусства",
+        "повседневность",
+    ]
+    assert payload["rulate_tags"] == ["умный гг", "система", "магия"]
+
+
+def test_rulate_and_ranobelib_catalog_fields_are_kept_separate():
+    worker = RulateToRanobeCreateWorker(
+        "https://tl.rulate.ru/book/123",
+        options={
+            "rulate_genres": ["Фэнтези"],
+            "rulate_tags": ["Магия"],
+        },
+    )
+    data = worker._apply_options({"genres": ["Фэнтези"], "tags": ["Магия"]})
+
+    assert data["rulate_genres"] == ["Фэнтези"]
+    assert data["rulate_tags"] == ["Магия"]
+    assert data["genres"] == []
+    assert data["tags"] == []
+
+    worker = RulateToRanobeCreateWorker(
+        "https://tl.rulate.ru/book/123",
+        options={
+            "rulate_genres": ["Фэнтези"],
+            "rulate_tags": ["Магия"],
+            "genres": ["Драма"],
+            "tags": ["Умный ГГ"],
+        },
+    )
+    data = worker._apply_options({})
+
+    assert data["genres"] == ["Драма"]
+    assert data["tags"] == ["Умный ГГ"]
+
+
+def test_ranobelib_catalog_normalizer_splits_csv_and_glued_values():
+    assert _normalize_allowed_catalog_items(
+        ["Комедия, Повседневность", "Романтика"],
+        RANOBELIB_GENRES,
+        5,
+    ) == ["Комедия", "Повседневность", "Романтика"]
+
+    assert _normalize_allowed_catalog_items(
+        ["СистемаСовременностьРеинкарнация"],
+        RANOBELIB_TAGS,
+        8,
+    ) == ["Система", "Современность", "Реинкарнация"]
+
+
+def test_rulate_to_ranobelib_uses_prefetched_metadata_without_reopening_rulate():
+    worker = RulateToRanobeCreateWorker(
+        "https://tl.rulate.ru/book/123",
+        options={
+            "title_ru": "Уже загружено",
+            "source_url": "https://www.qidian.com/book/1041604040/",
+            "rulate_edit_url": "https://tl.rulate.ru/book/123/edit/info",
+        },
+    )
+
+    metadata = worker._read_rulate_metadata(playwright=None)
+
+    assert metadata["title_ru"] == "Уже загружено"
+    assert metadata["source_url"] == "https://www.qidian.com/book/1041604040/"
+    assert metadata["rulate_url"] == "https://tl.rulate.ru/book/123"
+
+
+def test_prepare_ranobelib_author_payload_uses_romanized_name(monkeypatch):
+    def fake_translate(value, target_lang, source_lang="auto", timeout=20):
+        return {"en": "Far Pupil", "ru": "Далёкий зрачок"}.get(target_lang, "")
+
+    monkeypatch.setattr("workers._google_translate_or_empty", fake_translate)
+    monkeypatch.setattr("workers._google_romanize_or_empty", lambda *args, **kwargs: "Yuan Tong")
+
+    payload = _prepare_ranobelib_author_payload("远瞳")
+
+    assert payload["name_en"] == "Yuan Tong"
+    assert payload["name_ru"] == "Далёкий зрачок"
+    assert "远瞳" in payload["aliases"]
+    assert "Far Pupil" in payload["aliases"]
+
+
+def test_ranobelib_title_status_value_defaults_to_ongoing():
+    assert _ranobelib_title_status_value("продолжается") == "1"
+    assert _ranobelib_title_status_value("выпуск прекращён") == "5"
+
+
+def test_parse_ranobelib_catalog_response_strictly_uses_allowed_items():
+    payload = _parse_ranobelib_catalog_response(
+        """
+        {
+          "genres": ["Фэнтези", "Мистика", "Несуществующий жанр", "Приключения"],
+          "tags": ["Магия", "Умный ГГ", "Чужой тег", "Фэнтези мир"],
+          "age_rating": "18+",
+          "title_status": "completed",
+          "translation_status": "frozen",
+          "release_year": "2024"
+        }
+        """
+    )
+
+    assert payload["genres"] == ["Фэнтези", "Мистика", "Приключения"]
+    assert payload["tags"] == ["Магия", "Умный ГГ", "Фэнтези мир"]
+    assert all(genre in RANOBELIB_GENRES for genre in payload["genres"])
+    assert all(tag in RANOBELIB_TAGS for tag in payload["tags"])
+    assert payload["age_value"] == "4"
+    assert payload["status_value"] == "2"
+    assert payload["translation_status_value"] == "3"
+    assert payload["year"] == "2024"
+
+
+def test_browser_missing_error_is_detected():
+    error = RuntimeError("Executable doesn't exist at C:/ms-playwright/chromium/chrome.exe\nplaywright install")
+
+    assert _is_browser_missing_error(error)
+
+
+def test_cached_chromium_prefers_newest_revision(monkeypatch, tmp_path):
+    older = tmp_path / "chromium-1000" / "chrome-win64" / "chrome.exe"
+    newer = tmp_path / "chromium-1223" / "chrome-win64" / "chrome.exe"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    older.write_text("", encoding="utf-8")
+    newer.write_text("", encoding="utf-8")
+    monkeypatch.setattr("workers._candidate_browser_cache_roots", lambda: [tmp_path])
+
+    assert _find_cached_chromium_executable() == newer
+
+
+def test_rulate_edit_info_url_is_used_for_metadata_source():
+    assert (
+        _rulate_edit_info_url("https://tl.rulate.ru/book/204281")
+        == "https://tl.rulate.ru/book/204281/edit/info"
+    )
+    assert (
+        _rulate_edit_info_url("https://tl.rulate.ru/book/204281/edit/info")
+        == "https://tl.rulate.ru/book/204281/edit/info"
+    )
+    assert (
+        _rulate_public_book_url("https://tl.rulate.ru/book/204281/edit/info")
+        == "https://tl.rulate.ru/book/204281"
+    )

@@ -298,6 +298,38 @@ class BackgroundFetchTests(unittest.TestCase):
         self.assertEqual(partial_order, full_order,
                          "Partial merge + Python sort must produce the same order as full SQL ORDER BY")
 
+    def test_partial_path_handles_cached_null_sequence_sort_key(self):
+        tm = self._make_stub_with_db()
+        completed_id = "00000000-0000-0000-0000-000000000002"
+        failed_id = "00000000-0000-0000-0000-000000000003"
+        with tm._get_read_only_conn() as conn:
+            conn.execute(
+                "UPDATE tasks SET sequence = NULL WHERE task_id = ?",
+                (completed_id,),
+            )
+            conn.commit()
+
+        full = tm._get_ui_state_list_background({"ids": (), "structural": True})
+        tm._ui_state_list_cache = full["entries"]
+        tm._sort_keys = full["sort_keys"]
+        self.assertEqual(tm._sort_keys[completed_id][1], float("-inf"))
+
+        with tm._get_read_only_conn() as conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'completed' WHERE task_id = ?",
+                (failed_id,),
+            )
+            conn.commit()
+
+        partial = tm._get_ui_state_list_background({
+            "ids": (failed_id,),
+            "structural": False,
+        })
+
+        self.assertEqual(partial["mode"], "partial")
+        partial_order = [str(e[0][0]) for e in partial["entries"]]
+        self.assertLess(partial_order.index(completed_id), partial_order.index(failed_id))
+
 
 class OnCacheUpdatedTests(unittest.TestCase):
     def _make_stub(self):

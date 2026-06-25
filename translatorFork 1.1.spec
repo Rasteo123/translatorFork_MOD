@@ -28,6 +28,7 @@ datas = [
     ('gemini_translator\\scripts\\chatgpt_workascii_bridge.cjs', 'gemini_translator\\scripts'),
     ('gemini_translator\\scripts\\chatgpt_profile_launcher.cjs', 'gemini_translator\\scripts'),
     ('qidian_rulate\\tags.txt', 'qidian_rulate'),
+    ('tools\\tomato', 'tools\\tomato'),
     ('playwright_runtime\\node.exe', 'playwright_runtime'),
     ('playwright_runtime\\package', 'playwright_runtime\\package'),
     ('playwright_runtime\\ms-playwright', 'playwright_runtime\\ms-playwright'),

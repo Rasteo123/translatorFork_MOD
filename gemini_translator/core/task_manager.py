@@ -92,6 +92,26 @@ STATUS_GROUP_ORDER = {
 }
 
 PARTIAL_REFRESH_THRESHOLD = 0.5  # if len(dirty_ids) > threshold * len(cache), use full path
+SORT_NULL_PRIORITY = float("-inf")
+SORT_NULL_SEQUENCE = float("-inf")
+
+
+def _coerce_sort_number(value, default):
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_sort_key(priority, sequence):
+    return (
+        _coerce_sort_number(priority, SORT_NULL_PRIORITY),
+        _coerce_sort_number(sequence, SORT_NULL_SEQUENCE),
+    )
 
 
 class ChapterQueueManager(QObject):
@@ -698,11 +718,24 @@ class ChapterQueueManager(QObject):
         with self._get_write_conn() as conn:
             # 1. Сохраняем успешные главы как 'completed'
             if successful_chapters:
+                cursor = conn.execute("SELECT MAX(sequence) FROM tasks WHERE status = 'completed'")
+                max_seq_row = cursor.fetchone()
+                max_seq = max_seq_row[0] if max_seq_row else None
+                start_seq = _coerce_sort_number(max_seq, -1) + 1
                 completed_tasks_to_insert = [
-                    (str(uuid.uuid4()), json.dumps(('epub', epub_path, chapter), default=tuple_serializer), 'completed')
-                    for chapter in successful_chapters
+                    (
+                        str(uuid.uuid4()),
+                        json.dumps(('epub', epub_path, chapter), default=tuple_serializer),
+                        'completed',
+                        start_seq + index,
+                        0,
+                    )
+                    for index, chapter in enumerate(successful_chapters)
                 ]
-                conn.executemany("INSERT INTO tasks (task_id, payload, status) VALUES (?, ?, ?)", completed_tasks_to_insert)
+                conn.executemany(
+                    "INSERT INTO tasks (task_id, payload, status, sequence, priority) VALUES (?, ?, ?, ?, ?)",
+                    completed_tasks_to_insert,
+                )
 
             # 2. Обновляем исходную задачу
             if not failed_chapters:
@@ -1477,7 +1510,7 @@ class ChapterQueueManager(QObject):
         ui_status = {'completed': 'success', 'failed': 'error'}.get(row['status'], row['status'])
         task_tuple_for_ui = (uuid.UUID(task_id_str), payload)
         details = error_histories.get(task_id_str, {})
-        return ((task_tuple_for_ui, ui_status, details), (row['priority'], row['sequence']))
+        return ((task_tuple_for_ui, ui_status, details), _normalize_sort_key(row['priority'], row['sequence']))
 
     def _fetch_partial_ui_state(self, conn, dirty_ids):
         if not dirty_ids:
@@ -1518,7 +1551,7 @@ class ChapterQueueManager(QObject):
         def _sort_key(entry):
             tid = str(entry[0][0])
             status = entry[1]
-            prio, seq = effective_sort_keys.get(tid, (0, 0))
+            prio, seq = _normalize_sort_key(*effective_sort_keys.get(tid, (0, 0)))
             return (STATUS_GROUP_ORDER.get(status, 6), -prio, seq)
 
         entries = sorted(merged_by_id.values(), key=_sort_key)

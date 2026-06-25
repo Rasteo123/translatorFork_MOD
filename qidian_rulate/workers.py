@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import atexit
 import asyncio
+import html
 import json
 import os
 import re
+import subprocess
 import sys
+import time
 import traceback
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -41,6 +45,7 @@ RULATE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 QIDIAN_BOOK_RE = re.compile(r"^https?://(?:www\.)?qidian\.com/book/\d+/?(?:[?#].*)?$", re.IGNORECASE)
+FANQIE_BOOK_RE = re.compile(r"^https?://(?:www\.)?fanqienovel\.com/page/\d+/?(?:[?#].*)?$", re.IGNORECASE)
 RULATE_CATEGORY_URL = "https://tl.rulate.ru/book/0/edit/cat"
 RULATE_INFO_URL = "https://tl.rulate.ru/book/0/edit/info#general"
 RULATE_LOGIN_URL = "https://tl.rulate.ru/book/0/edit/info"
@@ -50,6 +55,22 @@ RULATE_BOOK_TYPE_SELECTOR = 'a.create-card.card-book[href*="typ=A"]'
 RULATE_CHINESE_CATEGORY_TITLE = "Китайские"
 QIDIAN_COVER_PROMPT_CHAPTER_COUNT = 3
 QIDIAN_COVER_PROMPT_MAX_CHARS = 18000
+TOMATO_WEB_URL_ENV = "TOMATO_NOVEL_WEB_URL"
+TOMATO_WEB_PASSWORD_ENV = "TOMATO_NOVEL_WEB_PASSWORD"
+TOMATO_SAVE_DIR_ENV = "TOMATO_NOVEL_SAVE_DIR"
+TOMATO_EXE_ENV = "TOMATO_NOVEL_DOWNLOADER_EXE"
+TOMATO_AUTO_START_ENV = "TOMATO_NOVEL_AUTO_START"
+TOMATO_WEB_DEFAULT_URL = "http://127.0.0.1:18423"
+TOMATO_JOB_TIMEOUT_SECONDS = 180
+TOMATO_STARTUP_TIMEOUT_SECONDS = 30
+TOMATO_EXE_PATTERNS = (
+    "Tomato-Novel-Downloader*.exe",
+    "TomatoNovelDownloader*.exe",
+    "tomato-novel-downloader*.exe",
+    "tomato*downloader*.exe",
+)
+_TOMATO_AUTOSTART_PROCESS: subprocess.Popen | None = None
+_TOMATO_AUTOSTART_CLEANUP_REGISTERED = False
 
 QIDIAN_DESCRIPTION_HEADER = "作品简介"
 QIDIAN_DESCRIPTION_HEADERS = {
@@ -108,6 +129,21 @@ _RULATE_TAGS_CACHE: list[str] | None = None
 
 def validate_qidian_url(url: str) -> bool:
     return bool(QIDIAN_BOOK_RE.match((url or "").strip()))
+
+
+def validate_fanqie_url(url: str) -> bool:
+    return bool(FANQIE_BOOK_RE.match((url or "").strip()))
+
+
+def validate_source_url(url: str) -> bool:
+    url = (url or "").strip()
+    return validate_qidian_url(url) or validate_fanqie_url(url)
+
+
+def _source_name(url: str) -> str:
+    if validate_fanqie_url(url):
+        return "Fanqie"
+    return "Qidian"
 
 
 def _tag_file_candidates() -> list[Path]:
@@ -708,7 +744,7 @@ def build_catalog_prompt(
 Исходные данные:
 Китайское название: {metadata.title_original}
 Автор: {metadata.author_name}
-Оригинальное описание Qidian:
+Оригинальное описание источника:
 {metadata.description}
 
 Название EN:
@@ -740,6 +776,466 @@ def _clean_qidian_chapter_text(value: str | None) -> str:
     return _clean_multiline("\n".join(lines))
 
 
+def _strip_html_to_text(value: str | None) -> str:
+    value = str(value or "")
+    value = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", value)
+    value = re.sub(r"(?i)</\s*p\s*>", "\n", value)
+    value = re.sub(r"(?i)</\s*div\s*>", "\n", value)
+    value = re.sub(r"<[^>]+>", "", value)
+    return html.unescape(value)
+
+
+def _is_likely_fanqie_obfuscated_text(value: str | None) -> bool:
+    text = str(value or "")
+    if not text:
+        return False
+    private_chars = sum(1 for char in text if "\ue000" <= char <= "\uf8ff")
+    cjk_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    return private_chars >= 20 and private_chars > cjk_chars
+
+
+def _clean_fanqie_chapter_text(value: str | None) -> str:
+    text = _strip_html_to_text(value)
+    if _is_likely_fanqie_obfuscated_text(text):
+        return ""
+    return _clean_qidian_chapter_text(text)
+
+
+def _fanqie_book_id(url: str) -> str:
+    match = re.search(r"/page/(\d+)", str(url or ""))
+    return match.group(1) if match else ""
+
+
+def _tomato_web_base_url() -> str:
+    value = os.environ.get(TOMATO_WEB_URL_ENV, TOMATO_WEB_DEFAULT_URL).strip()
+    if value.lower() in {"0", "false", "off", "disabled", "none"}:
+        return ""
+    return value.rstrip("/")
+
+
+def _tomato_web_headers() -> dict[str, str]:
+    password = os.environ.get(TOMATO_WEB_PASSWORD_ENV, "").strip()
+    return {"x-tomato-password": password} if password else {}
+
+
+def _tomato_auto_start_enabled() -> bool:
+    value = os.environ.get(TOMATO_AUTO_START_ENV, "1").strip().lower()
+    return value not in {"0", "false", "off", "no", "disabled", "none"}
+
+
+def _tomato_web_is_local(base_url: str) -> bool:
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _tomato_bind_addr_from_base_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 18423
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{host}:{port}"
+
+
+def _tomato_executable_candidates_from_dir(directory: Path) -> list[Path]:
+    if not directory.exists() or not directory.is_dir():
+        return []
+    candidates: list[Path] = []
+    for pattern in TOMATO_EXE_PATTERNS:
+        candidates.extend(directory.glob(pattern))
+        candidates.extend(directory.glob(f"*/{pattern}"))
+    return [candidate for candidate in candidates if candidate.exists() and candidate.is_file()]
+
+
+def _find_tomato_executable() -> Path | None:
+    env_value = os.environ.get(TOMATO_EXE_ENV, "").strip()
+    if env_value:
+        env_path = Path(env_value)
+        if env_path.exists() and env_path.is_file():
+            return env_path
+        for candidate in _tomato_executable_candidates_from_dir(env_path):
+            return candidate
+
+    roots: list[Path] = []
+    module_root = Path(__file__).resolve().parents[1]
+    roots.extend([
+        api_config.get_resource_path("tools/tomato"),
+        api_config.get_resource_path("tomato"),
+        module_root,
+        module_root / "tomato",
+        module_root / "tools",
+        module_root / "tools" / "tomato",
+        Path.cwd(),
+        Path.cwd() / "tomato",
+    ])
+    try:
+        executable_dir = api_config.get_executable_dir()
+        if executable_dir:
+            roots.extend([Path(executable_dir), Path(executable_dir) / "tomato", Path(executable_dir) / "tools" / "tomato"])
+    except Exception:
+        pass
+    try:
+        internal_dir = api_config.get_internal_resource_dir()
+        if internal_dir:
+            roots.extend([Path(internal_dir), Path(internal_dir) / "tomato", Path(internal_dir) / "tools" / "tomato"])
+    except Exception:
+        pass
+    try:
+        dev_root = api_config.get_dev_project_root()
+        if dev_root:
+            roots.extend([Path(dev_root), Path(dev_root) / "tomato", Path(dev_root) / "tools" / "tomato"])
+    except Exception:
+        pass
+
+    downloads_dir = Path.home() / "Downloads"
+    roots.extend([
+        downloads_dir,
+        downloads_dir / "tomato",
+        downloads_dir / "Tomato-Novel-Downloader",
+    ])
+
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except Exception:
+            resolved = root
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates = _tomato_executable_candidates_from_dir(resolved)
+        if candidates:
+            return max(candidates, key=lambda path: path.stat().st_mtime)
+    return None
+
+
+def _stop_tomato_autostart_process() -> None:
+    process = _TOMATO_AUTOSTART_PROCESS
+    if process and process.poll() is None:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+
+
+def _start_tomato_web_server(
+    session: requests.Session,
+    base_url: str,
+    headers: dict[str, str],
+    *,
+    log_callback=None,
+) -> bool:
+    global _TOMATO_AUTOSTART_PROCESS, _TOMATO_AUTOSTART_CLEANUP_REGISTERED
+
+    def log(level: str, message: str) -> None:
+        if callable(log_callback):
+            log_callback(level, message)
+
+    if not _tomato_auto_start_enabled():
+        log("INFO", f"Tomato: автозапуск отключён через {TOMATO_AUTO_START_ENV}.")
+        return False
+    if not _tomato_web_is_local(base_url):
+        log("WARNING", "Tomato: автозапуск доступен только для локального Web UI.")
+        return False
+
+    process = _TOMATO_AUTOSTART_PROCESS
+    if process and process.poll() is None:
+        log("INFO", "Tomato: Web UI уже запускается, жду готовности...")
+    else:
+        executable = _find_tomato_executable()
+        if not executable:
+            log(
+                "WARNING",
+                f"Tomato: exe не найден. Укажите путь в {TOMATO_EXE_ENV} или положите TomatoNovelDownloader*.exe рядом с программой.",
+            )
+            return False
+
+        env = os.environ.copy()
+        env.setdefault("TOMATO_WEB_ADDR", _tomato_bind_addr_from_base_url(base_url))
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        try:
+            log("INFO", f"Tomato: запускаю Web UI из {executable}...")
+            _TOMATO_AUTOSTART_PROCESS = subprocess.Popen(
+                [str(executable), "--server"],
+                cwd=str(executable.parent),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        except Exception as error:
+            log("WARNING", f"Tomato: не удалось запустить Web UI: {error}")
+            return False
+
+        if not _TOMATO_AUTOSTART_CLEANUP_REGISTERED:
+            atexit.register(_stop_tomato_autostart_process)
+            _TOMATO_AUTOSTART_CLEANUP_REGISTERED = True
+
+    deadline = time.monotonic() + TOMATO_STARTUP_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        process = _TOMATO_AUTOSTART_PROCESS
+        if process and process.poll() is not None:
+            log("WARNING", f"Tomato: Web UI завершился сразу после запуска с кодом {process.returncode}.")
+            return False
+        try:
+            response = session.get(f"{base_url}/api/status", headers=headers, timeout=2.5)
+            if response.ok or response.status_code == 401:
+                log("SUCCESS", "Tomato: Web UI запущен.")
+                return True
+        except requests.RequestException:
+            pass
+        time.sleep(0.5)
+
+    log("WARNING", "Tomato: Web UI не ответил после автозапуска, использую Playwright.")
+    return False
+
+
+def _tomato_status_folder(save_root: Path, book_id: str) -> Path:
+    safe_book_id = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", book_id).strip(" ._")
+    return save_root / (safe_book_id or book_id)
+
+
+def _tomato_record_text(record) -> tuple[str, str]:
+    if isinstance(record, list):
+        title = _clean_text(str(record[0] if len(record) > 0 else ""))
+        content = record[1] if len(record) > 1 else ""
+        return title, str(content or "")
+    if isinstance(record, dict):
+        title = _clean_text(str(record.get("title") or record.get("name") or ""))
+        content = record.get("content") or record.get("text") or ""
+        return title, str(content or "")
+    return "", ""
+
+
+def _read_tomato_chapters_from_folder(folder: Path, *, limit: int = QIDIAN_COVER_PROMPT_CHAPTER_COUNT) -> str:
+    records: list[tuple[str, str]] = []
+    seen_ids: set[str] = set()
+
+    journal_path = folder / "downloaded_chapters.jsonl"
+    if journal_path.exists():
+        try:
+            with journal_path.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    if len(records) >= limit:
+                        break
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        payload = json.loads(raw_line)
+                    except Exception:
+                        continue
+                    chapter_id = _clean_text(str(payload.get("id") or ""))
+                    if chapter_id and chapter_id in seen_ids:
+                        continue
+                    title = _clean_text(str(payload.get("title") or ""))
+                    text = _clean_fanqie_chapter_text(str(payload.get("content") or ""))
+                    if not text or text == "[本章下载失败]":
+                        continue
+                    if chapter_id:
+                        seen_ids.add(chapter_id)
+                    records.append((title, text))
+        except OSError:
+            pass
+
+    status_path = folder / "status.json"
+    if status_path.exists() and len(records) < limit:
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+            downloaded = payload.get("downloaded") if isinstance(payload, dict) else None
+            if isinstance(downloaded, dict):
+                for chapter_id, record in downloaded.items():
+                    if len(records) >= limit:
+                        break
+                    chapter_id = _clean_text(str(chapter_id))
+                    if chapter_id and chapter_id in seen_ids:
+                        continue
+                    title, raw_text = _tomato_record_text(record)
+                    text = _clean_fanqie_chapter_text(raw_text)
+                    if not text or text == "[本章下载失败]":
+                        continue
+                    if chapter_id:
+                        seen_ids.add(chapter_id)
+                    records.append((title, text))
+        except Exception:
+            pass
+
+    chapters = []
+    for index, (title, text) in enumerate(records[:limit], start=1):
+        chapter_title = title or f"Глава {index}"
+        chapters.append(f"{chapter_title}\n{text}")
+    return _truncate_cover_source_text("\n\n".join(chapters))
+
+
+def _tomato_save_root(session: requests.Session, base_url: str, headers: dict[str, str]) -> Path:
+    env_value = os.environ.get(TOMATO_SAVE_DIR_ENV, "").strip()
+    if env_value:
+        return Path(env_value)
+
+    try:
+        response = session.get(f"{base_url}/api/library", params={"start": "false"}, headers=headers, timeout=8)
+        if response.ok:
+            root = _clean_text(str(response.json().get("root") or ""))
+            if root:
+                return Path(root)
+    except Exception:
+        pass
+
+    try:
+        response = session.get(f"{base_url}/api/config/full", headers=headers, timeout=8)
+        if response.ok:
+            save_path = _clean_text(str(response.json().get("save_path") or ""))
+            if save_path:
+                return Path(save_path)
+    except Exception:
+        pass
+
+    return Path.cwd()
+
+
+def _tomato_submit_waiting_choices(
+    session: requests.Session,
+    base_url: str,
+    headers: dict[str, str],
+    job: dict,
+    submitted: set[str],
+) -> None:
+    job_id = job.get("id")
+    if not job_id:
+        return
+    if job.get("book_name_options") and "book_name" not in submitted:
+        try:
+            session.post(f"{base_url}/api/jobs/{job_id}/book_name", json={"value": None}, headers=headers, timeout=8)
+            submitted.add("book_name")
+        except Exception:
+            pass
+    if job.get("format_options") and "format" not in submitted:
+        try:
+            session.post(f"{base_url}/api/jobs/{job_id}/format", json={"value": "txt"}, headers=headers, timeout=8)
+            submitted.add("format")
+        except Exception:
+            pass
+
+
+def _fetch_fanqie_chapters_via_tomato(
+    source_url: str,
+    *,
+    log_callback=None,
+    limit: int = QIDIAN_COVER_PROMPT_CHAPTER_COUNT,
+) -> str:
+    def log(level: str, message: str) -> None:
+        if callable(log_callback):
+            log_callback(level, message)
+
+    base_url = _tomato_web_base_url()
+    if not base_url:
+        return ""
+
+    book_id = _fanqie_book_id(source_url)
+    if not book_id:
+        return ""
+
+    headers = _tomato_web_headers()
+    session = requests.Session()
+    try:
+        status = session.get(f"{base_url}/api/status", headers=headers, timeout=2.5)
+    except requests.RequestException as error:
+        if os.environ.get(TOMATO_WEB_URL_ENV):
+            log("INFO", f"Tomato: Web UI недоступен ({base_url}), пробую автозапуск: {error}")
+        else:
+            log("INFO", "Tomato: локальный Web UI не запущен, пробую автозапуск.")
+        if not _start_tomato_web_server(session, base_url, headers, log_callback=log_callback):
+            return ""
+        try:
+            status = session.get(f"{base_url}/api/status", headers=headers, timeout=8)
+        except requests.RequestException as retry_error:
+            log("WARNING", f"Tomato: Web UI не ответил после автозапуска: {retry_error}")
+            return ""
+    if status.status_code == 401:
+        log("WARNING", f"Tomato: Web UI требует пароль; укажите {TOMATO_WEB_PASSWORD_ENV}.")
+        return ""
+    if not status.ok:
+        log("WARNING", f"Tomato: Web UI вернул HTTP {status.status_code}, использую Playwright.")
+        return ""
+
+    log("INFO", f"Tomato: скачиваю первые {limit} главы Fanqie через локальный Web UI...")
+    try:
+        response = session.post(
+            f"{base_url}/api/jobs",
+            json={"book_id": source_url, "range_start": 1, "range_end": limit},
+            headers=headers,
+            timeout=12,
+        )
+        if response.status_code == 429:
+            log("WARNING", "Tomato: уже есть активная задача, использую Playwright.")
+            return ""
+        if response.status_code == 401:
+            log("WARNING", f"Tomato: Web UI требует пароль; укажите {TOMATO_WEB_PASSWORD_ENV}.")
+            return ""
+        response.raise_for_status()
+        job_payload = response.json()
+        job_id = job_payload.get("id")
+        resolved_book_id = _clean_text(str(job_payload.get("book_id") or book_id))
+        if not job_id:
+            log("WARNING", "Tomato: Web UI не вернул id задачи, использую Playwright.")
+            return ""
+    except Exception as error:
+        log("WARNING", f"Tomato: не удалось создать задачу загрузки: {error}")
+        return ""
+
+    submitted: set[str] = set()
+    deadline = time.monotonic() + TOMATO_JOB_TIMEOUT_SECONDS
+    last_state = ""
+    while time.monotonic() < deadline:
+        try:
+            response = session.get(
+                f"{base_url}/api/jobs",
+                params={"id": job_id, "all": "true"},
+                headers=headers,
+                timeout=8,
+            )
+            response.raise_for_status()
+            items = response.json().get("items") or []
+        except Exception as error:
+            log("WARNING", f"Tomato: не удалось получить статус задачи: {error}")
+            return ""
+        if not items:
+            log("WARNING", "Tomato: задача пропала из списка, использую Playwright.")
+            return ""
+
+        job = items[0]
+        _tomato_submit_waiting_choices(session, base_url, headers, job, submitted)
+        state = str(job.get("state") or "")
+        if state and state != last_state:
+            last_state = state
+            log("INFO", f"Tomato: состояние задачи {state}.")
+        if state == "done":
+            break
+        if state in {"failed", "canceled"}:
+            message = _clean_text(str(job.get("message") or state))
+            log("WARNING", f"Tomato: задача завершилась неуспешно: {message}")
+            return ""
+        time.sleep(1.5)
+    else:
+        log("WARNING", "Tomato: задача не завершилась за отведённое время, использую Playwright.")
+        return ""
+
+    save_root = _tomato_save_root(session, base_url, headers)
+    folder = _tomato_status_folder(save_root, resolved_book_id)
+    chapters_text = _read_tomato_chapters_from_folder(folder, limit=limit)
+    if not chapters_text:
+        log("WARNING", f"Tomato: скачанные главы не найдены в {folder}, использую Playwright.")
+        return ""
+    log("SUCCESS", f"Tomato: главы для контекста обложки взяты из {folder}.")
+    return chapters_text
+
+
 def _truncate_cover_source_text(text: str, max_chars: int = QIDIAN_COVER_PROMPT_MAX_CHARS) -> str:
     text = _clean_multiline(text)
     if len(text) <= max_chars:
@@ -757,7 +1253,7 @@ def build_cover_prompt_request(title_ru: str, chapters_text: str, original_descr
 
 ВВОДНЫЕ ДАННЫЕ:
 1. Название (RU): {title_ru}
-2. Оригинальное описание Qidian:
+2. Оригинальное описание источника:
 {original_description or "[описание не найдено]"}
 3. Текст первых глав:
 {chapters_text}
@@ -867,13 +1363,17 @@ class QidianFetchWorker(QThread):
 
     def run(self) -> None:
         try:
-            if not validate_qidian_url(self.qidian_url):
-                raise ValueError("Введите ссылку вида https://www.qidian.com/book/1041604040/")
+            if not validate_source_url(self.qidian_url):
+                raise ValueError(
+                    "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
+                    "или https://fanqienovel.com/page/7229603492648717324"
+                )
 
             configure_playwright_runtime()
             from playwright.sync_api import sync_playwright
 
-            self.log("INFO", "Qidian: открываю страницу книги...")
+            source = _source_name(self.qidian_url)
+            self.log("INFO", f"{source}: открываю страницу книги...")
             with sync_playwright() as playwright:
                 browser = _launch_chromium(
                     playwright,
@@ -890,47 +1390,60 @@ class QidianFetchWorker(QThread):
                 )
                 try:
                     page.goto(self.qidian_url, wait_until="domcontentloaded", timeout=60000)
-                    try:
-                        page.wait_for_function(
-                            """() => {
-                                const body = document.body && document.body.innerText;
-                                return body && /(?:作品|内容|书籍|小说)(?:简介|介绍)/.test(body) && body.length > 1000;
-                            }""",
-                            timeout=12000,
-                        )
-                    except Exception:
-                        page.wait_for_timeout(2500)
-                    payload = page.evaluate(_QIDIAN_EXTRACT_SCRIPT)
+                    if validate_fanqie_url(self.qidian_url):
+                        try:
+                            page.wait_for_function(
+                                "() => window.__INITIAL_STATE__ && window.__INITIAL_STATE__.page && window.__INITIAL_STATE__.page.bookName",
+                                timeout=12000,
+                            )
+                        except Exception:
+                            page.wait_for_timeout(2500)
+                        payload = page.evaluate(_FANQIE_EXTRACT_SCRIPT)
+                    else:
+                        try:
+                            page.wait_for_function(
+                                """() => {
+                                    const body = document.body && document.body.innerText;
+                                    return body && /(?:作品|内容|书籍|小说)(?:简介|介绍)/.test(body) && body.length > 1000;
+                                }""",
+                                timeout=12000,
+                            )
+                        except Exception:
+                            page.wait_for_timeout(2500)
+                        payload = page.evaluate(_QIDIAN_EXTRACT_SCRIPT)
                 finally:
                     browser.close()
 
             title_original = _clean_text(payload.get("title"))
             author_name = _clean_text(payload.get("author"))
             cover_url = _normalize_url(payload.get("cover_url"), self.qidian_url)
+            description = _clean_multiline(payload.get("description"))
+            if not validate_fanqie_url(self.qidian_url):
+                description = _select_qidian_description(
+                    payload,
+                    title=title_original,
+                    author=author_name,
+                )
             metadata = QidianBookMetadata(
                 source_url=self.qidian_url,
                 title_original=title_original,
                 author_name=author_name,
-                description=_select_qidian_description(
-                    payload,
-                    title=title_original,
-                    author=author_name,
-                ),
+                description=description,
                 cover_url=cover_url,
                 cover_image_data=_download_cover_image(cover_url, referer=self.qidian_url),
             )
             if not metadata.title_original:
-                raise ValueError("Qidian: не удалось определить название книги.")
+                raise ValueError(f"{source}: не удалось определить название книги.")
             if not metadata.author_name:
-                self.log("WARNING", "Qidian: автор не найден, его можно вписать вручную.")
+                self.log("WARNING", f"{source}: автор не найден, его можно вписать вручную.")
             if not metadata.description:
-                self.log("WARNING", "Qidian: описание не найдено, его можно вставить вручную.")
+                self.log("WARNING", f"{source}: описание не найдено, его можно вставить вручную.")
             if metadata.cover_url and not metadata.cover_image_data:
-                self.log("WARNING", "Qidian: ссылка на обложку найдена, но предпросмотр загрузить не удалось.")
+                self.log("WARNING", f"{source}: ссылка на обложку найдена, но предпросмотр загрузить не удалось.")
             self.metadata_ready.emit(metadata)
-            self.log("SUCCESS", f"Qidian: получено '{metadata.title_original}'.")
+            self.log("SUCCESS", f"{source}: получено '{metadata.title_original}'.")
         except Exception as error:
-            self.log("ERROR", f"Qidian: {error}")
+            self.log("ERROR", f"Источник: {error}")
             self.log("DEBUG", traceback.format_exc())
         finally:
             self.finished_signal.emit()
@@ -1060,6 +1573,120 @@ def _fetch_qidian_cover_context(
     return _truncate_cover_source_text("\n\n".join(chapters)), description
 
 
+def _fetch_fanqie_cover_context(
+    source_url: str,
+    *,
+    visible_browser: bool = False,
+    original_description: str = "",
+    log_callback=None,
+) -> tuple[str, str]:
+    def log(level: str, message: str) -> None:
+        if callable(log_callback):
+            log_callback(level, message)
+
+    description = _clean_multiline(original_description)
+    log("INFO", "Fanqie: ищу первые главы для контекста обложки...")
+    tomato_chapters = _fetch_fanqie_chapters_via_tomato(
+        source_url,
+        log_callback=log_callback,
+        limit=QIDIAN_COVER_PROMPT_CHAPTER_COUNT,
+    )
+    if tomato_chapters and description:
+        log("SUCCESS", "Fanqie: получено глав для контекста обложки через Tomato.")
+        return tomato_chapters, description
+
+    configure_playwright_runtime()
+    from playwright.sync_api import sync_playwright
+
+    chapters = []
+    with sync_playwright() as playwright:
+        browser = _launch_chromium(
+            playwright,
+            headless=not visible_browser,
+            log_callback=log,
+        )
+        page = browser.new_page(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        )
+        try:
+            page.goto(source_url, wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_function(
+                    "() => window.__INITIAL_STATE__ && window.__INITIAL_STATE__.page && window.__INITIAL_STATE__.page.bookName",
+                    timeout=12000,
+                )
+            except Exception:
+                page.wait_for_timeout(3000)
+
+            payload = page.evaluate(_FANQIE_EXTRACT_SCRIPT)
+            if not description:
+                description = _clean_multiline(payload.get("description"))
+                if description:
+                    log("SUCCESS", "Fanqie: описание добавлено в контекст обложки.")
+
+            if tomato_chapters:
+                log("SUCCESS", "Fanqie: получено глав для контекста обложки через Tomato.")
+                return tomato_chapters, description
+
+            links = page.evaluate(_FANQIE_CHAPTER_LINKS_SCRIPT, QIDIAN_COVER_PROMPT_CHAPTER_COUNT)
+            if not links:
+                raise ValueError("На странице книги не найдены ссылки на главы.")
+
+            for index, link in enumerate(links[:QIDIAN_COVER_PROMPT_CHAPTER_COUNT], start=1):
+                href = link.get("href") if isinstance(link, dict) else ""
+                if not href:
+                    continue
+                title = _clean_text(link.get("title") if isinstance(link, dict) else "") or f"Глава {index}"
+                log("INFO", f"Fanqie: читаю {title}...")
+                page.goto(href, wait_until="domcontentloaded", timeout=60000)
+                try:
+                    page.wait_for_selector(".muye-reader-content, .reader-content, article", timeout=12000)
+                except Exception:
+                    page.wait_for_timeout(2500)
+                chapter_payload = page.evaluate(_FANQIE_CHAPTER_TEXT_SCRIPT)
+                chapter_title = title or _clean_text(chapter_payload.get("title")) or f"Глава {index}"
+                chapter_text = _clean_fanqie_chapter_text(chapter_payload.get("text"))
+                if not chapter_text:
+                    log(
+                        "WARNING",
+                        f"Fanqie: текст главы '{title}' не получен или обфусцирован, пропускаю.",
+                    )
+                    continue
+                chapters.append(f"{chapter_title}\n{chapter_text}")
+        finally:
+            browser.close()
+
+    log("SUCCESS", f"Fanqie: получено глав для контекста обложки: {len(chapters)}.")
+    return _truncate_cover_source_text("\n\n".join(chapters)), description
+
+
+def _fetch_source_cover_context(
+    source_url: str,
+    *,
+    visible_browser: bool = False,
+    original_description: str = "",
+    log_callback=None,
+) -> tuple[str, str]:
+    if validate_fanqie_url(source_url):
+        return _fetch_fanqie_cover_context(
+            source_url,
+            visible_browser=visible_browser,
+            original_description=original_description,
+            log_callback=log_callback,
+        )
+    return _fetch_qidian_cover_context(
+        source_url,
+        visible_browser=visible_browser,
+        original_description=original_description,
+        log_callback=log_callback,
+    )
+
+
 class AiPrepareWorker(QThread):
     log_signal = pyqtSignal(str, str)
     prepared_ready = pyqtSignal(object)
@@ -1117,9 +1744,10 @@ class AiPrepareWorker(QThread):
                 raise ValueError("AI не вернул описание на русском.")
 
             chapters_text = ""
-            if validate_qidian_url(self.metadata.source_url):
+            if validate_source_url(self.metadata.source_url):
                 try:
-                    chapters_text, original_description = _fetch_qidian_cover_context(
+                    source = _source_name(self.metadata.source_url)
+                    chapters_text, original_description = _fetch_source_cover_context(
                         self.metadata.source_url,
                         visible_browser=self.visible_browser,
                         original_description=self.metadata.description,
@@ -1128,9 +1756,9 @@ class AiPrepareWorker(QThread):
                     if original_description and not self.metadata.description:
                         self.metadata.description = original_description
                 except Exception as error:
-                    self.log("WARNING", f"Qidian: главы для промпта обложки не получены, продолжаю без них: {error}")
+                    self.log("WARNING", f"{source}: главы для промпта обложки не получены, продолжаю без них: {error}")
             else:
-                self.log("WARNING", "Qidian: ссылка на оригинал не задана, промпт обложки будет без текста глав.")
+                self.log("WARNING", "Источник: ссылка на оригинал не задана, промпт обложки будет без текста глав.")
 
             self.log("INFO", "AI: подбираю жанры, теги и промпт обложки...")
             catalog_prompt = build_catalog_prompt(self.metadata, prepared, chapters_text)
@@ -1205,8 +1833,11 @@ class CoverPromptWorker(QThread):
 
     def run(self) -> None:
         try:
-            if not validate_qidian_url(self.qidian_url):
-                raise ValueError("Введите ссылку вида https://www.qidian.com/book/1041604040/")
+            if not validate_source_url(self.qidian_url):
+                raise ValueError(
+                    "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
+                    "или https://fanqienovel.com/page/7229603492648717324"
+                )
             if not self.title_ru:
                 raise ValueError("Заполните русское название перед генерацией промпта обложки.")
             if not self.provider_id:
@@ -1216,7 +1847,7 @@ class CoverPromptWorker(QThread):
 
             chapters_text = self._fetch_chapters_text()
             if not chapters_text:
-                raise ValueError("Не удалось получить текст первых глав Qidian.")
+                self.log("WARNING", "Источник: текст первых глав не получен, генерирую промпт по описанию.")
 
             prompt = build_cover_prompt_request(
                 self.title_ru,
@@ -1246,7 +1877,7 @@ class CoverPromptWorker(QThread):
             self.finished_signal.emit()
 
     def _fetch_chapters_text(self) -> str:
-        chapters_text, original_description = _fetch_qidian_cover_context(
+        chapters_text, original_description = _fetch_source_cover_context(
             self.qidian_url,
             visible_browser=self.visible_browser,
             original_description=self.original_description,
@@ -1744,6 +2375,125 @@ _QIDIAN_CHAPTER_TEXT_SCRIPT = r"""() => {
         ".chapter-wrapper",
         "article",
     ];
+    for (const selector of candidates) {
+        const value = text(document.querySelector(selector));
+        if (value.length > 200) return {title, text: value};
+    }
+    return {title, text: ""};
+}"""
+
+
+_FANQIE_EXTRACT_SCRIPT = r"""() => {
+    const state = window.__INITIAL_STATE__ || {};
+    const page = state.page || {};
+    const text = (node) => (node && node.textContent ? node.textContent.replace(/\s+/g, " ").trim() : "");
+    const attr = (selector, name) => {
+        const node = document.querySelector(selector);
+        return node ? (node.getAttribute(name) || "").trim() : "";
+    };
+    const meta = (name) => (
+        attr(`meta[property="${name}"]`, "content") ||
+        attr(`meta[name="${name}"]`, "content")
+    );
+    const firstText = (selectors) => {
+        for (const selector of selectors) {
+            const value = text(document.querySelector(selector));
+            if (value) return value;
+        }
+        return "";
+    };
+    const firstAttr = (selectors, name) => {
+        for (const selector of selectors) {
+            const value = attr(selector, name);
+            if (value) return value;
+        }
+        return "";
+    };
+    const jsonLdImages = () => {
+        for (const script of Array.from(document.querySelectorAll('script[type="application/ld+json"]'))) {
+            try {
+                const payload = JSON.parse(script.textContent || "{}");
+                const image = Array.isArray(payload.image) ? payload.image[0] : payload.image;
+                if (image) return image;
+                const images = Array.isArray(payload.images) ? payload.images[0] : payload.images;
+                if (images) return images;
+            } catch (_) {}
+        }
+        return "";
+    };
+    return {
+        title: page.bookName || firstText(["h1", ".info-name h1"]) || (document.title || "").split("_")[0].replace(/完整版在线免费阅读$/, "").trim(),
+        author: page.author || firstText([".author-name-text", ".author-name"]) || "",
+        description: page.abstract || firstText([".page-abstract-content p", ".page-abstract-content"]) || meta("description") || "",
+        cover_url:
+            page.thumbUrl ||
+            page.thumbUri ||
+            jsonLdImages() ||
+            firstAttr([".book-cover-img", ".book-cover img", "img[alt]"], "src"),
+        body_text: document.body && document.body.innerText ? document.body.innerText.replace(/\r/g, "").trim() : "",
+        meta_description: meta("description")
+    };
+}"""
+
+
+_FANQIE_CHAPTER_LINKS_SCRIPT = r"""(limit) => {
+    const state = window.__INITIAL_STATE__ || {};
+    const page = state.page || {};
+    const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+    const result = [];
+    const seen = new Set();
+    const add = (href, title, order) => {
+        if (!href || seen.has(href)) return;
+        seen.add(href);
+        result.push({href, title: normalize(title), order: Number(order) || result.length + 1});
+    };
+
+    const volumes = Array.isArray(page.chapterListWithVolume) ? page.chapterListWithVolume : [];
+    for (const volume of volumes) {
+        for (const item of (Array.isArray(volume) ? volume : [])) {
+            if (!item || !item.itemId) continue;
+            add(new URL(`/reader/${item.itemId}`, location.href).href, item.title || "", item.realChapterOrder);
+        }
+    }
+
+    if (!result.length) {
+        for (const anchor of Array.from(document.querySelectorAll('a[href*="/reader/"]'))) {
+            add(anchor.href, anchor.innerText || anchor.textContent || "", result.length + 1);
+        }
+    }
+
+    return result
+        .sort((left, right) => (left.order - right.order))
+        .slice(0, limit || 3)
+        .map(({href, title}) => ({href, title}));
+}"""
+
+
+_FANQIE_CHAPTER_TEXT_SCRIPT = r"""() => {
+    const state = window.__INITIAL_STATE__ || {};
+    const data = (state.reader && state.reader.chapterData) || {};
+    const text = (node) => node ? (node.innerText || node.textContent || "").replace(/\r/g, "").trim() : "";
+    const htmlToText = (value) => {
+        const div = document.createElement("div");
+        div.innerHTML = value || "";
+        return text(div);
+    };
+    const title =
+        data.title ||
+        text(document.querySelector(".muye-reader-title")) ||
+        text(document.querySelector("h1")) ||
+        (document.title || "").split("_")[0].trim();
+    const fromState = htmlToText(data.content || "");
+    if (fromState) return {title, text: fromState};
+
+    const paragraphs = Array.from(document.querySelectorAll(".muye-reader-content p, .reader-content p, article p"))
+        .map(node => text(node))
+        .filter(Boolean);
+    if (paragraphs.length) {
+        return {title, text: paragraphs.join("\n")};
+    }
+
+    const candidates = [".muye-reader-content", ".reader-content", "article"];
     for (const selector of candidates) {
         const value = text(document.querySelector(selector));
         if (value.length > 200) return {title, text: value};

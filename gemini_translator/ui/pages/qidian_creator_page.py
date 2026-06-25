@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""QidianCreatorPage — Qidian → Rulate creator as an embeddable ShellPage."""
+"""QidianCreatorPage — Qidian/Fanqie → Rulate creator as an embeddable ShellPage."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from qidian_rulate.workers import (
     RulateLoginWorker,
     _download_cover_image,
     normalize_rulate_tags,
-    validate_qidian_url,
+    validate_source_url,
 )
 
 from ..widgets.key_management_widget import KeyManagementWidget
@@ -43,7 +43,7 @@ from gemini_translator.ui.dialogs.qidian_rulate_creator import _split_csv
 
 
 class QidianCreatorPage(ShellPage):
-    page_title = "Qidian → Rulate"
+    page_title = "Qidian/Fanqie → Rulate"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -117,16 +117,18 @@ class QidianCreatorPage(ShellPage):
         layout = QVBoxLayout(group)
 
         url_row = QHBoxLayout()
-        url_row.addWidget(QLabel("Qidian URL:"))
+        url_row.addWidget(QLabel("URL источника:"))
         self.qidian_url_edit = QLineEdit("https://www.qidian.com/book/1041604040/")
-        self.qidian_url_edit.setPlaceholderText("https://www.qidian.com/book/1041604040/")
+        self.qidian_url_edit.setPlaceholderText(
+            "https://www.qidian.com/book/1041604040/ или https://fanqienovel.com/page/7229603492648717324"
+        )
         url_row.addWidget(self.qidian_url_edit, 1)
-        self.visible_qidian_checkbox = QCheckBox("Открывать Qidian видимо")
+        self.visible_qidian_checkbox = QCheckBox("Открывать источник видимо")
         url_row.addWidget(self.visible_qidian_checkbox)
         layout.addLayout(url_row)
 
         action_row = QHBoxLayout()
-        self.fetch_qidian_btn = QPushButton("Получить данные Qidian")
+        self.fetch_qidian_btn = QPushButton("Получить данные источника")
         self.fetch_qidian_btn.clicked.connect(self._fetch_qidian)
         action_row.addWidget(self.fetch_qidian_btn)
 
@@ -165,7 +167,7 @@ class QidianCreatorPage(ShellPage):
         return splitter
 
     def _build_qidian_group(self) -> QGroupBox:
-        group = QGroupBox("Данные Qidian")
+        group = QGroupBox("Данные источника")
         layout = QFormLayout(group)
 
         self.original_title_edit = QLineEdit()
@@ -248,8 +250,13 @@ class QidianCreatorPage(ShellPage):
 
     def _fetch_qidian(self) -> None:
         url = self.qidian_url_edit.text().strip()
-        if not validate_qidian_url(url):
-            QMessageBox.warning(self, "Qidian", "Введите ссылку вида https://www.qidian.com/book/1041604040/")
+        if not validate_source_url(url):
+            QMessageBox.warning(
+                self,
+                "Источник",
+                "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
+                "или https://fanqienovel.com/page/7229603492648717324",
+            )
             return
         self.fetch_qidian_btn.setEnabled(False)
         worker = QidianFetchWorker(url, visible_browser=self.visible_qidian_checkbox.isChecked())
@@ -285,8 +292,13 @@ class QidianCreatorPage(ShellPage):
 
     def _generate_cover_prompt(self) -> None:
         url = self.source_url_edit.text().strip() or self.qidian_url_edit.text().strip()
-        if not validate_qidian_url(url):
-            QMessageBox.warning(self, "Обложка", "Введите ссылку вида https://www.qidian.com/book/1041604040/")
+        if not validate_source_url(url):
+            QMessageBox.warning(
+                self,
+                "Обложка",
+                "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
+                "или https://fanqienovel.com/page/7229603492648717324",
+            )
             return
 
         title_ru = self.translated_title_edit.text().strip()

@@ -145,8 +145,13 @@ call :build_app_base "ПОЛНОСТЬЮ ПОРТАТИВНАЯ"
 --clean ^
 --icon="gemini_translator\GT.ico" ^
 --noconfirm ^
+--collect-data="PyQt6" ^
 --collect-data="certifi" ^
 --collect-data="docx" ^
+--collect-data="emoji" ^
+--collect-data="jieba" ^
+--collect-data="lxml" ^
+--collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
@@ -155,19 +160,26 @@ call :build_app_base "ПОЛНОСТЬЮ ПОРТАТИВНАЯ"
 --onefile ^
 --add-data "config;config" ^
 --add-data "README.md;." ^
---add-data "ranobelib/__init__.py;ranobelib" ^
---add-data "ranobelib/api_upload.py;ranobelib" ^
---add-data "ranobelib/constants.py;ranobelib" ^
---add-data "ranobelib/dependencies.py;ranobelib" ^
---add-data "ranobelib/dialogs.py;ranobelib" ^
---add-data "ranobelib/main.py;ranobelib" ^
---add-data "ranobelib/main_window.py;ranobelib" ^
---add-data "ranobelib/models.py;ranobelib" ^
---add-data "ranobelib/parsers.py;ranobelib" ^
---add-data "ranobelib/ranobelib-upload.mjs;ranobelib" ^
---add-data "ranobelib/ranobelib_uploader_v12.py;ranobelib" ^
---add-data "ranobelib/utils.py;ranobelib" ^
---add-data "ranobelib/workers.py;ranobelib"
+--add-data "gemini_translator\scripts\chatgpt_workascii_bridge.cjs;gemini_translator\scripts" ^
+--add-data "gemini_translator\scripts\chatgpt_profile_launcher.cjs;gemini_translator\scripts" ^
+--add-data "qidian_rulate\tags.txt;qidian_rulate" ^
+--add-data "tools\tomato;tools\tomato" ^
+--add-data "ranobelib\__init__.py;ranobelib" ^
+--add-data "ranobelib\api_upload.py;ranobelib" ^
+--add-data "ranobelib\constants.py;ranobelib" ^
+--add-data "ranobelib\dependencies.py;ranobelib" ^
+--add-data "ranobelib\dialogs.py;ranobelib" ^
+--add-data "ranobelib\main.py;ranobelib" ^
+--add-data "ranobelib\main_window.py;ranobelib" ^
+--add-data "ranobelib\models.py;ranobelib" ^
+--add-data "ranobelib\parsers.py;ranobelib" ^
+--add-data "ranobelib\ranobelib-upload.mjs;ranobelib" ^
+--add-data "ranobelib\ranobelib_uploader_v12.py;ranobelib" ^
+--add-data "ranobelib\utils.py;ranobelib" ^
+--add-data "ranobelib\workers.py;ranobelib" ^
+--add-data "playwright_runtime\node.exe;playwright_runtime" ^
+--add-data "playwright_runtime\package;playwright_runtime\package" ^
+--add-data "playwright_runtime\ms-playwright;playwright_runtime\ms-playwright"
 call :build_app_end
 goto :eof
 
@@ -181,8 +193,13 @@ call :build_app_base "ГИБРИДНАЯ"
 --clean ^
 --icon="gemini_translator\GT.ico" ^
 --noconfirm ^
+--collect-data="PyQt6" ^
 --collect-data="certifi" ^
 --collect-data="docx" ^
+--collect-data="emoji" ^
+--collect-data="jieba" ^
+--collect-data="lxml" ^
+--collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
@@ -194,6 +211,13 @@ if %ERRORLEVEL% EQU 0 (
     echo [+] Этап 3 из 3: Копирование внешних данных...
     xcopy "config" "dist\config\" /E /I /Y /Q > nul
     copy /Y "README.md" "dist\README.md" > nul
+    if not exist "dist\gemini_translator\scripts" mkdir "dist\gemini_translator\scripts"
+    copy /Y "gemini_translator\scripts\chatgpt_workascii_bridge.cjs" "dist\gemini_translator\scripts\chatgpt_workascii_bridge.cjs" > nul
+    if not exist "dist\gemini_translator\scripts" mkdir "dist\gemini_translator\scripts"
+    copy /Y "gemini_translator\scripts\chatgpt_profile_launcher.cjs" "dist\gemini_translator\scripts\chatgpt_profile_launcher.cjs" > nul
+    if not exist "dist\qidian_rulate" mkdir "dist\qidian_rulate"
+    copy /Y "qidian_rulate\tags.txt" "dist\qidian_rulate\tags.txt" > nul
+    xcopy "tools\tomato" "dist\tools\tomato\" /E /I /Y /Q > nul
     if not exist "dist\ranobelib" mkdir "dist\ranobelib"
     copy /Y "ranobelib\__init__.py" "dist\ranobelib\__init__.py" > nul
     if not exist "dist\ranobelib" mkdir "dist\ranobelib"
@@ -220,6 +244,10 @@ if %ERRORLEVEL% EQU 0 (
     copy /Y "ranobelib\utils.py" "dist\ranobelib\utils.py" > nul
     if not exist "dist\ranobelib" mkdir "dist\ranobelib"
     copy /Y "ranobelib\workers.py" "dist\ranobelib\workers.py" > nul
+    if not exist "dist\playwright_runtime" mkdir "dist\playwright_runtime"
+    copy /Y "playwright_runtime\node.exe" "dist\playwright_runtime\node.exe" > nul
+    xcopy "playwright_runtime\package" "dist\playwright_runtime\package\" /E /I /Y /Q > nul
+    xcopy "playwright_runtime\ms-playwright" "dist\playwright_runtime\ms-playwright\" /E /I /Y /Q > nul
     echo [OK] Данные скопированы.
 )
 call :build_app_end
@@ -235,8 +263,13 @@ call :build_app_base "ПРОДВИНУТАЯ"
 --clean ^
 --icon="gemini_translator\GT.ico" ^
 --noconfirm ^
+--collect-data="PyQt6" ^
 --collect-data="certifi" ^
 --collect-data="docx" ^
+--collect-data="emoji" ^
+--collect-data="jieba" ^
+--collect-data="lxml" ^
+--collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
@@ -247,6 +280,13 @@ if %ERRORLEVEL% EQU 0 (
     echo [+] Этап 3 из 3: Копирование внешних данных...
     xcopy "config" "dist\%AppName%\config\" /E /I /Y /Q > nul
     copy /Y "README.md" "dist\%AppName%\README.md" > nul
+    if not exist "dist\%AppName%\gemini_translator\scripts" mkdir "dist\%AppName%\gemini_translator\scripts"
+    copy /Y "gemini_translator\scripts\chatgpt_workascii_bridge.cjs" "dist\%AppName%\gemini_translator\scripts\chatgpt_workascii_bridge.cjs" > nul
+    if not exist "dist\%AppName%\gemini_translator\scripts" mkdir "dist\%AppName%\gemini_translator\scripts"
+    copy /Y "gemini_translator\scripts\chatgpt_profile_launcher.cjs" "dist\%AppName%\gemini_translator\scripts\chatgpt_profile_launcher.cjs" > nul
+    if not exist "dist\%AppName%\qidian_rulate" mkdir "dist\%AppName%\qidian_rulate"
+    copy /Y "qidian_rulate\tags.txt" "dist\%AppName%\qidian_rulate\tags.txt" > nul
+    xcopy "tools\tomato" "dist\%AppName%\tools\tomato\" /E /I /Y /Q > nul
     if not exist "dist\%AppName%\ranobelib" mkdir "dist\%AppName%\ranobelib"
     copy /Y "ranobelib\__init__.py" "dist\%AppName%\ranobelib\__init__.py" > nul
     if not exist "dist\%AppName%\ranobelib" mkdir "dist\%AppName%\ranobelib"
@@ -273,6 +313,10 @@ if %ERRORLEVEL% EQU 0 (
     copy /Y "ranobelib\utils.py" "dist\%AppName%\ranobelib\utils.py" > nul
     if not exist "dist\%AppName%\ranobelib" mkdir "dist\%AppName%\ranobelib"
     copy /Y "ranobelib\workers.py" "dist\%AppName%\ranobelib\workers.py" > nul
+    if not exist "dist\%AppName%\playwright_runtime" mkdir "dist\%AppName%\playwright_runtime"
+    copy /Y "playwright_runtime\node.exe" "dist\%AppName%\playwright_runtime\node.exe" > nul
+    xcopy "playwright_runtime\package" "dist\%AppName%\playwright_runtime\package\" /E /I /Y /Q > nul
+    xcopy "playwright_runtime\ms-playwright" "dist\%AppName%\playwright_runtime\ms-playwright\" /E /I /Y /Q > nul
     echo [OK] Данные скопированы.
 )
 call :build_app_end
@@ -351,8 +395,13 @@ call :build_app_base "ИНСТАЛЛЯТОР"
 --clean ^
 --icon="gemini_translator\GT.ico" ^
 --noconfirm ^
+--collect-data="PyQt6" ^
 --collect-data="certifi" ^
 --collect-data="docx" ^
+--collect-data="emoji" ^
+--collect-data="jieba" ^
+--collect-data="lxml" ^
+--collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
@@ -367,6 +416,13 @@ echo.
 echo [+] Этап 3 из 4: Копирование внешних данных...
     xcopy "config" "dist\%AppName%\config\" /E /I /Y /Q > nul
     copy /Y "README.md" "dist\%AppName%\README.md" > nul
+    if not exist "dist\%AppName%\gemini_translator\scripts" mkdir "dist\%AppName%\gemini_translator\scripts"
+    copy /Y "gemini_translator\scripts\chatgpt_workascii_bridge.cjs" "dist\%AppName%\gemini_translator\scripts\chatgpt_workascii_bridge.cjs" > nul
+    if not exist "dist\%AppName%\gemini_translator\scripts" mkdir "dist\%AppName%\gemini_translator\scripts"
+    copy /Y "gemini_translator\scripts\chatgpt_profile_launcher.cjs" "dist\%AppName%\gemini_translator\scripts\chatgpt_profile_launcher.cjs" > nul
+    if not exist "dist\%AppName%\qidian_rulate" mkdir "dist\%AppName%\qidian_rulate"
+    copy /Y "qidian_rulate\tags.txt" "dist\%AppName%\qidian_rulate\tags.txt" > nul
+    xcopy "tools\tomato" "dist\%AppName%\tools\tomato\" /E /I /Y /Q > nul
     if not exist "dist\%AppName%\ranobelib" mkdir "dist\%AppName%\ranobelib"
     copy /Y "ranobelib\__init__.py" "dist\%AppName%\ranobelib\__init__.py" > nul
     if not exist "dist\%AppName%\ranobelib" mkdir "dist\%AppName%\ranobelib"
@@ -393,6 +449,10 @@ echo [+] Этап 3 из 4: Копирование внешних данных..
     copy /Y "ranobelib\utils.py" "dist\%AppName%\ranobelib\utils.py" > nul
     if not exist "dist\%AppName%\ranobelib" mkdir "dist\%AppName%\ranobelib"
     copy /Y "ranobelib\workers.py" "dist\%AppName%\ranobelib\workers.py" > nul
+    if not exist "dist\%AppName%\playwright_runtime" mkdir "dist\%AppName%\playwright_runtime"
+    copy /Y "playwright_runtime\node.exe" "dist\%AppName%\playwright_runtime\node.exe" > nul
+    xcopy "playwright_runtime\package" "dist\%AppName%\playwright_runtime\package\" /E /I /Y /Q > nul
+    xcopy "playwright_runtime\ms-playwright" "dist\%AppName%\playwright_runtime\ms-playwright\" /E /I /Y /Q > nul
 echo [OK] Данные скопированы.
 echo.
 echo [+] Этап 4 из 4: Создание инсталлятора через Inno Setup...

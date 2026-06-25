@@ -47,6 +47,44 @@ def test_batch_response_normalizes_split_epub_heading_to_h1():
     assert '<h2>Glava 175</h2>' not in final_html
 
 
+def test_batch_response_accepts_multi_h2_heading_collapsed_to_one_line():
+    parser = ResponseParser(
+        worker=None,
+        log_callback=lambda _message: None,
+        validator_func=validate_html_structure,
+        prompt_builder=_PromptBuilderStub(),
+    )
+    original_contents = {
+        "Text/ch42.xhtml": (
+            '<html><body class="chapter">'
+            '<h2>Chapter 42</h2>'
+            '<h2>Review: Hidden plot</h2>'
+            '<p>First source paragraph.</p>'
+            '</body></html>'
+        )
+    }
+    translated_response = (
+        '<!-- 0 -->\n'
+        '<body class="chapter">'
+        '<h2>Glava 42 Review: Hidden plot</h2>'
+        '<p>Translated paragraph.</p>'
+        '</body>\n'
+        '<!-- 1 -->'
+    )
+
+    report = parser.unpack_and_validate_batch(
+        translated_response,
+        ["Text/ch42.xhtml"],
+        original_contents,
+    )
+
+    assert report["failed"] == []
+    assert len(report["successful"]) == 1
+    final_html = report["successful"][0]["final_html"]
+    assert '<h1>Glava 42 Review: Hidden plot</h1>' in final_html
+    assert '<h2>Glava 42 Review: Hidden plot</h2>' not in final_html
+
+
 def test_batch_response_uses_eof_when_last_end_marker_is_missing():
     parser = ResponseParser(
         worker=None,

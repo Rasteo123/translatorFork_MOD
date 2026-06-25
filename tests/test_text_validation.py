@@ -70,6 +70,28 @@ def test_validate_html_structure_normalizes_split_epub_heading_to_h1():
     assert '<h2>Глава 175: «Визит тети»</h2>' not in repaired
 
 
+def test_validate_html_structure_accepts_multi_h2_heading_collapsed_by_ai():
+    original = (
+        '<body class="chapter">'
+        '<h2>Chapter 42</h2>'
+        '<h2>Review: Hidden plot</h2>'
+        '<p>First paragraph.</p>'
+        '</body>'
+    )
+    translated = (
+        '<body class="chapter">'
+        '<h2>Glava 42 Review: Hidden plot</h2>'
+        '<p>Translated paragraph.</p>'
+        '</body>'
+    )
+
+    is_valid, reason, repaired = validate_html_structure(original, translated)
+
+    assert is_valid, reason
+    assert '<h1>Glava 42 Review: Hidden plot</h1>' in repaired
+    assert '<h2>Glava 42 Review: Hidden plot</h2>' not in repaired
+
+
 def test_normalize_translated_body_wrapper_repairs_inner_html_response():
     original = '<body id="main"><p>Source text.</p></body>'
     translated = '<p>Переведенный текст.</p>'

@@ -200,8 +200,8 @@ class StartupToolDialog(QDialog):
         )
         extra_tools_layout.addWidget(ranobelib_widget)
         qidian_rulate_widget = self._create_tool_widget(
-            "Qidian -> Rulate",
-            "Создание черновика книги на Rulate: данные с Qidian, AI-перевод названия и описания, жанры, теги и автозаполнение формы.",
+            "Qidian/Fanqie -> Rulate",
+            "Создание черновика книги на Rulate: данные с Qidian/Fanqie, AI-перевод названия и описания, жанры, теги и автозаполнение формы.",
             "qidian_rulate_creator"
         )
         extra_tools_layout.addWidget(qidian_rulate_widget)

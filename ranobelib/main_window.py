@@ -1,14 +1,18 @@
+import json
 import logging
 import os
+import re
+import urllib.request
 from datetime import datetime, timedelta
 
-from PyQt6.QtCore import QDateTime, QSettings, Qt, QUrl
+from PyQt6.QtCore import QDateTime, QObject, QSettings, QThread, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QKeySequence,
+    QPixmap,
     QShortcut,
 )
 from PyQt6.QtWidgets import (
@@ -19,6 +23,7 @@ from PyQt6.QtWidgets import (
     QDateTimeEdit,
     QDialog,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -34,6 +39,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSystemTrayIcon,
+    QTabWidget,
     QTextEdit,
     QToolBar,
     QVBoxLayout,
@@ -57,9 +63,101 @@ from utils import format_num, validate_rulate_url, validate_url
 from workers import (
     LastChapterDetector,
     LoginWorker,
+    RanobeLibCatalogMatchWorker,
+    RANOBELIB_GENRES,
+    RANOBELIB_TAGS,
     RulateDownloadWorker,
+    RulateToRanobeMetadataWorker,
+    RulateToRanobeCreateWorker,
     UploadWorker,
 )
+
+try:
+    from gemini_translator.ui.widgets.key_management_widget import KeyManagementWidget
+    from gemini_translator.ui.widgets.model_settings_widget import ModelSettingsWidget
+    from gemini_translator.utils.settings import SettingsManager
+except Exception:
+    KeyManagementWidget = None
+    ModelSettingsWidget = None
+    SettingsManager = None
+
+
+def _split_csv_text(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"[,;\n]+", text or "") if part.strip()]
+
+
+class _CoverPreviewWorker(QThread):
+    image_ready = pyqtSignal(bytes, str)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, url: str, referer: str = ""):
+        super().__init__()
+        self.url = url
+        self.referer = referer
+
+    def run(self):
+        try:
+            request = urllib.request.Request(
+                self.url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                    ),
+                    "Referer": self.referer or "https://tl.rulate.ru/",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=25) as response:
+                data = response.read(8 * 1024 * 1024)
+            if not data:
+                raise RuntimeError("пустой ответ")
+            self.image_ready.emit(data, self.url)
+        except Exception as error:
+            self.failed.emit(str(error), self.url)
+
+
+class _RanobeEventBus(QObject):
+    event_posted = pyqtSignal(dict)
+    data_changed = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._topic_subscribers = {}
+        self._data_store = {}
+        self.event_posted.connect(self._dispatch_to_topics)
+
+    def subscribe(self, event_name: str, callback):
+        subscribers = self._topic_subscribers.setdefault(event_name, [])
+        if callback not in subscribers:
+            subscribers.append(callback)
+
+    def unsubscribe(self, event_name: str, callback):
+        subscribers = self._topic_subscribers.get(event_name) or []
+        if callback in subscribers:
+            subscribers.remove(callback)
+
+    def _dispatch_to_topics(self, event: dict):
+        event_name = event.get("event") if isinstance(event, dict) else None
+        if not event_name:
+            return
+        for callback in list(self._topic_subscribers.get(event_name, [])):
+            try:
+                callback(event)
+            except Exception:
+                pass
+
+    def emit_event(self, event: dict):
+        self.event_posted.emit(event)
+
+    def set_data(self, key: str, value):
+        self._data_store[key] = value
+        self.data_changed.emit(key)
+
+    def pop_data(self, key: str, default=None):
+        return self._data_store.pop(key, default)
+
+    def get_data(self, key: str, default=None):
+        return self._data_store.get(key, default)
 
 class RanobeUploaderApp(QMainWindow):
 
@@ -81,10 +179,39 @@ class RanobeUploaderApp(QMainWindow):
         self._last_lib_chapter = 0.0    # v12: номер последней главы на lib
         self._process_dialogs: dict[str, ProcessDialog] = {}
         self._return_to_menu_handler = None
+        self._rulate_media_metadata: dict = {}
+        self._cover_preview_workers: list[_CoverPreviewWorker] = []
+        self._ensure_event_bus()
+        self.settings_manager = self._resolve_settings_manager()
+        self.server_manager = getattr(QApplication.instance(), "server_manager", None)
 
         self._build_ui()
         self._setup_tray_icon()
         self._restore_settings()
+
+    def _ensure_event_bus(self):
+        app = QApplication.instance()
+        if app and not hasattr(app, "event_bus"):
+            app.event_bus = _RanobeEventBus()
+
+    def _resolve_settings_manager(self):
+        app = QApplication.instance()
+        if app and hasattr(app, "get_settings_manager"):
+            try:
+                return app.get_settings_manager()
+            except Exception:
+                pass
+        if SettingsManager is None:
+            return None
+        try:
+            manager = SettingsManager()
+            if app:
+                app.settings_manager = manager
+                app.get_settings_manager = lambda manager=manager: manager
+            return manager
+        except Exception as error:
+            logging.warning("RanobeLib: SettingsManager недоступен: %s", error)
+            return None
 
     # ── Построение интерфейса ──
 
@@ -153,6 +280,16 @@ class RanobeUploaderApp(QMainWindow):
         self.lbl_stats = QLabel("OK: 0  Ошибки: 0  Пропущено: 0")
         self.statusBar().addPermanentWidget(self.lbl_stats)
 
+        self.main_tabs = QTabWidget()
+        layout.addWidget(self.main_tabs, 1)
+        self.main_tabs.addTab(self._build_rulate_media_tab(), "Rulate → RanobeLib")
+        self._connect_rulate_media_ai_widgets()
+
+        upload_tab = QWidget()
+        upload_layout = QVBoxLayout(upload_tab)
+        upload_layout.setSpacing(6)
+        layout = upload_layout
+
         # 1. URL RanobeLib
         layout.addWidget(QLabel("1. URL страницы добавления глав (RanobeLib):"))
         url_row = QHBoxLayout()
@@ -194,10 +331,11 @@ class RanobeUploaderApp(QMainWindow):
         self.rulate_url_input.setPlaceholderText("https://tl.rulate.ru/book/123870")
         rulate_url_row.addWidget(self.rulate_url_input)
 
-        self.btn_login_rulate = QPushButton("Войти в Rulate (опционально)")
+        self.btn_login_rulate = QPushButton("Войти в Rulate (главы)")
         self.btn_login_rulate.setToolTip(
             "Авторизация нужна только для скачивания платных глав.\n"
-            "Бесплатные главы скачиваются без входа в аккаунт."
+            "Бесплатные главы скачиваются без входа в аккаунт.\n"
+            "Создание карточки RanobeLib использует куки из Qidian/Fanqie → Rulate."
         )
         self.btn_login_rulate.clicked.connect(self._start_login_rulate)
         rulate_url_row.addWidget(self.btn_login_rulate)
@@ -393,7 +531,10 @@ class RanobeUploaderApp(QMainWindow):
         self.btn_stop.setMinimumHeight(40)
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
-        main_layout.addLayout(btn_row)
+        layout.addLayout(btn_row)
+
+        self.main_tabs.addTab(upload_tab, "Загрузка глав")
+        self.main_tabs.setCurrentIndex(0)
 
         # Шорткаты
         QShortcut(QKeySequence("Ctrl+A"), self).activated.connect(self._select_all)
@@ -405,6 +546,210 @@ class RanobeUploaderApp(QMainWindow):
             "INFO",
             f"Готов. v{APP_VERSION} — .epub, .zip(docx), .txt, .md, .html + Rulate + API",
         )
+
+    def _build_rulate_media_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        source_group = QGroupBox("Источник")
+        source_layout = QVBoxLayout(source_group)
+        url_row = QHBoxLayout()
+        url_row.addWidget(QLabel("URL Rulate:"))
+        self.media_rulate_url_input = QLineEdit()
+        self.media_rulate_url_input.setPlaceholderText("https://tl.rulate.ru/book/204281/edit/info")
+        url_row.addWidget(self.media_rulate_url_input, 1)
+        self.btn_media_copy_url = QPushButton("Из вкладки глав")
+        self.btn_media_copy_url.clicked.connect(self._copy_rulate_url_to_media)
+        url_row.addWidget(self.btn_media_copy_url)
+        source_layout.addLayout(url_row)
+
+        action_row = QHBoxLayout()
+        self.btn_fetch_rulate_media = QPushButton("Получить данные Rulate")
+        self.btn_fetch_rulate_media.clicked.connect(self._fetch_rulate_media_metadata)
+        action_row.addWidget(self.btn_fetch_rulate_media)
+        self.btn_match_ranobelib_catalog = QPushButton("AI подобрать жанры/теги")
+        self.btn_match_ranobelib_catalog.clicked.connect(self._match_ranobelib_catalog_ai)
+        action_row.addWidget(self.btn_match_ranobelib_catalog)
+        self.btn_create_ranobelib_media = QPushButton("Открыть и заполнить RanobeLib")
+        self.btn_create_ranobelib_media.clicked.connect(self._create_ranobelib_media_from_rulate)
+        action_row.addWidget(self.btn_create_ranobelib_media)
+        action_row.addStretch()
+        source_layout.addLayout(action_row)
+        layout.addWidget(source_group)
+
+        form_group = QGroupBox("Карточка")
+        form = QFormLayout(form_group)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        self.media_title_ru_edit = QLineEdit()
+        self.media_original_title_edit = QLineEdit()
+        self.media_alt_hieroglyph_edit = QLineEdit()
+        self.media_title_en_edit = QLineEdit()
+        self.media_alt_names_edit = QLineEdit()
+        self.media_author_edit = QLineEdit()
+        author_widget = QWidget()
+        author_layout = QHBoxLayout(author_widget)
+        author_layout.setContentsMargins(0, 0, 0, 0)
+        author_layout.addWidget(self.media_author_edit, 1)
+        self.media_create_author_chk = QCheckBox("создать если не найден")
+        self.media_create_author_chk.setChecked(True)
+        author_layout.addWidget(self.media_create_author_chk)
+
+        self.media_cover_url_edit = QLineEdit()
+        self.media_cover_url_edit.editingFinished.connect(self._refresh_media_cover_preview)
+        self.btn_media_cover_preview = QPushButton("Обновить превью")
+        self.btn_media_cover_preview.clicked.connect(self._refresh_media_cover_preview)
+        cover_url_widget = QWidget()
+        cover_url_layout = QHBoxLayout(cover_url_widget)
+        cover_url_layout.setContentsMargins(0, 0, 0, 0)
+        cover_url_layout.addWidget(self.media_cover_url_edit, 1)
+        cover_url_layout.addWidget(self.btn_media_cover_preview)
+
+        self.media_cover_preview_label = QLabel("Нет обложки")
+        self.media_cover_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.media_cover_preview_label.setFixedSize(150, 220)
+        self.media_cover_preview_label.setStyleSheet(
+            "QLabel { border: 1px solid #555; background: #202020; color: #aaa; }"
+        )
+
+        self.media_year_edit = QLineEdit()
+        self.media_year_edit.setText("2026")
+        self.media_year_edit.setPlaceholderText("2026")
+
+        self.media_type_combo = QComboBox()
+        self.media_type_combo.addItem("Китай", "12")
+        self.media_type_combo.addItem("Япония", "10")
+        self.media_type_combo.addItem("Корея", "11")
+        self.media_type_combo.addItem("Английский", "13")
+        self.media_type_combo.addItem("Авторский", "14")
+        self.media_type_combo.addItem("Фанфик", "15")
+
+        self.media_status_combo = QComboBox()
+        self.media_status_combo.addItem("Онгоинг", "1")
+        self.media_status_combo.addItem("Завершён", "2")
+        self.media_status_combo.addItem("Анонс", "3")
+        self.media_status_combo.addItem("Приостановлен", "4")
+        self.media_status_combo.addItem("Выпуск прекращён", "5")
+
+        self.media_age_combo = QComboBox()
+        self.media_age_combo.addItem("16+", "3")
+        self.media_age_combo.addItem("6+", "1")
+        self.media_age_combo.addItem("12+", "2")
+        self.media_age_combo.addItem("18+", "4")
+
+        self.media_translation_status_combo = QComboBox()
+        self.media_translation_status_combo.addItem("Продолжается", "1")
+        self.media_translation_status_combo.addItem("Завершён", "2")
+        self.media_translation_status_combo.addItem("Заморожен", "3")
+        self.media_translation_status_combo.addItem("Заброшен", "4")
+
+        self.media_chapter_upload_combo = QComboBox()
+        self.media_chapter_upload_combo.addItem("Создатель и переводчики", "2")
+        self.media_chapter_upload_combo.addItem("Все", "0")
+
+        self.media_rulate_genres_edit = QTextEdit()
+        self.media_rulate_genres_edit.setAcceptRichText(False)
+        self.media_rulate_genres_edit.setReadOnly(True)
+        self.media_rulate_genres_edit.setMaximumHeight(62)
+
+        self.media_rulate_tags_edit = QTextEdit()
+        self.media_rulate_tags_edit.setAcceptRichText(False)
+        self.media_rulate_tags_edit.setReadOnly(True)
+        self.media_rulate_tags_edit.setMaximumHeight(70)
+
+        self.media_genres_edit = QTextEdit()
+        self.media_genres_edit.setAcceptRichText(False)
+        self.media_genres_edit.setMaximumHeight(70)
+        self.media_genres_edit.setPlaceholderText(", ".join(RANOBELIB_GENRES[:8]) + "...")
+
+        self.media_tags_edit = QTextEdit()
+        self.media_tags_edit.setAcceptRichText(False)
+        self.media_tags_edit.setMaximumHeight(90)
+        self.media_tags_edit.setPlaceholderText(", ".join(RANOBELIB_TAGS[:8]) + "...")
+
+        self.media_description_edit = QTextEdit()
+        self.media_description_edit.setAcceptRichText(False)
+        self.media_description_edit.setMinimumHeight(110)
+
+        form.addRow("Название RU:", self.media_title_ru_edit)
+        form.addRow("Оригинальное название:", self.media_original_title_edit)
+        form.addRow("Альтернативное (иероглифы):", self.media_alt_hieroglyph_edit)
+        form.addRow("Название EN:", self.media_title_en_edit)
+        form.addRow("Альтернативные:", self.media_alt_names_edit)
+        form.addRow("Автор:", author_widget)
+        form.addRow("Обложка URL:", cover_url_widget)
+        form.addRow("Превью обложки:", self.media_cover_preview_label)
+        form.addRow("Год релиза:", self.media_year_edit)
+        form.addRow("Тип:", self.media_type_combo)
+        form.addRow("Статус тайтла:", self.media_status_combo)
+        form.addRow("Возраст:", self.media_age_combo)
+        form.addRow("Статус перевода:", self.media_translation_status_combo)
+        form.addRow("Загрузка глав:", self.media_chapter_upload_combo)
+        form.addRow("Жанры Rulate:", self.media_rulate_genres_edit)
+        form.addRow("Теги Rulate:", self.media_rulate_tags_edit)
+        form.addRow("Жанры RanobeLib:", self.media_genres_edit)
+        form.addRow("Теги RanobeLib:", self.media_tags_edit)
+        form.addRow("Описание:", self.media_description_edit)
+        layout.addWidget(form_group)
+
+        ai_group = QGroupBox("AI")
+        ai_layout = QVBoxLayout(ai_group)
+        if KeyManagementWidget and ModelSettingsWidget and self.settings_manager:
+            self.media_key_widget = KeyManagementWidget(
+                self.settings_manager,
+                self,
+                server_manager=self.server_manager,
+            )
+            self.media_model_settings_widget = ModelSettingsWidget(
+                self,
+                settings_manager=self.settings_manager,
+                server_manager=self.server_manager,
+            )
+            self.media_model_settings_widget.set_cjk_options_visible(False)
+            self.media_model_settings_widget.set_glossary_options_visible(False)
+            self.media_model_settings_widget.set_misc_options_visible(False)
+            ai_layout.addWidget(self.media_key_widget)
+            ai_layout.addWidget(self.media_model_settings_widget)
+        else:
+            self.media_key_widget = None
+            self.media_model_settings_widget = None
+            ai_layout.addWidget(QLabel("AI-настройки недоступны в этой сборке."))
+            self.btn_match_ranobelib_catalog.setEnabled(False)
+        layout.addWidget(ai_group)
+
+        hint = QLabel(
+            "Форма RanobeLib заполняется в браузере. Финальная кнопка «Создать» не нажимается автоматически."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        return tab
+
+    def _connect_rulate_media_ai_widgets(self):
+        if not self.media_key_widget or not self.media_model_settings_widget:
+            return
+        provider_id = self.media_key_widget.get_selected_provider()
+        self.media_model_settings_widget.set_available_models(provider_id)
+        self.media_key_widget.provider_combo.currentIndexChanged.connect(
+            self._on_media_provider_changed
+        )
+        self.media_model_settings_widget.model_combo.currentIndexChanged.connect(
+            self._on_media_model_changed
+        )
+        self._on_media_model_changed(self.media_model_settings_widget.model_combo.currentIndex())
+
+    def _on_media_provider_changed(self, _index: int):
+        if not self.media_key_widget or not self.media_model_settings_widget:
+            return
+        provider_id = self.media_key_widget.get_selected_provider()
+        self.media_model_settings_widget.set_available_models(provider_id)
+        self._on_media_model_changed(self.media_model_settings_widget.model_combo.currentIndex())
+
+    def _on_media_model_changed(self, index: int):
+        if not self.media_key_widget or not self.media_model_settings_widget or index < 0:
+            return
+        model_id = self.media_model_settings_widget.model_combo.itemData(index)
+        if model_id:
+            self.media_key_widget.set_current_model(model_id)
 
     # ── Feature 4: Системный трей ──
 
@@ -500,6 +845,30 @@ class RanobeUploaderApp(QMainWindow):
         self.settings.setValue("paid", self.chk_paid.isChecked())
         self.settings.setValue("price", self.spin_price.value())
         self.settings.setValue("rulate_url", self.rulate_url_input.text())
+        self.settings.setValue("media_rulate_url", self.media_rulate_url_input.text())
+        self.settings.setValue("media_title_ru", self.media_title_ru_edit.text())
+        self.settings.setValue("media_original_title", self.media_original_title_edit.text())
+        self.settings.setValue("media_title_en", self.media_title_en_edit.text())
+        self.settings.setValue("media_alt_names", self.media_alt_names_edit.text())
+        self.settings.setValue("media_alt_hieroglyph", self.media_alt_hieroglyph_edit.text())
+        self.settings.setValue("media_author", self.media_author_edit.text())
+        self.settings.setValue("media_cover_url", self.media_cover_url_edit.text())
+        self.settings.setValue("media_year", self.media_year_edit.text())
+        self.settings.setValue("media_description", self.media_description_edit.toPlainText())
+        self.settings.setValue("media_rulate_genres", self.media_rulate_genres_edit.toPlainText())
+        self.settings.setValue("media_rulate_tags", self.media_rulate_tags_edit.toPlainText())
+        self.settings.setValue("media_genres", self.media_genres_edit.toPlainText())
+        self.settings.setValue("media_tags", self.media_tags_edit.toPlainText())
+        self.settings.setValue("media_type", self.media_type_combo.currentData())
+        self.settings.setValue("media_status", self.media_status_combo.currentData())
+        self.settings.setValue("media_age", self.media_age_combo.currentData())
+        self.settings.setValue(
+            "media_translation_status",
+            self.media_translation_status_combo.currentData(),
+        )
+        self.settings.setValue("media_chapter_upload", self.media_chapter_upload_combo.currentData())
+        self.settings.setValue("media_create_author", self.media_create_author_chk.isChecked())
+        self._save_rulate_media_state()
         self.settings.endGroup()
 
         self._load_profile_list()
@@ -559,8 +928,60 @@ class RanobeUploaderApp(QMainWindow):
         rulate_url = self.settings.value("rulate_url", "")
         if rulate_url:
             self.rulate_url_input.setText(rulate_url)
+        media_rulate_url = self.settings.value("media_rulate_url", "")
+        cached_media = self._load_rulate_media_state()
+        self._rulate_media_metadata = dict(cached_media)
+        if media_rulate_url:
+            self.media_rulate_url_input.setText(media_rulate_url)
+        elif rulate_url:
+            self.media_rulate_url_input.setText(rulate_url)
+        elif cached_media.get("rulate_edit_url") or cached_media.get("rulate_url"):
+            self.media_rulate_url_input.setText(cached_media.get("rulate_edit_url") or cached_media.get("rulate_url"))
+        self.media_title_ru_edit.setText(self._settings_text("media_title_ru", cached_media.get("title_ru", "")))
+        self.media_original_title_edit.setText(
+            self._settings_text("media_original_title", cached_media.get("original_title", ""))
+        )
+        self.media_title_en_edit.setText(self._settings_text("media_title_en", cached_media.get("title_en", "")))
+        self.media_alt_names_edit.setText(self._settings_text("media_alt_names", cached_media.get("alt_names", "")))
+        self.media_alt_hieroglyph_edit.setText(
+            self._settings_text("media_alt_hieroglyph", cached_media.get("alt_hieroglyph_title", ""))
+        )
+        self.media_author_edit.setText(self._settings_text("media_author", cached_media.get("author", "")))
+        self.media_cover_url_edit.setText(self._settings_text("media_cover_url", cached_media.get("cover_url", "")))
+        self.media_year_edit.setText(str(self.settings.value("media_year", cached_media.get("year") or "2026") or "2026"))
+        self.media_description_edit.setPlainText(
+            self._settings_text("media_description", cached_media.get("description", ""))
+        )
+        self.media_rulate_genres_edit.setPlainText(
+            self.settings.value("media_rulate_genres", ", ".join(cached_media.get("rulate_genres") or []))
+        )
+        self.media_rulate_tags_edit.setPlainText(
+            self.settings.value("media_rulate_tags", ", ".join(cached_media.get("rulate_tags") or []))
+        )
+        self.media_genres_edit.setPlainText(
+            self.settings.value("media_genres", ", ".join(cached_media.get("genres") or []))
+        )
+        self.media_tags_edit.setPlainText(
+            self.settings.value("media_tags", ", ".join(cached_media.get("tags") or []))
+        )
+        self._set_combo_data(self.media_type_combo, self.settings.value("media_type", "12"))
+        self._set_combo_data(self.media_status_combo, self.settings.value("media_status", "1"))
+        self._set_combo_data(self.media_age_combo, self.settings.value("media_age", "3"))
+        self._set_combo_data(
+            self.media_translation_status_combo,
+            self.settings.value("media_translation_status", "1"),
+        )
+        self._set_combo_data(
+            self.media_chapter_upload_combo,
+            self._default_media_chapter_upload_value(),
+        )
+        self.media_create_author_chk.setChecked(
+            self.settings.value("media_create_author", True, type=bool)
+        )
         self.settings.endGroup()
         self._on_upload_mode_changed(self.upload_mode_combo.currentIndex())
+        if self.media_cover_url_edit.text().strip():
+            self._refresh_media_cover_preview()
 
         self._append_log("INFO", f"Профиль «{name}» загружен.")
 
@@ -657,12 +1078,64 @@ class RanobeUploaderApp(QMainWindow):
         rulate_url = self.settings.value("rulate_url", "")
         if rulate_url:
             self.rulate_url_input.setText(rulate_url)
+        media_rulate_url = self.settings.value("media_rulate_url", "")
+        cached_media = self._load_rulate_media_state()
+        self._rulate_media_metadata = dict(cached_media)
+        if media_rulate_url:
+            self.media_rulate_url_input.setText(media_rulate_url)
+        elif rulate_url:
+            self.media_rulate_url_input.setText(rulate_url)
+        elif cached_media.get("rulate_edit_url") or cached_media.get("rulate_url"):
+            self.media_rulate_url_input.setText(cached_media.get("rulate_edit_url") or cached_media.get("rulate_url"))
+        self.media_title_ru_edit.setText(self._settings_text("media_title_ru", cached_media.get("title_ru", "")))
+        self.media_original_title_edit.setText(
+            self._settings_text("media_original_title", cached_media.get("original_title", ""))
+        )
+        self.media_title_en_edit.setText(self._settings_text("media_title_en", cached_media.get("title_en", "")))
+        self.media_alt_names_edit.setText(self._settings_text("media_alt_names", cached_media.get("alt_names", "")))
+        self.media_alt_hieroglyph_edit.setText(
+            self._settings_text("media_alt_hieroglyph", cached_media.get("alt_hieroglyph_title", ""))
+        )
+        self.media_author_edit.setText(self._settings_text("media_author", cached_media.get("author", "")))
+        self.media_cover_url_edit.setText(self._settings_text("media_cover_url", cached_media.get("cover_url", "")))
+        self.media_year_edit.setText(str(self.settings.value("media_year", cached_media.get("year") or "2026") or "2026"))
+        self.media_description_edit.setPlainText(
+            self._settings_text("media_description", cached_media.get("description", ""))
+        )
+        self.media_rulate_genres_edit.setPlainText(
+            self.settings.value("media_rulate_genres", ", ".join(cached_media.get("rulate_genres") or []))
+        )
+        self.media_rulate_tags_edit.setPlainText(
+            self.settings.value("media_rulate_tags", ", ".join(cached_media.get("rulate_tags") or []))
+        )
+        self.media_genres_edit.setPlainText(
+            self.settings.value("media_genres", ", ".join(cached_media.get("genres") or []))
+        )
+        self.media_tags_edit.setPlainText(
+            self.settings.value("media_tags", ", ".join(cached_media.get("tags") or []))
+        )
+        self._set_combo_data(self.media_type_combo, self.settings.value("media_type", "12"))
+        self._set_combo_data(self.media_status_combo, self.settings.value("media_status", "1"))
+        self._set_combo_data(self.media_age_combo, self.settings.value("media_age", "3"))
+        self._set_combo_data(
+            self.media_translation_status_combo,
+            self.settings.value("media_translation_status", "1"),
+        )
+        self._set_combo_data(
+            self.media_chapter_upload_combo,
+            self._default_media_chapter_upload_value(),
+        )
+        self.media_create_author_chk.setChecked(
+            self.settings.value("media_create_author", True, type=bool)
+        )
         self.chk_skip_uploaded.setChecked(
             self.settings.value("skip_uploaded", True, type=bool)
         )
         # Feature 1: загрузить список профилей
         self._load_profile_list()
         self._on_upload_mode_changed(self.upload_mode_combo.currentIndex())
+        if self.media_cover_url_edit.text().strip():
+            self._refresh_media_cover_preview()
 
     def _save_settings(self):
         self.settings.setValue("url", self.url_input.text())
@@ -675,7 +1148,31 @@ class RanobeUploaderApp(QMainWindow):
         self.settings.setValue("price", self.spin_price.value())
         self.settings.setValue("theme_mode", self.theme_mode_combo.currentData())
         self.settings.setValue("rulate_url", self.rulate_url_input.text())
+        self.settings.setValue("media_rulate_url", self.media_rulate_url_input.text())
+        self.settings.setValue("media_title_ru", self.media_title_ru_edit.text())
+        self.settings.setValue("media_original_title", self.media_original_title_edit.text())
+        self.settings.setValue("media_title_en", self.media_title_en_edit.text())
+        self.settings.setValue("media_alt_names", self.media_alt_names_edit.text())
+        self.settings.setValue("media_alt_hieroglyph", self.media_alt_hieroglyph_edit.text())
+        self.settings.setValue("media_author", self.media_author_edit.text())
+        self.settings.setValue("media_cover_url", self.media_cover_url_edit.text())
+        self.settings.setValue("media_year", self.media_year_edit.text())
+        self.settings.setValue("media_description", self.media_description_edit.toPlainText())
+        self.settings.setValue("media_rulate_genres", self.media_rulate_genres_edit.toPlainText())
+        self.settings.setValue("media_rulate_tags", self.media_rulate_tags_edit.toPlainText())
+        self.settings.setValue("media_genres", self.media_genres_edit.toPlainText())
+        self.settings.setValue("media_tags", self.media_tags_edit.toPlainText())
+        self.settings.setValue("media_type", self.media_type_combo.currentData())
+        self.settings.setValue("media_status", self.media_status_combo.currentData())
+        self.settings.setValue("media_age", self.media_age_combo.currentData())
+        self.settings.setValue(
+            "media_translation_status",
+            self.media_translation_status_combo.currentData(),
+        )
+        self.settings.setValue("media_chapter_upload", self.media_chapter_upload_combo.currentData())
+        self.settings.setValue("media_create_author", self.media_create_author_chk.isChecked())
         self.settings.setValue("skip_uploaded", self.chk_skip_uploaded.isChecked())
+        self._save_rulate_media_state()
 
     def closeEvent(self, event):
         self._save_settings()
@@ -810,6 +1307,307 @@ class RanobeUploaderApp(QMainWindow):
         )
         self.btn_login_rulate.setEnabled(False)
         self.login_rulate_worker.start()
+
+    def _media_rulate_url(self) -> str:
+        return self.media_rulate_url_input.text().strip() or self.rulate_url_input.text().strip()
+
+    def _copy_rulate_url_to_media(self):
+        self.media_rulate_url_input.setText(self.rulate_url_input.text().strip())
+
+    def _set_combo_data(self, combo: QComboBox, value: str):
+        index = combo.findData(str(value))
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _settings_text(self, key: str, fallback: str = "") -> str:
+        value = self.settings.value(key, fallback)
+        return str(value or "")
+
+    def _load_rulate_media_state(self) -> dict:
+        raw = self.settings.value("media_last_metadata_json", "")
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(str(raw))
+        except Exception as error:
+            logging.warning("RanobeLib: failed to read cached media metadata: %s", error)
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _save_rulate_media_state(self, sync: bool = False):
+        try:
+            metadata = self._collect_rulate_media_options()
+            metadata["rulate_url"] = self._media_rulate_url()
+            metadata["rulate_edit_url"] = metadata.get("rulate_edit_url") or self._media_rulate_url()
+            metadata["source_url"] = metadata.get("source_url") or metadata["rulate_url"]
+            self._rulate_media_metadata = dict(metadata)
+            self.settings.setValue(
+                "media_last_metadata_json",
+                json.dumps(metadata, ensure_ascii=False),
+            )
+            if sync:
+                self.settings.sync()
+        except Exception as error:
+            logging.warning("RanobeLib: failed to cache media metadata: %s", error)
+
+    def _set_media_cover_preview_text(self, text: str):
+        self.media_cover_preview_label.clear()
+        self.media_cover_preview_label.setText(text)
+
+    def _refresh_media_cover_preview(self):
+        url = self.media_cover_url_edit.text().strip()
+        if not url:
+            self._set_media_cover_preview_text("Нет обложки")
+            return
+        self._set_media_cover_preview_text("Загрузка...")
+        worker = _CoverPreviewWorker(url, self._media_rulate_url())
+        self._cover_preview_workers.append(worker)
+        worker.image_ready.connect(self._on_media_cover_preview_ready)
+        worker.failed.connect(self._on_media_cover_preview_failed)
+        worker.finished.connect(lambda worker=worker: self._forget_cover_preview_worker(worker))
+        worker.start()
+
+    def _forget_cover_preview_worker(self, worker: _CoverPreviewWorker):
+        if worker in self._cover_preview_workers:
+            self._cover_preview_workers.remove(worker)
+
+    def _on_media_cover_preview_ready(self, data: bytes, url: str):
+        if url != self.media_cover_url_edit.text().strip():
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(data):
+            self._set_media_cover_preview_text("Не удалось\nпрочитать")
+            return
+        scaled = pixmap.scaled(
+            self.media_cover_preview_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.media_cover_preview_label.setText("")
+        self.media_cover_preview_label.setPixmap(scaled)
+        self.media_cover_preview_label.setToolTip(url)
+
+    def _on_media_cover_preview_failed(self, error: str, url: str):
+        if url != self.media_cover_url_edit.text().strip():
+            return
+        self._set_media_cover_preview_text("Нет превью")
+        self.media_cover_preview_label.setToolTip(error)
+
+    def _default_media_chapter_upload_value(self) -> str:
+        value = self.settings.value("media_chapter_upload", None)
+        if value in (None, ""):
+            return "2"
+        migrated = self.settings.value("media_chapter_upload_default_v2", False, type=bool)
+        if str(value) == "0" and not migrated:
+            self.settings.setValue("media_chapter_upload_default_v2", True)
+            return "2"
+        return str(value)
+
+    def _fetch_rulate_media_metadata(self):
+        rulate_url = self._media_rulate_url()
+        if not rulate_url:
+            return QMessageBox.warning(self, "Ошибка", "Введите URL книги на Rulate.")
+
+        if not validate_rulate_url(rulate_url):
+            answer = QMessageBox.question(
+                self,
+                "Подозрительный URL",
+                f"URL не соответствует шаблону tl.rulate.ru/book/XXXXX.\n\n"
+                f"{rulate_url}\n\nВсё равно продолжить?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.No:
+                return
+
+        self.progress_bar.setValue(0)
+        self._open_process_dialog("rulate_media_fetch", "Rulate: данные карточки")
+        self.btn_fetch_rulate_media.setEnabled(False)
+
+        self._rulate_media_fetch_worker = RulateToRanobeMetadataWorker(rulate_url)
+        self._rulate_media_fetch_worker.log_signal.connect(
+            lambda level, msg: self._process_log("rulate_media_fetch", level, msg)
+        )
+        self._rulate_media_fetch_worker.metadata_ready.connect(self._apply_rulate_media_metadata)
+        self._rulate_media_fetch_worker.finished_signal.connect(self._on_rulate_media_fetch_finished)
+        self._rulate_media_fetch_worker.start()
+
+    def _on_rulate_media_fetch_finished(self):
+        self.btn_fetch_rulate_media.setEnabled(True)
+        self._finish_process_dialog("rulate_media_fetch")
+
+    def _apply_rulate_media_metadata(self, metadata: dict):
+        self._rulate_media_metadata = dict(metadata or {})
+        self.media_rulate_url_input.setText(
+            metadata.get("rulate_edit_url") or metadata.get("source_url", self._media_rulate_url())
+        )
+        self.media_title_ru_edit.setText(metadata.get("title_ru", ""))
+        self.media_original_title_edit.setText(metadata.get("original_title", ""))
+        self.media_alt_hieroglyph_edit.setText(metadata.get("alt_hieroglyph_title", ""))
+        self.media_title_en_edit.setText(metadata.get("title_en", ""))
+        self.media_alt_names_edit.setText(metadata.get("alt_names", ""))
+        self.media_author_edit.setText(metadata.get("author", ""))
+        self.media_cover_url_edit.setText(metadata.get("cover_url", ""))
+        self._refresh_media_cover_preview()
+        self.media_year_edit.setText(metadata.get("year") or "2026")
+        self.media_description_edit.setPlainText(metadata.get("description", ""))
+        self._set_combo_data(self.media_status_combo, metadata.get("status_value", "1"))
+        self.media_rulate_genres_edit.setPlainText(", ".join(metadata.get("genres") or []))
+        self.media_rulate_tags_edit.setPlainText(", ".join(metadata.get("tags") or []))
+        self.media_genres_edit.clear()
+        self.media_tags_edit.clear()
+        self._save_rulate_media_state(sync=True)
+        self._process_log("rulate_media_fetch", "SUCCESS", "Данные Rulate перенесены в форму карточки.")
+
+    def _collect_rulate_media_options(self) -> dict:
+        options = dict(self._rulate_media_metadata)
+        alt_names = self.media_alt_names_edit.text().strip()
+        alt_hieroglyph = self.media_alt_hieroglyph_edit.text().strip()
+        alt_values = []
+        for value in (alt_names, alt_hieroglyph):
+            if value and value not in alt_values:
+                alt_values.append(value)
+        options.update(
+            {
+                "title_ru": self.media_title_ru_edit.text().strip(),
+                "original_title": self.media_original_title_edit.text().strip(),
+                "alt_hieroglyph_title": alt_hieroglyph,
+                "title_en": self.media_title_en_edit.text().strip(),
+                "alt_names": " / ".join(alt_values),
+                "author": self.media_author_edit.text().strip(),
+                "cover_url": self.media_cover_url_edit.text().strip(),
+                "year": self.media_year_edit.text().strip(),
+                "description": self.media_description_edit.toPlainText().strip(),
+                "rulate_genres": _split_csv_text(self.media_rulate_genres_edit.toPlainText()),
+                "rulate_tags": _split_csv_text(self.media_rulate_tags_edit.toPlainText()),
+                "type_value": self.media_type_combo.currentData() or "12",
+                "status_value": self.media_status_combo.currentData() or "1",
+                "age_value": self.media_age_combo.currentData() or "3",
+                "translation_status_value": self.media_translation_status_combo.currentData() or "1",
+                "chapter_upload_value": self.media_chapter_upload_combo.currentData() or "2",
+                "genres": _split_csv_text(self.media_genres_edit.toPlainText()),
+                "tags": _split_csv_text(self.media_tags_edit.toPlainText()),
+                "create_author": self.media_create_author_chk.isChecked(),
+            }
+        )
+        return options
+
+    def _match_ranobelib_catalog_ai(self):
+        metadata = self._collect_rulate_media_options()
+        if not metadata.get("title_ru") and not metadata.get("description"):
+            QMessageBox.warning(self, "AI", "Сначала получите данные Rulate или заполните название/описание.")
+            return
+        if not self.media_key_widget or not self.media_model_settings_widget:
+            QMessageBox.warning(self, "AI", "AI-настройки недоступны.")
+            return
+
+        provider_id = self.media_key_widget.get_selected_provider()
+        active_keys = self.media_key_widget.get_active_keys()
+        model_settings = self.media_model_settings_widget.get_settings()
+        self._open_process_dialog("rulate_media_ai", "AI: RanobeLib жанры и теги")
+        self.btn_match_ranobelib_catalog.setEnabled(False)
+        self._rulate_media_ai_worker = RanobeLibCatalogMatchWorker(
+            metadata,
+            provider_id,
+            model_settings,
+            active_keys,
+            self.settings_manager,
+        )
+        self._rulate_media_ai_worker.log_signal.connect(
+            lambda level, msg: self._process_log("rulate_media_ai", level, msg)
+        )
+        self._rulate_media_ai_worker.catalog_ready.connect(self._apply_ranobelib_catalog)
+        self._rulate_media_ai_worker.finished_signal.connect(self._on_rulate_media_ai_finished)
+        self._rulate_media_ai_worker.start()
+
+    def _apply_ranobelib_catalog(self, catalog: dict):
+        if catalog.get("genres"):
+            self.media_genres_edit.setPlainText(", ".join(catalog["genres"]))
+        if catalog.get("tags"):
+            self.media_tags_edit.setPlainText(", ".join(catalog["tags"]))
+        if catalog.get("year") and not self.media_year_edit.text().strip():
+            self.media_year_edit.setText(catalog["year"])
+        self._set_combo_data(self.media_age_combo, catalog.get("age_value", "3"))
+        self._set_combo_data(self.media_status_combo, catalog.get("status_value", "1"))
+        self._set_combo_data(
+            self.media_translation_status_combo,
+            catalog.get("translation_status_value", "1"),
+        )
+        self._process_log("rulate_media_ai", "SUCCESS", "AI-результат применён к форме карточки.")
+
+        self._save_rulate_media_state(sync=True)
+
+    def _on_rulate_media_ai_finished(self):
+        self.btn_match_ranobelib_catalog.setEnabled(True)
+        self._finish_process_dialog("rulate_media_ai")
+
+    def _create_ranobelib_media_from_rulate(self):
+        """Создать карточку RanobeLib из страницы книги Rulate."""
+        rulate_url = self._media_rulate_url()
+        if not rulate_url:
+            return QMessageBox.warning(self, "Ошибка", "Введите URL книги на Rulate.")
+
+        if not validate_rulate_url(rulate_url):
+            answer = QMessageBox.question(
+                self,
+                "Подозрительный URL",
+                f"URL не соответствует шаблону tl.rulate.ru/book/XXXXX.\n\n"
+                f"{rulate_url}\n\nВсё равно продолжить?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.No:
+                return
+
+        options = self._collect_rulate_media_options()
+        missing = []
+        if not options.get("title_ru"):
+            missing.append("название RU")
+        if not options.get("description"):
+            missing.append("описание")
+        if not options.get("author"):
+            missing.append("автор")
+        if len(options.get("genres") or []) < 3:
+            missing.append("минимум 3 жанра")
+        if len(options.get("tags") or []) < 3:
+            missing.append("минимум 3 тега")
+        if missing:
+            answer = QMessageBox.question(
+                self,
+                "Не хватает данных",
+                "В форме не хватает: " + ", ".join(missing) + ".\n\nПродолжить всё равно?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.No:
+                return
+
+        self._save_settings()
+        self.progress_bar.setValue(0)
+        self._open_process_dialog(
+            "rulate_media_create",
+            "Rulate → RanobeLib: создание карточки",
+            can_stop=True,
+            stop_fn=self._stop_rulate_media_create,
+        )
+        self.btn_create_ranobelib_media.setEnabled(False)
+
+        self._rulate_media_worker = RulateToRanobeCreateWorker(rulate_url, options=options)
+        self._rulate_media_worker.log_signal.connect(
+            lambda level, msg: self._process_log("rulate_media_create", level, msg)
+        )
+        self._rulate_media_worker.progress_signal.connect(
+            lambda val: self._process_progress("rulate_media_create", val)
+        )
+        self._rulate_media_worker.finished_signal.connect(self._on_rulate_media_create_finished)
+        self._rulate_media_worker.start()
+
+    def _stop_rulate_media_create(self):
+        worker = getattr(self, "_rulate_media_worker", None)
+        if worker:
+            self._process_log("rulate_media_create", "WARNING", "Останавливаю создание карточки...")
+            worker.stop()
+
+    def _on_rulate_media_create_finished(self):
+        self.btn_create_ranobelib_media.setEnabled(True)
+        self._finish_process_dialog("rulate_media_create")
 
     # ══════════════════════════════════════════════════════════════════
     #  v12: RULATE — получение списка глав

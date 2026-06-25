@@ -2656,14 +2656,18 @@ def coerce_translated_body_block(original_html: str, translated_html: str) -> st
     if not isinstance(normalized, str) or not isinstance(original_html, str):
         return normalized
 
-    original_lower = original_html.lower()
+    normalized_original = _normalize_epub_heading_for_validation(original_html)
+    normalized = _normalize_epub_heading_for_validation(normalized)
+    normalized = _coerce_first_heading_level(normalized_original, normalized)
+
+    original_lower = normalized_original.lower()
     if '<body' not in original_lower or '</body>' not in original_lower:
         return normalized
 
     normalized_lower = normalized.lower()
     if re.search(r'<body\b', normalized_lower) and re.search(r'</body>', normalized_lower):
         normalized = process_body_tag(normalized, return_parts=False, body_content_only=False)
-    return repair_missing_paragraph_tags(original_html, normalized)
+    return repair_missing_paragraph_tags(normalized_original, normalized)
 
 
 def _normalize_epub_heading_for_validation(html_content: str) -> str:

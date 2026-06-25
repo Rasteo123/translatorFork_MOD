@@ -10,9 +10,17 @@ from qidian_rulate.workers import (
     _clean_qidian_description,
     _clean_qidian_chapter_text,
     _extract_qidian_description_from_body,
+    _FANQIE_CHAPTER_LINKS_SCRIPT,
+    _FANQIE_CHAPTER_TEXT_SCRIPT,
+    _FANQIE_EXTRACT_SCRIPT,
+    _fanqie_book_id,
+    _find_tomato_executable,
     _QIDIAN_CHAPTER_LINKS_SCRIPT,
+    _read_tomato_chapters_from_folder,
     _select_qidian_description,
     _tag_file_candidates,
+    _tomato_bind_addr_from_base_url,
+    _tomato_web_is_local,
     RULATE_BOOK_TYPE_DESCRIPTION,
     RULATE_BOOK_TYPE_SELECTOR,
     RULATE_BOOK_TYPE_TITLE,
@@ -29,7 +37,9 @@ from qidian_rulate.workers import (
     parse_catalog_metadata,
     parse_prepared_metadata,
     parse_translation_metadata,
+    validate_fanqie_url,
     validate_qidian_url,
+    validate_source_url,
 )
 
 
@@ -106,6 +116,46 @@ def test_validate_qidian_url_accepts_book_links_only():
     assert not validate_qidian_url("https://www.qidian.com/author/4362948/")
     assert not validate_qidian_url("https://www.qidian.com/book/1041604040/catalog/")
     assert not validate_qidian_url("https://example.com/book/1041604040/")
+
+
+def test_validate_source_url_accepts_fanqie_book_links():
+    assert validate_fanqie_url("https://fanqienovel.com/page/7229603492648717324")
+    assert validate_fanqie_url("https://www.fanqienovel.com/page/7229603492648717324?enter_from=search")
+    assert not validate_fanqie_url("https://fanqienovel.com/reader/7233607619578233396")
+    assert not validate_fanqie_url("https://example.com/page/7229603492648717324")
+    assert validate_source_url("https://www.qidian.com/book/1041604040/")
+    assert validate_source_url("https://fanqienovel.com/page/7229603492648717324")
+    assert _fanqie_book_id("https://fanqienovel.com/page/7229603492648717324") == "7229603492648717324"
+
+
+def test_tomato_autostart_helpers_find_env_executable(monkeypatch, tmp_path):
+    exe = tmp_path / "TomatoNovelDownloader-Win64-v2.4.11.exe"
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setenv("TOMATO_NOVEL_DOWNLOADER_EXE", str(exe))
+
+    assert _find_tomato_executable() == exe
+
+
+def test_tomato_autostart_prefers_bundled_tools_dir(monkeypatch, tmp_path):
+    bundled = tmp_path / "program" / "tools" / "tomato"
+    bundled.mkdir(parents=True)
+    bundled_exe = bundled / "TomatoNovelDownloader-Win64-v2.4.11.exe"
+    bundled_exe.write_text("", encoding="utf-8")
+    monkeypatch.delenv("TOMATO_NOVEL_DOWNLOADER_EXE", raising=False)
+    monkeypatch.setattr(
+        workers.api_config,
+        "get_resource_path",
+        lambda relative_path: bundled if relative_path == "tools/tomato" else tmp_path / "missing",
+    )
+
+    assert _find_tomato_executable() == bundled_exe
+
+
+def test_tomato_web_autostart_is_limited_to_local_urls():
+    assert _tomato_web_is_local("http://127.0.0.1:18423")
+    assert _tomato_web_is_local("http://localhost:18423")
+    assert not _tomato_web_is_local("https://example.com:18423")
+    assert _tomato_bind_addr_from_base_url("http://127.0.0.1:18424") == "127.0.0.1:18424"
 
 
 def test_qidian_rulate_profile_is_separate_from_ranobelib_uploader():
@@ -421,6 +471,53 @@ def test_qidian_chapter_link_script_supports_chinese_chapter_numbers():
     assert r"^第\s*\d+\s*章" not in _QIDIAN_CHAPTER_LINKS_SCRIPT
 
 
+def test_clean_fanqie_chapter_text_drops_obfuscated_private_use_text():
+    obfuscated = "婚礼参。" * 4
+
+    assert workers._clean_fanqie_chapter_text(obfuscated) == ""
+    assert workers._clean_fanqie_chapter_text("<p>正常第一段。</p><p>正常第二段。</p>") == "正常第一段。\n正常第二段。"
+
+
+def test_read_tomato_chapters_from_folder_prefers_resume_journal(tmp_path):
+    folder = tmp_path / "7229603492648717324"
+    folder.mkdir()
+    records = [
+        {"id": "1001", "title": "第一章", "content": "<p>第一段。</p><p>第二段。</p>"},
+        {"id": "1002", "title": "第二章", "content": "婚礼参。" * 4},
+        {"id": "1003", "title": "第三章", "content": "<p>第三段。</p>"},
+    ]
+    (folder / "downloaded_chapters.jsonl").write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in records),
+        encoding="utf-8",
+    )
+    (folder / "status.json").write_text(
+        json.dumps(
+            {
+                "downloaded": {
+                    "1004": ["第四章", "<p>第四段。</p>"],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    text = _read_tomato_chapters_from_folder(folder, limit=3)
+
+    assert "第一章" in text
+    assert "第一段。\n第二段。" in text
+    assert "第二章" not in text
+    assert "第三章" in text
+    assert "第四章" in text
+
+
+def test_fanqie_scripts_use_initial_state_and_reader_links():
+    assert "__INITIAL_STATE__" in _FANQIE_EXTRACT_SCRIPT
+    assert "chapterListWithVolume" in _FANQIE_CHAPTER_LINKS_SCRIPT
+    assert "/reader/" in _FANQIE_CHAPTER_LINKS_SCRIPT
+    assert "reader.chapterData" in _FANQIE_CHAPTER_TEXT_SCRIPT
+
+
 def test_build_cover_prompt_request_includes_ru_title_and_chapters():
     prompt = build_cover_prompt_request(
         "Иномирная гостиница",
@@ -429,7 +526,7 @@ def test_build_cover_prompt_request_includes_ru_title_and_chapters():
     )
 
     assert "Название (RU): Иномирная гостиница" in prompt
-    assert "Оригинальное описание Qidian:" in prompt
+    assert "Оригинальное описание источника:" in prompt
     assert "Оригинальное описание про странный отель между мирами." in prompt
     assert 'The text "Иномирная гостиница"' in prompt
     assert "Герой видит странную тень под фонарем." in prompt

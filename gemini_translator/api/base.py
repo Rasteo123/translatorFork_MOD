@@ -237,6 +237,78 @@ class BaseApiHandler:
             return "network_error"
         return type(error).__name__.lower()
 
+    def _config_value(self, name, default=None):
+        model_config = getattr(self.worker, "model_config", None)
+        if isinstance(model_config, dict) and name in model_config:
+            return model_config.get(name)
+
+        provider_config = getattr(self.worker, "provider_config", None)
+        if isinstance(provider_config, dict) and name in provider_config:
+            return provider_config.get(name)
+
+        return default
+
+    def _transient_disconnect_retry_attempts(self) -> int:
+        raw_value = self._config_value("transient_disconnect_retries", 1)
+        try:
+            return max(0, int(raw_value))
+        except (TypeError, ValueError):
+            return 1
+
+    def _transient_disconnect_retry_delay(self, attempt: int) -> float:
+        raw_value = self._config_value("transient_disconnect_retry_delay_seconds", 1.0)
+        try:
+            base_delay = max(0.0, float(raw_value))
+        except (TypeError, ValueError):
+            base_delay = 1.0
+        return base_delay * max(1, attempt)
+
+    def _exception_chain(self, error: Exception):
+        seen = set()
+        stack = [error]
+        while stack:
+            current = stack.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            yield current
+            cause = getattr(current, "__cause__", None)
+            context = getattr(current, "__context__", None)
+            if context is not None:
+                stack.append(context)
+            if cause is not None:
+                stack.append(cause)
+
+    def _is_transient_disconnect_error(self, error: Exception) -> bool:
+        transient_aiohttp_types = [aiohttp.ServerDisconnectedError]
+        for type_name in ("ClientConnectionResetError",):
+            transient_type = getattr(aiohttp, type_name, None)
+            if transient_type is not None:
+                transient_aiohttp_types.append(transient_type)
+        transient_error_types = tuple(transient_aiohttp_types)
+
+        text_parts = []
+        for chained_error in self._exception_chain(error):
+            if isinstance(chained_error, transient_error_types):
+                return True
+            if isinstance(chained_error, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+                return True
+            if isinstance(chained_error, OSError):
+                os_code = getattr(chained_error, "winerror", None) or getattr(chained_error, "errno", None)
+                if os_code in {32, 54, 10053, 10054}:
+                    return True
+            text_parts.append(f"{type(chained_error).__name__}: {chained_error}".lower())
+
+        error_text = " ".join(text_parts)
+        return (
+            "serverdisconnectederror" in error_text
+            or "server disconnected" in error_text
+            or "connection reset by peer" in error_text
+        )
+
+    def _should_retry_transient_disconnect(self, error: Exception, attempt: int, max_retries: int) -> bool:
+        return attempt <= max_retries and self._is_transient_disconnect_error(error)
+
     def _temperature_payload_value(self):
         if not getattr(self.worker, "temperature_override_enabled", True):
             return None
@@ -302,23 +374,43 @@ class BaseApiHandler:
         trace = self._create_debug_trace(log_prefix)
         trace_token = _current_debug_trace.set(trace)
         started_at = time.perf_counter()
+        attempt = 1
+        transient_disconnect_retries = self._transient_disconnect_retry_attempts()
 
         try:
-            try:
-                if self.is_async_native:
-                    result = await self._async_executor(prompt, log_prefix, allow_incomplete, use_stream, debug, max_output_tokens)
-                else:
-                    result = await self._sync_executor_wrapper(prompt, log_prefix, allow_incomplete, use_stream, debug, max_output_tokens)
-            except asyncio.CancelledError as exc:
-                if self._is_shutdown_cancellation():
-                    raise OperationCancelledError("Операция отменена системой (asyncio.CancelledError)") from exc
+            while True:
+                try:
+                    if self.is_async_native:
+                        result = await self._async_executor(prompt, log_prefix, allow_incomplete, use_stream, debug, max_output_tokens)
+                    else:
+                        result = await self._sync_executor_wrapper(prompt, log_prefix, allow_incomplete, use_stream, debug, max_output_tokens)
+                    break
+                except asyncio.CancelledError as exc:
+                    if self._is_shutdown_cancellation():
+                        raise OperationCancelledError("Операция отменена системой (asyncio.CancelledError)") from exc
 
-                error_msg = "Запрос прерван (CancelledError). Вероятная причина: таймаут DNS или сброс соединения."
-                self._force_session_reset()
-                raise NetworkError(error_msg, delay_seconds=10) from exc
-            except Exception as exc:
-                self._process_exception_and_counters(exc)
-                raise
+                    error_msg = "Запрос прерван (CancelledError). Вероятная причина: таймаут DNS или сброс соединения."
+                    self._force_session_reset()
+                    raise NetworkError(error_msg, delay_seconds=10) from exc
+                except Exception as exc:
+                    if self._should_retry_transient_disconnect(exc, attempt, transient_disconnect_retries):
+                        self._debug_record_error(
+                            exc,
+                            attempt=attempt,
+                            extra={
+                                "transient_disconnect_retry": True,
+                                "next_attempt": attempt + 1,
+                            },
+                        )
+                        self._force_session_reset()
+                        delay = self._transient_disconnect_retry_delay(attempt)
+                        if delay:
+                            await asyncio.sleep(delay)
+                        attempt += 1
+                        continue
+
+                    self._process_exception_and_counters(exc)
+                    raise
 
             self._finalize_debug_trace(trace, started_at=started_at, status="success")
             return result

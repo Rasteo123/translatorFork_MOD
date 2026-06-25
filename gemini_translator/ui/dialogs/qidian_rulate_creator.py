@@ -11,7 +11,7 @@ from .menu_utils import return_to_main_menu
 class QidianRulateCreatorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Qidian -> Rulate")
+        self.setWindowTitle("Qidian/Fanqie -> Rulate")
         self.resize(1180, 920)
         self._return_to_menu_handler = None
 

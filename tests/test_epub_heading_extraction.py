@@ -18,6 +18,8 @@ SPLIT_HEAD = (
     '<h2 class="head"><span class="chapter-sequence-number">'
     f"{SEQUENCE}</span><br />{CHAPTER_NAME}</h2>"
 )
+MULTI_H2_HEAD = "<h2>Chapter 42</h2><h2>Review: Hidden plot</h2>"
+EXPECTED_MULTI_H2_TITLE = "Chapter 42 Review: Hidden plot"
 
 
 def _chapter_html(title_html=SPLIT_HEAD):
@@ -43,6 +45,14 @@ def test_split_epub_heading_is_normalized_to_plain_h1():
     assert SPLIT_HEAD not in normalized
     assert f"<h1>{EXPECTED_TITLE}</h1>" in normalized
     assert "chapter-sequence-number" not in normalized
+
+
+def test_leading_multi_h2_heading_is_normalized_to_plain_h1():
+    normalized = normalize_epub_chapter_heading_to_h1(_chapter_html(MULTI_H2_HEAD))
+
+    assert MULTI_H2_HEAD not in normalized
+    assert f"<h1>{EXPECTED_MULTI_H2_TITLE}</h1>" in normalized
+    assert "<h2>" not in normalized
 
 
 def test_chapter_fingerprint_keeps_split_heading_separator(tmp_path):

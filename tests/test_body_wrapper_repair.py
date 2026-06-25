@@ -33,3 +33,24 @@ def test_coerce_translated_body_block_extracts_body_from_full_document():
     repaired = coerce_translated_body_block(original, translated)
 
     assert repaired == '<body><p>Translated.</p></body>'
+
+
+def test_coerce_translated_body_block_normalizes_collapsed_multi_h2_heading():
+    original = (
+        '<html><body class="chapter">'
+        '<h2>Chapter 42</h2>'
+        '<h2>Review: Hidden plot</h2>'
+        '<p>Source.</p>'
+        '</body></html>'
+    )
+    translated = (
+        '<body class="chapter">'
+        '<h2>Glava 42 Review: Hidden plot</h2>'
+        '<p>Translated.</p>'
+        '</body>'
+    )
+
+    repaired = coerce_translated_body_block(original, translated)
+
+    assert '<h1>Glava 42 Review: Hidden plot</h1>' in repaired
+    assert '<h2>Glava 42 Review: Hidden plot</h2>' not in repaired
