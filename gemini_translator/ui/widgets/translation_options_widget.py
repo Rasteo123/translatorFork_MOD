@@ -284,6 +284,74 @@ class TranslationOptionsWidget(QGroupBox):
             for file_name in self.chapter_compositions
         }
 
+    def _chunk_count_for_size(self, size, target_size):
+        if size <= 0:
+            return 1
+        return max(1, math.ceil(size / max(1, target_size)))
+
+    def _count_sequential_batch_tasks(self, file_names, target_size, include_chunking):
+        task_count = 0
+        current_size = 0
+        for file_name in file_names:
+            size = self._chapter_size_for_current_unit(file_name)
+            if size > target_size:
+                if current_size > 0:
+                    task_count += 1
+                    current_size = 0
+                task_count += self._chunk_count_for_size(size, target_size) if include_chunking else 1
+                continue
+
+            if current_size and current_size + size > target_size:
+                task_count += 1
+                current_size = 0
+            current_size += size
+
+        if current_size > 0:
+            task_count += 1
+        return task_count
+
+    def _count_non_sequential_batch_tasks(self, file_names, target_size, include_chunking):
+        task_count = 0
+        open_batch_sizes = []
+        for file_name in file_names:
+            size = self._chapter_size_for_current_unit(file_name)
+            if size > target_size:
+                task_count += self._chunk_count_for_size(size, target_size) if include_chunking else 1
+                continue
+
+            for index, batch_size in enumerate(open_batch_sizes):
+                if batch_size + size <= target_size:
+                    open_batch_sizes[index] = batch_size + size
+                    break
+            else:
+                open_batch_sizes.append(size)
+
+        return task_count + len(open_batch_sizes)
+
+    def _sequential_chapter_chains_for_preview(self):
+        split_count = self.sequential_splits_spin.value() if self.sequential_checkbox.isChecked() else 1
+        split_count = max(1, min(int(split_count or 1), len(self.html_files)))
+        chains = []
+        for index in range(split_count):
+            start = (index * len(self.html_files)) // split_count
+            end = ((index + 1) * len(self.html_files)) // split_count
+            if start < end:
+                chains.append(self.html_files[start:end])
+        return chains or [self.html_files]
+
+    def _estimate_batch_task_count(self, include_chunking=False):
+        target_size = max(1, self.task_size_spin.value())
+        if self.sequential_checkbox.isChecked():
+            return sum(
+                self._count_sequential_batch_tasks(chain, target_size, include_chunking)
+                for chain in self._sequential_chapter_chains_for_preview()
+            )
+        return self._count_non_sequential_batch_tasks(
+            self.html_files,
+            target_size,
+            include_chunking,
+        )
+
     def _set_task_size_value(self, value, *, user_defined=None):
         self._changing_task_size_programmatically = True
         try:
@@ -635,20 +703,7 @@ class TranslationOptionsWidget(QGroupBox):
         )
 
         if self.batch_checkbox.isChecked() and self.chunking_checkbox.isChecked():
-            chunk_tasks = 0
-            open_batch_sizes = []
-            for file_name in self.html_files:
-                size = self._chapter_size_for_current_unit(file_name)
-                if size > current_target_size:
-                    chunk_tasks += math.ceil(size / current_target_size) if size > 0 else 1
-                    continue
-                for index, batch_size in enumerate(open_batch_sizes):
-                    if batch_size + size <= current_target_size:
-                        open_batch_sizes[index] = batch_size + size
-                        break
-                else:
-                    open_batch_sizes.append(size)
-            total_tasks = len(open_batch_sizes) + chunk_tasks
+            total_tasks = self._estimate_batch_task_count(include_chunking=True)
             sequential_prefix = (
                 "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
                 if sequential_enabled
@@ -678,15 +733,7 @@ class TranslationOptionsWidget(QGroupBox):
                 f"{sequential_prefix}\u0437\u0430\u0434\u0430\u0447 (\u0447\u0430\u043d\u043a\u043e\u0432){sequential_suffix}."
             )
         elif self.batch_checkbox.isChecked():
-            batches, current_size = 0, 0
-            for file_name in self.html_files:
-                size = self._chapter_size_for_current_unit(file_name)
-                if current_size + size > current_target_size and current_size > 0:
-                    batches += 1
-                    current_size = 0
-                current_size += size
-            if current_size > 0:
-                batches += 1
+            batches = self._estimate_batch_task_count(include_chunking=False)
             sequential_prefix = (
                 "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
                 if sequential_enabled

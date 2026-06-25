@@ -83,6 +83,30 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
             {"Text/ch1.xhtml": 7000, "Text/ch2.xhtml": 7000},
         )
 
+    def test_batch_preview_uses_same_packing_with_and_without_chunking(self):
+        widget = self._create_widget()
+        widget.html_files = [
+            "Text/ch1.xhtml",
+            "Text/ch2.xhtml",
+            "Text/ch3.xhtml",
+            "Text/ch4.xhtml",
+        ]
+        widget.chapter_compositions = {
+            "Text/ch1.xhtml": {"total_size": 600, "is_cjk": False},
+            "Text/ch2.xhtml": {"total_size": 600, "is_cjk": False},
+            "Text/ch3.xhtml": {"total_size": 400, "is_cjk": False},
+            "Text/ch4.xhtml": {"total_size": 400, "is_cjk": False},
+        }
+        widget._update_batching_availability()
+        widget.task_size_spin.setValue(1000)
+        widget.batch_checkbox.setChecked(True)
+
+        self.assertIn("~2", widget.info_label.text())
+
+        widget.chunking_checkbox.setChecked(True)
+
+        self.assertIn("~2", widget.info_label.text())
+
     def test_saved_task_size_is_not_overwritten_by_model_recommendation(self):
         widget = self._create_widget()
         widget.set_settings({"task_size_limit": 15404})
