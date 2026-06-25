@@ -24,8 +24,6 @@ def discover_ranobelib_source_data():
 datas = [
     ('config', 'config'),
     ('README.md', '.'),
-    ('ffmpeg.exe', '.'),
-    ('ffprobe.exe', '.'),
     ('gemini_translator\\scripts\\chatgpt_workascii_bridge.cjs', 'gemini_translator\\scripts'),
     ('gemini_translator\\scripts\\chatgpt_profile_launcher.cjs', 'gemini_translator\\scripts'),
     ('qidian_rulate\\tags.txt', 'qidian_rulate'),
@@ -33,6 +31,11 @@ datas = [
     ('playwright_runtime\\node.exe', 'playwright_runtime'),
     ('playwright_runtime\\package', 'playwright_runtime\\package'),
     ('playwright_runtime\\ms-playwright', 'playwright_runtime\\ms-playwright'),
+]
+datas += [
+    (name, '.')
+    for name in ('ffmpeg.exe', 'ffprobe.exe')
+    if (PROJECT_ROOT / name).exists()
 ]
 datas += discover_ranobelib_source_data()
 datas += collect_data_files('PyQt6')
