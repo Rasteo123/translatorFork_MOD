@@ -50,9 +50,12 @@ from ...utils.settings import SettingsManager
 from ...utils.epub_tools import (
     extract_number_from_path,
     calculate_potential_output_size,
+    estimate_epub_chapter_input_size,
     estimate_epub_chapter_input_tokens,
     get_epub_chapter_sizes_with_cache,
     get_epub_chapter_order,
+    normalize_task_size_unit,
+    TASK_SIZE_UNIT_CHARS,
 )
 from ...utils.helpers import TokenCounter
 from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
@@ -359,6 +362,7 @@ class InitialSetupPage(ShellPage):
         self.current_project_folder_loaded = None # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
         self.is_settings_dirty = False
         self.is_glossary_dirty = False
+        self._task_queue_needs_rebuild = False
         self.local_set = False
         self.cpu_performance_index = None
         self.is_fuzzy_disabled_by_system = False
@@ -693,6 +697,14 @@ class InitialSetupPage(ShellPage):
     def _on_translation_options_changed(self):
         self._refresh_auto_translate_runtime_context()
         self._mark_settings_as_dirty()
+        self._task_queue_needs_rebuild = True
+        if getattr(self, 'is_session_active', False):
+            return
+        if not (getattr(self, 'selected_file', None) and getattr(self, 'html_files', None)):
+            return
+        if not getattr(self, 'task_manager', None):
+            return
+        self._prepare_and_display_tasks(clean_rebuild=True)
 
     def _on_main_tab_changed(self, index: int):
         if index == getattr(self, 'glossary_tab_index', -1):
@@ -1374,6 +1386,7 @@ class InitialSetupPage(ShellPage):
             provider_id=self.key_management_widget.get_selected_provider(),
             current_model_name=self.model_settings_widget.model_combo.currentText(),
             current_task_size_limit=self.translation_options_widget.task_size_spin.value(),
+            current_task_size_unit=self.translation_options_widget.task_size_unit(),
             uses_cjk=uses_cjk,
             current_model_settings=self.model_settings_widget.get_settings(),
         )
@@ -1399,6 +1412,39 @@ class InitialSetupPage(ShellPage):
         Устаревший метод, используйте глобальную функцию calculate_potential_output_size.
         """
         return calculate_potential_output_size(html_content, is_cjk)
+
+    def _build_chapter_size_map_for_task_unit(self, chapters, settings_or_unit=None):
+        if isinstance(settings_or_unit, dict):
+            task_size_unit = normalize_task_size_unit(settings_or_unit.get('task_size_unit'))
+        else:
+            task_size_unit = normalize_task_size_unit(settings_or_unit)
+
+        unique_chapters = list(dict.fromkeys(chapters or []))
+        if not unique_chapters or not self.selected_file:
+            return {}
+
+        sizes = {}
+        if task_size_unit != TASK_SIZE_UNIT_CHARS:
+            cached_sizes = get_epub_chapter_sizes_with_cache(self.project_manager, self.selected_file)
+            sizes.update({
+                chapter: int(cached_sizes.get(chapter, 0) or 0)
+                for chapter in unique_chapters
+            })
+
+        missing_size_chapters = [
+            chapter
+            for chapter in unique_chapters
+            if int(sizes.get(chapter, 0) or 0) <= 0
+        ]
+        if missing_size_chapters:
+            with open(self.selected_file, 'rb') as epub_file, zipfile.ZipFile(epub_file, 'r') as zf:
+                for chapter in missing_size_chapters:
+                    sizes[chapter] = estimate_epub_chapter_input_size(
+                        zf.read(chapter).decode('utf-8', 'ignore'),
+                        task_size_unit,
+                    )
+
+        return {chapter: int(sizes.get(chapter, 0) or 0) for chapter in unique_chapters}
 
     # --------------------------------------------------------------------
     # ОБЩАЯ ЛОГИКА И ОБРАБОТЧИКИ
@@ -3199,6 +3245,7 @@ class InitialSetupPage(ShellPage):
                 'sequential_translation',
                 'sequential_translation_splits',
                 'task_size_limit',
+                'task_size_unit',
             )):
                 self.translation_options_widget.set_settings(settings)
 
@@ -3482,7 +3529,11 @@ class InitialSetupPage(ShellPage):
         """
         engine = getattr(self, 'engine', None)
         task_manager = getattr(engine, 'task_manager', None) or getattr(self, 'task_manager', None)
-        if task_manager and task_manager.has_pending_tasks():
+        if (
+            task_manager
+            and task_manager.has_pending_tasks()
+            and not getattr(self, '_task_queue_needs_rebuild', False)
+        ):
             return True
 
         if not (self.selected_file and self.output_folder and self.html_files):
@@ -3847,11 +3898,9 @@ class InitialSetupPage(ShellPage):
 
         # 3. Получаем рекомендуемый размер из виджета опций
         recommended_size = self.translation_options_widget.task_size_spin.value()
+        task_size_unit = self.translation_options_widget.task_size_unit()
 
-        real_chapter_sizes = {
-            path: composition.get('total_size', 0)
-            for path, composition in self.translation_options_widget.chapter_compositions.items()
-        }
+        real_chapter_sizes = self.translation_options_widget.chapter_sizes_for_current_unit()
 
         if not real_chapter_sizes:
              QMessageBox.warning(self, "Ошибка", "Не удалось получить данные о размерах глав. Попробуйте перезагрузить проект.")
@@ -3862,6 +3911,7 @@ class InitialSetupPage(ShellPage):
             filtered_chapters=list(filtered_chapters),
             successful_chapters=list(successful_chapters),
             recommended_size=recommended_size,
+            task_size_unit=task_size_unit,
             epub_path=self.selected_file,
             real_chapter_sizes=real_chapter_sizes,
             parent=self
@@ -4706,6 +4756,19 @@ class InitialSetupPage(ShellPage):
                     settings.update(effective_options)
             display_tasks_settings = settings.copy()
 
+            try:
+                real_chapter_sizes = self._build_chapter_size_map_for_task_unit(
+                    source_chapters,
+                    display_tasks_settings,
+                )
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "РћС€РёР±РєР° РѕР±СЂР°Р±РѕС‚РєРё EPUB",
+                    f"РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕС‡РёС‚Р°С‚СЊ EPUB РґР»СЏ СЂР°СЃС‡С‘С‚Р° СЂР°Р·РјРµСЂРѕРІ РіР»Р°РІ.\n\n{e}"
+                )
+                return
+
             preparer = TaskPreparer(display_tasks_settings, real_chapter_sizes)
             if display_tasks_settings.get('sequential_translation'):
                 chapter_chains = self._build_sequential_chapter_chains(
@@ -4723,6 +4786,7 @@ class InitialSetupPage(ShellPage):
                 self.task_manager.set_pending_tasks(plain_payloads)
 
         QtCore.QTimer.singleShot(15, lambda: self.translation_options_widget._update_info_text())
+        self._task_queue_needs_rebuild = False
 
 
         if self.cpu_performance_index is None and self.html_files and self.glossary_widget.get_glossary():
@@ -5068,6 +5132,7 @@ class InitialSetupPage(ShellPage):
                         zf.read(chapter).decode('utf-8', 'ignore')
                     )
 
+        real_chapter_sizes = self._build_chapter_size_map_for_task_unit(chapters, settings)
         preparer = TaskPreparer(settings, real_chapter_sizes)
         return preparer.prepare_tasks(chapters)
 
@@ -5431,10 +5496,7 @@ class InitialSetupPage(ShellPage):
             ]),
         )
 
-        real_chapter_sizes = {
-            path: composition.get('total_size', 0)
-            for path, composition in self.translation_options_widget.chapter_compositions.items()
-        }
+        real_chapter_sizes = self.translation_options_widget.chapter_sizes_for_current_unit()
         if not real_chapter_sizes:
             self._auto_log("Не удалось получить размеры глав для автопереупаковки фильтра.", force=True)
             return False
@@ -5443,6 +5505,7 @@ class InitialSetupPage(ShellPage):
             filtered_chapters=list(filtered_chapters),
             successful_chapters=list(successful_chapters),
             recommended_size=self.translation_options_widget.task_size_spin.value(),
+            task_size_unit=self.translation_options_widget.task_size_unit(),
             epub_path=self.selected_file,
             real_chapter_sizes=real_chapter_sizes,
             parent=self

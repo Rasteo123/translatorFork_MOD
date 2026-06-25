@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6 import QtWidgets
 
 from gemini_translator.api import config as api_config
+from gemini_translator.utils.epub_tools import TASK_SIZE_UNIT_CHARS, TASK_SIZE_UNIT_TOKENS
 from gemini_translator.ui.widgets.translation_options_widget import TranslationOptionsWidget
 
 
@@ -38,6 +39,73 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
         self.assertNotEqual(widget.task_size_spin.value(), 10000)
         self.assertFalse(widget.is_task_size_user_defined())
         self.assertFalse(widget.get_settings()["task_size_limit_user_defined"])
+        self.assertEqual(widget.get_settings()["task_size_unit"], TASK_SIZE_UNIT_TOKENS)
+
+    def test_task_size_unit_switch_round_trips(self):
+        widget = self._create_widget()
+
+        widget.set_settings({"task_size_unit": TASK_SIZE_UNIT_CHARS})
+
+        self.assertTrue(widget.task_size_chars_checkbox.isChecked())
+        self.assertEqual(widget.task_size_unit(), TASK_SIZE_UNIT_CHARS)
+        self.assertEqual(widget.get_settings()["task_size_unit"], TASK_SIZE_UNIT_CHARS)
+
+    def test_character_mode_uses_character_sizes_for_batch_preview(self):
+        widget = self._create_widget()
+        widget.html_files = ["Text/ch1.xhtml", "Text/ch2.xhtml"]
+        widget.chapter_compositions = {
+            "Text/ch1.xhtml": {
+                "code_size": 0,
+                "text_size": 2000,
+                "total_size": 2000,
+                "total_chars": 7000,
+                "is_cjk": False,
+            },
+            "Text/ch2.xhtml": {
+                "code_size": 0,
+                "text_size": 2000,
+                "total_size": 2000,
+                "total_chars": 7000,
+                "is_cjk": False,
+            },
+        }
+        widget._update_batching_availability()
+        widget.batch_checkbox.setChecked(True)
+        widget.task_size_spin.setValue(10_000)
+
+        self.assertIn("~1", widget.info_label.text())
+
+        widget.task_size_chars_checkbox.setChecked(True)
+
+        self.assertIn("~2", widget.info_label.text())
+        self.assertEqual(
+            widget.chapter_sizes_for_current_unit(),
+            {"Text/ch1.xhtml": 7000, "Text/ch2.xhtml": 7000},
+        )
+
+    def test_batch_preview_uses_same_packing_with_and_without_chunking(self):
+        widget = self._create_widget()
+        widget.html_files = [
+            "Text/ch1.xhtml",
+            "Text/ch2.xhtml",
+            "Text/ch3.xhtml",
+            "Text/ch4.xhtml",
+        ]
+        widget.chapter_compositions = {
+            "Text/ch1.xhtml": {"total_size": 600, "is_cjk": False},
+            "Text/ch2.xhtml": {"total_size": 600, "is_cjk": False},
+            "Text/ch3.xhtml": {"total_size": 400, "is_cjk": False},
+            "Text/ch4.xhtml": {"total_size": 400, "is_cjk": False},
+        }
+        widget._update_batching_availability()
+        widget.task_size_spin.setValue(1000)
+        widget.batch_checkbox.setChecked(True)
+
+        self.assertIn("~2", widget.info_label.text())
+
+        widget.chunking_checkbox.setChecked(True)
+
+        self.assertIn("~2", widget.info_label.text())
 
     def test_saved_task_size_is_not_overwritten_by_model_recommendation(self):
         widget = self._create_widget()

@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from ...api import config as api_config
 from ...core.consistency_engine import FAST_PROOFREAD_MODE
+from ...utils.epub_tools import TASK_SIZE_UNIT_CHARS, TASK_SIZE_UNIT_TOKENS, normalize_task_size_unit
 from ...utils.settings import SettingsManager
 from .common_widgets import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from gemini_translator.ui import theme_manager
@@ -120,6 +121,7 @@ class AutoTranslateWidget(QWidget):
         self._current_provider_id = None
         self._current_model_name = api_config.default_model_name()
         self._current_task_size_limit = 0
+        self._current_task_size_unit = TASK_SIZE_UNIT_TOKENS
         self._current_uses_cjk = False
         self._current_model_settings = {}
 
@@ -550,6 +552,7 @@ class AutoTranslateWidget(QWidget):
         provider_id: str | None = None,
         current_model_name: str | None = None,
         current_task_size_limit: int | None = None,
+        current_task_size_unit: str | None = None,
         uses_cjk: bool | None = None,
         current_model_settings: dict | None = None,
     ):
@@ -563,6 +566,8 @@ class AutoTranslateWidget(QWidget):
             self._current_model_name = current_model_name
         if current_task_size_limit is not None:
             self._current_task_size_limit = max(0, int(current_task_size_limit))
+        if current_task_size_unit is not None:
+            self._current_task_size_unit = normalize_task_size_unit(current_task_size_unit)
         if uses_cjk is not None:
             self._current_uses_cjk = bool(uses_cjk)
         if isinstance(current_model_settings, dict):
@@ -860,9 +865,14 @@ class AutoTranslateWidget(QWidget):
                 f"(task limit: {self._format_number(estimated_chars)} Gemini tokens, profile: {profile_name})."
             )
         elif self._current_task_size_limit > 0:
+            inherited_unit = (
+                "символов"
+                if self._current_task_size_unit == TASK_SIZE_UNIT_CHARS
+                else "Gemini tokens"
+            )
             batch_text = (
                 "Batch limit: inherited from common settings "
-                f"({self._format_number(self._current_task_size_limit)} Gemini tokens)."
+                f"({self._format_number(self._current_task_size_limit)} {inherited_unit})."
             )
         chapter_limit = int(self.batch_chapters_spin.value())
         if chapter_limit > 0:

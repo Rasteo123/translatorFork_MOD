@@ -6,6 +6,8 @@ import zipfile
 from gemini_translator.utils.epub_tools import (
     CHAPTER_SIZE_CACHE_METRIC,
     CHAPTER_SIZE_CACHE_VERSION,
+    TASK_SIZE_UNIT_CHARS,
+    estimate_epub_chapter_input_size,
     estimate_epub_chapter_input_tokens,
     get_epub_chapter_sizes_with_cache,
 )
@@ -39,6 +41,18 @@ class GeminiTokenAnalysisTests(unittest.TestCase):
         self.assertEqual(estimate_gemini_tokens("a" * 400), 100)
         self.assertEqual(estimate_gemini_tokens("я" * 22), 10)
         self.assertEqual(estimate_gemini_tokens("你" * 15), 10)
+
+    def test_epub_input_size_can_use_legacy_character_unit(self):
+        content = "<html><body><p>" + ("Hello " * 20) + "</p></body></html>"
+
+        self.assertEqual(
+            estimate_epub_chapter_input_size(content),
+            estimate_epub_chapter_input_tokens(content),
+        )
+        self.assertEqual(
+            estimate_epub_chapter_input_size(content, TASK_SIZE_UNIT_CHARS),
+            len(content),
+        )
 
     def test_epub_chapter_size_cache_stores_gemini_input_tokens(self):
         content = "<html><body><p>" + ("Hello world. " * 20) + "</p></body></html>"

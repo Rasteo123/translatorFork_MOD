@@ -14,6 +14,7 @@ from gemini_translator.api import config as api_config
 from gemini_translator.core.task_manager import ChapterQueueManager
 from gemini_translator.core.translation_engine import normalize_sequential_parallel_settings
 from gemini_translator.core.worker_helpers.prompt_builder import PromptBuilder
+from gemini_translator.utils.epub_tools import TASK_SIZE_UNIT_CHARS
 from gemini_translator.utils.glossary_tools import TaskPreparer
 
 
@@ -180,6 +181,19 @@ class SequentialTranslationTests(unittest.TestCase):
             tasks = preparer.prepare_tasks(["Text/ch1.xhtml"])
 
         self.assertEqual(tasks, [("epub", epub_path, "Text/ch1.xhtml")])
+
+    def test_task_preparer_character_unit_uses_limit_as_chunk_chars(self):
+        settings = {
+            "file_path": "book.epub",
+            "use_batching": False,
+            "chunking": True,
+            "sequential_translation": False,
+            "task_size_limit": 10_000,
+            "task_size_unit": TASK_SIZE_UNIT_CHARS,
+        }
+        preparer = TaskPreparer(settings, {})
+
+        self.assertEqual(preparer._chunk_target_chars_for_token_limit("a" * 4000), 10_000)
 
     def test_task_preparer_batches_small_chapters_across_large_chapter(self):
         settings = {

@@ -6,14 +6,27 @@ import zipfile
 
 from PyQt6 import QtCore
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QGroupBox, QLabel, QLineEdit, QVBoxLayout
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...api import config as api_config
 from ...utils.epub_tools import (
     CHAPTER_SIZE_CACHE_METRIC,
     CHAPTER_SIZE_CACHE_VERSION,
+    TASK_SIZE_UNIT_CHARS,
+    TASK_SIZE_UNIT_TOKENS,
     estimate_epub_chapter_input_tokens,
     get_epub_chapter_sizes_with_cache,
+    normalize_task_size_unit,
 )
 from ...utils.helpers import estimate_gemini_tokens
 from ...utils.language_tools import LanguageDetector
@@ -98,6 +111,23 @@ class TranslationOptionsWidget(QGroupBox):
             "\u0432 Gemini-\u0442\u043e\u043a\u0435\u043d\u0430\u0445."
         )
         self._recommended_task_size = self.task_size_spin.value()
+        self.task_size_chars_checkbox = QCheckBox("\u0421\u0438\u043c\u0432\u043e\u043b\u044b")
+        self.task_size_chars_checkbox.setToolTip(
+            "\u0415\u0441\u043b\u0438 \u0432\u043a\u043b\u044e\u0447\u0435\u043d\u043e, "
+            "\u0440\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
+            "\u0441\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044f \u0432 HTML-"
+            "\u0441\u0438\u043c\u0432\u043e\u043b\u0430\u0445, \u043a\u0430\u043a "
+            "\u0432 \u0441\u0442\u0430\u0440\u043e\u0439 \u0432\u0435\u0440\u0441\u0438\u0438. "
+            "\u0415\u0441\u043b\u0438 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e, "
+            "\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044e\u0442\u0441\u044f "
+            "Gemini-\u0442\u043e\u043a\u0435\u043d\u044b."
+        )
+        task_size_input_widget = QWidget()
+        task_size_input_layout = QHBoxLayout(task_size_input_widget)
+        task_size_input_layout.setContentsMargins(0, 0, 0, 0)
+        task_size_input_layout.setSpacing(8)
+        task_size_input_layout.addWidget(self.task_size_spin, 1)
+        task_size_input_layout.addWidget(self.task_size_chars_checkbox)
 
         self.sequential_splits_spin = NoScrollSpinBox()
         self.sequential_splits_spin.setRange(1, 32)
@@ -119,12 +149,9 @@ class TranslationOptionsWidget(QGroupBox):
         self.info_label.setWordWrap(True)
         self.info_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        settings_layout.addWidget(
-            QLabel("\u0420\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 (Gemini-\u0442\u043e\u043a\u0435\u043d\u044b):"),
-            0,
-            0,
-        )
-        settings_layout.addWidget(self.task_size_spin, 0, 1)
+        self.task_size_label = QLabel()
+        settings_layout.addWidget(self.task_size_label, 0, 0)
+        settings_layout.addWidget(task_size_input_widget, 0, 1)
         settings_layout.addWidget(
             QLabel("\u0420\u0430\u0437\u0431\u0438\u0435\u043d\u0438\u0435 \u043f\u043e\u0441\u043b. \u043f\u0435\u0440\u0435\u0432\u043e\u0434\u0430:"),
             1,
@@ -182,10 +209,12 @@ class TranslationOptionsWidget(QGroupBox):
         self.multi_pass_count_spin.valueChanged.connect(self._on_mode_changed)
         self.multi_pass_strategy_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.task_size_spin.valueChanged.connect(self._on_task_size_changed)
+        self.task_size_chars_checkbox.toggled.connect(self._on_task_size_unit_changed)
         line_edit = self.task_size_spin.lineEdit()
         if line_edit is not None:
             line_edit.textEdited.connect(self._mark_task_size_user_defined)
 
+        self._apply_task_size_unit_ui()
         self._on_mode_changed(emit_signal=False)
 
     def get_settings(self):
@@ -203,11 +232,125 @@ class TranslationOptionsWidget(QGroupBox):
             "multi_pass_count": self.multi_pass_count_spin.value(),
             "multi_pass_strategy": self.multi_pass_strategy_combo.currentData() or "merge",
             "task_size_limit": self.task_size_spin.value(),
+            "task_size_unit": self.task_size_unit(),
             "task_size_limit_user_defined": self._task_size_user_defined,
         }
 
+    def task_size_unit(self):
+        if self.task_size_chars_checkbox.isChecked():
+            return TASK_SIZE_UNIT_CHARS
+        return TASK_SIZE_UNIT_TOKENS
+
     def is_task_size_user_defined(self):
         return self._task_size_user_defined
+
+    def _apply_task_size_unit_ui(self):
+        if self.task_size_unit() == TASK_SIZE_UNIT_CHARS:
+            self.task_size_label.setText(
+                "\u0420\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
+                "(\u0441\u0438\u043c\u0432\u043e\u043b\u044b):"
+            )
+            self.task_size_spin.setSingleStep(100)
+            self.task_size_spin.setToolTip(
+                "\u0426\u0435\u043b\u0435\u0432\u043e\u0439 \u0440\u0430\u0437\u043c\u0435\u0440 "
+                "\u0432\u0445\u043e\u0434\u043d\u044b\u0445 HTML-\u0434\u0430\u043d\u043d\u044b\u0445 "
+                "\u0434\u043b\u044f \u043e\u0434\u043d\u043e\u0439 \u0437\u0430\u0434\u0430\u0447\u0438 "
+                "(\u043f\u0430\u043a\u0435\u0442\u0430 \u0438\u043b\u0438 \u0447\u0430\u043d\u043a\u0430) "
+                "\u0432 \u0441\u0438\u043c\u0432\u043e\u043b\u0430\u0445."
+            )
+        else:
+            self.task_size_label.setText(
+                "\u0420\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
+                "(Gemini-\u0442\u043e\u043a\u0435\u043d\u044b):"
+            )
+            self.task_size_spin.setSingleStep(500)
+            self.task_size_spin.setToolTip(
+                "\u0426\u0435\u043b\u0435\u0432\u043e\u0439 \u0440\u0430\u0437\u043c\u0435\u0440 "
+                "\u0432\u0445\u043e\u0434\u043d\u044b\u0445 \u0434\u0430\u043d\u043d\u044b\u0445 "
+                "\u0434\u043b\u044f \u043e\u0434\u043d\u043e\u0439 \u0437\u0430\u0434\u0430\u0447\u0438 "
+                "(\u043f\u0430\u043a\u0435\u0442\u0430 \u0438\u043b\u0438 \u0447\u0430\u043d\u043a\u0430) "
+                "\u0432 Gemini-\u0442\u043e\u043a\u0435\u043d\u0430\u0445."
+            )
+
+    def _chapter_size_for_current_unit(self, file_name):
+        composition = self.chapter_compositions.get(file_name, {})
+        if self.task_size_unit() == TASK_SIZE_UNIT_CHARS:
+            return int(composition.get("total_chars", composition.get("total_size", 0)) or 0)
+        return int(composition.get("total_size", 0) or 0)
+
+    def chapter_sizes_for_current_unit(self):
+        return {
+            file_name: self._chapter_size_for_current_unit(file_name)
+            for file_name in self.chapter_compositions
+        }
+
+    def _chunk_count_for_size(self, size, target_size):
+        if size <= 0:
+            return 1
+        return max(1, math.ceil(size / max(1, target_size)))
+
+    def _count_sequential_batch_tasks(self, file_names, target_size, include_chunking):
+        task_count = 0
+        current_size = 0
+        for file_name in file_names:
+            size = self._chapter_size_for_current_unit(file_name)
+            if size > target_size:
+                if current_size > 0:
+                    task_count += 1
+                    current_size = 0
+                task_count += self._chunk_count_for_size(size, target_size) if include_chunking else 1
+                continue
+
+            if current_size and current_size + size > target_size:
+                task_count += 1
+                current_size = 0
+            current_size += size
+
+        if current_size > 0:
+            task_count += 1
+        return task_count
+
+    def _count_non_sequential_batch_tasks(self, file_names, target_size, include_chunking):
+        task_count = 0
+        open_batch_sizes = []
+        for file_name in file_names:
+            size = self._chapter_size_for_current_unit(file_name)
+            if size > target_size:
+                task_count += self._chunk_count_for_size(size, target_size) if include_chunking else 1
+                continue
+
+            for index, batch_size in enumerate(open_batch_sizes):
+                if batch_size + size <= target_size:
+                    open_batch_sizes[index] = batch_size + size
+                    break
+            else:
+                open_batch_sizes.append(size)
+
+        return task_count + len(open_batch_sizes)
+
+    def _sequential_chapter_chains_for_preview(self):
+        split_count = self.sequential_splits_spin.value() if self.sequential_checkbox.isChecked() else 1
+        split_count = max(1, min(int(split_count or 1), len(self.html_files)))
+        chains = []
+        for index in range(split_count):
+            start = (index * len(self.html_files)) // split_count
+            end = ((index + 1) * len(self.html_files)) // split_count
+            if start < end:
+                chains.append(self.html_files[start:end])
+        return chains or [self.html_files]
+
+    def _estimate_batch_task_count(self, include_chunking=False):
+        target_size = max(1, self.task_size_spin.value())
+        if self.sequential_checkbox.isChecked():
+            return sum(
+                self._count_sequential_batch_tasks(chain, target_size, include_chunking)
+                for chain in self._sequential_chapter_chains_for_preview()
+            )
+        return self._count_non_sequential_batch_tasks(
+            self.html_files,
+            target_size,
+            include_chunking,
+        )
 
     def _set_task_size_value(self, value, *, user_defined=None):
         self._changing_task_size_programmatically = True
@@ -242,14 +385,19 @@ class TranslationOptionsWidget(QGroupBox):
         current_multi_pass_count = self.multi_pass_count_spin.value()
         current_multi_pass_strategy = self.multi_pass_strategy_combo.currentData() or "merge"
         current_task_size = self.task_size_spin.value()
+        current_task_size_unit = self.task_size_unit()
         has_explicit_task_size = (
             "task_size_limit" in settings and settings.get("task_size_limit") is not None
         )
+        has_explicit_task_size_unit = "task_size_unit" in settings
 
         try:
             target_task_size = int(settings.get("task_size_limit", current_task_size))
         except (TypeError, ValueError):
             target_task_size = current_task_size
+        target_task_size_unit = normalize_task_size_unit(
+            settings.get("task_size_unit", current_task_size_unit)
+        )
 
         self.blockSignals(True)
         try:
@@ -291,9 +439,12 @@ class TranslationOptionsWidget(QGroupBox):
             if has_explicit_task_size:
                 user_defined = bool(settings.get("task_size_limit_user_defined", True))
                 self._set_task_size_value(target_task_size, user_defined=user_defined)
+            if has_explicit_task_size_unit:
+                self.task_size_chars_checkbox.setChecked(target_task_size_unit == TASK_SIZE_UNIT_CHARS)
         finally:
             self.blockSignals(False)
 
+        self._apply_task_size_unit_ui()
         self._on_mode_changed(emit_signal=False)
         self._update_info_text()
 
@@ -390,7 +541,11 @@ class TranslationOptionsWidget(QGroupBox):
 
             for file_name in self.html_files:
                 cached_entry = cached_chapters.get(file_name)
-                if isinstance(cached_entry, dict):
+                if (
+                    isinstance(cached_entry, dict)
+                    and "total_chars" in cached_entry
+                    and "text_chars" in cached_entry
+                ):
                     total_size = int(
                         cached_entry.get(
                             "input_tokens",
@@ -412,6 +567,9 @@ class TranslationOptionsWidget(QGroupBox):
                         "code_tokens": code_size,
                         "text_tokens": text_size,
                         "input_tokens": total_size,
+                        "code_chars": int(cached_entry.get("code_chars", 0) or 0),
+                        "text_chars": int(cached_entry.get("text_chars", 0) or 0),
+                        "total_chars": int(cached_entry.get("total_chars", 0) or 0),
                     }
                 else:
                     missing_files.append(file_name)
@@ -423,20 +581,26 @@ class TranslationOptionsWidget(QGroupBox):
                         soup = BeautifulSoup(content_str, "html.parser")
                         visible_text = soup.get_text()
 
-                        text_size = estimate_gemini_tokens(visible_text)
-                        total_size = int(
+                        text_tokens = estimate_gemini_tokens(visible_text)
+                        total_tokens = int(
                             chapter_sizes.get(file_name, 0)
                             or estimate_epub_chapter_input_tokens(content_str)
                         )
-                        code_size = max(0, total_size - text_size)
+                        code_tokens = max(0, total_tokens - text_tokens)
+                        total_chars = len(content_str)
+                        text_chars = len(visible_text)
+                        code_chars = max(0, total_chars - text_chars)
                         chapter_data = {
-                            "code_size": code_size,
-                            "text_size": text_size,
+                            "code_size": code_tokens,
+                            "text_size": text_tokens,
                             "is_cjk": LanguageDetector.is_cjk_text(visible_text),
-                            "total_size": total_size,
-                            "code_tokens": code_size,
-                            "text_tokens": text_size,
-                            "input_tokens": total_size,
+                            "total_size": total_tokens,
+                            "code_tokens": code_tokens,
+                            "text_tokens": text_tokens,
+                            "input_tokens": total_tokens,
+                            "code_chars": code_chars,
+                            "text_chars": text_chars,
+                            "total_chars": total_chars,
                         }
                         self.chapter_compositions[file_name] = chapter_data
                         merged_cached_chapters[file_name] = chapter_data
@@ -497,6 +661,21 @@ class TranslationOptionsWidget(QGroupBox):
             if output_token_weight > 0
             else 30000
         )
+        if self.task_size_unit() == TASK_SIZE_UNIT_CHARS:
+            total_input_tokens = sum(
+                int(comp.get("total_size", 0) or 0)
+                for comp in self.chapter_compositions.values()
+            )
+            total_input_chars = sum(
+                int(comp.get("total_chars", 0) or 0)
+                for comp in self.chapter_compositions.values()
+            )
+            chars_per_token = (
+                total_input_chars / total_input_tokens
+                if total_input_tokens > 0 and total_input_chars > 0
+                else (1.5 if is_any_cjk else api_config.CHARS_PER_ASCII_TOKEN)
+            )
+            recommended_input_size = int(recommended_input_size * chars_per_token)
         recommended_input_size = max(500, min(recommended_input_size, 300000))
         self._recommended_task_size = recommended_input_size
 
@@ -524,20 +703,7 @@ class TranslationOptionsWidget(QGroupBox):
         )
 
         if self.batch_checkbox.isChecked() and self.chunking_checkbox.isChecked():
-            chunk_tasks = 0
-            open_batch_sizes = []
-            for file_name in self.html_files:
-                size = self.chapter_compositions.get(file_name, {}).get("total_size", 0)
-                if size > current_target_size:
-                    chunk_tasks += math.ceil(size / current_target_size) if size > 0 else 1
-                    continue
-                for index, batch_size in enumerate(open_batch_sizes):
-                    if batch_size + size <= current_target_size:
-                        open_batch_sizes[index] = batch_size + size
-                        break
-                else:
-                    open_batch_sizes.append(size)
-            total_tasks = len(open_batch_sizes) + chunk_tasks
+            total_tasks = self._estimate_batch_task_count(include_chunking=True)
             sequential_prefix = (
                 "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
                 if sequential_enabled
@@ -552,10 +718,10 @@ class TranslationOptionsWidget(QGroupBox):
 
         if self.chunking_checkbox.isChecked():
             total_tasks = sum(
-                math.ceil(comp["total_size"] / current_target_size)
-                if comp["total_size"] > 0
+                math.ceil(self._chapter_size_for_current_unit(file_name) / current_target_size)
+                if self._chapter_size_for_current_unit(file_name) > 0
                 else 1
-                for comp in self.chapter_compositions.values()
+                for file_name in self.chapter_compositions
             )
             sequential_prefix = (
                 "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
@@ -567,15 +733,7 @@ class TranslationOptionsWidget(QGroupBox):
                 f"{sequential_prefix}\u0437\u0430\u0434\u0430\u0447 (\u0447\u0430\u043d\u043a\u043e\u0432){sequential_suffix}."
             )
         elif self.batch_checkbox.isChecked():
-            batches, current_size = 0, 0
-            for file_name in self.html_files:
-                size = self.chapter_compositions.get(file_name, {}).get("total_size", 0)
-                if current_size + size > current_target_size and current_size > 0:
-                    batches += 1
-                    current_size = 0
-                current_size += size
-            if current_size > 0:
-                batches += 1
+            batches = self._estimate_batch_task_count(include_chunking=False)
             sequential_prefix = (
                 "\u043f\u043e\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 "
                 if sequential_enabled
@@ -600,6 +758,11 @@ class TranslationOptionsWidget(QGroupBox):
     def _on_task_size_changed(self, _value: int):
         self._mark_task_size_user_defined()
 
+        self._update_info_text()
+        self.settings_changed.emit()
+
+    def _on_task_size_unit_changed(self, _checked: bool):
+        self._apply_task_size_unit_ui()
         self._update_info_text()
         self.settings_changed.emit()
 
