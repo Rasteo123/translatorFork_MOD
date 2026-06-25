@@ -67,6 +67,19 @@ class UpdateChecker(QThread):
                 latest_parsed = parse_version(latest_version)
                 current_parsed = parse_version(current_version)
                 
+                if not current_parsed:
+                    # If version has no numbers (e.g. "dev")
+                    settings = QtCore.QSettings("SiberianTeam", "TranslatorFork")
+                    installed_v = settings.value("updater/installed_version", "")
+                    installed_parsed = parse_version(installed_v)
+                    
+                    if installed_parsed:
+                        current_parsed = installed_parsed
+                    elif not getattr(sys, 'frozen', False):
+                        # Running from source (e.g. downloaded zip of main branch).
+                        # Assume they are on bleeding edge to prevent downgrading to a release.
+                        current_parsed = [float('inf')]
+                
                 if latest_parsed > current_parsed:
                     body = data.get("body", "Доступно новое обновление.")
                     
