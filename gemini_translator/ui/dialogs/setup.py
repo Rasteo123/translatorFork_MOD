@@ -157,12 +157,11 @@ def _create_tasks_tab_scroll_area(task_management_widget, translation_options_wi
     tasks_splitter.setCollapsible(0, False)
     tasks_splitter.setCollapsible(1, True)
     tasks_splitter.setSizes([max(560, t_min), o_min])
+    tasks_min_height = max(TASKS_TAB_MIN_HEIGHT, t_min + o_min + 24)
+    tasks_splitter.setMinimumHeight(tasks_min_height)
 
     tasks_tab_layout.addWidget(tasks_splitter, 1)
-    
-    # We remove tasks_splitter.setMinimumHeight and tasks_tab_container.setMinimumHeight
-    # because Qt's QVBoxLayout will automatically enforce the sum of minimumSizeHints
-    # of its children, guaranteeing QScrollArea displays a scrollbar correctly.
+    tasks_tab_container.setMinimumHeight(tasks_min_height)
 
     tasks_scroll = QScrollArea()
     tasks_scroll.setWidgetResizable(True)
