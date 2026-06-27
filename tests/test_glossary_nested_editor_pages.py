@@ -30,6 +30,21 @@ class _CheckStub:
         return self._checked
 
 
+class _ResidueSettings:
+    def get_last_word_exceptions_text(self):
+        return " "
+
+
+class _ResidueLogic:
+    def __init__(self, residue_map):
+        self.residue_map = residue_map
+        self.calls = 0
+
+    def find_untranslated_residue(self, glossary):
+        self.calls += 1
+        return self.residue_map
+
+
 class _GlossaryManagerHarness(ShellPage):
     def __init__(self):
         super().__init__()
@@ -229,6 +244,36 @@ class GlossaryNestedEditorPageTests(unittest.TestCase):
 
         self.assertIsNotNone(data_for_ai)
         self.assertIn("alpha", data_for_ai)
+
+    def test_residue_analyzer_translation_only_survives_shell_reparent(self):
+        translation_entry = {"original": "Alpha", "rus": "Alpha leftover", "note": ""}
+        note_entry = {"original": "Beta", "rus": "Beta", "note": "Beta noteonly"}
+        residue_map = {
+            "leftover": {"entries_with_residue": [{"entry": translation_entry, "location": "rus"}]},
+            "noteonly": {"entries_with_residue": [{"entry": note_entry, "location": "note"}]},
+        }
+        owner = _ShellGlossaryOwner()
+        owner.logic = _ResidueLogic(residue_map)
+        self.addCleanup(owner.close)
+        page = glossary_module.ResidueAnalyzerPage(
+            residue_map,
+            [translation_entry, note_entry],
+            _ResidueSettings(),
+            owner,
+        )
+        stack = QtWidgets.QStackedWidget()
+        self.addCleanup(stack.close)
+        stack.addWidget(page)
+
+        page.toggle_analysis_mode_btn.click()
+        keys = [
+            page.left_list.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
+            for i in range(page.left_list.count())
+        ]
+
+        self.assertEqual(page.analysis_mode, "translation_only")
+        self.assertEqual(keys, ["leftover"])
+        self.assertGreaterEqual(owner.logic.calls, 2)
 
     def test_core_term_analyzer_is_pushed_and_applies_accepted_patch(self):
         with (

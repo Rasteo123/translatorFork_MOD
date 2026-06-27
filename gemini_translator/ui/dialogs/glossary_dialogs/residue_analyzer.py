@@ -1,12 +1,11 @@
 # gemini_translator/ui/dialogs/glossary_dialogs/residue_analyzer.py
 
-import re
 from collections import defaultdict
-from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6 import QtGui
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel, QWidget, 
     QHBoxLayout, QTableWidget, QHeaderView, QTableWidgetItem, QListWidget, QTextEdit,
-    QListWidgetItem, QSplitter, QAbstractItemView, QGroupBox, QLineEdit, QGridLayout
+    QListWidgetItem, QSplitter, QGroupBox, QLineEdit, QGridLayout
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -14,10 +13,6 @@ from .custom_widgets import ExpandingTextEditDelegate, ExpandingTextEdit
 from ....ui.widgets.preset_widget import PresetWidget
 from ....api import config as api_config
 from ...shell import ShellPage
-
-NO_RUS_PATTERN = re.compile(r'[^а-яА-ЯёЁ\s\d!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~]+')
-
-
 
 class ResidueAnalyzerPage(ShellPage):
     """
@@ -39,6 +34,7 @@ class ResidueAnalyzerPage(ShellPage):
         self.view_mode = 'fragment_to_term'
         # --- Состояние режима анализа ---
         self.analysis_mode = 'all' # 'all' или 'translation_only'
+        self._glossary_owner = self._locate_glossary_owner()
 
         # --- Эти словари теперь будут содержать отфильтрованные данные ---
         self.residue_map = {}
@@ -51,6 +47,19 @@ class ResidueAnalyzerPage(ShellPage):
         # ---  Первый запуск теперь тоже проходит через фильтр ---
         self._apply_all_filters_and_update_view()
 
+    def _locate_glossary_owner(self):
+        node = self.parent()
+        while node is not None:
+            if hasattr(node, 'logic'):
+                return node
+            node = node.parent()
+        return None
+
+    def _get_glossary_owner(self):
+        if self._glossary_owner is None:
+            self._glossary_owner = self._locate_glossary_owner()
+        return self._glossary_owner
+
     def _get_entry_id(self, entry):
         if not isinstance(entry, dict):
             return str(entry)
@@ -62,59 +71,17 @@ class ResidueAnalyzerPage(ShellPage):
         ТЕКУЩЕГО состояния глоссария (с учетом патча), а затем применяет фильтры.
         """
         # --- ШАГ 1: Переанализ на основе актуальных данных ---
-        parent_main_window = self.parent()
-        if not (parent_main_window and hasattr(parent_main_window, 'logic')): 
-            return
+        parent_main_window = self._get_glossary_owner()
 
-        # Получаем самое свежее состояние глоссария (оригинал + все правки из патча)
-        current_glossary_state = self.get_current_glossary_state()
-        
-        # Запускаем анализ на этих свежих данных, чтобы получить актуальную карту остатков
-        self.full_residue_map = parent_main_window.logic.find_untranslated_residue(current_glossary_state)
+        if parent_main_window and hasattr(parent_main_window, 'logic') and hasattr(parent_main_window.logic, 'find_untranslated_residue'):
+            # Получаем самое свежее состояние глоссария (оригинал + все правки из патча)
+            current_glossary_state = self.get_current_glossary_state()
+
+            # Запускаем анализ на этих свежих данных, чтобы получить актуальную карту остатков
+            self.full_residue_map = parent_main_window.logic.find_untranslated_residue(current_glossary_state)
 
         # --- ШАГ 2: Применение фильтров к актуальной карте ---
-        
-        # 2.1. Загружаем и применяем список исключений
-        exceptions_text = self.settings_manager.get_last_word_exceptions_text() or api_config.default_word_exceptions()
-        exceptions_set = {line.strip().lower() for line in exceptions_text.splitlines() if line.strip() and not line.strip().startswith('#')}
-        
-        temp_residue_map = {
-            fragment: data for fragment, data in self.full_residue_map.items()
-            if fragment not in exceptions_set
-        }
-        
-        # 2.2. Применяем фильтр по режиму (translation_only / all)
-        if self.analysis_mode == 'all':
-            self.residue_map = temp_residue_map
-        else: # 'translation_only'
-            filtered_map = defaultdict(lambda: {'entries_with_residue': []})
-            for fragment, data in temp_residue_map.items():
-                entries_in_translation = [
-                    entry_info for entry_info in data.get('entries_with_residue', [])
-                    if entry_info.get('location') == 'rus'
-                ]
-                if entries_in_translation:
-                    filtered_map[fragment]['entries_with_residue'] = entries_in_translation
-            self.residue_map = dict(filtered_map)
-        
-        # --- ШАГ 3: Перестроение UI ---
-        
-        # 3.1. Перестраиваем инвертированную карту
-        self.inverted_residue_map.clear()
-        for fragment, data in self.residue_map.items():
-            for entry_info in data['entries_with_residue']:
-                entry = entry_info['entry']
-                original_term = entry.get('original')
-                if original_term:
-                    self.inverted_residue_map[original_term]['entries'].append(entry)
-                    self.inverted_residue_map[original_term]['fragments'].add(fragment)
-        
-        # 3.2. Определяем оптимальный вид и обновляем список
-        if self.inverted_residue_map and (len(self.inverted_residue_map) < len(self.residue_map)):
-            self.view_mode = 'term_to_fragment'
-        else:
-            self.view_mode = 'fragment_to_term'
-            
+        self._apply_filter_and_rebuild_maps()
         self._populate_left_list()
 
     def _init_ui(self):
@@ -211,22 +178,28 @@ class ResidueAnalyzerPage(ShellPage):
         в self.residue_map в соответствии с текущим self.analysis_mode.
         Затем перестраивает инвертированную карту для другого вида.
         """
+        exceptions_text = self.settings_manager.get_last_word_exceptions_text() or api_config.default_word_exceptions()
+        exceptions_set = {
+            line.strip().lower()
+            for line in exceptions_text.splitlines()
+            if line.strip() and not line.strip().startswith('#')
+        }
+        temp_residue_map = {
+            fragment: data
+            for fragment, data in self.full_residue_map.items()
+            if str(fragment).lower() not in exceptions_set
+        }
+
         if self.analysis_mode == 'all':
-            self.residue_map = self.full_residue_map
+            self.residue_map = temp_residue_map
         else: # 'translation_only'
-            # ИЗМЕНЕНИЕ: Регулярное выражение ищет последовательности символов,
-            # которые НЕ являются кириллицей, пробелами, цифрами или пунктуацией.
             filtered_map = defaultdict(lambda: {'entries_with_residue': []})
             
-            for fragment, data in self.full_residue_map.items():
-                entries_in_translation = []
-                for entry_info in data['entries_with_residue']:
-                    entry = entry_info['entry']
-                    rus = entry.get('rus', '')
-
-                    found_words = {r.lower() for r in NO_RUS_PATTERN.findall(rus)}
-                    if fragment in found_words:
-                        entries_in_translation.append(entry_info)
+            for fragment, data in temp_residue_map.items():
+                entries_in_translation = [
+                    entry_info for entry_info in data.get('entries_with_residue', [])
+                    if entry_info.get('location') == 'rus'
+                ]
                 
                 if entries_in_translation:
                     filtered_map[fragment]['entries_with_residue'] = entries_in_translation

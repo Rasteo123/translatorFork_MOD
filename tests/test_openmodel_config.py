@@ -20,7 +20,7 @@ class OpenModelConfigTests(unittest.TestCase):
         self.assertEqual(model["id"], "deepseek-v4-flash")
         self.assertEqual(model["rpm"], 10)
         self.assertEqual(model["tpm"], 100000)
-        self.assertEqual(model["max_concurrent_requests"], 1)
+        self.assertEqual(model["max_concurrent_requests"], 10)
         self.assertEqual(model["context_length"], 1000000)
         self.assertEqual(model["max_output_tokens"], 8192)
         self.assertTrue(model["needs_chunking"])
