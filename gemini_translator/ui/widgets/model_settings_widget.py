@@ -1125,8 +1125,13 @@ class ModelSettingsWidget(QGroupBox):
         current_display_name = self.model_combo.currentText()
         
         system_instruction_text = None
+        system_instruction_preset = None
+        system_instruction_preset_modified = False
         if self.system_instruction_checkbox.isChecked():
             system_instruction_text = self.system_instruction_editor_dialog.get_prompt()
+            system_instruction_preset = self.system_instruction_editor_dialog.get_current_preset_name()
+            preset_widget = getattr(self.system_instruction_editor_dialog, 'preset_widget', None)
+            system_instruction_preset_modified = bool(getattr(preset_widget, 'is_preset_modified', False))
     
         # Определяем, какой режим Thinking активен (уровни или бюджет)
         thinking_level = None
@@ -1152,6 +1157,8 @@ class ModelSettingsWidget(QGroupBox):
             'temperature_override_enabled': self.temperature_override_checkbox.isChecked(),
             'use_system_instruction': self.system_instruction_checkbox.isChecked(),
             'system_instruction': system_instruction_text,
+            'system_instruction_preset': system_instruction_preset,
+            'system_instruction_preset_modified': system_instruction_preset_modified,
             'thinking_enabled': self.thinking_checkbox.isChecked(),
             'max_concurrent_requests': max_concurrent,
             'thinking_budget': thinking_budget,

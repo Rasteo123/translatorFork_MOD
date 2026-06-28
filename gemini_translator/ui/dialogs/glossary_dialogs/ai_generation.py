@@ -687,10 +687,10 @@ class GenerationSessionPage(ShellPage):
         actions_row.addWidget(self.pipeline_clear_steps_btn)
         layout.addLayout(actions_row)
 
-        self.pipeline_table = QTableWidget(0, 8)
+        self.pipeline_table = QTableWidget(0, 9)
         self.pipeline_table.setAlternatingRowColors(True)
         self.pipeline_table.setHorizontalHeaderLabels(
-            ["#", "Название", "Слияние", "T", "Режим", "Пакет", "Новых", "Статус"]
+            ["#", "Название", "Слияние", "T", "Сист.", "Режим", "Пакет", "Новых", "Статус"]
         )
         self.pipeline_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.pipeline_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
@@ -703,7 +703,7 @@ class GenerationSessionPage(ShellPage):
         header = self.pipeline_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for col in (2, 3, 4, 5, 6, 7):
+        for col in (2, 3, 4, 5, 6, 7, 8):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self.pipeline_table.itemSelectionChanged.connect(self._on_pipeline_selection_changed)
         self.pipeline_table.itemChanged.connect(self._on_pipeline_table_item_changed)
@@ -984,6 +984,7 @@ class GenerationSessionPage(ShellPage):
                     step.name,
                     summary["merge_mode"],
                     summary["temperature"],
+                    summary["system_instruction"],
                     summary["execution_mode"],
                     summary["task_size"],
                     summary["new_terms_limit"],
@@ -1004,7 +1005,7 @@ class GenerationSessionPage(ShellPage):
                     if col == 0:
                         item.setData(Qt.ItemDataRole.UserRole, step.step_id)
 
-                status_item = self.pipeline_table.item(row, 7)
+                status_item = self.pipeline_table.item(row, 8)
                 brush = self._status_brush_for_pipeline_step(step.status)
                 for col in range(self.pipeline_table.columnCount()):
                     row_item = self.pipeline_table.item(row, col)
@@ -1047,6 +1048,7 @@ class GenerationSessionPage(ShellPage):
             f"Название: {selected_step.name}",
             f"Слияние: {summary['merge_mode']}",
             f"Температура: {summary['temperature']}",
+            f"Сист. инструкции: {summary['system_instruction']}",
             f"Режим: {summary['execution_mode']}",
             f"Пакет: {summary['task_size']}",
             f"Новых терминов: {summary['new_terms_limit']}",
@@ -2355,6 +2357,7 @@ class GenerationSessionPage(ShellPage):
         start_message = (
             f"[PIPELINE] Шаг {step_index}/{total_steps}: {next_step.name} | "
             f"{summary['merge_mode']} | T={summary['temperature']} | "
+            f"Сист.: {summary['system_instruction']} | "
             f"{summary['execution_mode']} | новых терминов: {summary['new_terms_limit']}"
         )
         self._append_pipeline_log(start_message, step_id=next_step.step_id)

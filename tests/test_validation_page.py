@@ -85,6 +85,26 @@ class TranslationValidatorPageContractTests(unittest.TestCase):
 
         self.assertGreater(page.content_scroll_area.verticalScrollBar().maximum(), 0)
 
+    def test_close_button_requests_shell_back_navigation(self):
+        with patch.object(TranslationValidatorPage, "_perform_initial_cjk_scan"):
+            page = TranslationValidatorPage(
+                "/tmp/nonexistent-translations",
+                "/tmp/nonexistent-book.epub",
+                project_manager=None,
+            )
+        self.addCleanup(page.deleteLater)
+        page._populate_initial_table_timer.stop()
+        page.show()
+        self.app.processEvents()
+
+        requests = []
+        page.request_back.connect(lambda: requests.append(True))
+
+        page.btn_back.click()
+
+        self.assertEqual(requests, [True])
+        self.assertFalse(page.isHidden())
+
     def test_initial_table_population_stops_if_table_is_deleted_during_event_pump(self):
         with patch.object(TranslationValidatorPage, "_perform_initial_cjk_scan"):
             page = TranslationValidatorPage(

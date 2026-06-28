@@ -82,12 +82,26 @@ def summarize_step_settings(settings: Optional[Dict[str, Any]] = None) -> Dict[s
     new_terms_limit = settings.get("new_terms_limit")
     new_terms_limit_text = str(new_terms_limit) if new_terms_limit not in (None, "") else "—"
 
+    system_instruction_text = str(settings.get("system_instruction") or "").strip()
+    if not settings.get("use_system_instruction"):
+        system_instruction = "выкл."
+    elif not system_instruction_text:
+        system_instruction = "вкл., пусто"
+    else:
+        preset_name = str(settings.get("system_instruction_preset") or "").strip()
+        if preset_name:
+            suffix = "*" if settings.get("system_instruction_preset_modified") else ""
+            system_instruction = f"{preset_name}{suffix}"
+        else:
+            system_instruction = "пользовательская"
+
     return {
         "temperature": temperature,
         "merge_mode": merge_mode,
         "execution_mode": execution_mode,
         "task_size": task_size_text,
         "new_terms_limit": new_terms_limit_text,
+        "system_instruction": system_instruction,
     }
 
 

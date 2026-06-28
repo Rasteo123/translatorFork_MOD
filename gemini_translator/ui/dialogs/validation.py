@@ -2896,7 +2896,7 @@ class TranslationValidatorPage(ShellPage):
         
         self.btn_apply_changes = QPushButton("✅ Применить действия"); self.btn_apply_changes.clicked.connect(self.apply_changes)
         self.btn_send_to_retry = QPushButton("▶️ Отправить на перевод и закрыть"); self.btn_send_to_retry.clicked.connect(self.request_retry_translation); self.btn_send_to_retry.setVisible(self.retry_is_available)
-        self.btn_back = QPushButton("Закрыть"); self.btn_back.clicked.connect(self.close)
+        self.btn_back = QPushButton("Закрыть"); self.btn_back.clicked.connect(self.request_back.emit)
         
         bottom_layout.addWidget(self.lbl_status, 1)
         bottom_layout.addWidget(self.btn_consistency)

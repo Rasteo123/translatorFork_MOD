@@ -125,6 +125,16 @@ class GlossaryPipelineTests(unittest.TestCase):
         self.assertEqual(summary["execution_mode"], "Последовательный")
         self.assertEqual(summary["task_size"], "24000")
         self.assertEqual(summary["new_terms_limit"], "70")
+        self.assertEqual(summary["system_instruction"], "выкл.")
+
+        summary_with_system = summarize_step_settings(
+            {
+                "use_system_instruction": True,
+                "system_instruction": "Follow glossary rules.",
+                "system_instruction_preset": "WH_glossary_patch1",
+            }
+        )
+        self.assertEqual(summary_with_system["system_instruction"], "WH_glossary_patch1")
 
     def test_default_step_name_contains_mode_and_temperature(self):
         name = build_default_step_name({"temperature": 1.3, "merge_mode": "accumulate"}, index=3)
