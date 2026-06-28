@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QUrl, QRegularExpression
 from PyQt6.QtGui import QDesktopServices, QColor, QBrush, QSyntaxHighlighter, QTextCharFormat, QFont, QTextCursor
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets, sip
 
 
 from ..widgets.preset_widget import PresetWidget
@@ -1987,7 +1987,16 @@ class TranslationValidatorPage(ShellPage):
         self.lbl_status.setText("Построение таблицы файлов...")
         
         # 2. Запускаем построение таблицы через 100мс ПОСЛЕ того, как окно отрисуется
-        QtCore.QTimer.singleShot(150, self._populate_initial_table)
+        self._populate_initial_table_timer = QtCore.QTimer(self)
+        self._populate_initial_table_timer.setSingleShot(True)
+        self._populate_initial_table_timer.timeout.connect(self._populate_initial_table)
+        self._populate_initial_table_timer.start(150)
+
+    def _is_destroyed(self):
+        if sip.isdeleted(self):
+            return True
+        table = getattr(self, "table_results", None)
+        return table is not None and sip.isdeleted(table)
 
     def _read_text_file(self, file_path):
         try:
@@ -2350,6 +2359,9 @@ class TranslationValidatorPage(ShellPage):
         Все добавленные файлы помечаются как требующие анализа.
         Вызывается отложенно через QTimer.
         """
+        if self._is_destroyed():
+            return
+
         # --- 1. БЛОКИРОВКА ИНТЕРФЕЙСА ---
         # Чтобы пользователь не нажал ничего лишнего, пока таблица строится
         # self.table_results.setSortingEnabled(False)
@@ -2388,6 +2400,8 @@ class TranslationValidatorPage(ShellPage):
             # Даем интерфейсу "дышать" каждые 50 файлов
             if row_pos % 50 == 0:
                 QApplication.processEvents()
+                if self._is_destroyed():
+                    return
 
             versions = self.project_manager.get_versions_for_original(internal_path)
             if not versions:
@@ -2441,6 +2455,9 @@ class TranslationValidatorPage(ShellPage):
                 self.table_results.setRowHidden(row_pos, True)
             
             row_pos += 1
+
+        if self._is_destroyed():
+            return
 
         self.table_results.setUpdatesEnabled(True)
         self.table_results.setSortingEnabled(was_sorting_enabled)
@@ -3777,6 +3794,8 @@ class TranslationValidatorPage(ShellPage):
         # 2. Сообщаем пользователю
         self.lbl_status.setText("Синхронизация завершена. Обновление таблицы...")
         QApplication.processEvents() 
+        if self._is_destroyed():
+            return
         
         # 3. УМНАЯ ПЕРЕЗАГРУЗКА: Сохраняем данные, обновляем список файлов
         self._smart_reload_table_preserving_data()
@@ -4427,6 +4446,8 @@ class TranslationValidatorPage(ShellPage):
         """
         self.lbl_status.setText("Авто-обработка 'хороших' файлов…")
         QApplication.processEvents()
+        if self._is_destroyed():
+            return
 
         from ...api import config as api_config
         VALIDATED_SUFFIX = "_validated.html"

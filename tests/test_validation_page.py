@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from unittest.mock import patch
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtWidgets, sip
 
 from gemini_translator.ui.pages.validation_page import TranslationValidatorPage
 from gemini_translator.ui.shell import ShellPage
@@ -84,3 +84,29 @@ class TranslationValidatorPageContractTests(unittest.TestCase):
         self.app.processEvents()
 
         self.assertGreater(page.content_scroll_area.verticalScrollBar().maximum(), 0)
+
+    def test_initial_table_population_stops_if_table_is_deleted_during_event_pump(self):
+        with patch.object(TranslationValidatorPage, "_perform_initial_cjk_scan"):
+            page = TranslationValidatorPage(
+                "/tmp/nonexistent-translations",
+                "/tmp/nonexistent-book.epub",
+                project_manager=object(),
+            )
+        self.addCleanup(page.deleteLater)
+        page._populate_initial_table_timer.stop()
+
+        def delete_results_table():
+            if not sip.isdeleted(page.table_results):
+                sip.delete(page.table_results)
+
+        with (
+            patch.object(TranslationValidatorPage, "_load_validation_snapshot_state"),
+            patch(
+                "gemini_translator.ui.dialogs.validation.get_epub_chapter_order",
+                return_value=(["chapter.xhtml"], "spine"),
+            ),
+            patch.object(QtWidgets.QApplication, "processEvents", side_effect=delete_results_table),
+        ):
+            page._populate_initial_table()
+
+        self.assertTrue(sip.isdeleted(page.table_results))
