@@ -28,7 +28,7 @@ from gemini_translator.ui.shell import ShellPage
 from gemini_translator.utils.language_tools import LanguageDetector
 # Импорты для работы движка
 from gemini_translator.api import config as api_config
-from gemini_translator.utils.epub_tools import estimate_epub_chapter_input_size
+from gemini_translator.utils.epub_tools import TASK_SIZE_UNIT_CHARS, estimate_epub_chapter_input_size
 from gemini_translator.utils.glossary_tools import GlossaryAggregator, ContextManager
 from gemini_translator.utils.power_inhibitor import (
     PREVENT_SLEEP_SETTING_KEY,
@@ -1114,6 +1114,12 @@ class GenerationSessionPage(ShellPage):
             return
 
         widget = self.translation_options_widget
+        if hasattr(widget, 'task_size_chars_checkbox'):
+            widget.task_size_chars_checkbox.blockSignals(True)
+            widget.task_size_chars_checkbox.setChecked(True)
+            widget.task_size_chars_checkbox.blockSignals(False)
+            widget._apply_task_size_unit_ui()
+
         controls = (
             widget.batch_checkbox,
             widget.chunking_checkbox,
@@ -1158,10 +1164,34 @@ class GenerationSessionPage(ShellPage):
             f"Фиксированный размер пакета: {value:,} симв.\n"
             f"({self._glossary_task_size_lock_reason})"
         )
-        self.translation_options_widget.info_label.setText(
-            f"Fixed package size: {value:,} Gemini tokens.\n"
-            f"({self._glossary_task_size_lock_reason})"
+
+    def _average_chars_per_token_for_selected_chapters(self) -> float:
+        widget = getattr(self, 'translation_options_widget', None)
+        compositions = getattr(widget, 'chapter_compositions', {}) or {}
+        total_chars = sum(int((composition or {}).get('total_chars', 0) or 0) for composition in compositions.values())
+        total_tokens = sum(
+            int((composition or {}).get('total_size', (composition or {}).get('input_tokens', 0)) or 0)
+            for composition in compositions.values()
         )
+        if total_chars > 0 and total_tokens > 0:
+            return max(1.0, total_chars / total_tokens)
+        return max(1.0, float(api_config.CHARS_PER_ASCII_TOKEN))
+
+    def _task_size_value_to_estimated_tokens(self, value: int) -> int:
+        widget = getattr(self, 'translation_options_widget', None)
+        task_size_unit = getattr(widget, 'task_size_unit', lambda: TASK_SIZE_UNIT_CHARS)()
+        if task_size_unit == TASK_SIZE_UNIT_CHARS:
+            chars_per_token = GenerationSessionPage._average_chars_per_token_for_selected_chapters(self)
+            return max(1, int(int(value or 0) / chars_per_token))
+        return max(1, int(value or 0))
+
+    def _token_budget_to_visible_task_size(self, token_budget: int) -> int:
+        widget = getattr(self, 'translation_options_widget', None)
+        task_size_unit = getattr(widget, 'task_size_unit', lambda: TASK_SIZE_UNIT_CHARS)()
+        if task_size_unit == TASK_SIZE_UNIT_CHARS:
+            chars_per_token = GenerationSessionPage._average_chars_per_token_for_selected_chapters(self)
+            return int(int(token_budget or 0) * chars_per_token)
+        return int(token_budget or 0)
 
     def _update_new_terms_limit_from_current_size(self):
         """
@@ -1173,7 +1203,10 @@ class GenerationSessionPage(ShellPage):
         if getattr(self, '_new_terms_limit_user_defined', False):
             return
 
-        estimated_tokens = self.translation_options_widget.task_size_spin.value()
+        estimated_tokens = GenerationSessionPage._task_size_value_to_estimated_tokens(
+            self,
+            self.translation_options_widget.task_size_spin.value()
+        )
         recommended_limit = self.round_up_to_tens(
             max(DEFAULT_NEW_TERMS_LIMIT, int(estimated_tokens / NEW_TERMS_LIMIT_TOKENS_PER_TERM))
         )
@@ -2581,10 +2614,6 @@ class GenerationSessionPage(ShellPage):
                 f"Фиксированный размер пакета: {locked_value:,} симв.\n"
                 f"({lock_reason})"
             )
-            self.translation_options_widget.info_label.setText(
-                f"Fixed package size: {locked_value:,} Gemini tokens.\n"
-                f"({lock_reason})"
-            )
             return
 
         if getattr(self.translation_options_widget, 'is_task_size_user_defined', lambda: False)():
@@ -2603,7 +2632,8 @@ class GenerationSessionPage(ShellPage):
         recommended_tokens = int(target_budget_tokens)
 
         spin = self.translation_options_widget.task_size_spin
-        final_val = max(500, min(recommended_tokens, spin.maximum()))
+        visible_size = GenerationSessionPage._token_budget_to_visible_task_size(self, recommended_tokens)
+        final_val = max(500, min(visible_size, spin.maximum()))
         
         # Установка вызовет сигнал valueChanged, который запустит _update_new_terms_limit_from_current_size
         if hasattr(self.translation_options_widget, 'set_task_size_limit'):
@@ -2612,16 +2642,12 @@ class GenerationSessionPage(ShellPage):
             spin.setValue(final_val)
         self._update_new_terms_limit_from_current_size()
         budget_share_label = "~7.5%"
-        info_text = "Авто-размер: {:,} симв.\n({} контекста {}, единая токен-оценка)".format(
+        info_text = "Авто-размер: {:,} симв.\n({} контекста {}, оценка по размеру глав)".format(
             final_val,
             budget_share_label,
             model_name,
         )
         self.translation_options_widget.info_label.setText(info_text)
-        self.translation_options_widget.info_label.setText(
-            f"Auto size: {final_val:,} Gemini tokens.\n"
-            f"({budget_share_label} context {model_name})"
-        )
 
     def _redraw_task_list_and_update_map(self):
         """Перерисовывает список задач и обновляет карту сгенерированных глав ИЗ БАЗЫ ДАННЫХ."""

@@ -47,11 +47,15 @@ class GeminiTokenAnalysisTests(unittest.TestCase):
 
         self.assertEqual(
             estimate_epub_chapter_input_size(content),
-            estimate_epub_chapter_input_tokens(content),
+            len(content),
         )
         self.assertEqual(
             estimate_epub_chapter_input_size(content, TASK_SIZE_UNIT_CHARS),
             len(content),
+        )
+        self.assertEqual(
+            estimate_epub_chapter_input_size(content, "tokens"),
+            estimate_epub_chapter_input_tokens(content),
         )
 
     def test_epub_chapter_size_cache_stores_gemini_input_tokens(self):

@@ -23,10 +23,8 @@ from ...utils.epub_tools import (
     CHAPTER_SIZE_CACHE_METRIC,
     CHAPTER_SIZE_CACHE_VERSION,
     TASK_SIZE_UNIT_CHARS,
-    TASK_SIZE_UNIT_TOKENS,
     estimate_epub_chapter_input_tokens,
     get_epub_chapter_sizes_with_cache,
-    normalize_task_size_unit,
 )
 from ...utils.helpers import estimate_gemini_tokens
 from ...utils.language_tools import LanguageDetector
@@ -108,19 +106,16 @@ class TranslationOptionsWidget(QGroupBox):
             "\u0432\u0445\u043e\u0434\u043d\u044b\u0445 \u0434\u0430\u043d\u043d\u044b\u0445 "
             "\u0434\u043b\u044f \u043e\u0434\u043d\u043e\u0439 \u0437\u0430\u0434\u0430\u0447\u0438 "
             "(\u043f\u0430\u043a\u0435\u0442\u0430 \u0438\u043b\u0438 \u0447\u0430\u043d\u043a\u0430) "
-            "\u0432 Gemini-\u0442\u043e\u043a\u0435\u043d\u0430\u0445."
+            "\u0432 HTML-\u0441\u0438\u043c\u0432\u043e\u043b\u0430\u0445."
         )
         self._recommended_task_size = self.task_size_spin.value()
         self.task_size_chars_checkbox = QCheckBox("\u0421\u0438\u043c\u0432\u043e\u043b\u044b")
+        self.task_size_chars_checkbox.setChecked(True)
+        self.task_size_chars_checkbox.setVisible(False)
         self.task_size_chars_checkbox.setToolTip(
-            "\u0415\u0441\u043b\u0438 \u0432\u043a\u043b\u044e\u0447\u0435\u043d\u043e, "
-            "\u0440\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
+            "\u0420\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
             "\u0441\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044f \u0432 HTML-"
-            "\u0441\u0438\u043c\u0432\u043e\u043b\u0430\u0445, \u043a\u0430\u043a "
-            "\u0432 \u0441\u0442\u0430\u0440\u043e\u0439 \u0432\u0435\u0440\u0441\u0438\u0438. "
-            "\u0415\u0441\u043b\u0438 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e, "
-            "\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044e\u0442\u0441\u044f "
-            "Gemini-\u0442\u043e\u043a\u0435\u043d\u044b."
+            "\u0441\u0438\u043c\u0432\u043e\u043b\u0430\u0445."
         )
         task_size_input_widget = QWidget()
         task_size_input_layout = QHBoxLayout(task_size_input_widget)
@@ -241,40 +236,24 @@ class TranslationOptionsWidget(QGroupBox):
         }
 
     def task_size_unit(self):
-        if self.task_size_chars_checkbox.isChecked():
-            return TASK_SIZE_UNIT_CHARS
-        return TASK_SIZE_UNIT_TOKENS
+        return TASK_SIZE_UNIT_CHARS
 
     def is_task_size_user_defined(self):
         return self._task_size_user_defined
 
     def _apply_task_size_unit_ui(self):
-        if self.task_size_unit() == TASK_SIZE_UNIT_CHARS:
-            self.task_size_label.setText(
-                "\u0420\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
-                "(\u0441\u0438\u043c\u0432\u043e\u043b\u044b):"
-            )
-            self.task_size_spin.setSingleStep(100)
-            self.task_size_spin.setToolTip(
-                "\u0426\u0435\u043b\u0435\u0432\u043e\u0439 \u0440\u0430\u0437\u043c\u0435\u0440 "
-                "\u0432\u0445\u043e\u0434\u043d\u044b\u0445 HTML-\u0434\u0430\u043d\u043d\u044b\u0445 "
-                "\u0434\u043b\u044f \u043e\u0434\u043d\u043e\u0439 \u0437\u0430\u0434\u0430\u0447\u0438 "
-                "(\u043f\u0430\u043a\u0435\u0442\u0430 \u0438\u043b\u0438 \u0447\u0430\u043d\u043a\u0430) "
-                "\u0432 \u0441\u0438\u043c\u0432\u043e\u043b\u0430\u0445."
-            )
-        else:
-            self.task_size_label.setText(
-                "\u0420\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
-                "(Gemini-\u0442\u043e\u043a\u0435\u043d\u044b):"
-            )
-            self.task_size_spin.setSingleStep(500)
-            self.task_size_spin.setToolTip(
-                "\u0426\u0435\u043b\u0435\u0432\u043e\u0439 \u0440\u0430\u0437\u043c\u0435\u0440 "
-                "\u0432\u0445\u043e\u0434\u043d\u044b\u0445 \u0434\u0430\u043d\u043d\u044b\u0445 "
-                "\u0434\u043b\u044f \u043e\u0434\u043d\u043e\u0439 \u0437\u0430\u0434\u0430\u0447\u0438 "
-                "(\u043f\u0430\u043a\u0435\u0442\u0430 \u0438\u043b\u0438 \u0447\u0430\u043d\u043a\u0430) "
-                "\u0432 Gemini-\u0442\u043e\u043a\u0435\u043d\u0430\u0445."
-            )
+        self.task_size_label.setText(
+            "\u0420\u0430\u0437\u043c\u0435\u0440 \u0437\u0430\u0434\u0430\u0447\u0438 "
+            "(\u0441\u0438\u043c\u0432\u043e\u043b\u044b):"
+        )
+        self.task_size_spin.setSingleStep(100)
+        self.task_size_spin.setToolTip(
+            "\u0426\u0435\u043b\u0435\u0432\u043e\u0439 \u0440\u0430\u0437\u043c\u0435\u0440 "
+            "\u0432\u0445\u043e\u0434\u043d\u044b\u0445 HTML-\u0434\u0430\u043d\u043d\u044b\u0445 "
+            "\u0434\u043b\u044f \u043e\u0434\u043d\u043e\u0439 \u0437\u0430\u0434\u0430\u0447\u0438 "
+            "(\u043f\u0430\u043a\u0435\u0442\u0430 \u0438\u043b\u0438 \u0447\u0430\u043d\u043a\u0430) "
+            "\u0432 \u0441\u0438\u043c\u0432\u043e\u043b\u0430\u0445."
+        )
 
     def _chapter_size_for_current_unit(self, file_name):
         composition = self.chapter_compositions.get(file_name, {})
@@ -389,20 +368,14 @@ class TranslationOptionsWidget(QGroupBox):
         current_multi_pass_count = self.multi_pass_count_spin.value()
         current_multi_pass_strategy = self.multi_pass_strategy_combo.currentData() or "merge"
         current_task_size = self.task_size_spin.value()
-        current_task_size_unit = self.task_size_unit()
         has_explicit_task_size = (
             "task_size_limit" in settings and settings.get("task_size_limit") is not None
         )
-        has_explicit_task_size_unit = "task_size_unit" in settings
 
         try:
             target_task_size = int(settings.get("task_size_limit", current_task_size))
         except (TypeError, ValueError):
             target_task_size = current_task_size
-        target_task_size_unit = normalize_task_size_unit(
-            settings.get("task_size_unit", current_task_size_unit)
-        )
-
         self.blockSignals(True)
         try:
             self.batch_checkbox.setChecked(settings.get("use_batching", current_batching))
@@ -443,8 +416,7 @@ class TranslationOptionsWidget(QGroupBox):
             if has_explicit_task_size:
                 user_defined = bool(settings.get("task_size_limit_user_defined", True))
                 self._set_task_size_value(target_task_size, user_defined=user_defined)
-            if has_explicit_task_size_unit:
-                self.task_size_chars_checkbox.setChecked(target_task_size_unit == TASK_SIZE_UNIT_CHARS)
+            self.task_size_chars_checkbox.setChecked(True)
         finally:
             self.blockSignals(False)
 

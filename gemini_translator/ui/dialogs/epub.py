@@ -57,7 +57,7 @@ except ImportError:
     
 # --- Импорты из нашего проекта ---
 from gemini_translator.ui import theme_manager
-from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path, extract_number_from_path_reversed, EpubCreator, estimate_epub_chapter_input_tokens, get_epub_chapter_sizes_with_cache, extract_epub_heading_text
+from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path, extract_number_from_path_reversed, EpubCreator, TASK_SIZE_UNIT_CHARS, get_epub_chapter_sizes_with_cache, extract_epub_heading_text
 from ...utils.text import unify_paragraphs_for_ai
 from ...utils.project_manager import TranslationProjectManager
 from ...utils.project_migrator import ProjectMigrator, SyncThread
@@ -840,7 +840,11 @@ class EpubHtmlSelectorDialog(QDialog):
     
         # Получение размеров (используем кэш или быстрое чтение)
         if self.project_manager:
-            self._size_cache = get_epub_chapter_sizes_with_cache(self.project_manager, self.real_epub_path)
+            self._size_cache = get_epub_chapter_sizes_with_cache(
+                self.project_manager,
+                self.real_epub_path,
+                task_size_unit=TASK_SIZE_UNIT_CHARS,
+            )
         else:
             self._size_cache = {}
             try:
@@ -869,16 +873,16 @@ class EpubHtmlSelectorDialog(QDialog):
                         if median_bytes > 0:
                             try:
                                 content_sample = zf.read(median_name).decode('utf-8', errors='ignore')
-                                tokens_count = estimate_epub_chapter_input_tokens(content_sample)
-                                ratio = tokens_count / median_bytes
+                                chars_count = len(content_sample)
+                                ratio = chars_count / median_bytes
                             except Exception:
                                 pass # Оставляем ratio = 1.0
                         
                         # 4. Применяем коэффициент ко всем файлам
                         for name, b_size in temp_byte_sizes:
                             # Округляем до целого
-                            estimated_tokens = max(1, int(b_size * ratio)) if b_size > 0 else 0
-                            self._size_cache[name] = estimated_tokens
+                            estimated_chars = max(1, int(b_size * ratio)) if b_size > 0 else 0
+                            self._size_cache[name] = estimated_chars
 
             except Exception as e:
                 print(f"Ошибка чтения размеров: {e}")
@@ -906,10 +910,9 @@ class EpubHtmlSelectorDialog(QDialog):
     def _populate_list_widget(self, chapters_to_show):
         self.list_widget.clear()
         for i, file_path in enumerate(chapters_to_show):
-            # self._size_cache теперь хранит напрямую {path: total_chars}
-            size_tokens = self._size_cache.get(file_path, 0)
+            size_chars = self._size_cache.get(file_path, 0)
             
-            display_text = f"{os.path.basename(file_path)} ({size_tokens:,} ток.)"
+            display_text = f"{os.path.basename(file_path)} ({size_chars:,} симв.)"
             item = QListWidgetItem(display_text)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, file_path)
             self._apply_chapter_item_tooltip(item, file_path)

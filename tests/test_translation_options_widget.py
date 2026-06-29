@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6 import QtWidgets
 
 from gemini_translator.api import config as api_config
-from gemini_translator.utils.epub_tools import TASK_SIZE_UNIT_CHARS, TASK_SIZE_UNIT_TOKENS
+from gemini_translator.utils.epub_tools import TASK_SIZE_UNIT_CHARS
 from gemini_translator.ui.widgets.translation_options_widget import TranslationOptionsWidget
 
 
@@ -39,12 +39,12 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
         self.assertNotEqual(widget.task_size_spin.value(), 10000)
         self.assertFalse(widget.is_task_size_user_defined())
         self.assertFalse(widget.get_settings()["task_size_limit_user_defined"])
-        self.assertEqual(widget.get_settings()["task_size_unit"], TASK_SIZE_UNIT_TOKENS)
+        self.assertEqual(widget.get_settings()["task_size_unit"], TASK_SIZE_UNIT_CHARS)
 
-    def test_task_size_unit_switch_round_trips(self):
+    def test_legacy_token_task_size_setting_is_migrated_to_characters(self):
         widget = self._create_widget()
 
-        widget.set_settings({"task_size_unit": TASK_SIZE_UNIT_CHARS})
+        widget.set_settings({"task_size_unit": "tokens"})
 
         self.assertTrue(widget.task_size_chars_checkbox.isChecked())
         self.assertEqual(widget.task_size_unit(), TASK_SIZE_UNIT_CHARS)
@@ -72,10 +72,6 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
         widget._update_batching_availability()
         widget.batch_checkbox.setChecked(True)
         widget.task_size_spin.setValue(10_000)
-
-        self.assertIn("~1", widget.info_label.text())
-
-        widget.task_size_chars_checkbox.setChecked(True)
 
         self.assertIn("~2", widget.info_label.text())
         self.assertEqual(

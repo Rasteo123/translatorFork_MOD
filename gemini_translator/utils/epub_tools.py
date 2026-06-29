@@ -20,13 +20,14 @@ from .helpers import estimate_gemini_tokens
 
 EPUB_HEADING_TAGS = ("h1", "h2", "h3")
 CHAPTER_SIZE_CACHE_METRIC = "gemini_input_tokens"
+CHAPTER_CHAR_SIZE_CACHE_METRIC = "html_chars"
 CHAPTER_SIZE_CACHE_VERSION = 2
 TASK_SIZE_UNIT_TOKENS = "tokens"
 TASK_SIZE_UNIT_CHARS = "chars"
 
 
 def normalize_task_size_unit(value):
-    value = str(value or TASK_SIZE_UNIT_TOKENS).strip().lower()
+    value = str(value or TASK_SIZE_UNIT_CHARS).strip().lower()
     if value in {
         TASK_SIZE_UNIT_CHARS,
         "char",
@@ -728,22 +729,34 @@ def estimate_epub_chapter_input_tokens(html_content):
     return estimate_gemini_tokens(html_content or "")
 
 
-def estimate_epub_chapter_input_size(html_content, task_size_unit=TASK_SIZE_UNIT_TOKENS):
+def estimate_epub_chapter_input_size(html_content, task_size_unit=TASK_SIZE_UNIT_CHARS):
     if normalize_task_size_unit(task_size_unit) == TASK_SIZE_UNIT_CHARS:
         return len(html_content or "")
     return estimate_epub_chapter_input_tokens(html_content)
 
 
 
-def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_status=False):
+def get_epub_chapter_sizes_with_cache(
+    project_manager,
+    epub_path,
+    return_cache_status=False,
+    task_size_unit=TASK_SIZE_UNIT_TOKENS,
+):
     """
-    Получает ОБЩИЙ размер глав во входных Gemini-токенах, используя "ДНК" файла для кэширования.
-    Возвращает словарь {internal_path: input_tokens}.
+    Получает общий размер глав в выбранной единице, используя "ДНК" файла для кэширования.
+    По умолчанию сохраняет старое поведение и возвращает Gemini-токены.
     
     Улучшения:
     1. Sanity Check: проверяет реальное количество токенов в 3 точках (начало, середина, конец),
        чтобы убедиться, что кэш не врет.
     """
+    task_size_unit = normalize_task_size_unit(task_size_unit)
+    cache_metric = (
+        CHAPTER_CHAR_SIZE_CACHE_METRIC
+        if task_size_unit == TASK_SIZE_UNIT_CHARS
+        else CHAPTER_SIZE_CACHE_METRIC
+    )
+
     if not project_manager or not epub_path or not os.path.exists(epub_path):
         return ({}, False) if return_cache_status else {}
 
@@ -782,7 +795,7 @@ def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_s
             metadata.get('content_checksum') == current_content_checksum
         )
         if (is_epub_identity_match and
-            metadata.get('metric') == CHAPTER_SIZE_CACHE_METRIC and
+            metadata.get('metric') == cache_metric and
             int(metadata.get('version', 0) or 0) >= CHAPTER_SIZE_CACHE_VERSION):
             
             cached_sizes = cache_data.get('sizes', {})
@@ -806,7 +819,7 @@ def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_s
                             
                             # Читаем реально
                             real_content = zf.read(check_path).decode('utf-8', errors='ignore')
-                            real_len = estimate_epub_chapter_input_tokens(real_content)
+                            real_len = estimate_epub_chapter_input_size(real_content, task_size_unit)
                             
                             if abs(real_len - cached_val) > 5: # Допускаем крошечную погрешность, но лучше точное совпадение
                                 print(f"[CACHE] Несовпадение в '{check_path}': кэш={cached_val}, реально={real_len}. Сброс.")
@@ -833,7 +846,7 @@ def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_s
             # Перебираем сохраненный ранее список файлов
             for fname, _ in chapter_info_list:
                 content_str = zf.read(fname).decode('utf-8', errors='ignore')
-                final_sizes[fname] = estimate_epub_chapter_input_tokens(content_str)
+                final_sizes[fname] = estimate_epub_chapter_input_size(content_str, task_size_unit)
     except Exception as e:
         print(f"[ERROR] Не удалось пересчитать размеры глав: {e}")
         return ({}, False) if return_cache_status else {}
@@ -843,7 +856,7 @@ def get_epub_chapter_sizes_with_cache(project_manager, epub_path, return_cache_s
             'epub_name': current_epub_name,
             'epub_size': current_epub_size,
             'content_checksum': current_content_checksum,
-            'metric': CHAPTER_SIZE_CACHE_METRIC,
+            'metric': cache_metric,
             'version': CHAPTER_SIZE_CACHE_VERSION
         },
         'sizes': final_sizes
