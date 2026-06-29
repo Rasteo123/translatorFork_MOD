@@ -1318,8 +1318,8 @@ class GlossaryManagerPage(ShellPage):
             return
 
         # 2. Открываем дочерний редактор
-        # Используем self.__class__, чтобы создать экземпляр того же класса (MainWindow)
-        child_manager = self.__class__(parent=self, mode='child')
+        # GlossaryManagerPage is a ShellPage; MainWindow provides the modal exec() API.
+        child_manager = MainWindow(parent=self, mode='child')
         filter_text = self.filter_state.get('text', '')
         child_manager.setWindowTitle(f"Редактор группы [{filter_text}] ({len(filtered_entries)} записей)")
         
