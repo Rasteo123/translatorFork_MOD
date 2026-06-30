@@ -273,6 +273,24 @@ def test_parse_translation_metadata_ignores_catalog_fields():
     assert prepared.tags == []
 
 
+def test_parse_translation_metadata_repairs_unescaped_quotes_in_string():
+    raw_response = r"""{
+        "english_title": "Beast Taming Immortal Dynasty: I Can Design Evolutionary Forms",
+        "translated_title": "\u0411\u0435\u0441\u0441\u043c\u0435\u0440\u0442\u043d\u0430\u044f \u0434\u0438\u043d\u0430\u0441\u0442\u0438\u044f \u0437\u0432\u0435\u0440\u0435\u0439",
+        "translated_description": "\u0413\u0435\u0440\u043e\u0439 \u043f\u043e\u043b\u0443\u0447\u0430\u0435\u0442 \u043d\u0430\u0432\u044b\u043a "Evolution Design" \u0438 \u043c\u0435\u043d\u044f\u0435\u0442 \u0441\u0443\u0434\u044c\u0431\u0443."
+    }"""
+
+    prepared = parse_translation_metadata(raw_response)
+
+    assert prepared.english_title == "Beast Taming Immortal Dynasty: I Can Design Evolutionary Forms"
+    assert prepared.translated_title == "\u0411\u0435\u0441\u0441\u043c\u0435\u0440\u0442\u043d\u0430\u044f \u0434\u0438\u043d\u0430\u0441\u0442\u0438\u044f \u0437\u0432\u0435\u0440\u0435\u0439"
+    assert prepared.translated_description == (
+        "\u0413\u0435\u0440\u043e\u0439 \u043f\u043e\u043b\u0443\u0447\u0430\u0435\u0442 \u043d\u0430\u0432\u044b\u043a "
+        '"Evolution Design" '
+        "\u0438 \u043c\u0435\u043d\u044f\u0435\u0442 \u0441\u0443\u0434\u044c\u0431\u0443."
+    )
+
+
 def test_parse_catalog_metadata_returns_only_catalog_fields(monkeypatch):
     allowed_tags = ["sci-fi", "\u0442\u0430\u0439\u043d\u044b", "\u043c\u0438\u0441\u0442\u0438\u043a\u0430"]
     monkeypatch.setattr(workers, "load_rulate_tags", lambda: allowed_tags)

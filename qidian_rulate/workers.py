@@ -622,13 +622,157 @@ def google_translate_title_to_english(title: str, timeout: int = 20) -> str:
     return _clean_text(translated)
 
 
-def _parse_json_response(raw_response: str) -> dict:
+_JSON_FIELD_RE = re.compile(r'(?:^|,)\s*"(?P<key>[A-Za-z_][A-Za-z0-9_]*)"\s*:', re.DOTALL)
+_LOOSE_JSON_PARSE_FAILED = object()
+
+
+def _extract_json_payload_text(raw_response: str) -> str:
     raw_response = (raw_response or "").strip()
     raw_response = re.sub(r"^```(?:json)?\s*", "", raw_response, flags=re.IGNORECASE)
     raw_response = re.sub(r"\s*```$", "", raw_response)
     match = re.search(r"\{.*\}", raw_response, re.DOTALL)
-    payload_text = match.group(0) if match else raw_response
-    return json.loads(payload_text)
+    return match.group(0) if match else raw_response
+
+
+def _decode_loose_json_string(value: str) -> str:
+    result = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "\\" or index + 1 >= len(value):
+            result.append(char)
+            index += 1
+            continue
+
+        escaped = value[index + 1]
+        replacements = {
+            '"': '"',
+            "\\": "\\",
+            "/": "/",
+            "b": "\b",
+            "f": "\f",
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+        }
+        if escaped in replacements:
+            result.append(replacements[escaped])
+            index += 2
+            continue
+        if escaped == "u" and index + 5 < len(value):
+            hex_value = value[index + 2 : index + 6]
+            if re.fullmatch(r"[0-9a-fA-F]{4}", hex_value):
+                result.append(chr(int(hex_value, 16)))
+                index += 6
+                continue
+
+        result.append(escaped)
+        index += 2
+    return "".join(result)
+
+
+def _split_loose_json_items(value: str) -> list[str]:
+    items = []
+    start = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            items.append(value[start:index])
+            start = index + 1
+    items.append(value[start:])
+    return items
+
+
+def _parse_loose_json_value(raw_value: str):
+    value = raw_value.strip().rstrip(",").strip()
+    if not value:
+        return ""
+
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        pass
+
+    if value.startswith('"'):
+        last_quote = value.rfind('"')
+        if last_quote > 0:
+            value = value[1:last_quote]
+        else:
+            value = value[1:]
+        return _decode_loose_json_string(value)
+
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        parsed_items = []
+        for item in _split_loose_json_items(inner):
+            parsed = _parse_loose_json_value(item)
+            if parsed is _LOOSE_JSON_PARSE_FAILED:
+                return _LOOSE_JSON_PARSE_FAILED
+            parsed_items.append(parsed)
+        return parsed_items
+
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "null":
+        return None
+
+    return _LOOSE_JSON_PARSE_FAILED
+
+
+def _parse_loose_top_level_json_object(payload_text: str) -> dict | None:
+    body = payload_text.strip()
+    if body.startswith("{"):
+        body = body[1:]
+    if body.endswith("}"):
+        body = body[:-1]
+
+    matches = list(_JSON_FIELD_RE.finditer(body))
+    if not matches:
+        return None
+
+    payload = {}
+    for index, match in enumerate(matches):
+        key = match.group("key")
+        value_start = match.end()
+        value_end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        parsed = _parse_loose_json_value(body[value_start:value_end])
+        if parsed is not _LOOSE_JSON_PARSE_FAILED:
+            payload[key] = parsed
+
+    return payload or None
+
+
+def _parse_json_response(raw_response: str) -> dict:
+    payload_text = _extract_json_payload_text(raw_response)
+    try:
+        return json.loads(payload_text)
+    except json.JSONDecodeError:
+        repaired = _parse_loose_top_level_json_object(payload_text)
+        if repaired is not None:
+            return repaired
+        raise
 
 
 def parse_translation_metadata(raw_response: str) -> PreparedRulateMetadata:
@@ -2031,6 +2175,18 @@ class RulateFillWorker(QThread):
         if translator_team_mode == "first_suggestion" and not _select_first_rulate_choice_field(
             page,
             selectors=(
+                '[name="Book[team_id]"]',
+                '[name="Book[team_ids][]"]',
+                '[name="Book[teams][]"]',
+                '[name="Book[teams]"]',
+                '[name="Book[team]"]',
+                '[name="Book[translator_team]"]',
+                '[name="Book[translator_team_id]"]',
+                '[name="Book[translation_team]"]',
+                '[name="Book[translation_team_id]"]',
+                '[name="Book[translate_group]"]',
+                '[name="Book[group]"]',
+                '[name="Book[group_id]"]',
                 "#Book_teams",
                 "#Book_team",
                 "#Book_team_id",
@@ -2043,18 +2199,6 @@ class RulateFillWorker(QThread):
                 "#Book_translate_group",
                 "#Book_group",
                 "#Book_group_id",
-                '[name="Book[teams][]"]',
-                '[name="Book[teams]"]',
-                '[name="Book[team]"]',
-                '[name="Book[team_id]"]',
-                '[name="Book[team_ids][]"]',
-                '[name="Book[translator_team]"]',
-                '[name="Book[translator_team_id]"]',
-                '[name="Book[translation_team]"]',
-                '[name="Book[translation_team_id]"]',
-                '[name="Book[translate_group]"]',
-                '[name="Book[group]"]',
-                '[name="Book[group_id]"]',
             ),
             labels=(
                 "Команда переводчиков",
@@ -2171,6 +2315,18 @@ def _selector_exists(page, selector: str) -> bool:
         return False
 
 
+def _wait_for_selector_attached(page, selector: str, timeout: int = 15000) -> bool:
+    try:
+        page.wait_for_selector(selector, state="attached", timeout=timeout)
+        return True
+    except Exception:
+        try:
+            page.locator(selector).first().wait_for(state="attached", timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+
 def _select_first_plain_choice(page, selector: str) -> bool:
     try:
         return bool(
@@ -2185,6 +2341,9 @@ def _select_first_plain_choice(page, selector: str) -> bool:
                         node.getAttribute?.("class"),
                     ].filter(Boolean).join(" "));
                     const likelyTeamField = (node) => /team|translat|group|команд|групп|перевод/.test(marker(node));
+                    const isKnownNonTeamField = (node) => /^Book\\[(?:status|s_lang|t_lang)\\]$/.test(
+                        String(node.getAttribute?.("name") || "")
+                    );
                     const setNativeValue = (el, nextValue) => {
                         const prototype = Object.getPrototypeOf(el);
                         const descriptor = Object.getOwnPropertyDescriptor(prototype, "value")
@@ -2198,6 +2357,7 @@ def _select_first_plain_choice(page, selector: str) -> bool:
                     };
                     const selectFirstOption = (select) => {
                         if (!select || select.tagName !== "SELECT") return false;
+                        if (isKnownNonTeamField(select) || !likelyTeamField(select)) return false;
                         const options = Array.from(select.options || []).filter((item) => !item.disabled);
                         const option = options.find((item) => String(item.value || "").trim())
                             || options.find((item) => {
@@ -2266,6 +2426,30 @@ def _find_rulate_choice_selector_by_label(page, labels: tuple[str, ...]) -> str:
                         ].filter(Boolean).join(" ")
                     ).toLowerCase();
                     const likelyTeamField = (node) => /team|translat|group|команд|групп|перевод/.test(marker(node));
+                    const isKnownNonTeamField = (node) => /^Book\\[(?:status|s_lang|t_lang)\\]$/.test(
+                        String(node.getAttribute?.("name") || "")
+                    );
+                    const selectorFor = (candidate) => {
+                        if (candidate.id) {
+                            const idSelector = `#${CSS.escape(candidate.id)}`;
+                            if (document.querySelectorAll(idSelector).length === 1) return idSelector;
+                        }
+                        const markerValue = `choice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                        candidate.setAttribute("data-codex-rulate-choice", markerValue);
+                        return `[data-codex-rulate-choice="${markerValue}"]`;
+                    };
+                    const candidateScore = (candidate) => {
+                        if (candidate.disabled || isKnownNonTeamField(candidate)) return -100;
+                        const name = String(candidate.getAttribute?.("name") || "").toLowerCase();
+                        let score = 0;
+                        if (/team|translat|group/.test(name)) score += 20;
+                        if (likelyTeamField(candidate)) score += 5;
+                        if (candidate.matches?.(".ms-ctn, .ms-parent, .magic-suggest, .select2-container, .selectize-control, .chosen-container")) {
+                            score += 4;
+                        }
+                        if (candidate.matches?.("input[type='hidden']") && !likelyTeamField(candidate)) score -= 20;
+                        return score;
+                    };
                     const needles = labels.map((label) => normalize(label).toLowerCase()).filter(Boolean);
                     if (!needles.length) return "";
                     const groups = Array.from(document.querySelectorAll(".form-group, .control-group, .form-row, .row, tr"));
@@ -2283,12 +2467,12 @@ def _find_rulate_choice_selector_by_label(page, labels: tuple[str, ...]) -> str:
                             ...Array.from(group.querySelectorAll("select, textarea, input")),
                             ...Array.from(group.querySelectorAll("[data-select2-id], [aria-controls], [id]")),
                         ];
-                        for (const candidate of candidates) {
-                            if (candidate.disabled) continue;
-                            if (candidate.matches?.("input[type='hidden']") && !likelyTeamField(candidate)) continue;
-                            if (candidate.id) return `#${CSS.escape(candidate.id)}`;
-                            candidate.setAttribute("data-codex-rulate-choice", "1");
-                            return '[data-codex-rulate-choice="1"]';
+                        const ranked = candidates
+                            .map((candidate) => [candidate, candidateScore(candidate)])
+                            .filter((entry) => entry[1] >= 0)
+                            .sort((left, right) => right[1] - left[1]);
+                        for (const [candidate] of ranked) {
+                            return selectorFor(candidate);
                         }
                     }
                     return "";
@@ -2352,7 +2536,8 @@ def _select_magic_value(page, selector: str, value: str, *, allow_free: bool) ->
     if not value:
         return True
 
-    page.locator(selector).wait_for(state="attached", timeout=15000)
+    if not _wait_for_selector_attached(page, selector, timeout=15000):
+        return False
     selected = False
     for _ in range(20):
         selected = page.evaluate(_MAGIC_SELECT_SCRIPT, [selector, value, allow_free])
@@ -2393,7 +2578,8 @@ def _select_magic_value(page, selector: str, value: str, *, allow_free: bool) ->
 
 
 def _select_first_magic_value(page, selector: str) -> bool:
-    page.locator(selector).wait_for(state="attached", timeout=15000)
+    if not _wait_for_selector_attached(page, selector, timeout=15000):
+        return False
     for _ in range(20):
         selected = page.evaluate(_MAGIC_SELECT_FIRST_SCRIPT, selector)
         if selected:
