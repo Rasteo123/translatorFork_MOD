@@ -1,4 +1,5 @@
 from .common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
+from .mcp_control_widget import McpControlWidget
 from ...api import config as api_config
 from ..dialogs.misc import KeyInputDialog, DeleteKeysDialog, CustomListWidget
 from ...utils.settings import SettingsManager
@@ -12,6 +13,10 @@ from PyQt6.QtWidgets import (
 from PyQt6 import QtWidgets, QtCore, QtGui
 import time
 import threading
+
+
+MCP_PROVIDER_ID = "__mcp_server__"
+MCP_PROVIDER_NAME = "MCP сервер"
 
 
 class AdaptiveControlsWidget(QWidget):
@@ -201,6 +206,14 @@ class KeyManagementWidget(QWidget):
             if p_data.get('visible', True):
                 self.provider_combo.addItem(
                     p_data['display_name'], userData=p_id)
+        first_real_provider_id = (
+            self.provider_combo.itemData(0)
+            if self.provider_combo.count() > 0
+            else None
+        )
+        self.provider_combo.addItem(
+            MCP_PROVIDER_NAME, userData=MCP_PROVIDER_ID)
+        self._last_real_provider_id = first_real_provider_id
 
         self.server_button = QPushButton("Запустить сервер")
         self.server_button.setStyleSheet(f"""
@@ -211,10 +224,13 @@ class KeyManagementWidget(QWidget):
         self.server_button.clicked.connect(self._toggle_server)
 
         self.key_status_card = self._create_key_status_card()
+        self.mcp_control_card = McpControlWidget(self)
+        self.mcp_control_card.setVisible(False)
 
         provider_layout.addWidget(self.provider_combo, 1)
         provider_layout.addWidget(self.server_button)
         provider_layout.addWidget(self.key_status_card, 0)
+        provider_layout.addWidget(self.mcp_control_card, 0)
 
         left_panel_layout.addWidget(provider_group)
 
@@ -564,6 +580,19 @@ class KeyManagementWidget(QWidget):
         item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
         return item
 
+    def _set_key_action_controls_enabled(self, enabled: bool):
+        for button in (
+            self.add_selected_btn,
+            self.remove_selected_btn,
+            self.add_all_btn,
+            self.remove_all_btn,
+            self.add_from_text_btn,
+            self.reset_selected_btn,
+            self.force_exhaust_btn,
+            self.remove_from_pool_btn,
+        ):
+            button.setEnabled(enabled)
+
     def _apply_provider_mode(self, provider_id: str, provider_display_name: str):
         requires_api_key = self._provider_requires_api_key(provider_id)
         available_title = "2. Доступные ключи" if requires_api_key else "2. Настройка сессии"
@@ -574,14 +603,32 @@ class KeyManagementWidget(QWidget):
 
         self.available_keys_list.setEnabled(requires_api_key)
         self.available_search_edit.setEnabled(requires_api_key)
-        self.add_selected_btn.setEnabled(requires_api_key)
-        self.remove_selected_btn.setEnabled(requires_api_key)
-        self.add_all_btn.setEnabled(requires_api_key)
-        self.remove_all_btn.setEnabled(requires_api_key)
-        self.add_from_text_btn.setEnabled(requires_api_key)
-        self.reset_selected_btn.setEnabled(requires_api_key)
-        self.force_exhaust_btn.setEnabled(requires_api_key)
-        self.remove_from_pool_btn.setEnabled(requires_api_key)
+        self._set_key_action_controls_enabled(requires_api_key)
+
+    def _current_raw_provider(self) -> str:
+        return self.provider_combo.currentData()
+
+    def _is_mcp_provider_selected(self) -> bool:
+        return self._current_raw_provider() == MCP_PROVIDER_ID
+
+    def _apply_mcp_provider_mode(self):
+        self.key_status_card.setVisible(False)
+        self.mcp_control_card.setVisible(True)
+        self.server_button.setVisible(False)
+        self.available_keys_group.setEnabled(False)
+        self.active_keys_group.setEnabled(False)
+        self.available_keys_list.setEnabled(False)
+        self.available_search_edit.setEnabled(False)
+        self._set_key_action_controls_enabled(False)
+        self.available_keys_group.setTitle("2. Ключи недоступны (MCP сервер)")
+        self.active_keys_group.setTitle("3. Управление ключами отключено для MCP")
+        self.mcp_control_card.refresh_status()
+
+    def _restore_key_provider_mode(self):
+        self.key_status_card.setVisible(True)
+        self.mcp_control_card.setVisible(False)
+        self.available_keys_group.setEnabled(True)
+        self.active_keys_group.setEnabled(True)
 
     def get_active_keys(self):
         active_keys = [
@@ -744,6 +791,13 @@ class KeyManagementWidget(QWidget):
     def _on_provider_changed(self, index):
         provider_id = self.provider_combo.itemData(index)
         provider_display_name = self.provider_combo.itemText(index)
+
+        if provider_id == MCP_PROVIDER_ID:
+            self._apply_mcp_provider_mode()
+            return
+
+        self._last_real_provider_id = provider_id
+        self._restore_key_provider_mode()
         self.available_keys_group.setTitle(
             f"2. Доступные ключи ({provider_display_name})")
 
@@ -774,7 +828,9 @@ class KeyManagementWidget(QWidget):
             self._update_single_key_item(item)
 
     def get_selected_provider(self) -> str:
-        return self.provider_combo.currentData()
+        if self._is_mcp_provider_selected():
+            return self._last_real_provider_id
+        return self._current_raw_provider()
 
     def set_session_model(self, model_id: str):
         self.current_model_id = model_id
@@ -1210,11 +1266,15 @@ class KeyManagementWidget(QWidget):
             )
 
     def _update_server_button_visibility(self):
+        if self._is_mcp_provider_selected():
+            self.server_button.setVisible(False)
+            return
+
         if not self.server_manager:
             self.server_button.setVisible(False)
             return
 
-        provider_id = self.provider_combo.currentData()
+        provider_id = self._current_raw_provider()
         provider_config = api_config.api_providers().get(provider_id, {})
         
         # --- НОВАЯ ЛОГИКА ---

@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,6 +10,7 @@ from gemini_translator.api import config as api_config
 from gemini_translator.ui.widgets.key_management_widget import (
     AdaptiveControlsWidget,
     KeyManagementWidget,
+    MCP_PROVIDER_ID,
 )
 
 
@@ -69,6 +71,13 @@ class _KeyStatusSettingsStub(_KeySettingsStub):
         return "Сброс позже"
 
 
+class _ServerManagerStub(QtCore.QObject):
+    server_status_changed = QtCore.pyqtSignal(bool, object)
+
+    def is_server_running(self):
+        return False
+
+
 class _CountingButton(QtWidgets.QPushButton):
     def __init__(self, text=""):
         super().__init__(text)
@@ -126,6 +135,28 @@ class KeyManagementWidgetProviderModeTests(unittest.TestCase):
 
     def setUp(self):
         api_config.initialize_configs()
+
+    def _key_action_buttons(self, widget):
+        return (
+            widget.add_selected_btn,
+            widget.remove_selected_btn,
+            widget.add_all_btn,
+            widget.remove_all_btn,
+            widget.add_from_text_btn,
+            widget.reset_selected_btn,
+            widget.force_exhaust_btn,
+            widget.remove_from_pool_btn,
+        )
+
+    def _first_api_key_provider_index(self, widget):
+        for index in range(widget.provider_combo.count()):
+            provider_id = widget.provider_combo.itemData(index)
+            if (
+                provider_id != MCP_PROVIDER_ID
+                and api_config.provider_requires_api_key(provider_id)
+            ):
+                return index
+        self.fail("No visible API-key provider found")
 
     def test_subscribes_only_to_relevant_topics(self):
         bus = _RecordingBus()
@@ -198,6 +229,115 @@ class KeyManagementWidgetProviderModeTests(unittest.TestCase):
         self.assertEqual(states_by_text["Активный"], "active")
         self.assertEqual(states_by_text["Пауза"], "paused")
         self.assertEqual(states_by_text["Исчерпан"], "exhausted")
+
+    def test_provider_combo_contains_mcp_server_item(self):
+        widget = KeyManagementWidget(_KeySettingsStub())
+        self.addCleanup(widget.close)
+
+        mcp_index = widget.provider_combo.findData(MCP_PROVIDER_ID)
+
+        self.assertGreaterEqual(mcp_index, 0)
+        self.assertEqual(widget.provider_combo.itemText(mcp_index), "MCP сервер")
+
+    def test_mcp_provider_swaps_key_status_for_mcp_card_without_changing_selected_provider(self):
+        widget = KeyManagementWidget(
+            _KeySettingsStub(),
+            server_manager=_ServerManagerStub(),
+        )
+        self.addCleanup(widget.close)
+        widget.mcp_control_card.refresh_status = lambda: None
+
+        api_provider_index = self._first_api_key_provider_index(widget)
+        widget.provider_combo.setCurrentIndex(api_provider_index)
+        previous_provider_id = widget.get_selected_provider()
+        self.assertTrue(api_config.provider_requires_api_key(previous_provider_id))
+        mcp_index = widget.provider_combo.findData(MCP_PROVIDER_ID)
+        self.assertGreaterEqual(mcp_index, 0)
+
+        widget.provider_combo.setCurrentIndex(mcp_index)
+
+        self.assertEqual(widget.get_selected_provider(), previous_provider_id)
+        self.assertTrue(widget.key_status_card.isHidden())
+        self.assertFalse(widget.mcp_control_card.isHidden())
+        self.assertTrue(widget.server_button.isHidden())
+        self.assertFalse(widget.available_keys_group.isEnabled())
+        self.assertFalse(widget.active_keys_group.isEnabled())
+        for button in self._key_action_buttons(widget):
+            with self.subTest(button=button.text()):
+                self.assertFalse(button.isEnabled())
+
+        widget.provider_combo.setCurrentIndex(api_provider_index)
+
+        self.assertFalse(widget.key_status_card.isHidden())
+        self.assertTrue(widget.mcp_control_card.isHidden())
+        self.assertTrue(widget.available_keys_group.isEnabled())
+        self.assertTrue(widget.active_keys_group.isEnabled())
+        for button in self._key_action_buttons(widget):
+            with self.subTest(button=button.text()):
+                self.assertTrue(button.isEnabled())
+
+    def test_mcp_to_local_restores_groups_but_keeps_key_actions_disabled(self):
+        widget = KeyManagementWidget(
+            _KeySettingsStub(),
+            server_manager=_ServerManagerStub(),
+        )
+        self.addCleanup(widget.close)
+        widget.mcp_control_card.refresh_status = lambda: None
+
+        local_index = widget.provider_combo.findData("local")
+        if local_index < 0:
+            self.skipTest("local provider is not visible")
+
+        widget.provider_combo.setCurrentIndex(widget.provider_combo.findData(MCP_PROVIDER_ID))
+        widget.provider_combo.setCurrentIndex(local_index)
+
+        self.assertEqual(widget.get_selected_provider(), "local")
+        self.assertTrue(widget.available_keys_group.isEnabled())
+        self.assertTrue(widget.active_keys_group.isEnabled())
+        for button in self._key_action_buttons(widget):
+            with self.subTest(button=button.text()):
+                self.assertFalse(button.isEnabled())
+
+    def test_mcp_provider_selection_does_not_emit_provider_changed(self):
+        bus = _RecordingBus()
+        old_bus = getattr(self.app, "event_bus", None)
+        self.app.event_bus = bus
+        emitted_events = []
+        bus.event_posted.connect(emitted_events.append)
+        try:
+            widget = KeyManagementWidget(_KeySettingsStub())
+            self.addCleanup(widget.close)
+            widget.mcp_control_card.refresh_status = lambda: None
+            emitted_events.clear()
+
+            widget.provider_combo.setCurrentIndex(widget.provider_combo.findData(MCP_PROVIDER_ID))
+
+            self.assertEqual(
+                [],
+                [event for event in emitted_events if event.get("event") == "provider_changed"],
+            )
+        finally:
+            bus.event_posted.disconnect(emitted_events.append)
+            if old_bus is None:
+                if hasattr(self.app, "event_bus"):
+                    delattr(self.app, "event_bus")
+            else:
+                self.app.event_bus = old_bus
+
+    def test_shared_ai_surfaces_still_use_key_management_widget(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        shared_surfaces = (
+            "gemini_translator/ui/dialogs/setup.py",
+            "gemini_translator/ui/dialogs/glossary_dialogs/ai_generation.py",
+            "gemini_translator/ui/dialogs/glossary_dialogs/ai_correction.py",
+            "gemini_translator/ui/dialogs/validation_dialogs/untranslated_fixer_dialog.py",
+            "gemini_translator/ui/dialogs/consistency_checker.py",
+        )
+
+        for surface in shared_surfaces:
+            with self.subTest(surface=surface):
+                self.assertIn("KeyManagementWidget", (repo_root / surface).read_text(encoding="utf-8"))
+
     def test_key_status_card_layout_policies(self):
         widget = KeyManagementWidget(_KeySettingsStub())
         self.addCleanup(widget.close)

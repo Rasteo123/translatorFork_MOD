@@ -144,6 +144,30 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
+## MCP-сервер для AI-клиентов
+
+translatorFork_MOD может запускать локальный MCP stdio-server, чтобы Codex, Claude Desktop, Antigravity и другие MCP-клиенты могли стартовать долгие AI-задачи без передачи текста книги обратно в чат.
+
+Показать конфиг для ручного подключения:
+
+```bash
+python -m gemini_translator.mcp config --client generic
+```
+
+Запустить MCP stdio-server вручную:
+
+```bash
+python -m gemini_translator.mcp server
+```
+
+Проверить daemon:
+
+```bash
+python -m gemini_translator.mcp daemon status
+```
+
+MCP tools возвращают `job_id`, статус, хвост логов и пути к файлам. Полные результаты переводов, глоссариев и проверок сохраняются на диск в проекте и в служебной папке `~/.translatorFork/mcp/`.
+
 ## Дополнительные требования для отдельных режимов
 
 Некоторые инструменты требуют дополнительных локальных компонентов:
