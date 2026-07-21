@@ -27,8 +27,6 @@ def get_version_tuple():
 
 # Метаданные пакета
 __all__ = [
-    'main',
-    'run_translation_with_auto_restart',
     'get_version',
     'get_version_tuple',
     '__version__',

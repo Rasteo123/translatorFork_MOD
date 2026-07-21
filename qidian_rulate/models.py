@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+DEFAULT_RULATE_VK_LINK = "https://vk.com/tldnd"
+DEFAULT_RULATE_TELEGRAM_LINK = "https://t.me/tl_srs"
+
+
 @dataclass(slots=True)
 class QidianBookMetadata:
     source_url: str = ""
@@ -21,6 +25,8 @@ class PreparedRulateMetadata:
     translated_title: str = ""
     translated_description: str = ""
     translator_team_mode: str = ""
+    vk_link: str = ""
+    telegram_link: str = ""
     genres: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     cover_prompt: str = ""

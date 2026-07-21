@@ -14,7 +14,7 @@ if RANOBELIB_DIR not in sys.path:
 
 from parsers import FileParser  # noqa: E402
 from models import ChapterData  # noqa: E402
-from utils import parse_vol_and_chapter  # noqa: E402
+from utils import is_safe_remote_http_url, parse_vol_and_chapter  # noqa: E402
 from workers import (  # noqa: E402
     QIDIAN_RULATE_PROFILE_DIR,
     RANOBELIB_GENRES,
@@ -387,6 +387,18 @@ def test_normalize_rulate_media_payload_filters_noise_and_logo_cover():
     )
 
 
+def test_rulate_cover_urls_reject_local_files_and_private_networks():
+    source_url = "https://tl.rulate.ru/book/204281/edit/info"
+
+    assert is_safe_remote_http_url("https://cdn.example.com/cover.webp") is True
+    assert is_safe_remote_http_url("file:///etc/passwd") is False
+    assert is_safe_remote_http_url("http://localhost:8080/cover.jpg") is False
+    assert is_safe_remote_http_url("http://127.0.0.1/cover.jpg") is False
+    assert is_safe_remote_http_url("http://192.168.1.10/cover.jpg") is False
+    assert _normalize_rulate_cover_url("file:///etc/passwd", source_url) == ""
+    assert _normalize_rulate_cover_url("http://127.0.0.1/private.jpg", source_url) == ""
+
+
 def test_normalize_rulate_media_payload_splits_concatenated_rulate_catalog(monkeypatch):
     monkeypatch.setattr(
         "workers._load_rulate_allowed_tags",
@@ -495,6 +507,141 @@ def test_ranobelib_author_autocomplete_searches_original_name_once():
     candidates = worker._author_autocomplete_candidates({"author": "远瞳"})
 
     assert candidates == ["远瞳"]
+
+
+def test_ranobelib_autocomplete_accepts_resolved_display_name(monkeypatch):
+    worker = RulateToRanobeCreateWorker("https://tl.rulate.ru/book/123")
+    state = {"clicked": False}
+
+    class FakeKeyboard:
+        def type(self, _value, delay=0):
+            return None
+
+        def press(self, key):
+            if key in {"ArrowDown", "Enter"}:
+                raise AssertionError("fallback keyboard selection should not run after a successful click")
+
+    class FakePage:
+        keyboard = FakeKeyboard()
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+    page = FakePage()
+    monkeypatch.setattr(worker, "_group_contains_value", lambda *_args: False)
+    monkeypatch.setattr(
+        worker,
+        "_group_selected_text",
+        lambda *_args: "Chang Shi" if state["clicked"] else "",
+    )
+    monkeypatch.setattr(worker, "_ensure_group_autocomplete_open", lambda *_args: True)
+    monkeypatch.setattr(worker, "_focus_group_autocomplete_input", lambda *_args: True)
+    monkeypatch.setattr(worker, "_clear_active_autocomplete_input", lambda *_args: True)
+    monkeypatch.setattr(worker, "_wait_for_autocomplete_suggestion", lambda *_args: True)
+
+    def fake_click(*_args, **_kwargs):
+        state["clicked"] = True
+        return True
+
+    monkeypatch.setattr(worker, "_click_autocomplete_suggestion", fake_click)
+
+    assert worker._add_autocomplete_item(page, "Автор", "常世", fast_missing=True) is True
+
+
+def test_ranobelib_description_is_filled_after_dynamic_fields(monkeypatch):
+    worker = RulateToRanobeCreateWorker("https://tl.rulate.ru/book/123")
+    events = []
+
+    class FakePage:
+        def evaluate(self, _script, _metadata):
+            events.append("main fields")
+            return {
+                "original": True,
+                "titleRu": True,
+                "titleEn": True,
+                "altNames": True,
+                "type": True,
+                "status": True,
+                "age": True,
+                "translationStatus": True,
+                "chaptersUpload": True,
+            }
+
+    monkeypatch.setattr(worker, "log", lambda *_args: None)
+    monkeypatch.setattr(worker, "_upload_cover", lambda *_args: events.append("cover"))
+    monkeypatch.setattr(worker, "_ensure_author", lambda *_args, **_kwargs: events.append("author"))
+    monkeypatch.setattr(worker, "_ensure_publisher", lambda *_args: events.append("publisher"))
+    monkeypatch.setattr(worker, "_ensure_translator_team", lambda *_args: events.append("team"))
+    monkeypatch.setattr(
+        worker,
+        "_add_autocomplete_items",
+        lambda _page, group_label, _values, _limit: events.append(group_label),
+    )
+    monkeypatch.setattr(worker, "_try_fill_source_link", lambda *_args: events.append("source"))
+    monkeypatch.setattr(worker, "_fill_description", lambda *_args: events.append("description"))
+
+    worker._fill_ranobelib_form(
+        FakePage(),
+        {
+            "description": "Описание",
+            "genres": ["Фэнтези"],
+            "tags": ["Магия"],
+        },
+        None,
+    )
+
+    assert events == [
+        "cover",
+        "main fields",
+        "author",
+        "publisher",
+        "team",
+        "Жанры",
+        "Теги",
+        "source",
+        "description",
+    ]
+
+
+def test_ranobelib_description_retries_when_editor_is_replaced(monkeypatch):
+    worker = RulateToRanobeCreateWorker("https://tl.rulate.ru/book/123")
+    inserted = []
+    matches = iter((False, True))
+
+    class FakePage:
+        def evaluate(self, _script, value):
+            inserted.append(value)
+            return {"ok": True, "characters": len(value)}
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+    monkeypatch.setattr(worker, "log", lambda *_args: None)
+    monkeypatch.setattr(worker, "_description_matches", lambda *_args: next(matches))
+
+    assert worker._fill_description(FakePage(), "Описание") is True
+    assert inserted == ["Описание", "Описание"]
+
+
+def test_ranobelib_description_is_not_truncated_before_editor_fill(monkeypatch):
+    worker = RulateToRanobeCreateWorker("https://tl.rulate.ru/book/123")
+    description = ("Длинное описание без искусственного ограничения. " * 30).strip()
+    inserted = []
+
+    class FakePage:
+        def evaluate(self, _script, value):
+            inserted.append(value)
+            return {"ok": True, "characters": len(value)}
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+    monkeypatch.setattr(worker, "log", lambda *_args: None)
+    monkeypatch.setattr(worker, "_description_matches", lambda _page, value: value == description)
+
+    assert len(description) > 800
+    assert worker._fill_description(FakePage(), description) is True
+    assert inserted == [description]
 
 
 def test_ranobelib_translator_team_search_uses_teams_group_even_when_other_team_exists(monkeypatch):

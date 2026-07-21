@@ -15,6 +15,9 @@ import mimetypes
 import zipfile
 import html as html_lib
 from xml.etree import ElementTree as ET
+from PyQt6.QtCore import Qt
+from defusedxml import ElementTree as SafeET
+
 from ..api import config as api_config
 from .helpers import estimate_gemini_tokens
 
@@ -678,7 +681,7 @@ def _get_spine_order_from_zip(epub_zip_file):
             opf_path = opf_files[0]
         elif len(opf_files) > 1:
             container_content = epub_zip_file.read('META-INF/container.xml')
-            root = ET.fromstring(container_content)
+            root = SafeET.fromstring(container_content)
             ns = {'cn': 'urn:oasis:names:tc:opendocument:xmlns:container'}
             opf_path = root.find('.//cn:rootfile', ns).attrib['full-path']
         
@@ -687,7 +690,7 @@ def _get_spine_order_from_zip(epub_zip_file):
 
         opf_dir = os.path.dirname(opf_path)
         opf_content = epub_zip_file.read(opf_path)
-        opf_root = ET.fromstring(opf_content)
+        opf_root = SafeET.fromstring(opf_content)
         opf_ns = {'opf': 'http://www.idpf.org/2007/opf'}
 
         manifest_items = {}
@@ -720,6 +723,8 @@ def calculate_potential_output_size(html_content, is_cjk):
     Возвращает кортеж: (общий_потенциальный_размер, размер_тегов).
     """
     try:
+        from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(html_content, 'html.parser')
         visible_text = soup.get_text()
         

@@ -114,7 +114,7 @@ def build_term_frequency_fingerprint(glossary_source, epub_path):
         sort_keys=True,
         separators=(",", ":"),
     )
-    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+    return hashlib.sha1(serialized.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def is_term_frequency_payload_valid(payload, glossary_source, epub_path):

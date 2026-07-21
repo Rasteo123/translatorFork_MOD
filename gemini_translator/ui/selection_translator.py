@@ -273,11 +273,15 @@ class SelectionTranslationController(QtCore.QObject):
         event_type = event.type()
 
         if event_type == QtCore.QEvent.Type.ApplicationDeactivate:
-            self._hide_offer()
+            # A click on the top-level tool button can briefly deactivate the
+            # main window on Windows. Keep the pending selection in that case
+            # so the button's clicked signal can still start the translation.
+            if not self._offer_click_in_progress():
+                self._hide_offer()
             return False
 
         if event_type == QtCore.QEvent.Type.MouseButtonPress:
-            if obj is not self._offer_button:
+            if not self._event_targets_offer(obj, event):
                 self._hide_offer()
 
         editor = self._resolve_text_source(obj)
@@ -658,6 +662,35 @@ class SelectionTranslationController(QtCore.QObject):
     def _hide_offer(self) -> None:
         self._offer_button.hide()
         self._offered_snapshot = None
+
+    def _event_targets_offer(self, obj, event) -> bool:
+        current = obj if isinstance(obj, QtWidgets.QWidget) else None
+        while current is not None:
+            if current is self._offer_button:
+                return True
+            current = current.parentWidget()
+
+        try:
+            if obj is self._offer_button.windowHandle():
+                return True
+            global_position = event.globalPosition().toPoint()
+        except (AttributeError, RuntimeError):
+            return False
+        return self._offer_global_rect().contains(global_position)
+
+    def _offer_click_in_progress(self) -> bool:
+        return (
+            self._offer_button.isVisible()
+            and self._offer_global_rect().contains(QtGui.QCursor.pos())
+            and bool(
+                QtWidgets.QApplication.mouseButtons()
+                & QtCore.Qt.MouseButton.LeftButton
+            )
+        )
+
+    def _offer_global_rect(self) -> QtCore.QRect:
+        top_left = self._offer_button.mapToGlobal(QtCore.QPoint(0, 0))
+        return QtCore.QRect(top_left, self._offer_button.size())
 
     def _position_offer_button(self, anchor: QtCore.QPoint) -> None:
         self._offer_button.adjustSize()

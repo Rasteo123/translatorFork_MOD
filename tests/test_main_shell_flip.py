@@ -106,6 +106,25 @@ class OpenToolInShellTests(unittest.TestCase):
         main.open_tool_in_shell(shell, "does_not_exist")
         self.assertEqual(shell.navigation.depth, 1)
 
+    def test_restart_with_new_files_records_payload_and_reboots_ui(self):
+        from unittest.mock import MagicMock, patch
+
+        main = _load_app_main_module()
+        app = MagicMock()
+
+        with patch.object(main.QtWidgets.QApplication, "instance", return_value=app):
+            main.restart_with_new_files("book.epub", ["chapter-1.xhtml"])
+
+        self.assertEqual(
+            main.RESTART_INFO,
+            {
+                "is_restarting": True,
+                "epub_path": "book.epub",
+                "chapters": ["chapter-1.xhtml"],
+            },
+        )
+        app.exit.assert_called_once_with(main.EXIT_CODE_REBOOT)
+
     def _fake_external_window(self, title):
         class FakeExternalWindow(QtWidgets.QMainWindow):
             def __init__(self):

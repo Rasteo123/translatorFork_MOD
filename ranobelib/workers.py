@@ -33,7 +33,7 @@ from api_upload import (
 )
 from models import ChapterData
 from parsers import FileParser
-from utils import format_num, format_timedelta, parse_vol_and_chapter
+from utils import format_num, format_timedelta, is_safe_remote_http_url, parse_vol_and_chapter
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 SOURCE_PUBLISHER_CANDIDATES = {
@@ -313,7 +313,7 @@ def _normalize_rulate_cover_url(value: str | None, source_url: str) -> str:
     if not raw:
         return ""
     url = urllib.parse.urljoin(source_url, raw)
-    if _is_bad_rulate_cover_url(url):
+    if not is_safe_remote_http_url(url) or _is_bad_rulate_cover_url(url):
         return ""
     return url
 
@@ -1773,6 +1773,8 @@ class RulateToRanobeCreateWorker(QThread):
         if _is_bad_rulate_cover_url(cover_url):
             self.log("WARNING", "Rulate: ссылка на обложку похожа на логотип/иконку, пропускаю загрузку.")
             return None
+        if not is_safe_remote_http_url(cover_url):
+            raise ValueError("Rulate: небезопасная схема или локальный адрес обложки")
 
         self.log("INFO", "Rulate: скачиваю обложку для загрузки на RanobeLib...")
         parsed = urllib.parse.urlparse(cover_url)
@@ -1799,7 +1801,7 @@ class RulateToRanobeCreateWorker(QThread):
         tmp_path = tmp.name
         try:
             with tmp:
-                with urllib.request.urlopen(request, timeout=45) as response:
+                with urllib.request.urlopen(request, timeout=45) as response:  # nosec B310
                     tmp.write(response.read())
             if os.path.getsize(tmp_path) < 1024:
                 raise RuntimeError("скачанный файл обложки слишком маленький")
@@ -1846,18 +1848,84 @@ class RulateToRanobeCreateWorker(QThread):
         except Exception as error:
             self.log("WARNING", f"RanobeLib: не удалось подставить обложку автоматически: {error}")
 
-    def _fill_description(self, page, description: str):
-        if not description:
-            return
+    def _description_matches(self, page, description: str) -> bool:
         try:
-            editor = page.locator(".ProseMirror").first
-            editor.click(timeout=10000)
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Backspace")
-            page.keyboard.insert_text(description)
-            self.log("SUCCESS", "RanobeLib: описание вставлено.")
-        except Exception as error:
-            self.log("WARNING", f"RanobeLib: не удалось вставить описание автоматически: {error}")
+            actual = page.locator(".ProseMirror[contenteditable='true']:visible").first.inner_text(timeout=5000)
+        except Exception:
+            return False
+
+        def normalize(value):
+            return re.sub(r"\s+", " ", str(value or "")).strip()
+
+        return bool(normalize(description) and normalize(actual) == normalize(description))
+
+    def _fill_description(self, page, description: str) -> bool:
+        description = str(description or "").strip()
+        if not description:
+            return False
+        last_error = None
+        page.wait_for_timeout(500)
+        for attempt in range(2):
+            try:
+                result = page.evaluate(
+                    r"""(description) => {
+                        const visible = (el) => {
+                            if (!el) return false;
+                            const style = window.getComputedStyle(el);
+                            const rect = el.getBoundingClientRect();
+                            return style.display !== "none" && style.visibility !== "hidden"
+                                && rect.width > 0 && rect.height > 0;
+                        };
+                        const element = Array.from(
+                            document.querySelectorAll(".ProseMirror[contenteditable='true']")
+                        ).find(visible);
+                        const editor = element?.editor;
+                        if (!editor?.commands?.setContent) {
+                            return { ok: false, reason: "TipTap editor API not found" };
+                        }
+
+                        const lines = String(description || "")
+                            .replace(/\r\n?/g, "\n")
+                            .split("\n");
+                        const content = lines.map((line) => {
+                            if (!line) return { type: "paragraph" };
+                            return {
+                                type: "paragraph",
+                                content: [{ type: "text", text: line }],
+                            };
+                        });
+                        const ok = editor.commands.setContent(
+                            {
+                                type: "doc",
+                                content: content.length ? content : [{ type: "paragraph" }],
+                            },
+                            { emitUpdate: true },
+                        );
+                        return {
+                            ok: Boolean(ok),
+                            reason: ok ? "" : "TipTap setContent returned false",
+                            characters: editor.storage?.characterCount?.characters?.() ?? null,
+                        };
+                    }""",
+                    description,
+                )
+                if not result or not result.get("ok"):
+                    reason = (result or {}).get("reason") or "TipTap не подтвердил обновление"
+                    raise RuntimeError(reason)
+                page.wait_for_timeout(700)
+                if self._description_matches(page, description):
+                    self.log("SUCCESS", "RanobeLib: описание вставлено и проверено.")
+                    return True
+            except Exception as error:
+                last_error = error
+            if attempt == 0:
+                page.wait_for_timeout(800)
+
+        if last_error:
+            self.log("WARNING", f"RanobeLib: не удалось вставить описание автоматически: {last_error}")
+        else:
+            self.log("WARNING", "RanobeLib: редактор не сохранил описание, его нужно проверить вручную.")
+        return False
 
     def _try_fill_source_link(self, page, source_url: str):
         if not source_url:
@@ -2148,7 +2216,7 @@ class RulateToRanobeCreateWorker(QThread):
                         && rect.width > 0 && rect.height > 0;
                 };
                 const suggestions = Array.from(document.querySelectorAll(".autocomplete-suggestion__item"))
-                    .filter(visible);
+                    .filter((item) => visible(item) && norm(item.innerText));
                 const exact = suggestions.find((item) => norm(item.innerText).toLowerCase() === wanted);
                 let target = exact || null;
                 if (!target && allowFallback) {
@@ -2253,13 +2321,36 @@ class RulateToRanobeCreateWorker(QThread):
         label = str(group_label or "").casefold()
         return "жанр" in label or "тег" in label
 
+    def _wait_for_autocomplete_suggestion(self, page, timeout_ms: int) -> bool:
+        try:
+            page.wait_for_function(
+                r"""() => {
+                    const norm = (raw) => (raw || "").replace(/\s+/g, " ").trim();
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== "none" && style.visibility !== "hidden"
+                            && rect.width > 0 && rect.height > 0;
+                    };
+                    return Array.from(document.querySelectorAll(".autocomplete-suggestion__item"))
+                        .some((item) => visible(item) && norm(item.innerText));
+                }""",
+                timeout=timeout_ms,
+                polling=100,
+            )
+            return True
+        except Exception:
+            return False
+
     def _add_autocomplete_item(self, page, group_label: str, value: str, *, fast_missing: bool = False) -> bool:
         value = _collapse_rulate_spaces(value)
         if not value:
             return False
         if self._group_contains_value(page, group_label, value):
             return True
-        suggestion_wait_ms = 900 if fast_missing else 2400
+        selected_before = self._group_selected_text(page, group_label)
+        suggestion_wait_ms = 3500 if fast_missing else 6000
         click_wait_ms = 1200 if fast_missing else 2600
         miss_retry_wait_ms = 500 if fast_missing else 1800
         click_attempts = 1 if fast_missing else 2
@@ -2289,12 +2380,17 @@ class RulateToRanobeCreateWorker(QThread):
             if not self._clear_active_autocomplete_input(page):
                 return False
             page.keyboard.type(value, delay=60)
-            page.wait_for_timeout(suggestion_wait_ms)
+            self._wait_for_autocomplete_suggestion(page, suggestion_wait_ms)
             success = False
             for _ in range(click_attempts):
                 if self._click_autocomplete_suggestion(page, value):
                     page.wait_for_timeout(click_wait_ms)
-                    if self._group_contains_value(page, group_label, value):
+                    if self._autocomplete_selection_confirmed(
+                        page,
+                        group_label,
+                        value,
+                        selected_before,
+                    ):
                         success = True
                         break
                 page.wait_for_timeout(miss_retry_wait_ms)
@@ -2304,7 +2400,12 @@ class RulateToRanobeCreateWorker(QThread):
                     page.wait_for_timeout(250 if fast_missing else 400)
                     page.keyboard.press("Enter")
                     page.wait_for_timeout(click_wait_ms)
-                    success = self._group_contains_value(page, group_label, value)
+                    success = self._autocomplete_selection_confirmed(
+                        page,
+                        group_label,
+                        value,
+                        selected_before,
+                    )
                 except Exception:
                     success = False
             try:
@@ -2388,9 +2489,9 @@ class RulateToRanobeCreateWorker(QThread):
         except Exception:
             return False
 
-    def _group_has_any_value(self, page, group_label: str) -> bool:
+    def _group_selected_text(self, page, group_label: str) -> str:
         try:
-            return bool(
+            return str(
                 page.evaluate(
                     r"""(groupLabel) => {
                         const norm = (raw) => (raw || "").replace(/\s+/g, " ").trim();
@@ -2398,7 +2499,7 @@ class RulateToRanobeCreateWorker(QThread):
                             const label = norm(item.querySelector(".form-label")?.innerText || "");
                             return label.toLowerCase().includes(groupLabel.toLowerCase());
                         });
-                        if (!group) return false;
+                        if (!group) return "";
                         const clone = group.cloneNode(true);
                         for (const item of Array.from(clone.querySelectorAll(
                             ".form-label, .autocomplete-suggestion, .autocomplete-suggestion__list, input, textarea"
@@ -2409,14 +2510,29 @@ class RulateToRanobeCreateWorker(QThread):
                             const text = norm(button.innerText || "").toLowerCase();
                             if (!text || text.includes("добавить")) button.remove();
                         }
-                        const text = norm(clone.innerText || "");
-                        return Boolean(text);
+                        return norm(clone.innerText || "");
                     }""",
                     group_label,
                 )
+                or ""
             )
         except Exception:
-            return False
+            return ""
+
+    def _autocomplete_selection_confirmed(
+        self,
+        page,
+        group_label: str,
+        value: str,
+        selected_before: str,
+    ) -> bool:
+        if self._group_contains_value(page, group_label, value):
+            return True
+        selected_after = self._group_selected_text(page, group_label)
+        return bool(selected_after and selected_after != selected_before)
+
+    def _group_has_any_value(self, page, group_label: str) -> bool:
+        return bool(self._group_selected_text(page, group_label))
 
     def _wait_between_autocomplete_items(self, page):
         self._close_autocomplete_popovers(page)
@@ -2596,7 +2712,6 @@ class RulateToRanobeCreateWorker(QThread):
             self.log("WARNING", "RanobeLib: не заполнены автоматически: " + ", ".join(missed))
         else:
             self.log("SUCCESS", "RanobeLib: основные поля заполнены.")
-        self._fill_description(page, metadata.get("description", ""))
         self._ensure_author(
             page,
             metadata,
@@ -2607,6 +2722,7 @@ class RulateToRanobeCreateWorker(QThread):
         self._add_autocomplete_items(page, "Жанры", metadata.get("genres"), 5)
         self._add_autocomplete_items(page, "Теги", metadata.get("tags"), 8)
         self._try_fill_source_link(page, metadata.get("source_url", ""))
+        self._fill_description(page, metadata.get("description", ""))
 
         if metadata.get("author"):
             self.log(

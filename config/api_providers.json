@@ -16,6 +16,40 @@
       "reset_minute": 1
     },
     "models": {
+      "Gemini 3.6 Flash": {
+        "id": "gemini-3.6-flash",
+        "rpm": 5,
+        "tpm": 250000,
+        "rpd": 20,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 10,
+        "max_output_tokens": 65536,
+        "thinkingLevel": [
+          "high",
+          "medium",
+          "low",
+          "minimal"
+        ],
+        "min_thinking_budget": "minimal"
+      },
+      "Gemini 3.5 Flash-Lite": {
+        "id": "gemini-3.5-flash-lite",
+        "rpm": 15,
+        "tpm": 250000,
+        "rpd": 500,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 65536,
+        "thinkingLevel": [
+          "high",
+          "medium",
+          "low",
+          "minimal"
+        ],
+        "min_thinking_budget": "minimal"
+      },
       "Gemini 3.5 Flash": {
         "id": "gemini-3.5-flash",
         "rpm": 5,

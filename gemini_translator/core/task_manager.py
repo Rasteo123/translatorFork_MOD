@@ -2294,7 +2294,7 @@ class ChapterQueueManager(QObject):
         size = stat.st_size
         
         # MD5 достаточно для проверки целостности/идентичности файла в этом контексте
-        h = hashlib.md5()
+        h = hashlib.md5(usedforsecurity=False)
         h.update(str(size).encode('utf-8'))
         
         try:

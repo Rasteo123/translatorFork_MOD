@@ -28,6 +28,12 @@ CJK_CHAPTER_NUMBER_REGEX = r'[0-9零一二三四五六七八九十百千万两]+
 # Matches both Markdown headings ("# 第1章 ...") and plain headings
 # ("第181章 ...") so a mixed TXT can be split with one expression.
 BASIC_CJK_CHAPTER_REGEX = rf'^(?:#\s*)?第\s*{CJK_CHAPTER_NUMBER_REGEX}\s*章'
+# Matches chapter dumps whose original filename is used as the heading, for
+# example: ``[ 0001_프롤로그..txt ]`` or ``[ 0002_Hello. World!.txt ]``.
+BRACKETED_TXT_FILENAME_CHAPTER_REGEX = r'^\s*\[\s*\d+_.+?\.txt\s*\]\s*$'
+# Covers Korean novel dumps that mix bare episode numbers (``1``) with the
+# explicit Korean episode suffix (``199화``).
+KOREAN_EPISODE_CHAPTER_REGEX = r'^\s*\d+\s*화?\s*$'
 
 _ARABIC_CJK_CHAPTER_NUMBER_RE = re.compile(
     r'^\s*(?:#\s*)?第\s*(\d+)\s*章'
@@ -176,6 +182,14 @@ class RegexExamplesDialog(QDialog):
                 "name": "Китайский: # (необязательно) + 第 + Число + 章",
                 "regex": BASIC_CJK_CHAPTER_REGEX,
             },
+            {
+                "name": "Имя TXT-файла: [ 0001_Название.txt ]",
+                "regex": BRACKETED_TXT_FILENAME_CHAPTER_REGEX,
+            },
+            {
+                "name": "Корейский: Номер или Номер + 화",
+                "regex": KOREAN_EPISODE_CHAPTER_REGEX,
+            },
             # 第 + пробелы(опц) + цифры + пробелы(опц) + Иероглиф(Глава/Секция/Раунд)
             {"name": "Китайский: 第 + Число + Иероглиф (Строго)", "regex": rf"^第\s*{CJK_CHAPTER_NUMBER_REGEX}\s*[章节回]"},
             # Для редких случаев, когда иероглифа нет, но есть точка (第1. )
@@ -264,6 +278,8 @@ class TxtChapterAnalyzer:
 
         candidates = set()
         candidates.add(r'^\d+\.?\s*$')
+        candidates.add(BRACKETED_TXT_FILENAME_CHAPTER_REGEX)
+        candidates.add(KOREAN_EPISODE_CHAPTER_REGEX)
         for p, _ in numeric_counter.most_common(5):
             if "第" in p:
                 sfx = p.split("...")[-1]
@@ -293,16 +309,65 @@ class TxtChapterAnalyzer:
             try:
                 fast_reg = re.compile(pat.replace('^', r'^\s*'), re.IGNORECASE)
                 indices = [idx for idx, line in enumerate(self.lines) if fast_reg.match(line)]
+                indices = self._collapse_adjacent_duplicate_headers(indices)
                 if pat == BASIC_CJK_CHAPTER_REGEX:
                     indices = self._filter_sandwiched_cjk_outliers(indices)
                 score, info = self._validate_indices(indices)
                 if score > 0:
                     display = self._format_display_name(pat)
+                    # A numbered filename in brackets is a strong structural
+                    # marker and should outrank frequently repeated body words.
+                    if pat == BRACKETED_TXT_FILENAME_CHAPTER_REGEX:
+                        score += 100
+                    elif pat == BASIC_CJK_CHAPTER_REGEX:
+                        # Prefer the explicit 第...章 form over the broad 第...
+                        # candidate, which can also match numbered body lines.
+                        score += 100
+                    elif pat == KOREAN_EPISODE_CHAPTER_REGEX:
+                        explicit_suffix_count = sum(
+                            self.lines[idx].strip().endswith("화")
+                            for idx in indices
+                        )
+                        if explicit_suffix_count >= 3:
+                            score += 100
                     final_results.append(((display, pat, 'direct_regex'), info['count'], score))
             except: continue
 
         final_results.sort(key=lambda x: (x[2] if len(x)>2 else 0, x[1]), reverse=True)
         return [item[0:2] for item in final_results]
+
+    def _collapse_adjacent_duplicate_headers(self, indices):
+        """Treat repeated identical headings with no body between as one."""
+        collapsed = []
+        for idx in indices:
+            if collapsed and self._are_duplicate_headers(collapsed[-1], idx):
+                continue
+            collapsed.append(idx)
+        return collapsed
+
+    def _are_duplicate_headers(self, previous_idx, current_idx):
+        only_blank_lines_between = not any(
+            line.strip()
+            for line in self.lines[previous_idx + 1:current_idx]
+        )
+        if not only_blank_lines_between:
+            return False
+
+        previous_title = self.lines[previous_idx].strip()
+        current_title = self.lines[current_idx].strip()
+        if previous_title == current_title:
+            return True
+
+        cjk_number_pattern = re.compile(
+            rf'^(?:#\s*)?第\s*({CJK_CHAPTER_NUMBER_REGEX})\s*章'
+        )
+        previous_match = cjk_number_pattern.match(previous_title)
+        current_match = cjk_number_pattern.match(current_title)
+        return bool(
+            previous_match
+            and current_match
+            and previous_match.group(1) == current_match.group(1)
+        )
 
     def _filter_sandwiched_cjk_outliers(self, indices):
         """Ignore prose lines that resemble headings inside a consecutive run.
@@ -379,6 +444,10 @@ class TxtChapterAnalyzer:
         return sorted(list(set(indices)))
 
     def _format_display_name(self, pat):
+        if pat == BRACKETED_TXT_FILENAME_CHAPTER_REGEX:
+            return "[Начало] [0001_Название.txt]"
+        if pat == KOREAN_EPISODE_CHAPTER_REGEX:
+            return "[Начало] 1 / 199화"
         d = pat.replace(r'[0-9零一二三四五六七八九十百千万两]+', '[Число]').replace(r'\d+', '[Число]')
         d = d.replace('^', '[Начало] ').replace('\\s*', ' ').replace('\\', '').strip()
         return d
@@ -445,6 +514,20 @@ class TxtChapterAnalyzer:
                     'char_idx': char_offsets[i]
                 })
 
+        if len(boundaries) > 1:
+            collapsed_boundaries = []
+            for boundary in boundaries:
+                if (
+                    collapsed_boundaries
+                    and self._are_duplicate_headers(
+                        collapsed_boundaries[-1]['line_idx'],
+                        boundary['line_idx'],
+                    )
+                ):
+                    continue
+                collapsed_boundaries.append(boundary)
+            boundaries = collapsed_boundaries
+
         if custom_regex == BASIC_CJK_CHAPTER_REGEX and len(boundaries) > 2:
             boundaries_by_line = {
                 boundary['line_idx']: boundary
@@ -454,7 +537,7 @@ class TxtChapterAnalyzer:
                 [boundary['line_idx'] for boundary in boundaries]
             )
             boundaries = [boundaries_by_line[line_idx] for line_idx in filtered_indices]
-                
+
         return boundaries
 
     def _split_by_marker(self, marker_word=None, context=None, custom_regex=None):

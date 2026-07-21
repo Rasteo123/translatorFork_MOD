@@ -1,5 +1,7 @@
 import re
+import ipaddress
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from constants import RULATE_URL_PATTERN, URL_PATTERN
 
@@ -23,6 +25,26 @@ def validate_url(url: str) -> bool:
 def validate_rulate_url(url: str) -> bool:
     """Проверка, что URL подходит для скачивания с rulate."""
     return bool(RULATE_URL_PATTERN.match(url.strip()))
+
+
+def is_safe_remote_http_url(url: str) -> bool:
+    """Allow remote HTTP(S) resources while rejecting local-file and private-network targets."""
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return False
+        if parsed.username is not None or parsed.password is not None:
+            return False
+
+        hostname = parsed.hostname.rstrip(".").casefold()
+        if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
+            return False
+        try:
+            return ipaddress.ip_address(hostname).is_global
+        except ValueError:
+            return True
+    except (TypeError, ValueError):
+        return False
 
 
 def format_timedelta(td: timedelta) -> str:

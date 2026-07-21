@@ -4,6 +4,8 @@ import os
 import re
 import zipfile
 import xml.etree.ElementTree as ET
+
+from defusedxml import ElementTree as SafeET
 from html import unescape
 from pathlib import Path
 from urllib.parse import unquote
@@ -56,7 +58,7 @@ class SimpleEpubReader:
     def _find_opf_path(self):
         try:
             with self.zf.open("META-INF/container.xml") as f:
-                tree = ET.parse(f)
+                tree = SafeET.parse(f)
                 root = tree.getroot()
                 for elem in root.iter():
                     if elem.tag.endswith("rootfile"):
@@ -71,7 +73,7 @@ class SimpleEpubReader:
 
     def _parse_opf(self):
         with self.zf.open(self.opf_path) as f:
-            tree = ET.parse(f)
+            tree = SafeET.parse(f)
             root = tree.getroot()
 
             for elem in root.iter():

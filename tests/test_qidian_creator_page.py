@@ -13,6 +13,7 @@ from gemini_translator.ui.pages.qidian_creator_page import (
     QidianCreatorPage,
     _CoverDropLabel,
 )
+from qidian_rulate.models import DEFAULT_RULATE_TELEGRAM_LINK, DEFAULT_RULATE_VK_LINK
 from gemini_translator.ui.dialogs.qidian_rulate_creator import _split_csv
 from gemini_translator.ui.shell import ShellPage
 
@@ -26,6 +27,9 @@ class _TextField:
 
     def setPlainText(self, value):
         self.value = value
+
+    def text(self):
+        return self.value or ""
 
 
 class _ButtonField:
@@ -104,6 +108,10 @@ class _UiStateHarness:
     def __init__(self, settings=None):
         self.settings_manager = _SettingsManagerStub(settings)
         self.translator_team_combo = _ComboField()
+        self.vk_link_edit = _TextField()
+        self.vk_link_edit.setText(DEFAULT_RULATE_VK_LINK)
+        self.telegram_link_edit = _TextField()
+        self.telegram_link_edit.setText(DEFAULT_RULATE_TELEGRAM_LINK)
 
 
 class _WorkerFinishedHarness:
@@ -249,6 +257,8 @@ class QidianCreatorPageContractTests(unittest.TestCase):
             {
                 QIDIAN_CREATOR_UI_STATE_KEY: {
                     "translator_team_mode": "",
+                    "vk_link": DEFAULT_RULATE_VK_LINK,
+                    "telegram_link": DEFAULT_RULATE_TELEGRAM_LINK,
                 }
             },
         )

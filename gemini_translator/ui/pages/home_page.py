@@ -660,7 +660,7 @@ rm -f "$0"
                 sh_path = os.path.join(tempfile.gettempdir(), "translator_updater.sh")
                 with open(sh_path, "w", encoding="utf-8") as f:
                     f.write(sh_content)
-                os.chmod(sh_path, 0o755)
+                os.chmod(sh_path, 0o700)
                 subprocess.Popen(
                     ["/bin/bash", sh_path],
                     start_new_session=True,

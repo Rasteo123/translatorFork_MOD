@@ -7,6 +7,8 @@ import re
 import traceback
 import zipfile
 import xml.etree.ElementTree as ET
+
+from defusedxml import ElementTree as SafeET
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -420,7 +422,7 @@ def _get_package_namespace(root):
 
 def _find_opf_path(epub_zip):
     try:
-        container_root = ET.fromstring(epub_zip.read("META-INF/container.xml"))
+        container_root = SafeET.fromstring(epub_zip.read("META-INF/container.xml"))
         for elem in container_root.iter():
             if elem.tag.endswith("rootfile"):
                 return elem.attrib.get("full-path")
@@ -443,7 +445,7 @@ def split_epub_file(input_path, output_path, settings, log_callback=None, progre
     with zipfile.ZipFile(input_path, "r") as zin:
         opf_path = _find_opf_path(zin)
         opf_dir = posixpath.dirname(opf_path)
-        opf_root = ET.fromstring(zin.read(opf_path))
+        opf_root = SafeET.fromstring(zin.read(opf_path))
         ns_uri = _get_package_namespace(opf_root)
         ns = {"opf": ns_uri}
 

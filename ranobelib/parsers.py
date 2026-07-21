@@ -3,6 +3,8 @@ import html
 import os
 import re
 import xml.etree.ElementTree as ET
+
+from defusedxml import ElementTree as SafeET
 import zipfile
 
 from bs4 import BeautifulSoup
@@ -59,7 +61,7 @@ class FileParser:
                 if not opf_name:
                     raise ValueError("Невалидный EPUB: .opf не найден")
 
-                root = ET.fromstring(z.read(opf_name))
+                root = SafeET.fromstring(z.read(opf_name))
                 ns = {"op": "http://www.idpf.org/2007/opf"}
                 manifest = {
                     item.get("id"): item.get("href")

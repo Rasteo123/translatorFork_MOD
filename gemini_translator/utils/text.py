@@ -18,6 +18,7 @@ from difflib import SequenceMatcher
 from collections import Counter
 import math
 from ..api import config as api_config
+from .glued_words import repair_glued_russian_words_in_html
 
 DASH_CHARS = '—–−─-'
 COMMA_CHARS = ',，'
@@ -740,19 +741,23 @@ def finalize_cleanup(html_content: str) -> str:
     content = _restore_masked_segments(content, tag_map)
     
     content = clean_glossary_garbage(content)
-    
-    # Чистим стыки тегов от случайных пробелов перед форматированием
-    # 1. Сначала убираем ВСЕ пробелы между тегами. Делаем "слиток".
-    # Было: </div>   <p>   <!-- .. --> <p>
-    # Стало: </div><p><!-- .. --><p>
-    content = re.sub(r'>\s+<', '><', content)
+
+    # Formatting whitespace is safe to remove only between structural tags.
+    # A blanket `>\s+<` replacement also removes visible spaces between inline
+    # elements, turning `</em> <strong>` into glued words in rendered HTML.
+    struct_tags = r'p|div|h[1-6]|li|blockquote|table|ul|ol|body|html|section|article'
+    content = re.sub(
+        fr'(</?(?:{struct_tags})\b[^>]*>)\s+(?=</?(?:{struct_tags})\b[^>]*>)',
+        r'\1',
+        content,
+        flags=re.IGNORECASE,
+    )
 
     # Безопасное удаление тире (перед </p>)
     content = re.sub(fr'\s*[{DASH_CHARS}]+\s*</p>', f'{ELLIPSIS_CHAR}</p>', content)
     
     # Список тегов, которые требуют изоляции (блочные)
     # ВАЖНО: Теги вроде <b>, <span>, <a>, <em> СЮДА НЕ ВХОДЯТ, они инлайновые.
-    struct_tags = r'p|div|h[1-6]|li|blockquote|table|ul|ol|body|html|section|article'
 
     # 2. ИЗОЛЯЦИЯ: Ставим \n ВОКРУГ блоков. Не между, а именно вокруг.
     
@@ -1881,6 +1886,7 @@ def repair_ai_html_artifacts(original_html: str, translated_html: str) -> str:
     repaired = repair_missing_paragraph_tags(original_html, repaired)
     repaired = _coerce_first_heading_level(original_html, repaired)
     repaired = coerce_translated_body_block(original_html, repaired)
+    repaired, _glued_word_candidates = repair_glued_russian_words_in_html(repaired)
     repaired = RAW_AMPERSAND_PATTERN.sub('&amp;', repaired)
 
     if preserved_shell and re.search(r'<body\b', repaired, re.IGNORECASE):

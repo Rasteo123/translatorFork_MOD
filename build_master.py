@@ -75,6 +75,9 @@ IMPORT_TO_PACKAGE_MAP = {
 }
 
 ESSENTIAL_PACKAGES = {
+    'cryptography',
+    'defusedxml',
+    'idna',
     'playwright',
     'python-docx',
     'EbookLib',
@@ -85,10 +88,17 @@ ESSENTIAL_PACKAGES = {
     'google-genai',
     'loguru',
     'websockets',
+    'soupsieve',
+    'urllib3',
 }
 FORCED_VERSIONS = {
+    'cryptography': '>=48.0.1',
+    'defusedxml': '>=0.7.1',
+    'idna': '>=3.15',
     'pydantic': '>=2.0.0',
     'setuptools': '<81',
+    'soupsieve': '>=2.8.4',
+    'urllib3': '>=2.7.0',
 }
 CONFLICTING_PACKAGES_TO_REMOVE = {"os_patch", "pyinstaller_hooks_contrib"}
 

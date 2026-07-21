@@ -4,6 +4,7 @@ import os
 import re
 import math
 import time
+import uuid
 from bs4 import BeautifulSoup
 from PyQt6 import QtGui
 from PyQt6.QtWidgets import (
@@ -40,6 +41,7 @@ SOURCE_TYPE_LABELS = {
     'system': 'SYSTEM',
     'user': 'USER',
 }
+UNTRANSLATED_FIXER_BACKGROUND_ROLE = 'untranslated_fixer'
 UNTRANSLATED_PROMPT_GUARDRAILS_MARKER = "## ОБЯЗАТЕЛЬНЫЙ ПАТЧ ПРОМПТА: CJK, ССЫЛКИ И РЕКЛАМА"
 UNTRANSLATED_PROMPT_GUARDRAILS = f"""{UNTRANSLATED_PROMPT_GUARDRAILS_MARKER}
 
@@ -2269,6 +2271,8 @@ class AITranslationPage(ShellPage):
 
         self.translated_results = []
         self.is_session_active = False
+        self._session_run_id = None
+        self._owned_session_id = None
         self._token_input_total = 0
         self._token_output_total = 0
         self._token_total = 0
@@ -2490,13 +2494,20 @@ class AITranslationPage(ShellPage):
             if not self._check_can_close():
                 event.ignore()
                 return
-        
-        if self.bus:
-            try:
-                self.bus.event_posted.disconnect(self._on_global_event)
-            except (TypeError, RuntimeError):
-                pass
+
+        self._disconnect_global_events()
         super().closeEvent(event)
+
+    def on_leave(self):
+        self._disconnect_global_events()
+
+    def _disconnect_global_events(self):
+        if not self.bus:
+            return
+        try:
+            self.bus.event_posted.disconnect(self._on_global_event)
+        except (TypeError, RuntimeError):
+            pass
 
     def _update_threads_limit(self):
         keys = self.key_widget.get_active_keys()
@@ -2521,6 +2532,21 @@ class AITranslationPage(ShellPage):
         session_id = self.engine.session_id if self.engine and self.engine.session_id else None
         event = { 'event': name, 'source': 'AITranslationDialog', 'session_id': session_id, 'data': data or {} }
         self.bus.event_posted.emit(event)
+
+    def _is_owned_session_lifecycle_event(self, event: dict) -> bool:
+        data = event.get('data', {}) if isinstance(event, dict) else {}
+        return bool(
+            self._session_run_id
+            and data.get('background_role') == UNTRANSLATED_FIXER_BACKGROUND_ROLE
+            and data.get('background_run_id') == self._session_run_id
+        )
+
+    def _is_owned_session_event(self, event: dict) -> bool:
+        return bool(
+            self._owned_session_id
+            and isinstance(event, dict)
+            and event.get('session_id') == self._owned_session_id
+        )
 
     def _update_start_button_state(self):
         can_start = not self.is_session_active and self.key_widget.can_start_ai_session()
@@ -2555,14 +2581,18 @@ class AITranslationPage(ShellPage):
                 self._post_event('manual_stop_requested')
         else:
             self._set_ui_active(True)
+            self._session_run_id = uuid.uuid4().hex
+            self._owned_session_id = None
             settings = self.get_settings()
             if not self.key_widget.can_start_ai_session():
                 if self.suppress_popups:
                     self.finish_reason = "No active AI service session configured for untranslated fixer."
+                    self._session_run_id = None
                     self._set_ui_active(False)
                     self._finish_auto_session(False)
                     return
                 QMessageBox.warning(self, "Нет сессии", "Нет активной сессии сервиса или подключенного MCP-клиента.")
+                self._session_run_id = None
                 self._set_ui_active(False)
                 return
 
@@ -2591,15 +2621,25 @@ class AITranslationPage(ShellPage):
         data = event.get('data', {})
 
         if event_name == 'session_started':
+            if not self._is_owned_session_lifecycle_event(event):
+                return
+            self._owned_session_id = event.get('session_id')
             self._set_ui_active(True)
             return
 
         if event_name == 'session_finished':
+            if not self._is_owned_session_lifecycle_event(event):
+                return
+            event_session_id = event.get('session_id')
+            if self._owned_session_id and event_session_id != self._owned_session_id:
+                return
             self.task_manager.clear_all_queues()
             self._set_ui_active(False)
             self.finish_reason = data.get('reason', '')
+            self._owned_session_id = None
 
             if self.suppress_popups:
+                self._disconnect_global_events()
                 self._finish_auto_session(bool(self.translated_results))
                 return
             
@@ -2610,6 +2650,8 @@ class AITranslationPage(ShellPage):
             return
 
         if event_name == 'task_finished':
+            if not self._is_owned_session_event(event):
+                return
             if data.get('success'):
                 task_info = data.get('task_info')
                 if task_info and task_info[1] and task_info[1][0] == 'raw_text_translation':
@@ -2619,6 +2661,8 @@ class AITranslationPage(ShellPage):
                         self._update_apply_button()
 
         if event_name == 'token_usage_updated':
+            if not self._is_owned_session_event(event):
+                return
             self._on_token_usage_updated(data)
 
     def _reset_token_usage(self):
@@ -2700,6 +2744,9 @@ class AITranslationPage(ShellPage):
         settings['model_config'] = api_config.all_models().get(model_name, {}).copy()
         settings['force_accept'] = True
         settings['custom_prompt'] = api_config.default_prompt()
+        settings['background_session'] = True
+        settings['background_role'] = UNTRANSLATED_FIXER_BACKGROUND_ROLE
+        settings['background_run_id'] = self._session_run_id
         return settings
 
     def get_translated_results(self):
