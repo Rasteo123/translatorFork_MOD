@@ -13,6 +13,27 @@ def _make_handler(model_config, provider_config=None):
 
 
 class OpenRouterHandlerTests(unittest.TestCase):
+    def test_provider_extra_headers_are_added_to_requests(self):
+        handler = _make_handler(
+            {"id": "auto"},
+            {
+                "is_async": True,
+                "extra_headers": {
+                    "X-OmniRoute-No-Cache": "true",
+                    "x-omniroute-no-memory": "true",
+                    "x-omniroute-compression": "off",
+                },
+            },
+        )
+        handler.worker.api_key = "endpoint-key"
+
+        headers = handler._build_request_headers()
+
+        self.assertEqual(headers["Authorization"], "Bearer endpoint-key")
+        self.assertEqual(headers["X-OmniRoute-No-Cache"], "true")
+        self.assertEqual(headers["x-omniroute-no-memory"], "true")
+        self.assertEqual(headers["x-omniroute-compression"], "off")
+
     def test_model_without_reasoning_config_leaves_payload_unchanged(self):
         handler = _make_handler({"id": "translator"})
         payload = {"model": "translator"}

@@ -38,6 +38,30 @@ def get_dynamic_server_url(endpoint_filename: str, default_port: int = 8000) -> 
     return f"http://127.0.0.1:{default_port}/v1/chat/completions"
 
 class OpenRouterApiHandler(BaseApiHandler):
+    def _build_request_headers(self):
+        headers = {
+            "Authorization": f"Bearer {self.worker.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/gemini-translator",
+            "X-Title": "Gemini Epub Translator",
+        }
+
+        provider_config = (
+            self.worker.provider_config
+            if isinstance(self.worker.provider_config, dict)
+            else {}
+        )
+        extra_headers = provider_config.get("extra_headers")
+        if isinstance(extra_headers, dict):
+            headers.update(
+                {
+                    str(name): str(value)
+                    for name, value in extra_headers.items()
+                    if str(name).strip() and value is not None
+                }
+            )
+        return headers
+
     def _apply_openai_reasoning_options(self, payload):
         model_config = self.worker.model_config if isinstance(self.worker.model_config, dict) else {}
         provider_config = self.worker.provider_config if isinstance(self.worker.provider_config, dict) else {}
@@ -166,12 +190,7 @@ class OpenRouterApiHandler(BaseApiHandler):
             self.base_url = get_dynamic_server_url(self.endpoint_filename)
         # ----------------------------
 
-        headers = {
-            "Authorization": f"Bearer {self.worker.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/gemini-translator",
-            "X-Title": "Gemini Epub Translator"
-        }
+        headers = self._build_request_headers()
 
         messages = ([{"role": "system", "content": self.worker.prompt_builder.system_instruction}] if self.worker.prompt_builder.system_instruction else []) + [{"role": "user", "content": prompt}]
 

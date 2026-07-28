@@ -838,6 +838,76 @@
       }
     }
   },
+  "omniroute": {
+    "display_name": "OmniRoute (локальный AI-маршрутизатор)",
+    "provider": "omniroute",
+    "handler_class": "OpenRouterApiHandler",
+    "base_url": "http://127.0.0.1:20128/v1/chat/completions",
+    "base_timeout": 1800,
+    "is_async": true,
+    "needs_warmup": false,
+    "visible": true,
+    "dynamic_model_discovery": true,
+    "discovery_endpoints": [
+      {
+        "name": "OmniRoute",
+        "base_url": "http://127.0.0.1:20128/v1"
+      }
+    ],
+    "extra_headers": {
+      "X-OmniRoute-No-Cache": "true",
+      "x-omniroute-no-memory": "true",
+      "x-omniroute-compression": "off"
+    },
+    "file_suffix": "_translated_omniroute.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "OmniRoute Auto": {
+        "id": "auto",
+        "rpm": 60,
+        "needs_chunking": true,
+        "max_concurrent_requests": 2,
+        "context_length": 128000,
+        "max_output_tokens": 32768
+      },
+      "OmniRoute Auto — запас квоты": {
+        "id": "auto/offline",
+        "rpm": 60,
+        "needs_chunking": true,
+        "max_concurrent_requests": 2,
+        "context_length": 128000,
+        "max_output_tokens": 32768
+      },
+      "OmniRoute Auto — качество": {
+        "id": "auto/smart",
+        "rpm": 60,
+        "needs_chunking": true,
+        "max_concurrent_requests": 2,
+        "context_length": 128000,
+        "max_output_tokens": 32768
+      },
+      "OmniRoute Auto — быстро": {
+        "id": "auto/fast",
+        "rpm": 60,
+        "needs_chunking": true,
+        "max_concurrent_requests": 2,
+        "context_length": 128000,
+        "max_output_tokens": 32768
+      },
+      "OmniRoute Auto — дешевле": {
+        "id": "auto/cheap",
+        "rpm": 60,
+        "needs_chunking": true,
+        "max_concurrent_requests": 2,
+        "context_length": 128000,
+        "max_output_tokens": 32768
+      }
+    }
+  },
   "xai": {
     "display_name": "xAI Grok API",
     "provider": "xai",
