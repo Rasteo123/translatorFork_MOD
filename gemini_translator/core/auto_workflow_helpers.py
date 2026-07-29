@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 
-AUTO_CJK_SHORT_RATIO_LIMIT = 1.80
+AUTO_CJK_SHORT_RATIO_LIMIT = 2.80
 AUTO_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 
 
