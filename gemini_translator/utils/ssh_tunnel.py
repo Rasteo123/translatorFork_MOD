@@ -1,0 +1,157 @@
+"""Manages a local `ssh -D` SOCKS tunnel as a supervised subprocess."""
+
+from __future__ import annotations
+
+import select
+import subprocess
+from typing import Callable, Optional
+
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+
+BACKOFF_SCHEDULE_SECONDS = [3, 6, 12, 24, 60]
+
+_SSH_OPTIONS = [
+    "-o", "StrictHostKeyChecking=yes",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+    "-o", "ExitOnForwardFailure=yes",
+]
+
+
+def _default_stderr_reader(process) -> Optional[str]:
+    """Non-blocking read of the next available line from ssh's stderr."""
+    stderr = getattr(process, "stderr", None)
+    if stderr is None:
+        return None
+    ready, _, _ = select.select([stderr], [], [], 0)
+    if not ready:
+        return None
+    line = stderr.readline()
+    if not line:
+        return None
+    if isinstance(line, bytes):
+        line = line.decode("utf-8", errors="replace")
+    return line.strip()
+
+
+class SshTunnelManager(QObject):
+    """Spawns and supervises `ssh -D` as a local SOCKS5 tunnel."""
+
+    status_changed = pyqtSignal(str, str)  # (state, message)
+
+    def __init__(
+        self,
+        popen_factory: Optional[Callable[[list], object]] = None,
+        stderr_reader: Optional[Callable[[object], Optional[str]]] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._popen_factory = popen_factory or subprocess.Popen
+        self._stderr_reader = stderr_reader or _default_stderr_reader
+        self._process = None
+        self._params = None
+        self._failure_count = 0
+        self._stopped = True
+        self._last_error = ""
+
+        self._check_timer = QTimer(self)
+        self._check_timer.setInterval(1000)
+        self._check_timer.timeout.connect(self._check_process)
+
+        self._restart_timer = QTimer(self)
+        self._restart_timer.setSingleShot(True)
+        self._restart_timer.timeout.connect(self._spawn)
+
+    @property
+    def active(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def start(self, *, ssh_host, ssh_port, ssh_user, ssh_key_path, local_port) -> None:
+        if self.active:
+            return
+        self._params = {
+            "ssh_host": ssh_host,
+            "ssh_port": ssh_port,
+            "ssh_user": ssh_user,
+            "ssh_key_path": ssh_key_path,
+            "local_port": local_port,
+        }
+        self._stopped = False
+        self._failure_count = 0
+        self._last_error = ""
+        self._restart_timer.stop()
+        self._spawn()
+
+    def stop(self) -> None:
+        self._stopped = True
+        self._restart_timer.stop()
+        self._check_timer.stop()
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+                process.wait(timeout=3)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _build_command(self) -> list:
+        p = self._params
+        return [
+            "ssh",
+            "-i", str(p["ssh_key_path"]),
+            "-p", str(p["ssh_port"]),
+            "-D", str(p["local_port"]),
+            "-N",
+            *_SSH_OPTIONS,
+            f"{p['ssh_user']}@{p['ssh_host']}",
+        ]
+
+    def _spawn(self) -> None:
+        if self._stopped:
+            return
+        self.status_changed.emit("connecting", "")
+        try:
+            self._process = self._popen_factory(self._build_command())
+        except Exception as exc:
+            self._process = None
+            self._last_error = str(exc)
+            self.status_changed.emit("error", str(exc))
+            return
+        self.status_changed.emit("up", "")
+        self._check_timer.start()
+
+    def _check_process(self) -> None:
+        if self._stopped or self._process is None:
+            return
+
+        while True:
+            line = self._stderr_reader(self._process)
+            if line is None:
+                break
+            if line:
+                self._last_error = line
+
+        if self._process.poll() is None:
+            return
+
+        self._check_timer.stop()
+        message = self._last_error or "ssh завершился неожиданно"
+        self.status_changed.emit("down", message)
+        self._schedule_restart()
+
+    def _schedule_restart(self) -> None:
+        if self._stopped:
+            return
+        index = min(self._failure_count, len(BACKOFF_SCHEDULE_SECONDS) - 1)
+        delay = BACKOFF_SCHEDULE_SECONDS[index]
+        self._failure_count += 1
+        self._restart_timer.start(delay * 1000)
