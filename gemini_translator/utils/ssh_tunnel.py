@@ -46,7 +46,10 @@ class SshTunnelManager(QObject):
         parent=None,
     ):
         super().__init__(parent)
-        self._popen_factory = popen_factory or subprocess.Popen
+        if popen_factory is not None:
+            self._popen_factory = popen_factory
+        else:
+            self._popen_factory = lambda args: subprocess.Popen(args, stderr=subprocess.PIPE)
         self._stderr_reader = stderr_reader or _default_stderr_reader
         self._process = None
         self._params = None
@@ -66,7 +69,7 @@ class SshTunnelManager(QObject):
     def active(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
-    def start(self, *, ssh_host, ssh_port, ssh_user, ssh_key_path, local_port) -> None:
+    def start(self, *, ssh_host: str, ssh_port: int, ssh_user: str, ssh_key_path: str, local_port: int) -> None:
         if self.active:
             return
         self._params = {
@@ -118,6 +121,7 @@ class SshTunnelManager(QObject):
     def _spawn(self) -> None:
         if self._stopped:
             return
+        self._last_error = ""
         self.status_changed.emit("connecting", "")
         try:
             self._process = self._popen_factory(self._build_command())
@@ -125,6 +129,7 @@ class SshTunnelManager(QObject):
             self._process = None
             self._last_error = str(exc)
             self.status_changed.emit("error", str(exc))
+            self._schedule_restart()
             return
         self.status_changed.emit("up", "")
         self._check_timer.start()

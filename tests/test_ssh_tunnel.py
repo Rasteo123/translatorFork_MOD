@@ -133,7 +133,7 @@ class SshTunnelManagerTests(unittest.TestCase):
         self.assertFalse(manager._check_timer.isActive())
         self.assertFalse(manager._restart_timer.isActive())
 
-    def test_missing_ssh_binary_emits_error_and_does_not_schedule_restart(self):
+    def test_missing_ssh_binary_emits_error_and_schedules_a_retry(self):
         def popen_factory(args):
             raise FileNotFoundError("ssh not found")
 
@@ -146,7 +146,8 @@ class SshTunnelManagerTests(unittest.TestCase):
         )
 
         self.assertEqual(events[-1], ("error", "ssh not found"))
-        self.assertFalse(manager._restart_timer.isActive())
+        self.assertTrue(manager._restart_timer.isActive())
+        self.assertEqual(manager._restart_timer.interval(), BACKOFF_SCHEDULE_SECONDS[0] * 1000)
         self.assertFalse(manager.active)
 
     def test_start_is_idempotent_when_already_active(self):
@@ -159,6 +160,56 @@ class SshTunnelManagerTests(unittest.TestCase):
         )
 
         self.assertEqual(len(calls), 1)
+
+    def test_default_stderr_reader_reads_a_real_pipe(self):
+        from gemini_translator.utils.ssh_tunnel import _default_stderr_reader
+
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b"Permission denied (publickey).\n")
+
+            class _ProcWithRealStderr:
+                def __init__(self, stderr):
+                    self.stderr = stderr
+
+            with os.fdopen(read_fd, "rb") as stderr_file:
+                read_fd = None  # fdopen now owns it, avoid double-close
+                process = _ProcWithRealStderr(stderr_file)
+                line = _default_stderr_reader(process)
+                self.assertEqual(line, "Permission denied (publickey).")
+        finally:
+            os.close(write_fd)
+            if read_fd is not None:
+                os.close(read_fd)
+
+    def test_stop_kills_process_when_terminate_times_out(self):
+        import subprocess as subprocess_module
+
+        class _FakeProcessWithTimeout(_FakeProcess):
+            def __init__(self):
+                super().__init__()
+                self._wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.waited = True
+                self._wait_calls += 1
+                if self._wait_calls == 1:
+                    raise subprocess_module.TimeoutExpired(cmd="ssh", timeout=3)
+                # Second call succeeds
+
+        manager, process, _ = self._make_manager(process=_FakeProcessWithTimeout())
+        manager.start(
+            ssh_host="h", ssh_port=22, ssh_user="root", ssh_key_path="/key", local_port=8080,
+        )
+
+        manager.stop()
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertTrue(process.waited)
+        self.assertFalse(manager.active)
+        self.assertFalse(manager._check_timer.isActive())
+        self.assertFalse(manager._restart_timer.isActive())
 
 
 if __name__ == "__main__":
