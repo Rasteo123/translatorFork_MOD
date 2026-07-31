@@ -54,7 +54,12 @@ class AsyncWorkerRuntime:
             self._tasks.discard(task)
 
     async def _cancel_all(self):
-        tasks = [t for t in self._tasks if t is not asyncio.current_task()]
+        current_task = asyncio.current_task()
+        tasks = [
+            task
+            for task in asyncio.all_tasks(self.loop)
+            if task is not current_task and not task.done()
+        ]
         for t in tasks:
             t.cancel()
         if tasks:
