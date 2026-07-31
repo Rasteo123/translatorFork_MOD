@@ -70,7 +70,7 @@ class SshTunnelManagerTests(unittest.TestCase):
                 "ssh",
                 "-i", "/Users/rasreo/Documents/ssh/_ssh/id_ed25519",
                 "-p", "22",
-                "-D", "8080",
+                "-D", "127.0.0.1:8080",
                 "-N",
                 "-o", "StrictHostKeyChecking=yes",
                 "-o", "ServerAliveInterval=15",
@@ -197,6 +197,33 @@ class SshTunnelManagerTests(unittest.TestCase):
             if read_fd is not None:
                 os.close(read_fd)
 
+    def test_default_stderr_reader_buffers_partial_real_pipe_line(self):
+        from gemini_translator.utils.ssh_tunnel import _default_stderr_reader
+
+        read_fd, write_fd = os.pipe()
+        try:
+            os.set_blocking(read_fd, False)
+
+            class _ProcWithRealStderr:
+                def __init__(self, stderr):
+                    self.stderr = stderr
+
+            with os.fdopen(read_fd, "rb") as stderr_file:
+                read_fd = None
+                process = _ProcWithRealStderr(stderr_file)
+                os.write(write_fd, b"Permission denied")
+                self.assertIsNone(_default_stderr_reader(process))
+
+                os.write(write_fd, b" (publickey).\n")
+                self.assertEqual(
+                    _default_stderr_reader(process),
+                    "Permission denied (publickey).",
+                )
+        finally:
+            os.close(write_fd)
+            if read_fd is not None:
+                os.close(read_fd)
+
     def test_stop_kills_process_when_terminate_times_out(self):
         import subprocess as subprocess_module
 
@@ -225,6 +252,45 @@ class SshTunnelManagerTests(unittest.TestCase):
         self.assertFalse(manager.active)
         self.assertFalse(manager._check_timer.isActive())
         self.assertFalse(manager._restart_timer.isActive())
+
+    def test_stop_kills_process_when_terminate_raises(self):
+        class _FakeProcessWithTerminateFailure(_FakeProcess):
+            def terminate(self):
+                self.terminated = True
+                raise OSError("terminate failed")
+
+        manager, process, _ = self._make_manager(process=_FakeProcessWithTerminateFailure())
+        manager.start(
+            ssh_host="h", ssh_port=22, ssh_user="root", ssh_key_path="/key", local_port=8080,
+        )
+
+        manager.stop()
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertTrue(process.waited)
+        self.assertIsNone(manager._process)
+
+    def test_stop_retains_process_when_fallback_kill_fails(self):
+        class _FakeProcessWithShutdownFailure(_FakeProcess):
+            def terminate(self):
+                self.terminated = True
+                raise OSError("terminate failed")
+
+            def kill(self):
+                self.killed = True
+                raise OSError("kill failed")
+
+        manager, process, _ = self._make_manager(process=_FakeProcessWithShutdownFailure())
+        manager.start(
+            ssh_host="h", ssh_port=22, ssh_user="root", ssh_key_path="/key", local_port=8080,
+        )
+
+        manager.stop()
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
+        self.assertIs(manager._process, process)
 
 
 if __name__ == "__main__":

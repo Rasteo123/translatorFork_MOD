@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import select
+import os
 import subprocess
 from typing import Callable, Optional
 
@@ -19,19 +19,33 @@ _SSH_OPTIONS = [
 
 
 def _default_stderr_reader(process) -> Optional[str]:
-    """Non-blocking read of the next available line from ssh's stderr."""
+    """Return one complete stderr line without blocking the Qt event loop."""
     stderr = getattr(process, "stderr", None)
     if stderr is None:
         return None
-    ready, _, _ = select.select([stderr], [], [], 0)
-    if not ready:
+
+    buffer = getattr(process, "_ssh_tunnel_stderr_buffer", b"")
+    try:
+        fd = stderr.fileno()
+        os.set_blocking(fd, False)
+        chunk = os.read(fd, 4096)
+    except (BlockingIOError, OSError):
         return None
-    line = stderr.readline()
-    if not line:
+
+    if not chunk:
+        if not buffer:
+            return None
+        setattr(process, "_ssh_tunnel_stderr_buffer", b"")
+        return buffer.decode("utf-8", errors="replace").strip()
+
+    buffer += chunk
+    if b"\n" not in buffer:
+        setattr(process, "_ssh_tunnel_stderr_buffer", buffer)
         return None
-    if isinstance(line, bytes):
-        line = line.decode("utf-8", errors="replace")
-    return line.strip()
+
+    line, buffer = buffer.split(b"\n", 1)
+    setattr(process, "_ssh_tunnel_stderr_buffer", buffer)
+    return line.decode("utf-8", errors="replace").strip()
 
 
 class SshTunnelManager(QObject):
@@ -90,21 +104,21 @@ class SshTunnelManager(QObject):
         self._restart_timer.stop()
         self._check_timer.stop()
         process = self._process
-        self._process = None
         if process is None:
             return
         try:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
+            if process.poll() is not None:
+                self._process = None
+                return
+            process.terminate()
+            process.wait(timeout=3)
+        except Exception:
             try:
                 process.kill()
                 process.wait(timeout=3)
             except Exception:
-                pass
-        except Exception:
-            pass
+                return
+        self._process = None
 
     def _build_command(self) -> list:
         p = self._params
@@ -112,7 +126,7 @@ class SshTunnelManager(QObject):
             "ssh",
             "-i", str(p["ssh_key_path"]),
             "-p", str(p["ssh_port"]),
-            "-D", str(p["local_port"]),
+            "-D", f"127.0.0.1:{p['local_port']}",
             "-N",
             *_SSH_OPTIONS,
             f"{p['ssh_user']}@{p['ssh_host']}",
