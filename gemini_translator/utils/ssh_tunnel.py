@@ -25,6 +25,11 @@ def _default_stderr_reader(process) -> Optional[str]:
         return None
 
     buffer = getattr(process, "_ssh_tunnel_stderr_buffer", b"")
+    if b"\n" in buffer:
+        line, buffer = buffer.split(b"\n", 1)
+        setattr(process, "_ssh_tunnel_stderr_buffer", buffer)
+        return line.decode("utf-8", errors="replace").strip()
+
     try:
         fd = stderr.fileno()
         os.set_blocking(fd, False)

@@ -224,6 +224,27 @@ class SshTunnelManagerTests(unittest.TestCase):
             if read_fd is not None:
                 os.close(read_fd)
 
+    def test_default_stderr_reader_drains_multiple_buffered_real_pipe_lines(self):
+        from gemini_translator.utils.ssh_tunnel import _default_stderr_reader
+
+        read_fd, write_fd = os.pipe()
+        try:
+            class _ProcWithRealStderr:
+                def __init__(self, stderr):
+                    self.stderr = stderr
+
+            with os.fdopen(read_fd, "rb") as stderr_file:
+                read_fd = None
+                process = _ProcWithRealStderr(stderr_file)
+                os.write(write_fd, b"first error\nsecond error\n")
+
+                self.assertEqual(_default_stderr_reader(process), "first error")
+                self.assertEqual(_default_stderr_reader(process), "second error")
+        finally:
+            os.close(write_fd)
+            if read_fd is not None:
+                os.close(read_fd)
+
     def test_stop_kills_process_when_terminate_times_out(self):
         import subprocess as subprocess_module
 
