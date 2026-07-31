@@ -282,6 +282,33 @@ class ChunkAssemblerTests(unittest.TestCase):
                 1,
             )
 
+            with self.task_manager._get_write_conn() as conn:
+                conn.execute(
+                    "UPDATE tasks SET status = 'completed' WHERE task_id IN (?, ?)",
+                    (
+                        "00000000-0000-0000-0000-000000000001",
+                        "00000000-0000-0000-0000-000000000002",
+                    ),
+                )
+
+            assembler._assemble_chapter_from_db(
+                [
+                    "00000000-0000-0000-0000-000000000001",
+                    "00000000-0000-0000-0000-000000000002",
+                ],
+                chapter_path,
+            )
+
+            self.assertEqual(self._task_status("00000000-0000-0000-0000-000000000001"), "pending")
+            self.assertEqual(self._task_status("00000000-0000-0000-0000-000000000002"), "pending")
+            self.assertEqual(
+                self._task_error_count(
+                    "00000000-0000-0000-0000-000000000001",
+                    "ASSEMBLY_VALIDATION",
+                ),
+                2,
+            )
+
     def test_repeated_scans_do_not_queue_duplicate_assemblies(self):
         with tempfile.TemporaryDirectory() as output_folder:
             assembler = ChunkAssembler(

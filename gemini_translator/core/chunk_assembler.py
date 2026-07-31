@@ -282,37 +282,25 @@ class ChunkAssembler(QObject):
 
         placeholders = ','.join('?' for _ in normalized_ids)
         retry_ids = []
-        fail_ids = []
         timestamp = time.time()
 
         with task_manager._get_write_conn() as conn:
             rows = conn.execute(
                 f"""
-                SELECT
-                    t.task_id,
-                    t.status,
-                    COUNT(te.error_id) AS validation_errors
-                FROM tasks AS t
-                LEFT JOIN task_errors AS te
-                  ON te.task_id = t.task_id
-                 AND te.error_type = ?
-                WHERE t.task_id IN ({placeholders})
-                GROUP BY t.task_id, t.status
+                SELECT task_id, status
+                FROM tasks
+                WHERE task_id IN ({placeholders})
                 """,
-                [ASSEMBLY_VALIDATION_ERROR, *normalized_ids],
+                normalized_ids,
             ).fetchall()
 
             for row in rows:
-                if row['status'] != 'completed':
-                    continue
-                if int(row['validation_errors'] or 0) >= 1:
-                    fail_ids.append(row['task_id'])
-                else:
+                if row['status'] == 'completed':
                     retry_ids.append(row['task_id'])
 
             error_rows = [
                 (task_id, ASSEMBLY_VALIDATION_ERROR, timestamp)
-                for task_id in retry_ids + fail_ids
+                for task_id in retry_ids
             ]
             if error_rows:
                 conn.executemany(
@@ -333,33 +321,15 @@ class ChunkAssembler(QObject):
                     retry_ids,
                 )
 
-            if fail_ids:
-                fail_placeholders = ','.join('?' for _ in fail_ids)
-                conn.execute(
-                    f"""
-                    UPDATE tasks
-                    SET status = 'failed',
-                        worker_id = NULL
-                    WHERE task_id IN ({fail_placeholders})
-                    """,
-                    fail_ids,
-                )
-
         if retry_ids:
             self._post_event('log_message', {
                 'message': (
                     f"[ASSEMBLER_VALIDATION] '{os.path.basename(original_chapter_path)}' "
-                    f"failed final integrity check and {len(retry_ids)} chunks were requeued. Reason: {reason}"
+                    f"failed final integrity check and {len(retry_ids)} chunks were requeued "
+                    f"for another attempt. Reason: {reason}"
                 )
             })
-        if fail_ids:
-            self._post_event('log_message', {
-                'message': (
-                    f"[ASSEMBLER_VALIDATION] '{os.path.basename(original_chapter_path)}' "
-                    f"failed final integrity check again; {len(fail_ids)} chunks were marked failed. Reason: {reason}"
-                )
-            })
-        if retry_ids or fail_ids:
+        if retry_ids:
             task_manager._safe_request_ui_update()
 
     def _assemble_chapter_from_db(self, task_ids: list, original_chapter_path: str):
