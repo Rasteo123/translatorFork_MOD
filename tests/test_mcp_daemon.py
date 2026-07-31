@@ -59,6 +59,13 @@ def _request(method, url, token, payload=None):
         return json.loads(response.read().decode("utf-8"))
 
 
+def _read_http_error_json(error):
+    try:
+        return json.loads(error.read().decode("utf-8"))
+    finally:
+        error.close()
+
+
 class _RawSseResponse:
     def __init__(self, sock: socket.socket, reader):
         self._sock = sock
@@ -190,7 +197,10 @@ def test_daemon_rejects_missing_token(tmp_path):
         try:
             urllib.request.urlopen(request, timeout=5)
         except urllib.error.HTTPError as exc:
-            assert exc.code == 401
+            try:
+                assert exc.code == 401
+            finally:
+                exc.close()
         else:
             raise AssertionError("request without token must fail")
     finally:
@@ -647,7 +657,7 @@ def test_daemon_ai_completion_inbox_failure_returns_http_error(tmp_path):
                 future.result(timeout=5)
 
         assert error_info.value.code == 502
-        payload = json.loads(error_info.value.read().decode("utf-8"))
+        payload = _read_http_error_json(error_info.value)
         assert payload["ok"] is False
         assert "AI client refused" in payload["error"]
     finally:
@@ -715,7 +725,7 @@ def test_daemon_ai_completion_inbox_failure_preserves_limit_payload(tmp_path):
                 future.result(timeout=5)
 
         assert error_info.value.code == 502
-        payload = json.loads(error_info.value.read().decode("utf-8"))
+        payload = _read_http_error_json(error_info.value)
         assert payload["ok"] is False
         assert payload["error"] == "usage limit reached"
         assert payload["reset_after_seconds"] == 120
@@ -782,7 +792,7 @@ def test_daemon_ai_completion_cancel_stops_inbox_wait_and_hides_task(tmp_path):
 
         assert cancel_payload == {"ok": True, "cancelled": True, "request_id": request_id}
         assert error_info.value.code == 499
-        payload = json.loads(error_info.value.read().decode("utf-8"))
+        payload = _read_http_error_json(error_info.value)
         assert payload["ok"] is False
         assert "cancelled" in payload["error"]
         assert _request("GET", f"{daemon.base_url}/gui-ai-tasks", daemon.token)["tasks"] == []
@@ -855,6 +865,7 @@ def test_daemon_ai_completion_timeout_cancels_inbox_task(tmp_path):
                 future.result(timeout=5)
 
         assert error_info.value.code == 504
+        error_info.value.close()
         cancelled = load_gui_ai_task(tmp_path, task_id)
         assert cancelled.status == "cancelled"
         assert "timed out" in cancelled.error

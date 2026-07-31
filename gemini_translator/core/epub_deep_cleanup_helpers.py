@@ -4,6 +4,8 @@ import os
 import re
 from xml.etree import ElementTree as ET
 
+from defusedxml import ElementTree as SafeET
+
 try:
     from bs4 import BeautifulSoup, Comment
 except ImportError:  # pragma: no cover - caller gates deep cleanup on bs4.
@@ -328,7 +330,7 @@ def find_opf_file(temp_dir):
     container_path = os.path.join(temp_dir, 'META-INF', 'container.xml')
     if os.path.exists(container_path):
         try:
-            tree = ET.parse(container_path)
+            tree = SafeET.parse(container_path)
             root = tree.getroot()
             rootfile = root.find('.//{*}rootfile')
             if rootfile is not None:
@@ -364,7 +366,7 @@ def clean_opf_file(
     ET.register_namespace('dc', 'http://purl.org/dc/elements/1.1/')
     ET.register_namespace('epub', 'http://www.idpf.org/2007/ops')
 
-    tree = ET.parse(opf_path)
+    tree = SafeET.parse(opf_path)
     root = tree.getroot()
     namespaces = {'opf': 'http://www.idpf.org/2007/opf'}
     manifest = root.find('.//opf:manifest', namespaces)

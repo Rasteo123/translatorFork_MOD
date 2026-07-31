@@ -3359,7 +3359,8 @@ class TranslationValidatorPage(ShellPage):
                     continue
 
                 mark_id = hashlib.sha1(
-                    f"{internal_path}\n{match_html}".encode('utf-8')
+                    f"{internal_path}\n{match_html}".encode('utf-8'),
+                    usedforsecurity=False,
                 ).hexdigest()
                 preview = _build_problem_term_preview(normalized_html, start, end)
                 stored_mark = collected_marks.get(mark_id)
@@ -5982,7 +5983,10 @@ class TranslationValidatorPage(ShellPage):
         for item in data_list:
             parts.append(item.get('internal_html_path', '') or '')
             parts.append(item.get('term', '') or '')
-        return hashlib.md5('|'.join(parts).encode('utf-8', errors='replace')).hexdigest()
+        return hashlib.md5(
+            '|'.join(parts).encode('utf-8', errors='replace'),
+            usedforsecurity=False,
+        ).hexdigest()
 
     def _open_untranslated_fixer(self, initial_source_filter='all'):
         try:

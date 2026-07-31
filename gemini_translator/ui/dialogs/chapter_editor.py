@@ -283,11 +283,14 @@ class _ChapterMarkupParser(HTMLParser):
 
 
 def _hash_text(value: str) -> str:
-    return hashlib.md5((value or "").encode("utf-8")).hexdigest()
+    return hashlib.md5((value or "").encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _hash_path(path: str) -> str:
-    return hashlib.md5(os.path.abspath(path).encode("utf-8")).hexdigest()[:12]
+    return hashlib.md5(
+        os.path.abspath(path).encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest()[:12]
 
 
 def _safe_key(path: str) -> str:

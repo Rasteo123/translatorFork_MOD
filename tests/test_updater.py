@@ -214,11 +214,12 @@ def test_launch_updater_macos(qtbot, tmp_path):
     
     with patch('sys.platform', 'darwin'):
         with patch('sys.executable', '/Applications/GeminiTranslator.app/Contents/MacOS/GeminiTranslator'):
-            with patch('subprocess.call'), patch('subprocess.Popen') as mock_popen, patch('os._exit'), patch('os.chmod'):
+            with patch('subprocess.call'), patch('subprocess.Popen') as mock_popen, patch('os._exit'), patch('os.chmod') as mock_chmod:
                 home_page.launch_updater(filepath)
                 
                 sh_path = os.path.join(tempfile.gettempdir(), "translator_updater.sh")
                 assert os.path.exists(sh_path)
+                mock_chmod.assert_called_once_with(sh_path, 0o700)
                 
                 with open(sh_path, "r", encoding="utf-8") as f:
                     content = f.read()

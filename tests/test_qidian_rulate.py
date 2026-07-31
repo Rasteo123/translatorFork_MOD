@@ -14,6 +14,7 @@ from qidian_rulate.workers import (
     _build_codex_cover_translation_prompt,
     _build_codex_cover_exec_command,
     _find_generated_cover,
+    _first_meaningful_select_option,
     _load_cover_image_from_file,
     _cover_url_candidates,
     _is_browser_missing_error,
@@ -106,6 +107,51 @@ class _UploadCoverHarness:
             qidian=QidianBookMetadata(),
             prepared=PreparedRulateMetadata(generated_cover_path=str(cover_path)),
         )
+
+    def log(self, level, message):
+        self.logs.append((level, message))
+
+
+class _SocialLinksHarness:
+    _fill_social_links = RulateFillWorker._fill_social_links
+
+    def __init__(self, prepared=None):
+        self.logs = []
+        self.draft = RulateBookDraft(
+            qidian=QidianBookMetadata(),
+            prepared=prepared or PreparedRulateMetadata(),
+        )
+
+    def log(self, level, message):
+        self.logs.append((level, message))
+
+
+class _CheckedField:
+    def __init__(self, selector, checked):
+        self.selector = selector
+        self.checked = checked
+
+    def check(self):
+        self.checked.append(self.selector)
+
+
+class _SchedulePage:
+    def __init__(self):
+        self.selected = []
+        self.checked = []
+
+    def select_option(self, selector, value):
+        self.selected.append((selector, value))
+
+    def locator(self, selector):
+        return _CheckedField(selector, self.checked)
+
+
+class _PublicationScheduleHarness:
+    _fill_publication_schedule = RulateFillWorker._fill_publication_schedule
+
+    def __init__(self):
+        self.logs = []
 
     def log(self, level, message):
         self.logs.append((level, message))
@@ -413,6 +459,58 @@ def test_parse_translation_metadata_ignores_catalog_fields():
     assert prepared.tags == []
 
 
+def test_first_team_option_skips_rulate_no_team_placeholder():
+    options = [
+        {"index": 0, "value": "0", "label": "Нет", "disabled": False},
+        {"index": 1, "value": "4120", "label": "Avalon", "disabled": False},
+        {"index": 2, "value": "3546", "label": "SRS", "disabled": False},
+    ]
+
+    assert _first_meaningful_select_option(options) == 1
+
+
+def test_social_links_use_defaults_for_legacy_draft(monkeypatch):
+    filled = []
+    monkeypatch.setattr(workers, "_fill", lambda _page, selector, value: filled.append((selector, value)))
+
+    harness = _SocialLinksHarness()
+    harness._fill_social_links(object())
+
+    assert filled == [
+        ('[name="Book[vk_link]"]', "https://vk.com/tldnd"),
+        ('[name="Book[tg_url]"]', "https://t.me/tl_srs"),
+    ]
+
+
+def test_publication_schedule_uses_requested_counts_and_random_times(monkeypatch):
+    random_values = iter((7, 42, 19))
+    filled = []
+    monkeypatch.setattr(workers.random, "randint", lambda _start, _end: next(random_values))
+    monkeypatch.setattr(workers, "_fill", lambda _page, selector, value: filled.append((selector, value)))
+    page = _SchedulePage()
+
+    harness = _PublicationScheduleHarness()
+    harness._fill_publication_schedule(page)
+
+    assert filled == [
+        ('[name="Book[unsub_count]"]', "1"),
+        ('[name="Book[unsub_days]"]', "3"),
+        ('[name="Book[unsub_limit]"]', "-1"),
+        ('[name="Book[open_count]"]', "10"),
+        ('[name="Book[open_days]"]', "1"),
+        ('[name="Book[open_hours]"]', "19"),
+    ]
+    assert page.selected == [
+        ('[name="Book[unsub_hours]"]', "7"),
+        ('[name="Book[unsub_minutes]"]', "42"),
+    ]
+    assert page.checked == [
+        '[name="Book[unsub_auto]"][type="checkbox"]',
+        '[name="Book[open_auto]"][type="checkbox"]',
+        '[name="Book[frequency]"][type="checkbox"]',
+    ]
+
+
 def test_parse_translation_metadata_repairs_unescaped_quotes_in_string():
     raw_response = r"""{
         "english_title": "Beast Taming Immortal Dynasty: I Can Design Evolutionary Forms",
@@ -629,6 +727,11 @@ def test_qidian_chapter_link_script_supports_chinese_chapter_numbers():
     assert "chineseNumber" in _QIDIAN_CHAPTER_LINKS_SCRIPT
     assert "[0-9零〇一二两三四五六七八九十百千万]+" in _QIDIAN_CHAPTER_LINKS_SCRIPT
     assert r"^第\s*\d+\s*章" not in _QIDIAN_CHAPTER_LINKS_SCRIPT
+
+
+def test_qidian_chapter_link_script_supports_zero_padded_numeric_prefixes():
+    assert "numericPrefix" in _QIDIAN_CHAPTER_LINKS_SCRIPT
+    assert r"(\d{1,9})" in _QIDIAN_CHAPTER_LINKS_SCRIPT
 
 
 def test_clean_fanqie_chapter_text_drops_obfuscated_private_use_text():

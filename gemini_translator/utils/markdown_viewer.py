@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import os
 import re
 import html
 import uuid # <-- Убедитесь, что импорт на месте
 
-from pathlib import Path
 from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QTextBrowser,
                              QPushButton, QFrame, QWidget, QHBoxLayout, QLabel,

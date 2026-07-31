@@ -9,6 +9,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FAILURE_TAIL_LINES = 80
+RUFF_RUNTIME_RULES = "F821,F822,F823,F601,F602,F631,F632,E9"
 
 
 def _github_escape(message: str) -> str:
@@ -105,6 +106,20 @@ def main(argv: list[str] | None = None) -> int:
     ]
 
     if not args.skip_tests:
+        checks.append(
+            (
+                "ruff runtime safety",
+                [
+                    sys.executable,
+                    "-m",
+                    "ruff",
+                    "check",
+                    ".",
+                    "--select",
+                    RUFF_RUNTIME_RULES,
+                ],
+            )
+        )
         pytest_args = list(args.pytest_args)
         if pytest_args[:1] == ["--"]:
             pytest_args = pytest_args[1:]

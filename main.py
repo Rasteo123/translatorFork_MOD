@@ -65,6 +65,12 @@ RANOBELIB_MODULE_NAMES = (
     "workers",
 )
 
+RESTART_INFO = {
+    "is_restarting": False,
+    "epub_path": None,
+    "chapters": [],
+}
+
 
 def configure_ranobelib_playwright_runtime():
     if sys.platform == "win32" and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
@@ -745,8 +751,8 @@ def restart_with_new_files(epub_path, chapters):
 
     app = QtWidgets.QApplication.instance()
     if app:
-        # Просто выходим из текущего цикла событий, чтобы вернуться в main()
-        app.quit()
+        # Возвращаемся во внешний цикл интерфейса, не завершая общий runtime.
+        app.exit(EXIT_CODE_REBOOT)
 
 
 def global_excepthook(exc_type, exc_value, exc_tb):

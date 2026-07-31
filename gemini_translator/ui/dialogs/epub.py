@@ -18,6 +18,8 @@ import tempfile
 import json
 import html as html_lib
 from xml.etree import ElementTree as ET
+
+from defusedxml import ElementTree as SafeET
 import traceback
 from functools import partial
 from collections import Counter
@@ -1295,7 +1297,7 @@ class EpubHtmlSelectorDialog(QDialog):
             elif len(opf_files) > 1:
                 # 2. Если эвристика не сработала, используем медленный, но надежный метод
                 container_content = epub_zip_file.read('META-INF/container.xml')
-                root = ET.fromstring(container_content)
+                root = SafeET.fromstring(container_content)
                 ns = {'cn': 'urn:oasis:names:tc:opendocument:xmlns:container'}
                 opf_path = root.find('.//cn:rootfile', ns).attrib['full-path']
             
@@ -1304,7 +1306,7 @@ class EpubHtmlSelectorDialog(QDialog):
 
             opf_dir = os.path.dirname(opf_path)
             opf_content = epub_zip_file.read(opf_path)
-            opf_root = ET.fromstring(opf_content)
+            opf_root = SafeET.fromstring(opf_content)
             opf_ns = {'opf': 'http://www.idpf.org/2007/opf'}
 
             manifest_items = {}
@@ -2522,7 +2524,7 @@ class TranslatedChaptersManagerDialog(QDialog):
                              opf_content = zf.read(opf_path)
                         
                         if opf_content:
-                            root = ET.fromstring(opf_content)
+                            root = SafeET.fromstring(opf_content)
                             ns = {'opf': 'http://www.idpf.org/2007/opf'}
                             meta_cover = root.find('.//opf:meta[@name="cover"]', ns)
                             if meta_cover:

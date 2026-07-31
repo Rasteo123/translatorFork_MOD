@@ -8,6 +8,7 @@ import glob
 import html
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -29,7 +30,13 @@ from gemini_translator.api import config as api_config
 from gemini_translator.api.errors import NetworkError, OperationCancelledError, TemporaryRateLimitError
 from gemini_translator.api.factory import get_api_handler_class
 
-from .models import PreparedRulateMetadata, QidianBookMetadata, RulateBookDraft
+from .models import (
+    DEFAULT_RULATE_TELEGRAM_LINK,
+    DEFAULT_RULATE_VK_LINK,
+    PreparedRulateMetadata,
+    QidianBookMetadata,
+    RulateBookDraft,
+)
 
 try:
     from ranobelib.constants import BROWSER_ARGS
@@ -2868,6 +2875,7 @@ class RulateFillWorker(QThread):
         _fill(page, "#Book_author", qidian.author_name)
         _fill(page, "#Book_source_url", qidian.source_url)
         _fill(page, "#Book_a_title_1", qidian.title_original)
+        _show_rulate_tab(page, "team")
         translator_team_mode = getattr(prepared, "translator_team_mode", "")
         if translator_team_mode == "first_suggestion" and not _select_first_rulate_choice_field(
             page,
@@ -2911,6 +2919,52 @@ class RulateFillWorker(QThread):
             self.log("WARNING", "Rulate: первую подсказку команды переводчиков нужно выбрать вручную.")
         elif translator_team_mode == "first_suggestion":
             self.log("SUCCESS", "Rulate: выбрана первая подсказка команды переводчиков.")
+        self._fill_social_links(page)
+        self._fill_publication_schedule(page)
+
+    def _fill_social_links(self, page) -> None:
+        prepared = self.draft.prepared
+        values = (
+            ('[name="Book[vk_link]"]', getattr(prepared, "vk_link", "") or DEFAULT_RULATE_VK_LINK, "VK"),
+            (
+                '[name="Book[tg_url]"]',
+                getattr(prepared, "telegram_link", "") or DEFAULT_RULATE_TELEGRAM_LINK,
+                "Telegram",
+            ),
+        )
+        for selector, value, label in values:
+            try:
+                _fill(page, selector, value)
+                self.log("SUCCESS", f"Rulate: заполнена ссылка {label}.")
+            except Exception as error:
+                self.log("WARNING", f"Rulate: не удалось заполнить ссылку {label}: {error}")
+
+    def _fill_publication_schedule(self, page) -> None:
+        unsub_hour = random.randint(0, 23)
+        unsub_minute = random.randint(0, 59)
+        publication_hour = random.randint(0, 23)
+        try:
+            _fill(page, '[name="Book[unsub_count]"]', "1")
+            _fill(page, '[name="Book[unsub_days]"]', "3")
+            page.select_option('[name="Book[unsub_hours]"]', str(unsub_hour))
+            page.select_option('[name="Book[unsub_minutes]"]', str(unsub_minute))
+            _fill(page, '[name="Book[unsub_limit]"]', "-1")
+            page.locator('[name="Book[unsub_auto]"][type="checkbox"]').check()
+
+            _fill(page, '[name="Book[open_count]"]', "10")
+            _fill(page, '[name="Book[open_days]"]', "1")
+            _fill(page, '[name="Book[open_hours]"]', str(publication_hour))
+            page.locator('[name="Book[open_auto]"][type="checkbox"]').check()
+            page.locator('[name="Book[frequency]"][type="checkbox"]').check()
+        except Exception as error:
+            self.log("WARNING", f"Rulate: не удалось заполнить расписание публикации: {error}")
+            return
+        self.log(
+            "SUCCESS",
+            "Rulate: расписание заполнено — "
+            f"снимать 1 главу каждые 3 дня в {unsub_hour:02d}:{unsub_minute:02d}; "
+            f"публиковать 10 глав ежедневно в {publication_hour:02d}:00 по Москве.",
+        )
 
     def _upload_generated_cover(self, page) -> None:
         cover_path_value = (getattr(self.draft.prepared, "generated_cover_path", "") or "").strip()
@@ -3105,11 +3159,78 @@ def _wait_for_selector_attached(page, selector: str, timeout: int = 15000) -> bo
             return False
 
 
+def _first_meaningful_select_option(options: list[dict]) -> int | None:
+    placeholder_labels = {"-", "--", "---", "без команды", "не выбирать", "нет", "no", "none"}
+    for option in options or []:
+        if not isinstance(option, dict) or option.get("disabled"):
+            continue
+        value = str(option.get("value") or "").strip()
+        label = " ".join(str(option.get("label") or "").split()).casefold()
+        if value in {"", "0"} or not label:
+            continue
+        if label in placeholder_labels or label.startswith("выбер") or label.startswith("select"):
+            continue
+        try:
+            return int(option["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
 def _select_first_plain_choice(page, selector: str) -> bool:
     try:
+        field = page.evaluate(
+            """(selector) => {
+                const element = document.querySelector(selector);
+                if (!element) return null;
+                const normalize = (text) => String(text || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const marker = (node) => normalize([
+                    node.id,
+                    node.getAttribute?.("name"),
+                    node.getAttribute?.("class"),
+                ].filter(Boolean).join(" "));
+                const likelyTeamField = (node) => /team|translat|group|команд|групп|перевод/.test(marker(node));
+                const isKnownNonTeamField = (node) => /^Book\\[(?:status|s_lang|t_lang)\\]$/.test(
+                    String(node.getAttribute?.("name") || "")
+                );
+                const roots = [element, element.parentElement, element.previousElementSibling, element.nextElementSibling]
+                    .filter(Boolean);
+                const closestGroup = element.closest?.(".form-group, .control-group, .form-row, .row, tr");
+                if (closestGroup) roots.push(closestGroup);
+                const select = [element, ...roots.map((root) => root.querySelector?.("select"))]
+                    .find((candidate) => (
+                        candidate?.tagName === "SELECT"
+                        && !isKnownNonTeamField(candidate)
+                        && likelyTeamField(candidate)
+                    ));
+                if (select) {
+                    return {
+                        options: Array.from(select.options || []).map((option, index) => ({
+                            index,
+                            value: String(option.value || ""),
+                            label: String(option.textContent || ""),
+                            disabled: Boolean(option.disabled),
+                        })),
+                    };
+                }
+                const selectedInput = roots
+                    .flatMap((root) => Array.from(root.querySelectorAll?.("input[type='hidden'], input[type='text']") || []))
+                    .find((input) => likelyTeamField(input) && normalize(input.value) && normalize(input.value) !== "0");
+                return {alreadySelected: Boolean(selectedInput), options: []};
+            }""",
+            selector,
+        )
+        if not isinstance(field, dict):
+            return False
+        if field.get("alreadySelected"):
+            return True
+
+        option_index = _first_meaningful_select_option(field.get("options") or [])
+        if option_index is None:
+            return False
         return bool(
             page.evaluate(
-                """(selector) => {
+                """([selector, optionIndex]) => {
                     const element = document.querySelector(selector);
                     if (!element) return false;
                     const normalize = (text) => String(text || "").replace(/\\s+/g, " ").trim().toLowerCase();
@@ -3122,66 +3243,25 @@ def _select_first_plain_choice(page, selector: str) -> bool:
                     const isKnownNonTeamField = (node) => /^Book\\[(?:status|s_lang|t_lang)\\]$/.test(
                         String(node.getAttribute?.("name") || "")
                     );
-                    const setNativeValue = (el, nextValue) => {
-                        const prototype = Object.getPrototypeOf(el);
-                        const descriptor = Object.getOwnPropertyDescriptor(prototype, "value")
-                            || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
-                            || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")
-                            || Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
-                        if (descriptor && descriptor.set) descriptor.set.call(el, nextValue);
-                        else el.value = nextValue;
-                        el.dispatchEvent(new Event("input", {bubbles: true}));
-                        el.dispatchEvent(new Event("change", {bubbles: true}));
-                    };
-                    const selectFirstOption = (select) => {
-                        if (!select || select.tagName !== "SELECT") return false;
-                        if (isKnownNonTeamField(select) || !likelyTeamField(select)) return false;
-                        const options = Array.from(select.options || []).filter((item) => !item.disabled);
-                        const option = options.find((item) => String(item.value || "").trim())
-                            || options.find((item) => {
-                                const text = String(item.textContent || "").trim().toLowerCase();
-                                return text && !text.includes("выбер") && !text.includes("select");
-                            });
-                        if (!option) return false;
-                        setNativeValue(select, option.value);
-                        if (window.jQuery) {
-                            window.jQuery(select).val(option.value).trigger("change");
-                        }
-                        return true;
-                    };
-
-                    if (selectFirstOption(element)) return true;
-
                     const roots = [element, element.parentElement, element.previousElementSibling, element.nextElementSibling]
                         .filter(Boolean);
                     const closestGroup = element.closest?.(".form-group, .control-group, .form-row, .row, tr");
                     if (closestGroup) roots.push(closestGroup);
-                    for (const root of roots) {
-                        const select = root.querySelector?.("select");
-                        if (selectFirstOption(select)) return true;
-                    }
-
-                    if (window.jQuery) {
-                        for (const root of roots) {
-                            const data = window.jQuery(root).data?.() || {};
-                            if (data.select2 || data.chosen || data.selectize) {
-                                const select = root.matches?.("select") ? root : root.querySelector?.("select");
-                                if (selectFirstOption(select)) return true;
-                                try {
-                                    window.jQuery(root).trigger("mousedown").trigger("click");
-                                } catch (_error) {}
-                            }
-                        }
-                    }
-
-                    const selectedInput = roots
-                        .flatMap((root) => Array.from(root.querySelectorAll?.("input[type='hidden'], input[type='text']") || []))
-                        .find((input) => likelyTeamField(input) && normalize(input.value));
-                    if (selectedInput) return true;
-
-                    return false;
+                    const select = [element, ...roots.map((root) => root.querySelector?.("select"))]
+                        .find((candidate) => (
+                            candidate?.tagName === "SELECT"
+                            && !isKnownNonTeamField(candidate)
+                            && likelyTeamField(candidate)
+                        ));
+                    const option = select?.options?.[optionIndex];
+                    if (!select || !option || option.disabled) return false;
+                    select.selectedIndex = optionIndex;
+                    select.dispatchEvent(new Event("input", {bubbles: true}));
+                    select.dispatchEvent(new Event("change", {bubbles: true}));
+                    if (window.jQuery) window.jQuery(select).val(option.value).trigger("change");
+                    return select.selectedIndex === optionIndex && String(select.value || "").trim() !== "0";
                 }""",
-                selector,
+                [selector, option_index],
             )
         )
     except Exception:
@@ -3278,9 +3358,9 @@ def _select_first_rulate_choice_field(
     for selector in candidates:
         if not _selector_exists(page, selector):
             continue
-        if _select_first_magic_value(page, selector):
-            return True
         if _select_first_plain_choice(page, selector):
+            return True
+        if _select_first_magic_value(page, selector):
             return True
     return False
 
@@ -3688,12 +3768,18 @@ _QIDIAN_CHAPTER_LINKS_SCRIPT = r"""(limit) => {
         }
         return total + section + number;
     };
-    const isChapterTitle = (text) => /^第\s*([0-9零〇一二两三四五六七八九十百千万]+)\s*章/.test(text) || /^(序章|楔子|引子)/.test(text);
+    const numericPrefix = (text) => text.match(/^\[?\s*(\d{1,9})\s*\]?(?:\s+|[.、:：_-]\s*)\S/);
+    const isChapterTitle = (text) => (
+        /^第\s*([0-9零〇一二两三四五六七八九十百千万]+)\s*章/.test(text)
+        || /^(序章|楔子|引子)/.test(text)
+        || Boolean(numericPrefix(text))
+    );
     const chapterNumber = (text) => {
         if (/^(序章|楔子|引子)/.test(text)) return 0;
         const match = text.match(/^第\s*([0-9零〇一二两三四五六七八九十百千万]+)\s*章/);
-        if (!match) return Number.MAX_SAFE_INTEGER;
-        return /^\d+$/.test(match[1]) ? Number(match[1]) : chineseNumber(match[1]);
+        if (match) return /^\d+$/.test(match[1]) ? Number(match[1]) : chineseNumber(match[1]);
+        const prefixed = numericPrefix(text);
+        return prefixed ? Number(prefixed[1]) : Number.MAX_SAFE_INTEGER;
     };
     const isServiceTitle = (text) => /(最新章节|已更新至|免费试读)/.test(text);
     for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {

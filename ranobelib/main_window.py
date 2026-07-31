@@ -59,7 +59,7 @@ from api_upload import ApiUploadWorker, chapter_identity, existing_chapter_ident
 from dialogs import PreviewDialog, ProcessDialog
 from models import ChapterData
 from parsers import FileParser
-from utils import format_num, validate_rulate_url, validate_url
+from utils import format_num, is_safe_remote_http_url, validate_rulate_url, validate_url
 from workers import (
     LastChapterDetector,
     LoginWorker,
@@ -121,6 +121,8 @@ class _CoverPreviewWorker(QThread):
 
     def run(self):
         try:
+            if not is_safe_remote_http_url(self.url):
+                raise ValueError("небезопасная схема или локальный адрес обложки")
             request = urllib.request.Request(
                 self.url,
                 headers={
@@ -131,7 +133,7 @@ class _CoverPreviewWorker(QThread):
                     "Referer": self.referer or "https://tl.rulate.ru/",
                 },
             )
-            with urllib.request.urlopen(request, timeout=25) as response:
+            with urllib.request.urlopen(request, timeout=25) as response:  # nosec B310
                 data = response.read(8 * 1024 * 1024)
             if not data:
                 raise RuntimeError("пустой ответ")

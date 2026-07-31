@@ -1,8 +1,10 @@
 import json
+import weakref
 
-from PyQt6 import QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from gemini_translator.ui.selection_translator import (
+    SelectionSnapshot,
     SelectionTranslationController,
     TranslationPopup,
     looks_foreign,
@@ -117,5 +119,56 @@ def test_controller_reads_selected_title_from_chapter_list_without_replacement()
     assert snapshot is not None
     assert snapshot.text == "第一章 新的开始"
     assert snapshot.editable is False
+    controller.shutdown()
+    app.removeEventFilter(controller)
+
+
+def test_offer_click_from_native_button_window_starts_translation(monkeypatch):
+    app = _app()
+    controller = SelectionTranslationController(app)
+    editor = QtWidgets.QLineEdit("Hello")
+    snapshot = SelectionSnapshot(weakref.ref(editor), "Hello", 0, 5, True)
+    controller._offered_snapshot = snapshot
+    controller._offer_button.adjustSize()
+    controller._offer_button.show()
+    app.processEvents()
+    translated = []
+    monkeypatch.setattr(
+        controller,
+        "translate",
+        lambda offered, *, anchor: translated.append((offered, anchor)),
+    )
+
+    event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonPress,
+        QtCore.QPointF(1, 1),
+        QtCore.QPointF(1, 1),
+        QtCore.QPointF(controller._offer_button.mapToGlobal(QtCore.QPoint(1, 1))),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    controller.eventFilter(controller._offer_button.windowHandle(), event)
+    controller._offer_button.click()
+
+    assert translated and translated[0][0] is snapshot
+    controller.shutdown()
+    app.removeEventFilter(controller)
+
+
+def test_offer_survives_application_deactivation_during_its_click(monkeypatch):
+    app = _app()
+    controller = SelectionTranslationController(app)
+    editor = QtWidgets.QLineEdit("Hello")
+    snapshot = SelectionSnapshot(weakref.ref(editor), "Hello", 0, 5, True)
+    controller._offered_snapshot = snapshot
+    monkeypatch.setattr(controller, "_offer_click_in_progress", lambda: True)
+
+    controller.eventFilter(
+        app,
+        QtCore.QEvent(QtCore.QEvent.Type.ApplicationDeactivate),
+    )
+
+    assert controller._offered_snapshot is snapshot
     controller.shutdown()
     app.removeEventFilter(controller)

@@ -24,7 +24,10 @@ def _needs_shortening(path: str, filename: str, max_path: int = WINDOWS_SAFE_MAX
 
 
 def _shorten_stem(stem: str, suffix: str, max_filename_len: int, digest_source: str) -> str:
-    digest = hashlib.sha1(digest_source.encode("utf-8", "surrogatepass")).hexdigest()[:HASH_LEN]
+    digest = hashlib.sha1(
+        digest_source.encode("utf-8", "surrogatepass"),
+        usedforsecurity=False,
+    ).hexdigest()[:HASH_LEN]
     marker = f"__{digest}"
     max_stem_len = max(1, max_filename_len - len(suffix))
 

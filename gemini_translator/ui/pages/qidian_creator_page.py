@@ -27,7 +27,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from qidian_rulate.models import PreparedRulateMetadata, QidianBookMetadata, RulateBookDraft
+from qidian_rulate.models import (
+    DEFAULT_RULATE_TELEGRAM_LINK,
+    DEFAULT_RULATE_VK_LINK,
+    PreparedRulateMetadata,
+    QidianBookMetadata,
+    RulateBookDraft,
+)
 from qidian_rulate.workers import (
     AiPrepareWorker,
     CodexCoverGenerateWorker,
@@ -302,6 +308,10 @@ class QidianCreatorPage(ShellPage):
         self.translator_team_combo.setToolTip(
             "Автоматически выбирает первую команду из подсказок Rulate, без ручного ввода ID или названия."
         )
+        self.vk_link_edit = QLineEdit(DEFAULT_RULATE_VK_LINK)
+        self.vk_link_edit.setPlaceholderText("Ссылка на группу VK")
+        self.telegram_link_edit = QLineEdit(DEFAULT_RULATE_TELEGRAM_LINK)
+        self.telegram_link_edit.setPlaceholderText("Ссылка на Telegram-канал")
         self.genres_edit = QLineEdit()
         self.genres_edit.setPlaceholderText("фэнтези, мистика, приключения")
         self.tags_edit = QLineEdit()
@@ -359,6 +369,8 @@ class QidianCreatorPage(ShellPage):
         layout.addRow("Название RU:", self.translated_title_edit)
         layout.addRow("Описание RU:", self.translated_description_edit)
         layout.addRow("Команда переводчиков:", self.translator_team_combo)
+        layout.addRow("VK:", self.vk_link_edit)
+        layout.addRow("Telegram:", self.telegram_link_edit)
         layout.addRow("Жанры:", self.genres_edit)
         layout.addRow("Теги:", self.tags_edit)
         layout.addRow("Промпт обложки:", cover_generation_widget)
@@ -604,6 +616,12 @@ class QidianCreatorPage(ShellPage):
             index = self.translator_team_combo.findData(translator_team_mode)
             if index >= 0:
                 self.translator_team_combo.setCurrentIndex(index)
+        vk_link = getattr(prepared, "vk_link", "") or ""
+        if vk_link:
+            self.vk_link_edit.setText(vk_link)
+        telegram_link = getattr(prepared, "telegram_link", "") or ""
+        if telegram_link:
+            self.telegram_link_edit.setText(telegram_link)
         if prepared.cover_prompt:
             self.cover_prompt_edit.setPlainText(prepared.cover_prompt)
         generated_cover_path = getattr(prepared, "generated_cover_path", "") or ""
@@ -693,12 +711,17 @@ class QidianCreatorPage(ShellPage):
         except Exception:
             saved = {}
 
-        if not isinstance(saved, dict) or "translator_team_mode" not in saved:
+        if not isinstance(saved, dict):
             return
 
-        index = self.translator_team_combo.findData(saved.get("translator_team_mode") or "")
-        if index >= 0:
-            self.translator_team_combo.setCurrentIndex(index)
+        if "translator_team_mode" in saved:
+            index = self.translator_team_combo.findData(saved.get("translator_team_mode") or "")
+            if index >= 0:
+                self.translator_team_combo.setCurrentIndex(index)
+        if saved.get("vk_link"):
+            self.vk_link_edit.setText(str(saved["vk_link"]))
+        if saved.get("telegram_link"):
+            self.telegram_link_edit.setText(str(saved["telegram_link"]))
 
     def _save_ui_state(self) -> None:
         try:
@@ -706,6 +729,8 @@ class QidianCreatorPage(ShellPage):
                 {
                     QIDIAN_CREATOR_UI_STATE_KEY: {
                         "translator_team_mode": self.translator_team_combo.currentData() or "",
+                        "vk_link": self.vk_link_edit.text().strip(),
+                        "telegram_link": self.telegram_link_edit.text().strip(),
                     }
                 }
             )
@@ -733,6 +758,8 @@ class QidianCreatorPage(ShellPage):
             translated_title=self.translated_title_edit.text().strip(),
             translated_description=self.translated_description_edit.toPlainText().strip(),
             translator_team_mode=self.translator_team_combo.currentData() or "",
+            vk_link=self.vk_link_edit.text().strip(),
+            telegram_link=self.telegram_link_edit.text().strip(),
             genres=_split_csv(self.genres_edit.text()),
             tags=_split_csv(self.tags_edit.text()),
             cover_prompt=self.cover_prompt_edit.toPlainText().strip(),

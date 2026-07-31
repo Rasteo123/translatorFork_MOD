@@ -4,9 +4,12 @@ from bs4 import BeautifulSoup
 
 from gemini_translator.utils.epub_tools import (
     EpubUpdater,
+    calculate_potential_output_size,
     extract_epub_heading_text,
     extract_first_epub_heading_text,
+    extract_number_from_path,
     get_chapter_fingerprint,
+    get_epub_chapter_order,
     normalize_epub_chapter_heading_to_h1,
 )
 
@@ -100,3 +103,48 @@ def test_epub_updater_uses_split_heading_for_toc_titles(tmp_path):
     assert EXPECTED_TITLE in ncx
     assert f"<h1>{EXPECTED_TITLE}</h1>" in rebuilt_chapter
     assert f"<title>{EXPECTED_TITLE}</title>" in rebuilt_chapter
+
+
+def test_extract_number_from_qt_item_uses_user_role_path():
+    class FakeItem:
+        def data(self, role):
+            assert role.name == "UserRole"
+            return "OEBPS/chapter-175.xhtml"
+
+    assert extract_number_from_path(FakeItem()) == 175
+
+
+def test_potential_output_size_parses_visible_html_text(monkeypatch):
+    from gemini_translator.utils.epub_tools import api_config
+
+    monkeypatch.setattr(api_config, "ALPHABETIC_EXPANSION_FACTOR", 2)
+
+    assert calculate_potential_output_size("<p>Hello</p>", is_cjk=False) == (17, 7)
+
+
+def test_epub_order_rejects_xml_entity_declarations(tmp_path):
+    epub_path = tmp_path / "malicious.epub"
+    with zipfile.ZipFile(epub_path, "w") as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            (
+                '<?xml version="1.0"?>'
+                '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                '<rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles>'
+                '</container>'
+            ),
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            (
+                '<?xml version="1.0"?>'
+                '<!DOCTYPE package [<!ENTITY payload "chapter.xhtml">]>'
+                '<package xmlns="http://www.idpf.org/2007/opf">'
+                '<manifest><item id="chapter" href="&payload;"/></manifest>'
+                '<spine><itemref idref="chapter"/></spine>'
+                '</package>'
+            ),
+        )
+        archive.writestr("OEBPS/chapter.xhtml", "<html><body>safe</body></html>")
+
+    assert get_epub_chapter_order(epub_path, return_method=True) == ([], "error")
