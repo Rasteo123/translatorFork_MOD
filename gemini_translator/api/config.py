@@ -1539,13 +1539,17 @@ def chunk_html_source(): return True
 
 
 # Subprocess-spawning handler classes (Playwright browser, Node bridge).
-_SUBPROCESS_HANDLER_CLASSES = {"BrowserApiHandler", "WorkAsciiChatGptApiHandler"}
+_SUBPROCESS_HANDLER_CLASSES = {
+    "BrowserApiHandler",
+    "QoderApiHandler",
+    "WorkAsciiChatGptApiHandler",
+}
 
 
 def uses_legacy_worker_thread(provider_config: dict) -> bool:
     """Subprocess-spawning handlers keep the per-thread worker model; everything
     else runs on the shared AsyncWorkerRuntime. The explicit flag is the override;
-    the handler-class set is a safety net so a future Browser/WorkAscii provider
+    the handler-class set is a safety net so a future subprocess-backed provider
     that forgets the flag is still routed to the legacy path."""
     if not provider_config:
         return False

@@ -17,6 +17,7 @@ pymorphy3
 pypdf
 PyQt6
 PySocks
+qoder-agent-sdk>=1.0.8
 python-docx
 python-Levenshtein
 pytz

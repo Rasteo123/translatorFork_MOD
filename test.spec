@@ -39,6 +39,7 @@ datas += collect_data_files("docx")
 datas += collect_data_files("emoji")
 datas += collect_data_files("jieba")
 datas += collect_data_files("lxml")
+datas += collect_data_files("qoder_agent_sdk")
 datas += collect_data_files("werkzeug")
 
 

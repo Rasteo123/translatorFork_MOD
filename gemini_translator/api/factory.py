@@ -16,6 +16,7 @@ HANDLER_CLASS_MAP = {
     "LocalApiHandler": handlers.LocalApiHandler,
     "McpApiHandler": handlers.McpApiHandler,
     "BrowserApiHandler": handlers.BrowserApiHandler,
+    "QoderApiHandler": handlers.QoderApiHandler,
     "WorkAsciiChatGptApiHandler": handlers.WorkAsciiChatGptApiHandler,
 }
 

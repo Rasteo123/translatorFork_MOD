@@ -16,6 +16,23 @@
       "reset_minute": 1
     },
     "models": {
+      "Gemini 3.6 Flash": {
+        "id": "gemini-3.6-flash",
+        "rpm": 5,
+        "tpm": 250000,
+        "rpd": 20,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 10,
+        "max_output_tokens": 32768,
+        "thinkingLevel": [
+          "high",
+          "medium",
+          "low",
+          "minimal"
+        ],
+        "min_thinking_budget": "minimal"
+      },
       "Gemini 3.5 Flash": {
         "id": "gemini-3.5-flash",
         "rpm": 5,
@@ -1190,6 +1207,144 @@
         "needs_chunking": true,
         "max_concurrent_requests": 15,
         "max_output_tokens": 8192,
+        "min_thinking_budget": false
+      }
+    }
+  },
+  "qoder": {
+    "display_name": "Qoder",
+    "handler_class": "QoderApiHandler",
+    "is_async": true,
+    "worker_runtime": "thread",
+    "visible": true,
+    "needs_warmup": false,
+    "base_timeout": 1800,
+    "requires_api_key": true,
+    "file_suffix": "_translated_qoder.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "Qoder Lite": {
+        "id": "lite",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Qoder Efficient": {
+        "id": "efficient",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Qoder Auto": {
+        "id": "auto",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Qoder Performance": {
+        "id": "performance",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Qoder Ultimate": {
+        "id": "ultimate",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 128000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Qwen3.7-Max": {
+        "id": "Qwen3.7-Max",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Qwen3.7-Plus": {
+        "id": "Qwen3.7-Plus",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "DeepSeek-V4-Pro": {
+        "id": "DeepSeek-V4-Pro",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "DeepSeek-V4-Flash": {
+        "id": "DeepSeek-V4-Flash",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "GLM-5.2": {
+        "id": "GLM-5.2",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Kimi-K2.7-Code": {
+        "id": "Kimi-K2.7-Code",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "MiniMax-M3": {
+        "id": "MiniMax-M3",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
         "min_thinking_budget": false
       }
     }

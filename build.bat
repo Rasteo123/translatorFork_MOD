@@ -151,6 +151,7 @@ call :build_app_base "ПОЛНОСТЬЮ ПОРТАТИВНАЯ"
 --collect-data="emoji" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
+--collect-data="qoder_agent_sdk" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
@@ -199,6 +200,7 @@ call :build_app_base "ГИБРИДНАЯ"
 --collect-data="emoji" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
+--collect-data="qoder_agent_sdk" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
@@ -269,6 +271,7 @@ call :build_app_base "ПРОДВИНУТАЯ"
 --collect-data="emoji" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
+--collect-data="qoder_agent_sdk" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
@@ -401,6 +404,7 @@ call :build_app_base "ИНСТАЛЛЯТОР"
 --collect-data="emoji" ^
 --collect-data="jieba" ^
 --collect-data="lxml" ^
+--collect-data="qoder_agent_sdk" ^
 --collect-data="werkzeug" ^
 --hidden-import="PyQt6.sip" ^
 --hidden-import="docx" ^
