@@ -150,6 +150,21 @@ class SshTunnelManagerTests(unittest.TestCase):
         self.assertEqual(manager._restart_timer.interval(), BACKOFF_SCHEDULE_SECONDS[0] * 1000)
         self.assertFalse(manager.active)
 
+    def test_stop_cancels_retry_when_no_process_is_active(self):
+        def popen_factory(args):
+            raise OSError("temporary spawn failure")
+
+        manager = SshTunnelManager(popen_factory=popen_factory)
+        manager.start(
+            ssh_host="h", ssh_port=22, ssh_user="root", ssh_key_path="/key", local_port=8080,
+        )
+        self.assertTrue(manager._restart_timer.isActive())
+
+        manager.stop()
+
+        self.assertFalse(manager._restart_timer.isActive())
+        self.assertFalse(manager.active)
+
     def test_start_is_idempotent_when_already_active(self):
         manager, process, calls = self._make_manager()
         manager.start(
