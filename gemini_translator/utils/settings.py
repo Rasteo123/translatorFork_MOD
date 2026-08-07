@@ -134,6 +134,17 @@ class SettingsManager(QObject):
         with self.file_lock:
             self._load_from_disk_unsafe()
 
+        # Пока приложение открыто, своевременно снимаем истекшие ограничения
+        # и очищаем счетчики запросов, не дожидаясь перезапуска или ручного
+        # сохранения настроек.
+        self._limit_maintenance_timer = QtCore.QTimer(self)
+        self._limit_maintenance_timer.setInterval(5000)
+        self._limit_maintenance_timer.setTimerType(QtCore.Qt.TimerType.CoarseTimer)
+        self._limit_maintenance_timer.timeout.connect(
+            self._refresh_expired_key_limits)
+        if QtCore.QCoreApplication.instance() is not None:
+            self._limit_maintenance_timer.start()
+
         # Гарантированное сохранение при выходе из приложения
         if app:
             app.aboutToQuit.connect(self.flush)
@@ -243,6 +254,21 @@ class SettingsManager(QObject):
         self._save_timer.start()
 
     @pyqtSlot()
+    def _refresh_expired_key_limits(self):
+        """Снимает истекшие ограничения ключей и сразу уведомляет интерфейс."""
+        changed = False
+        with self.file_lock:
+            changed = self._check_and_reset_limits_in_cache()
+            if changed:
+                self._request_save()
+
+        if changed:
+            self._post_event(
+                'key_statuses_updated',
+                {'reason': 'automatic_limit_reset'},
+            )
+
+    @pyqtSlot()
     def flush(self):
         """[Слот, GUI-поток] Принудительно сохраняет кэш. Вызывается при выходе."""
         if self._save_timer.isActive():
@@ -266,7 +292,7 @@ class SettingsManager(QObject):
             if 'exhausted_at' in key_info or 'requests' in key_info:
                 if 'status_by_model' not in key_info: key_info['status_by_model'] = {}
                 provider_id = key_info.get('provider', 'gemini')
-                provider_cfg = api_config.api_providers().get(provider_id, {})
+                provider_cfg = api_config.api_providers_view().get(provider_id, {})
                 default_model_id = next(iter(provider_cfg.get('models', {}).values()), {}).get('id')
                 if default_model_id and default_model_id not in key_info['status_by_model']:
                     key_info['status_by_model'][default_model_id] = {
@@ -329,7 +355,7 @@ class SettingsManager(QObject):
         level = model_status.get("exhausted_level", 0)
         if not timestamp or level < 2: return False
         provider = key_info.get("provider", "default")
-        policy = api_config.api_providers().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
+        policy = api_config.api_providers_view().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
         exhausted_time_utc = datetime.fromtimestamp(timestamp, tz=timezone.utc)
         now_utc = datetime.now(timezone.utc)
         if policy["type"] == "rolling":
@@ -357,7 +383,7 @@ class SettingsManager(QObject):
         timestamp = model_status.get("exhausted_at")
         if not timestamp: return "Активен"
         provider = key_info.get("provider", "default")
-        policy = api_config.api_providers().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
+        policy = api_config.api_providers_view().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
         exhausted_time_utc = datetime.fromtimestamp(timestamp, tz=timezone.utc)
         reset_time_utc = None
         if policy["type"] == "rolling":
@@ -381,7 +407,7 @@ class SettingsManager(QObject):
 
     def _get_request_policy(self, key_info):
         provider = key_info.get("provider", "default")
-        return api_config.api_providers().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
+        return api_config.api_providers_view().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
 
     def _filter_request_timestamps_in_window(self, timestamps, policy, now_ts=None):
         if not timestamps:
@@ -784,7 +810,7 @@ class SettingsManager(QObject):
 
     def get_request_count(self, key_info, model_id):
         provider_id = key_info.get("provider", "default")
-        provider_config = api_config.api_providers().get(provider_id, {})
+        provider_config = api_config.api_providers_view().get(provider_id, {})
         use_shared_counter = provider_config.get("shared_request_counter", False)
         policy = provider_config.get('reset_policy', api_config.default_reset_policy())
         if not use_shared_counter:
