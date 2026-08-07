@@ -2225,12 +2225,22 @@ class CoverPromptWorker(QThread):
 
 CODEX_COVER_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 CODEX_COVER_MODEL = "gpt-5.5"
+# Пути codex может печатать и в Windows- (C:\...\.codex\generated_images\...)
+# и в POSIX-формате (/Users/.../.codex/generated_images/...).
 CODEX_GENERATED_IMAGE_RE = re.compile(
-    r"(?P<path>[A-Za-z]:\\[^\r\n`<>|?\"]*?\\.codex\\generated_images\\[^\r\n`<>|?\"]+\.(?:png|jpe?g|webp))",
+    r"(?P<path>"
+    r"[A-Za-z]:\\[^\r\n`<>|?\"]*?\\.codex\\generated_images\\[^\r\n`<>|?\"]+\.(?:png|jpe?g|webp)"
+    r"|"
+    r"/[^\r\n`<>|?\"]*?/\.codex/generated_images/[^\r\n`<>|?\"]+\.(?:png|jpe?g|webp)"
+    r")",
     re.IGNORECASE,
 )
 CODEX_GENERATED_IMAGE_DIR_RE = re.compile(
-    r"(?P<path>[A-Za-z]:\\[^\r\n`<>|?*\"]*?\\.codex\\generated_images\\[0-9a-f-]{8,})(?=\\|[`'\"\s\r\n]|$)",
+    r"(?P<path>"
+    r"[A-Za-z]:\\[^\r\n`<>|?*\"]*?\\.codex\\generated_images\\[0-9a-f-]{8,}(?=\\|[`'\"\s\r\n]|$)"
+    r"|"
+    r"/[^\r\n`<>|?*\"]*?/\.codex/generated_images/[0-9a-f-]{8,}(?=/|[`'\"\s\r\n]|$)"
+    r")",
     re.IGNORECASE,
 )
 RULATE_COVER_UPLOAD_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif"}
@@ -2362,6 +2372,10 @@ def _copy_codex_generated_image_path(path_value: str, target_path: Path) -> Path
     path_text = (path_value or "").strip().strip("`'\"")
     if not path_text:
         return None
+    if path_text.startswith("/") and "\\" in path_text:
+        # PowerShell-стиль '<posix-каталог>\*.png' — приводим разделители к POSIX,
+        # иначе glob считает '\*' экранированной звёздочкой.
+        path_text = path_text.replace("\\", "/")
 
     try:
         if "*" in path_text:
