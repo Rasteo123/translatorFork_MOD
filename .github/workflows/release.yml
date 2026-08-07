@@ -65,6 +65,13 @@ jobs:
           name: GeminiTranslator-Windows-Installer
           path: installer_output/GeminiTranslator-Setup.exe
 
+      - name: Upload Windows Artifact (Portable EXE)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeminiTranslator-Windows-Portable
+          path: dist/GeminiTranslator-Portable.exe
+
       - name: Upload macOS Artifact (DMG)
         if: matrix.os == 'macos-latest'
         uses: actions/upload-artifact@v4

@@ -341,3 +341,50 @@ def test_update_checker_source_mode(monkeypatch, qtbot):
     assert blocker.args[0] == "source"
     assert "доступны обновления" in blocker.args[1].lower()
     assert blocker.args[2] == ""
+
+
+def test_pick_platform_asset_prefers_setup_exe_over_portable():
+    """В релизе теперь два .exe: Setup и Portable. Автообновление должно
+    ставить инсталлер, а не скачивать портативный exe."""
+    from gemini_translator.utils.updater import _pick_platform_asset
+
+    assets = [
+        {"name": "GeminiTranslator-Portable.exe", "browser_download_url": "http://example.com/portable.exe"},
+        {"name": "GeminiTranslator-Setup.exe", "browser_download_url": "http://example.com/setup.exe"},
+        {"name": "GeminiTranslator-macOS.dmg", "browser_download_url": "http://example.com/mac.dmg"},
+    ]
+
+    assert _pick_platform_asset(assets, "win32") == "http://example.com/setup.exe"
+
+
+def test_pick_platform_asset_falls_back_to_any_exe():
+    from gemini_translator.utils.updater import _pick_platform_asset
+
+    assets = [
+        {"name": "GeminiTranslator-Portable.exe", "browser_download_url": "http://example.com/portable.exe"},
+    ]
+
+    assert _pick_platform_asset(assets, "win32") == "http://example.com/portable.exe"
+
+
+def test_pick_platform_asset_darwin_prefers_dmg_then_zip():
+    from gemini_translator.utils.updater import _pick_platform_asset
+
+    assets = [
+        {"name": "GeminiTranslator-macOS.zip", "browser_download_url": "http://example.com/mac.zip"},
+        {"name": "GeminiTranslator-macOS.dmg", "browser_download_url": "http://example.com/mac.dmg"},
+    ]
+
+    assert _pick_platform_asset(assets, "darwin") == "http://example.com/mac.dmg"
+    assert _pick_platform_asset(assets[:1], "darwin") == "http://example.com/mac.zip"
+
+
+def test_pick_platform_asset_unknown_platform_takes_first():
+    from gemini_translator.utils.updater import _pick_platform_asset
+
+    assets = [
+        {"name": "whatever.bin", "browser_download_url": "http://example.com/x.bin"},
+    ]
+
+    assert _pick_platform_asset(assets, "linux") == "http://example.com/x.bin"
+    assert _pick_platform_asset([], "win32") == ""

@@ -7,6 +7,39 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from gemini_translator.api.config import GITHUB_REPO
 from gemini_translator.version import APP_VERSION
 
+
+def _pick_platform_asset(assets, platform) -> str:
+    """Выбирает ссылку на подходящий ассет релиза для платформы.
+
+    В релизе лежат и инсталлер (Setup.exe), и портативный exe: для
+    автообновления на Windows предпочитаем инсталлер. На macOS — dmg,
+    затем zip. Если ничего не подошло — первый ассет.
+    """
+    def _url(asset):
+        return asset["browser_download_url"]
+
+    if platform == "win32":
+        exe_assets = [a for a in assets if a["name"].lower().endswith(".exe")]
+        setup_assets = [a for a in exe_assets if "setup" in a["name"].lower()]
+        if setup_assets:
+            return _url(setup_assets[0])
+        if exe_assets:
+            return _url(exe_assets[0])
+    elif platform == "darwin":
+        dmg_url = None
+        zip_url = None
+        for asset in assets:
+            name = asset["name"].lower()
+            if name.endswith(".dmg") and dmg_url is None:
+                dmg_url = _url(asset)
+            elif name.endswith(".zip") and zip_url is None:
+                zip_url = _url(asset)
+        if dmg_url or zip_url:
+            return dmg_url or zip_url
+
+    return _url(assets[0]) if assets else ""
+
+
 class UpdateChecker(QThread):
     update_available = pyqtSignal(str, str, str) # version, description, download_url
     error_occurred = pyqtSignal(str)
@@ -104,30 +137,9 @@ class UpdateChecker(QThread):
                 if latest_parsed > current_parsed:
                     body = data.get("body", "Доступно новое обновление.")
 
-                    assets = data.get("assets", [])
-                    download_url = ""
-                    
-                    dmg_url = None
-                    zip_url = None
-                    # Try to find the right asset for the platform
-                    for asset in assets:
-                        name = asset["name"].lower()
-                        if sys.platform == "win32" and name.endswith(".exe"):
-                            download_url = asset["browser_download_url"]
-                            break
-                        elif sys.platform == "darwin":
-                            if name.endswith(".dmg"):
-                                dmg_url = asset["browser_download_url"]
-                            elif name.endswith(".zip"):
-                                zip_url = asset["browser_download_url"]
-                                
-                    if sys.platform == "darwin":
-                        download_url = dmg_url or zip_url
-                    
-                    # Fallback to first asset if platform specific is not found
-                    if not download_url and assets:
-                        download_url = assets[0]["browser_download_url"]
-                        
+                    download_url = _pick_platform_asset(
+                        data.get("assets", []), sys.platform)
+
                     self.update_available.emit(latest_version, body, download_url)
                 else:
                     self.no_update.emit()

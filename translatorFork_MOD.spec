@@ -16,7 +16,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types'],
+    hiddenimports=['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types', 'qoder_agent_sdk'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -59,6 +59,29 @@ coll = COLLECT(
 )
 
 import sys
+if sys.platform == 'win32':
+    # Портативная one-file сборка из того же анализа: один exe со всем
+    # содержимым внутри. Идёт в релиз рядом с инсталлером.
+    portable_exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name='GeminiTranslator-Portable',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=['gemini_translator/GT.ico'],
+    )
+
 if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
