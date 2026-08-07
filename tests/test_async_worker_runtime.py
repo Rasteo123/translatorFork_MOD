@@ -59,6 +59,43 @@ class AsyncWorkerRuntimeTests(unittest.TestCase):
         finally:
             rt.stop()
 
+    def test_stop_workers_cancels_nested_untracked_tasks(self):
+        rt = AsyncWorkerRuntime()
+        rt.start()
+        child_started = threading.Event()
+        child_cancelled = threading.Event()
+        child_holder = {}
+
+        async def child_request():
+            child_started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                child_cancelled.set()
+                raise
+
+        async def worker():
+            child = asyncio.create_task(child_request())
+            child_holder["task"] = child
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                # A worker may finish its own cancellation before an in-flight
+                # child request has unwound. The runtime still owns that child.
+                return
+
+        rt.spawn(worker())
+        self.assertTrue(child_started.wait(timeout=2))
+        try:
+            rt.stop_workers()
+            self.assertTrue(child_cancelled.wait(timeout=1))
+        finally:
+            child = child_holder.get("task")
+            if child is not None and not child.done() and rt.loop is not None:
+                rt.loop.call_soon_threadsafe(child.cancel)
+                child_cancelled.wait(timeout=1)
+            rt.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -86,13 +86,15 @@ class PresetWidget(QWidget):
         bottom_panel_layout = QHBoxLayout()
         load_default_btn = QPushButton(f"📋 Загрузить стандартный {self.preset_name_lower}")
         load_default_btn.clicked.connect(self._load_default_prompt)
-        load_default_btn.setVisible(self.show_default_button)
         bottom_panel_layout.addStretch()
         bottom_panel_layout.addWidget(load_default_btn)
-        
+
         main_layout.addLayout(top_panel_layout)
         main_layout.addWidget(self.prompt_edit)
         main_layout.addLayout(bottom_panel_layout)
+        # setVisible только после вставки в layout: у виджета без родителя
+        # setVisible(True) на мгновение показывает его отдельным окном.
+        load_default_btn.setVisible(self.show_default_button)
 
     def get_prompt(self):
         return self.prompt_edit.toPlainText().strip()

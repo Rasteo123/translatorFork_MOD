@@ -13,6 +13,7 @@ import shutil
 from datetime import datetime
 from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path
 from ...utils.language_tools import LanguageDetector
+from ..wait_dialogs import show_when_slow
 from ...utils.validation_cache import (
     build_detector_signature,
     build_file_fingerprint,
@@ -2008,7 +2009,7 @@ class TranslationValidatorPage(ShellPage):
 
     RATIO_PRESETS = {
         "Алфавитный (A -> A)": (0.70, 1.80, "Ожидаемое соотношение перевод/оригинал для En/Fr/De -> Ru"),
-        "Иероглифический (象 -> A)": (1.80, 6.50, "Ожидаемое перевод/оригинал для Zh/Jp/Ko -> Ru; если меньше x1.8, это уже подозрительно"),
+        "Иероглифический (象 -> A)": (2.80, 6.50, "Ожидаемое перевод/оригинал для Zh/Jp/Ko -> Ru; если меньше x2.8, это уже подозрительно"),
         "Медиана ±20%": (-1.0, 0.20, "Отклонение от медианного значения по всем главам"),
         "Медиана ±25%": (-1.0, 0.25, "Отклонение от медианного значения по всем главам"),
         "Медиана ±30%": (-1.0, 0.30, "Отклонение от медианного значения по всем главам")
@@ -3642,7 +3643,7 @@ class TranslationValidatorPage(ShellPage):
         if check_ratio:
             val = data.get('ratio_value', 1.0)
             if data.get('len_orig', 0) > 100: 
-                if not (ratio_min < val < ratio_max):
+                if not (ratio_min <= val < ratio_max):
                     current_reasons.append(f"Длина T/O ({val:.2f}x)")
 
         # 4. Размер абзаца
@@ -3986,9 +3987,9 @@ class TranslationValidatorPage(ShellPage):
         
         # --- ИЗМЕНЕНИЕ: Подключаем только финальный сигнал ---
         self.sync_thread.finished_sync.connect(self._on_validator_sync_finished)
-        
+
         self.sync_thread.start()
-        self.wait_dialog.show()
+        show_when_slow(self.wait_dialog)
         
     
     def _on_validator_sync_finished(self, is_project_ready, message):

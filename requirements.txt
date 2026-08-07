@@ -30,6 +30,7 @@ pypdf
 PyQt6
 PySocks
 pytest
+qoder-agent-sdk>=1.0.8
 python-docx
 python-Levenshtein
 pytz

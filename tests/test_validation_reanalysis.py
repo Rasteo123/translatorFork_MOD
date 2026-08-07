@@ -5,7 +5,10 @@ import types
 import unittest
 from unittest.mock import patch
 
-from gemini_translator.ui.dialogs.validation import TranslationValidatorDialog
+from gemini_translator.ui.dialogs.validation import (
+    TranslationValidatorDialog,
+    TranslationValidatorPage,
+)
 from gemini_translator.utils.validation_cache import build_snapshot_entry, build_text_hash
 
 
@@ -139,6 +142,31 @@ class _MessageBoxStub:
 
 
 class ValidationReanalysisTests(unittest.TestCase):
+    def test_cjk_ratio_preset_uses_2_80_minimum(self):
+        ratio_min, ratio_max, description = TranslationValidatorPage.RATIO_PRESETS[
+            "Иероглифический (象 -> A)"
+        ]
+
+        self.assertEqual(ratio_min, 2.80)
+        self.assertEqual(ratio_max, 6.50)
+        self.assertIn("x2.8", description)
+
+    def test_ratio_equal_to_lower_bound_is_not_too_short(self):
+        harness = _ValidationHarness()
+
+        reasons, status = harness._calculate_status_for_data(
+            {
+                "has_cached_analysis": True,
+                "len_orig": 1000,
+                "len_trans": 2800,
+                "ratio_value": 2.80,
+            },
+            override_bounds=(2.80, 6.50),
+        )
+
+        self.assertEqual(reasons, [])
+        self.assertEqual(status, "neutral")
+
     def test_build_row_data_restores_cached_snapshot_for_unchanged_file(self):
         harness = _ValidationHarness()
 

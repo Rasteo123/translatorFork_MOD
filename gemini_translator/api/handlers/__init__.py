@@ -14,6 +14,7 @@ if __name__ != "__main__":
     from .local import LocalApiHandler
     from .mcp import McpApiHandler
     from .openrouter import OpenRouterApiHandler
+    from .qoder import QoderApiHandler
     from .workascii_chatgpt import WorkAsciiChatGptApiHandler
 
     __all__ = [
@@ -27,6 +28,7 @@ if __name__ != "__main__":
         "LocalApiHandler",
         "McpApiHandler",
         "OpenRouterApiHandler",
+        "QoderApiHandler",
         "WorkAsciiChatGptApiHandler"
     ]
 

@@ -41,7 +41,7 @@ def test_auto_short_ratio_uses_cjk_sources_and_callback():
         {"original_text": "她抬头看向窗外。"},
     )
 
-    assert ratio_limit == 1.80
+    assert ratio_limit == 2.80
     assert profile == "CJK"
 
 

@@ -598,7 +598,7 @@ class AutoWorkflowFollowupTests(unittest.TestCase):
             {"is_cjk_original": True},
         )
 
-        self.assertEqual(ratio_limit, 1.80)
+        self.assertEqual(ratio_limit, 2.80)
         self.assertEqual(profile, "CJK")
 
     def test_auto_short_ratio_detects_cjk_original_html_without_cached_flag(self):
@@ -609,7 +609,7 @@ class AutoWorkflowFollowupTests(unittest.TestCase):
             {"original_html": "<html><body><p>她抬头看向窗外。</p></body></html>"},
         )
 
-        self.assertEqual(ratio_limit, 1.80)
+        self.assertEqual(ratio_limit, 2.80)
         self.assertEqual(profile, "CJK")
 
     def test_auto_short_ratio_detects_cjk_original_from_epub(self):
@@ -628,7 +628,7 @@ class AutoWorkflowFollowupTests(unittest.TestCase):
                 {"internal_html_path": internal_path},
             )
 
-            self.assertEqual(ratio_limit, 1.80)
+            self.assertEqual(ratio_limit, 2.80)
             self.assertEqual(profile, "CJK")
         finally:
             os.remove(epub_path)

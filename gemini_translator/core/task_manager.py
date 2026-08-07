@@ -1,4 +1,4 @@
-﻿# ======================================== Файл: .\gemini_translator\core\task_manager.py (ФИНАЛЬНАЯ ВЕРСИЯ) ========================================
+# ======================================== Файл: .\gemini_translator\core\task_manager.py (ФИНАЛЬНАЯ ВЕРСИЯ) ========================================
 
 import threading
 from threading import Lock
@@ -24,7 +24,7 @@ import hashlib
 from collections import Counter
 import contextlib
 
-from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QThread, QTimer
+from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QThread, QTimer, Qt
 from PyQt6 import QtWidgets
 from ..api.config import SHARED_DB_URI
 
@@ -170,6 +170,19 @@ class ChapterQueueManager(QObject):
         self._sort_keys: dict[str, tuple[int, int]] = {}  # task_id_str -> (priority, sequence)
         self._in_flight_snapshot = None  # holds the snapshot passed to the active worker, for failure recovery
 
+        # --- Energy-saving session throttle ---
+        # During active translation sessions multiple workers fire
+        # notify_task_dirty() continuously. Without throttling this creates a
+        # non-stop cycle: _update_timer(100ms) → DB worker → event → UI redraw
+        # → paint → _restart_timer_if_dirty → _update_timer(100ms) → …
+        # We switch _update_timer to a slower cadence during sessions and
+        # enforce a minimum cooldown between consecutive cache updates.
+        self._IDLE_UPDATE_INTERVAL_MS = 100
+        self._SESSION_UPDATE_INTERVAL_MS = 2000
+        self._SESSION_RESTART_COOLDOWN_NS = 1_500_000_000  # 1.5 seconds in nanoseconds
+        self._session_active = False
+        self._last_cache_update_ns: int = 0  # monotonic timestamp of last _on_cache_updated
+
         # Воркер для фоновой очистки при завершении сессии
         self._cleanup_worker = None
         # Особый воркер для глоссария, чтобы не блокировать основной поток
@@ -177,7 +190,7 @@ class ChapterQueueManager(QObject):
        
         self._update_timer = QTimer(self)
         self._update_timer.setSingleShot(True)
-        self._update_timer.setInterval(100) # Задержка для сбора нескольких быстрых запросов в один
+        self._update_timer.setInterval(self._IDLE_UPDATE_INTERVAL_MS)
         self._update_timer.timeout.connect(self._trigger_cache_update)
         self._ui_update_requested.connect(self._notify_ui_of_change)
         
@@ -1506,6 +1519,7 @@ class ChapterQueueManager(QObject):
                 'changed_ids': changed_ids,
             })
 
+        self._last_cache_update_ns = time.monotonic_ns()
         self._is_updating_cache = False
         self._cache_update_worker = None
         self._in_flight_snapshot = None
@@ -1523,11 +1537,37 @@ class ChapterQueueManager(QObject):
 
     def _restart_timer_if_dirty(self):
         """If notifications accumulated during the worker run, schedule another pass.
-        Also fixes the latent silent-drop bug at the _is_updating_cache guard."""
+        Also fixes the latent silent-drop bug at the _is_updating_cache guard.
+
+        During an active session a minimum cooldown is enforced between cache
+        updates so that the timer → DB worker → event → UI redraw cycle does
+        not spin continuously and overheat the CPU."""
         with self._dirty_state_lock:
             needs_followup = bool(self._dirty_task_ids) or self._structural_dirty
-        if needs_followup:
-            self._update_timer.start()
+        if not needs_followup:
+            return
+        if self._session_active:
+            elapsed_ns = time.monotonic_ns() - self._last_cache_update_ns
+            remaining_ns = self._SESSION_RESTART_COOLDOWN_NS - elapsed_ns
+            if remaining_ns > 0:
+                # Schedule the timer to fire after the remaining cooldown,
+                # clamped to at least the session interval.
+                delay_ms = max(remaining_ns // 1_000_000, self._SESSION_UPDATE_INTERVAL_MS)
+                self._update_timer.start(int(delay_ms))
+                return
+        self._update_timer.start()
+
+    def set_session_active(self, active: bool):
+        """Switch the cache-update timer between responsive (idle) and
+        energy-saving (active session) cadence.  Called by the UI layer
+        (SetupDialog._set_controls_enabled) at session start/stop."""
+        self._session_active = active
+        if active:
+            self._update_timer.setInterval(self._SESSION_UPDATE_INTERVAL_MS)
+            self._update_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        else:
+            self._update_timer.setInterval(self._IDLE_UPDATE_INTERVAL_MS)
+            self._update_timer.setTimerType(Qt.TimerType.PreciseTimer)
     
     def _get_ui_state_list_background(self, snapshot):
         """Runs in worker thread. Returns a result dict — never mutates

@@ -3492,10 +3492,24 @@ class GlossaryManagerPage(ShellPage):
             if not btn.isHidden()
         ]
         
+        # Держим кнопки детьми группы, а не сиротами: setParent(None) делал
+        # их топ-уровневыми окнами, и последующий setVisible(True) на миг
+        # показывал каждую как отдельное маленькое окошко.
+        analysis_group = self.analysis_layout.parentWidget()
         while self.analysis_layout.count():
             item = self.analysis_layout.takeAt(0)
             if widget := item.widget():
-                widget.setParent(None)
+                widget.setParent(analysis_group)
+
+        # Скрытые кнопки в сетку не попадают, но родителя иметь обязаны —
+        # кнопки создаются без родителя, и первый reflow при пустом
+        # глоссарии их иначе не усыновит.
+        if analysis_group is not None:
+            for widget in (self.static_analysis_buttons
+                           + self.dynamic_analysis_buttons
+                           + [self.status_label]):
+                if widget.parent() is not analysis_group:
+                    widget.setParent(analysis_group)
 
         if not visible_buttons and not self._is_glossary_empty():
             self.analysis_layout.addWidget(self.status_label, 0, 0)

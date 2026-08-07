@@ -53,8 +53,10 @@ DEV_MODULES = {'pyinstaller', 'pyinstaller-hooks-contrib'}
 DATA_FILE_EXTENSIONS = {'.txt', '.json', '.ico', '.css', '.html', '.js'}
 # RanobeLib загружается из bundled source-файлов, поэтому PyInstaller
 # не видит его import playwright.sync_api во время анализа main.py.
-HIDDEN_IMPORTS_BLOCK = ['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types']
-MANUAL_COLLECT_DATA_MODULES = {'certifi', 'docx'}
+# qoder_agent_sdk импортируется лениво (при первом обращении к Qoder),
+# поэтому PyInstaller не видит его при анализе — нужен явный hidden-import.
+HIDDEN_IMPORTS_BLOCK = ['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types', 'qoder_agent_sdk']
+MANUAL_COLLECT_DATA_MODULES = {'certifi', 'docx', 'qoder_agent_sdk'}
 COLLECT_DATA_EXCLUDE_MODULES = {'setuptools'}
 MANUALLY_PACKAGED_PACKAGES = {'playwright'}
 # --- КОНФИГУРАЦИЯ ЗАВИСИМОСТЕЙ ---
@@ -70,6 +72,7 @@ IMPORT_TO_PACKAGE_MAP = {
     'google': 'google-genai',
     'pyaudio': 'PyAudio',
     'pymorphy2': 'pymorphy3',
+    'qoder_agent_sdk': 'qoder-agent-sdk',
     'recognizers_text': 'recognizers-text',
     'recognizers_number': 'recognizers-text-number',
 }
@@ -96,6 +99,7 @@ FORCED_VERSIONS = {
     'defusedxml': '>=0.7.1',
     'idna': '>=3.15',
     'pydantic': '>=2.0.0',
+    'qoder-agent-sdk': '>=1.0.8',
     'setuptools': '<81',
     'soupsieve': '>=2.8.4',
     'urllib3': '>=2.7.0',

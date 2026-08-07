@@ -19,11 +19,11 @@ class RedrawTuningTests(unittest.TestCase):
         self.addCleanup(w.close)
         return w
 
-    def test_set_session_mode_active_uses_500ms_coarse_timer(self):
+    def test_set_session_mode_active_uses_slow_coarse_timer(self):
         widget = self._make_widget()
         widget.set_session_mode(True)
 
-        self.assertEqual(widget._redraw_timer.interval(), 500)
+        self.assertEqual(widget._redraw_timer.interval(), 2000)
         self.assertEqual(
             widget._redraw_timer.timerType(),
             QtCore.Qt.TimerType.CoarseTimer,

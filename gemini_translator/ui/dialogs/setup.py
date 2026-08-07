@@ -22,6 +22,7 @@ import traceback # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
 
 # --- Импорты из PyQt6 ---
 from ..widgets.overlay_tab_widget import OverlayTabWidget
+from ..wait_dialogs import show_when_slow
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QListWidget, QPushButton, QDialogButtonBox, QLabel,
@@ -3897,7 +3898,7 @@ class InitialSetupPage(ShellPage):
         self.sync_thread.finished_sync.connect(self._on_sync_finished)
 
         self.sync_thread.start()
-        self.wait_dialog.show()
+        show_when_slow(self.wait_dialog)
 
     def _on_sync_finished(self, is_project_ready, message):
         """Обрабатывает результат фоновой синхронизации."""
@@ -4466,6 +4467,13 @@ class InitialSetupPage(ShellPage):
         self.glossary_widget.set_session_mode(is_session_active)
         self.preset_widget.set_session_mode(is_session_active)
         self.auto_translate_widget.set_session_mode(is_session_active)
+
+        # Switch the TaskManager cache-update timer to energy-saving cadence
+        # during active sessions to prevent the continuous update loop that
+        # overheats the CPU (see _restart_timer_if_dirty).
+        task_mgr = getattr(self, 'task_manager', None) or (getattr(self, 'engine', None) and getattr(self.engine, 'task_manager', None))
+        if task_mgr:
+            task_mgr.set_session_active(is_session_active)
 
         if not enabled:
             # Сессия НАЧАЛАСЬ

@@ -69,6 +69,18 @@ class _BlockingActionBackend(_ActionBackend):
         return McpStatusSnapshot(running=True, detail="127.0.0.1:4567")
 
 
+class _SlowStatusBackend(_FakeBackend):
+    def __init__(self):
+        self.status_calls = 0
+        self.status_thread = None
+
+    def status(self):
+        self.status_calls += 1
+        self.status_thread = threading.current_thread()
+        time.sleep(0.25)
+        return McpStatusSnapshot(running=True, detail="127.0.0.1:9999")
+
+
 class _FakeThread:
     def __init__(self):
         self.quit_called = False
@@ -285,6 +297,34 @@ class McpControlWidgetTests(unittest.TestCase):
         self.assertTrue(thread.quit_called)
         self.assertIs(widget._worker_thread, thread)
         self.assertFalse(widget.action_button.isEnabled())
+
+    def test_refresh_status_does_not_block_gui_thread(self):
+        backend = _SlowStatusBackend()
+        widget = McpControlWidget(backend=backend)
+        self.addCleanup(widget.close)
+
+        started = time.monotonic()
+        widget.refresh_status()
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.15)
+        self.assertTrue(self._process_events_until(
+            lambda: widget._worker_thread is None and backend.status_calls == 1,
+            timeout=2.0))
+        self.assertIsNotNone(backend.status_thread)
+        self.assertIsNot(backend.status_thread, threading.main_thread())
+        self.assertEqual(widget.status_value_label.text(), "Запущен")
+
+    def test_refresh_status_keeps_action_button_enabled(self):
+        backend = _SlowStatusBackend()
+        widget = McpControlWidget(backend=backend)
+        self.addCleanup(widget.close)
+
+        widget.refresh_status()
+
+        self.assertTrue(widget.action_button.isEnabled())
+        self.assertTrue(self._process_events_until(
+            lambda: widget._worker_thread is None, timeout=2.0))
 
     def test_action_button_dispatches_toggle_without_sync_backend_call(self):
         backend = _ActionBackend()
