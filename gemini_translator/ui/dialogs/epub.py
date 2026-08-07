@@ -59,6 +59,7 @@ except ImportError:
     
 # --- Импорты из нашего проекта ---
 from gemini_translator.ui import theme_manager
+from gemini_translator.ui.wait_dialogs import show_when_slow
 from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path, extract_number_from_path_reversed, EpubCreator, TASK_SIZE_UNIT_CHARS, get_epub_chapter_sizes_with_cache, extract_epub_heading_text
 from ...utils.text import unify_paragraphs_for_ai
 from ...utils.project_manager import TranslationProjectManager
@@ -928,21 +929,17 @@ class EpubHtmlSelectorDialog(QDialog):
 
     @staticmethod
     def _extract_h1_title(html_content):
+        # Заголовок нужен только для подсказки; полный BS4-парсинг каждой
+        # главы стоил секунды на больших книгах, поэтому берём h1 регулярным
+        # выражением (сверено с BS4 на реальных книгах — результат совпадает).
         if not html_content:
             return ""
 
-        if BS4_AVAILABLE and BeautifulSoup:
-            try:
-                soup = BeautifulSoup(html_content, "html.parser")
-                return extract_epub_heading_text(soup.find("h1"))
-            except Exception:
-                return ""
-
-        match = re.search(r"<h1\b[^>]*>(.*?)</h1>", str(html_content), re.IGNORECASE | re.DOTALL)
+        match = re.search(r"<h1\b[^>]*>(.*?)</h1\s*>", str(html_content), re.IGNORECASE | re.DOTALL)
         if not match:
             return ""
         raw_title = re.sub(r"<(?:br|hr)\b[^>]*>", " ", match.group(1), flags=re.IGNORECASE)
-        raw_title = re.sub(r"<[^>]+>", " ", raw_title)
+        raw_title = re.sub(r"<[^>]+>", "", raw_title)
         return re.sub(r"\s+", " ", html_lib.unescape(raw_title)).strip()
 
     def _load_chapter_title_cache(self):
@@ -1043,8 +1040,8 @@ class EpubHtmlSelectorDialog(QDialog):
         self.analysis_thread = EpubAnalysisThread(self.virtual_epub_path, self.all_chapters)
         self.analysis_thread.analysis_finished.connect(self._on_full_analysis_finished)
         self.analysis_thread.start()
-        
-        self.wait_dialog.show()
+
+        show_when_slow(self.wait_dialog)
 
     def _on_full_analysis_finished(self, issues):
         """Анализ завершен. Показываем результаты."""

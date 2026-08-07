@@ -51,6 +51,28 @@ class _KeySettingsStub:
         return 0
 
 
+class SetCurrentModelDedupTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        api_config.initialize_configs()
+
+    def test_repeated_set_current_model_skips_restyle(self):
+        """При инициализации окна события провайдера/модели вызывают
+        set_current_model с одним и тем же id несколько раз подряд —
+        повторный вызов не должен заново перекрашивать весь список."""
+        widget = KeyManagementWidget(_KeySettingsStub())
+        self.addCleanup(widget.close)
+        calls = []
+        widget.update_key_styles_for_model = calls.append
+
+        widget.set_current_model("model-a")
+        widget.set_current_model("model-a")
+        widget.set_current_model("model-b")
+
+        self.assertEqual(calls, ["model-a", "model-b"])
+
+
 class _KeyStatusSettingsStub(_KeySettingsStub):
     def __init__(self, provider_id):
         self.provider_id = provider_id

@@ -551,6 +551,10 @@ class KeyManagementWidget(QWidget):
 
     @pyqtSlot(str)
     def set_current_model(self, model_id: str):
+        # События провайдера/модели при инициализации окна приходят пачкой
+        # с одним и тем же id — повторная перекраска всего списка не нужна.
+        if model_id == self.current_model_id:
+            return
         self.current_model_id = model_id
         self.update_key_styles_for_model(model_id)
 
