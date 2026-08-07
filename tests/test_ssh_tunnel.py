@@ -202,7 +202,10 @@ class SshTunnelManagerTests(unittest.TestCase):
 
         read_fd, write_fd = os.pipe()
         try:
-            os.set_blocking(read_fd, False)
+            # На Windows до Python 3.12 os.set_blocking отсутствует —
+            # неблокирующее чтение обеспечивает сам _default_stderr_reader.
+            if hasattr(os, "set_blocking"):
+                os.set_blocking(read_fd, False)
 
             class _ProcWithRealStderr:
                 def __init__(self, stderr):

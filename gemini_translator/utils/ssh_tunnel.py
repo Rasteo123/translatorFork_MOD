@@ -18,6 +18,28 @@ _SSH_OPTIONS = [
 ]
 
 
+if hasattr(os, "set_blocking"):
+    def _read_available_stderr_bytes(fd) -> bytes:
+        os.set_blocking(fd, False)
+        return os.read(fd, 4096)
+else:  # pragma: no cover - Windows до Python 3.12 (нет os.set_blocking для пайпов)
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    def _read_available_stderr_bytes(fd) -> bytes:
+        handle = msvcrt.get_osfhandle(fd)
+        available = wintypes.DWORD()
+        ok = ctypes.windll.kernel32.PeekNamedPipe(
+            handle, None, 0, None, ctypes.byref(available), None)
+        if not ok:
+            # Пайп закрыт с той стороны — эквивалент EOF.
+            return b""
+        if not available.value:
+            raise BlockingIOError()
+        return os.read(fd, min(4096, available.value))
+
+
 def _default_stderr_reader(process) -> Optional[str]:
     """Return one complete stderr line without blocking the Qt event loop."""
     stderr = getattr(process, "stderr", None)
@@ -32,8 +54,7 @@ def _default_stderr_reader(process) -> Optional[str]:
 
     try:
         fd = stderr.fileno()
-        os.set_blocking(fd, False)
-        chunk = os.read(fd, 4096)
+        chunk = _read_available_stderr_bytes(fd)
     except (BlockingIOError, OSError):
         return None
 
