@@ -6,7 +6,7 @@ from PyQt6 import QtCore, QtWidgets
 from gemini_translator.ui import theme_manager
 
 
-STATUS_FLUSH_INTERVAL_MS = 100
+STATUS_FLUSH_INTERVAL_MS = 1500
 
 
 class StatusBarWidget(QtWidgets.QWidget):

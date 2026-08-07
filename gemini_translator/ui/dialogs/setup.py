@@ -4467,6 +4467,13 @@ class InitialSetupPage(ShellPage):
         self.preset_widget.set_session_mode(is_session_active)
         self.auto_translate_widget.set_session_mode(is_session_active)
 
+        # Switch the TaskManager cache-update timer to energy-saving cadence
+        # during active sessions to prevent the continuous update loop that
+        # overheats the CPU (see _restart_timer_if_dirty).
+        task_mgr = getattr(self, 'task_manager', None) or (getattr(self, 'engine', None) and getattr(self.engine, 'task_manager', None))
+        if task_mgr:
+            task_mgr.set_session_active(is_session_active)
+
         if not enabled:
             # Сессия НАЧАЛАСЬ
             self._set_stop_button_mode(self._hard_stop_enabled)

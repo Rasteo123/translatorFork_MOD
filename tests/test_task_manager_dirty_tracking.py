@@ -344,6 +344,10 @@ class OnCacheUpdatedTests(unittest.TestCase):
             _in_flight_snapshot={"ids": ("a", "b"), "structural": False},
             _update_timer=_TimerStub(),
             _posted_events=[],
+            _session_active=False,
+            _last_cache_update_ns=0,
+            _SESSION_UPDATE_INTERVAL_MS=2000,
+            _SESSION_RESTART_COOLDOWN_NS=1_500_000_000,
         )
         tm._post_event = lambda name, data: tm._posted_events.append((name, data))
         from gemini_translator.core.task_manager import ChapterQueueManager

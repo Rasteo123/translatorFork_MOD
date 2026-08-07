@@ -9,7 +9,7 @@ from PyQt6.QtCore import pyqtSignal, Qt, pyqtSlot
 from .chapter_list_widget import ChapterListWidget
 
 IDLE_REDRAW_INTERVAL_MS = 35
-ACTIVE_SESSION_REDRAW_INTERVAL_MS = 500
+ACTIVE_SESSION_REDRAW_INTERVAL_MS = 2000
 
 class TaskManagementWidget(QWidget):
     """
