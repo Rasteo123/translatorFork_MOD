@@ -413,21 +413,27 @@ class UniversalWorker:
                     return
             await self._async_processing_loop()
         finally:
-            pending = list(getattr(self, "active_tasks", None) or [])
-            for t in pending:
-                t.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+            # Внутренний finally обязан быть синхронным: во время остановки
+            # рантайма await'ы ниже могут снова получить CancelledError, и
+            # тогда без него cancel() (отписка от шины + rescue) не выполнится —
+            # воркер навсегда останется в подписчиках EventBus (утечка памяти).
             try:
-                await self.api_handler_instance._close_thread_session_internal()
-            except Exception:
-                pass
-            # Паритет с legacy run() teardown: чистим ссылки и выполняем
-            # cancel()-контракт (отписка от EventBus + rescue задач + cancelled).
-            # Общий loop НЕ закрываем — им владеет runtime.
-            self._worker_loop = None
-            self._wake_event = None
-            self.cancel()
+                pending = list(getattr(self, "active_tasks", None) or [])
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                try:
+                    await self.api_handler_instance._close_thread_session_internal()
+                except Exception:
+                    pass
+            finally:
+                # Паритет с legacy run() teardown: чистим ссылки и выполняем
+                # cancel()-контракт (отписка от EventBus + rescue задач + cancelled).
+                # Общий loop НЕ закрываем — им владеет runtime.
+                self._worker_loop = None
+                self._wake_event = None
+                self.cancel()
 
     def run(self):
         """
@@ -472,13 +478,23 @@ class UniversalWorker:
             
         finally:
             # 6. ГАРАНТИРОВАННАЯ ОЧИСТКА РЕСУРСОВ
-            if loop and not loop.is_closed():
-                # Закрытием сессии управляет обработчик
-                loop.run_until_complete(self.api_handler_instance._close_thread_session_internal())
-                loop.close()
+            # Любая ошибка здесь не должна помешать cancel() ниже: иначе
+            # воркер остаётся подписанным на шину (утечка всего объекта)
+            # и его задача не спасается.
+            try:
+                if loop and not loop.is_closed():
+                    try:
+                        handler = getattr(self, 'api_handler_instance', None)
+                        if handler is not None:
+                            # Закрытием сессии управляет обработчик
+                            loop.run_until_complete(handler._close_thread_session_internal())
+                    finally:
+                        loop.close()
+            except Exception as cleanup_error:
+                print(f"[WORKER CLEANUP WARN] …{self.worker_id[-4:]}: {type(cleanup_error).__name__}: {cleanup_error}")
             self._worker_loop = None
             self._wake_event = None
-            
+
             self.cancel()
 
             print(f"[WORKER LIFECYCLE] Поток {threading.get_native_id()} ЗАВЕРШИЛ РАБОТУ для воркера …{self.worker_id[-4:]}.")
