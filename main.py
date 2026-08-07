@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+
+# Автоматическое подтягивание библиотек из .venv, если программа запущена системным Python
+_base_dir = os.path.dirname(os.path.abspath(__file__))
+_venv_site = os.path.join(_base_dir, ".venv", "Lib", "site-packages")
+if os.path.exists(_venv_site) and _venv_site not in sys.path:
+    sys.path.insert(0, _venv_site)
+
 import os_patch
 import builtins
 import argparse

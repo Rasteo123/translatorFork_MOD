@@ -339,7 +339,7 @@ class FreeDeepseekApiDialog(QDialog):
         command = self._npm_command("start")
         kwargs = {
             "cwd": repo_dir,
-            "stdin": subprocess.DEVNULL,
+            "stdin": subprocess.PIPE,
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
         }
@@ -350,6 +350,9 @@ class FreeDeepseekApiDialog(QDialog):
 
         try:
             self.proxy_process = subprocess.Popen(command, **kwargs)
+            self.proxy_process.stdin.write(b"\n")
+            self.proxy_process.stdin.flush()
+            self.proxy_process.stdin.close()
         except Exception as error:
             QtWidgets.QMessageBox.warning(
                 self,
