@@ -15,44 +15,73 @@ from ..errors import (
     ValidationFailedError,
 )
 
-try:
-    from qoder_agent_sdk import (
-        AssistantMessage,
-        AuthAccessTokenEnvVarError,
-        AuthNotConfiguredError,
-        CLIConnectionError,
-        CLINotFoundError,
-        ProcessError,
-        QoderAgentOptions,
-        QoderSDKError,
-        RateLimitEvent,
-        RateLimitInfo,
-        ResultMessage,
-        TextBlock,
-        access_token,
-        query,
-    )
-    _AUTH_ERRORS = (AuthNotConfiguredError, AuthAccessTokenEnvVarError)
-    _CLI_NOT_FOUND_ERRORS = (CLINotFoundError,)
-    _SDK_TRANSPORT_ERRORS = (CLIConnectionError, ProcessError, QoderSDKError)
-except ImportError:  # pragma: no cover - exercised only in broken installations
-    AssistantMessage = None
-    AuthAccessTokenEnvVarError = None
-    AuthNotConfiguredError = None
-    CLIConnectionError = None
-    CLINotFoundError = None
-    ProcessError = None
-    QoderAgentOptions = None
-    QoderSDKError = None
-    RateLimitEvent = None
-    RateLimitInfo = None
-    ResultMessage = None
-    TextBlock = None
-    access_token = None
-    query = None
-    _AUTH_ERRORS = ()
-    _CLI_NOT_FOUND_ERRORS = ()
-    _SDK_TRANSPORT_ERRORS = ()
+# Ленивый импорт qoder_agent_sdk: он тянет пакеты mcp и aiohttp (~250 мс),
+# поэтому загружается при первом обращении к Qoder-провайдеру, а не при
+# импорте модуля (модуль импортируется при старте приложения через фабрику).
+_SDK_NAMES = (
+    "AssistantMessage",
+    "AuthAccessTokenEnvVarError",
+    "AuthNotConfiguredError",
+    "CLIConnectionError",
+    "CLINotFoundError",
+    "ProcessError",
+    "QoderAgentOptions",
+    "QoderSDKError",
+    "RateLimitEvent",
+    "RateLimitInfo",
+    "ResultMessage",
+    "TextBlock",
+    "access_token",
+    "query",
+)
+
+AssistantMessage = None
+AuthAccessTokenEnvVarError = None
+AuthNotConfiguredError = None
+CLIConnectionError = None
+CLINotFoundError = None
+ProcessError = None
+QoderAgentOptions = None
+QoderSDKError = None
+RateLimitEvent = None
+RateLimitInfo = None
+ResultMessage = None
+TextBlock = None
+access_token = None
+query = None
+_AUTH_ERRORS = ()
+_CLI_NOT_FOUND_ERRORS = ()
+_SDK_TRANSPORT_ERRORS = ()
+
+_SDK_IMPORT_ATTEMPTED = False
+
+
+def _ensure_sdk_imported():
+    """Загружает qoder_agent_sdk при первом использовании.
+
+    Имена, уже установленные извне (например, подменённые в тестах),
+    не перезаписываются. Неполная/сломанная установка SDK оставляет имена
+    равными None — setup_client сообщит об этом пользователю.
+    """
+    global _SDK_IMPORT_ATTEMPTED, _AUTH_ERRORS, _CLI_NOT_FOUND_ERRORS, _SDK_TRANSPORT_ERRORS
+    if _SDK_IMPORT_ATTEMPTED:
+        return
+    _SDK_IMPORT_ATTEMPTED = True
+    try:
+        import qoder_agent_sdk as _sdk
+        resolved = {name: getattr(_sdk, name) for name in _SDK_NAMES}
+    except (ImportError, AttributeError):  # pragma: no cover - broken installations
+        return
+
+    module_globals = globals()
+    for name, value in resolved.items():
+        if module_globals[name] is None:
+            module_globals[name] = value
+    _AUTH_ERRORS = tuple(
+        exc for exc in (AuthNotConfiguredError, AuthAccessTokenEnvVarError) if exc)
+    _CLI_NOT_FOUND_ERRORS = tuple(exc for exc in (CLINotFoundError,) if exc)
+    _SDK_TRANSPORT_ERRORS = tuple(
+        exc for exc in (CLIConnectionError, ProcessError, QoderSDKError) if exc)
 
 
 class QoderApiHandler(BaseApiHandler):
@@ -73,6 +102,7 @@ class QoderApiHandler(BaseApiHandler):
         super().setup_client(client_override, proxy_settings)
         if not client_override or not getattr(client_override, "api_key", None):
             return False
+        _ensure_sdk_imported()
         if QoderAgentOptions is None or query is None or access_token is None:
             raise ModelNotFoundError(
                 "Не установлен официальный пакет qoder-agent-sdk. "

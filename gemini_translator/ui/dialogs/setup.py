@@ -22,6 +22,7 @@ import traceback # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
 
 # --- Импорты из PyQt6 ---
 from ..widgets.overlay_tab_widget import OverlayTabWidget
+from ..wait_dialogs import show_when_slow
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QListWidget, QPushButton, QDialogButtonBox, QLabel,
@@ -3897,7 +3898,7 @@ class InitialSetupPage(ShellPage):
         self.sync_thread.finished_sync.connect(self._on_sync_finished)
 
         self.sync_thread.start()
-        self.wait_dialog.show()
+        show_when_slow(self.wait_dialog)
 
     def _on_sync_finished(self, is_project_ready, message):
         """Обрабатывает результат фоновой синхронизации."""

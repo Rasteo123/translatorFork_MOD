@@ -187,6 +187,10 @@ class HybridPath:
                 return func(path, *args, **kwargs)
         return wrapper
 
+# Отладочные стеки владельцев PatientLock (дорого: ~1 мс на захват).
+_CAPTURE_OWNER_STACKS = os.environ.get("PATIENTLOCK_CAPTURE_STACKS") == "1"
+
+
 class PatientLock:
     """
     Справедливый, СТРОГИЙ (НЕреентрантный) замок на базе Condition.
@@ -232,14 +236,18 @@ class PatientLock:
 
         self._owner = thread_id
         self._owner_ts = time.monotonic()
-        self._owner_stack = traceback.format_stack()[:-2]
+        # Снятие полного стека стоит ~1 мс на КАЖДЫЙ захват; включается
+        # только для отладки зависаний через переменную окружения.
+        if _CAPTURE_OWNER_STACKS:
+            self._owner_stack = traceback.format_stack()[:-2]
+        else:
+            self._owner_stack = None
         self._current_leader = None
         return True
 
     def acquire(self, priority=False):
         me = threading.get_ident()
-        time.sleep(random.uniform(0.0001, 0.002))
-        
+
         # ЛОКАЛЬНЫЕ переменные для слежки за лидером
         watched_leader = None
         leader_misses = 0 

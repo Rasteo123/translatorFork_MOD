@@ -13,6 +13,7 @@ import shutil
 from datetime import datetime
 from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path
 from ...utils.language_tools import LanguageDetector
+from ..wait_dialogs import show_when_slow
 from ...utils.validation_cache import (
     build_detector_signature,
     build_file_fingerprint,
@@ -3986,9 +3987,9 @@ class TranslationValidatorPage(ShellPage):
         
         # --- ИЗМЕНЕНИЕ: Подключаем только финальный сигнал ---
         self.sync_thread.finished_sync.connect(self._on_validator_sync_finished)
-        
+
         self.sync_thread.start()
-        self.wait_dialog.show()
+        show_when_slow(self.wait_dialog)
         
     
     def _on_validator_sync_finished(self, is_project_ready, message):
