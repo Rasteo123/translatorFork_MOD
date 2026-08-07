@@ -272,7 +272,8 @@ class McpControlWidget(QtWidgets.QFrame):
         if self._worker_thread is not None:
             return
         self._closing = False
-        self.action_button.setEnabled(False)
+        if action != "status":
+            self.action_button.setEnabled(False)
         thread = QtCore.QThread()
         worker = McpActionWorker(self.backend, action, self._running)
         worker.moveToThread(thread)
@@ -374,8 +375,10 @@ class McpControlWidget(QtWidgets.QFrame):
         self._wait_for_worker()
         super().closeEvent(event)
 
-    def refresh_status(self) -> McpStatusSnapshot:
-        return self._execute_action_sync("status")
+    def refresh_status(self) -> None:
+        """Запрашивает статус демона в фоновом потоке: синхронный HTTP-запрос
+        (таймаут до 5 с) не должен замораживать GUI при переключении на MCP."""
+        self._dispatch_action("status")
 
     def copy_codex_config(self) -> str:
         try:
