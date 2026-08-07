@@ -697,9 +697,8 @@ class EpubHtmlSelectorDialog(QDialog):
         cleanup_layout.addWidget(self.duplicate_cleanup_btn)
         cleanup_layout.addWidget(self.restore_backup_btn)
         
-        # Сама панель должна быть видима, так как в ней лежит кнопка "Анализ"
-        self.cleanup_panel.setVisible(True) 
-        
+        # Панель видима по умолчанию вместе с родителем; явный setVisible(True)
+        # до прикрепления layout к диалогу на мгновение показывал её отдельным окном.
         bottom_bar_layout.addWidget(self.cleanup_panel, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         
         
