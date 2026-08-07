@@ -12,7 +12,85 @@ from gemini_translator.api.errors import (
     ValidationFailedError,
 )
 from gemini_translator.api.factory import get_api_handler_class
+from gemini_translator.api.handlers import qoder as _qoder_module
 from gemini_translator.api.handlers.qoder import QoderApiHandler
+
+
+def _install_sdk_stubs_if_needed():
+    """Тесты проверяют обработчик, а не SDK: если qoder_agent_sdk недоступен
+    или неполон (CI, машины без пакета), подставляем минимальные заглушки
+    в модуль обработчика. При рабочем SDK ничего не подменяется."""
+    _qoder_module._ensure_sdk_imported()
+    if _qoder_module.QoderAgentOptions is not None:
+        return
+
+    class _StubRecord:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class QoderAgentOptions(_StubRecord):
+        pass
+
+    class ResultMessage(_StubRecord):
+        pass
+
+    class RateLimitInfo(_StubRecord):
+        pass
+
+    class RateLimitEvent(_StubRecord):
+        pass
+
+    class AssistantMessage(_StubRecord):
+        pass
+
+    class TextBlock(_StubRecord):
+        pass
+
+    class QoderSDKError(Exception):
+        pass
+
+    class CLIConnectionError(QoderSDKError):
+        pass
+
+    class CLINotFoundError(QoderSDKError):
+        pass
+
+    class ProcessError(QoderSDKError):
+        pass
+
+    class AuthNotConfiguredError(QoderSDKError):
+        pass
+
+    class AuthAccessTokenEnvVarError(QoderSDKError):
+        pass
+
+    def _unpatched_query(**_kwargs):
+        raise AssertionError("query stub must be monkeypatched by the test")
+
+    stubs = {
+        "QoderAgentOptions": QoderAgentOptions,
+        "ResultMessage": ResultMessage,
+        "RateLimitInfo": RateLimitInfo,
+        "RateLimitEvent": RateLimitEvent,
+        "AssistantMessage": AssistantMessage,
+        "TextBlock": TextBlock,
+        "QoderSDKError": QoderSDKError,
+        "CLIConnectionError": CLIConnectionError,
+        "CLINotFoundError": CLINotFoundError,
+        "ProcessError": ProcessError,
+        "AuthNotConfiguredError": AuthNotConfiguredError,
+        "AuthAccessTokenEnvVarError": AuthAccessTokenEnvVarError,
+        "access_token": lambda token: token,
+        "query": _unpatched_query,
+    }
+    for name, value in stubs.items():
+        setattr(_qoder_module, name, value)
+    _qoder_module._AUTH_ERRORS = (AuthNotConfiguredError, AuthAccessTokenEnvVarError)
+    _qoder_module._CLI_NOT_FOUND_ERRORS = (CLINotFoundError,)
+    _qoder_module._SDK_TRANSPORT_ERRORS = (CLIConnectionError, ProcessError, QoderSDKError)
+
+
+_install_sdk_stubs_if_needed()
 
 
 class FakeSettingsManager:
