@@ -709,7 +709,8 @@ class HeadlessRuntime:
             app_main.initialize_global_resources(app)
             app.task_manager = app_main.ChapterQueueManager(event_bus=app.event_bus)
             app.proxy_controller = app_main.GlobalProxyController(app.event_bus)
-            app.settings_manager.load_proxy_settings()
+            proxy_settings = app.settings_manager.load_proxy_settings()
+            app.proxy_controller.apply_settings(proxy_settings)
             temp_folder = os.path.join(os.path.expanduser("~"), ".epub_translator_temp")
             os.makedirs(temp_folder, exist_ok=True)
             app.context_manager = app_main.ContextManager(temp_folder)
@@ -737,6 +738,8 @@ class HeadlessRuntime:
                 app.settings_manager.flush()
         except Exception:
             pass
+        if hasattr(app, "proxy_controller"):
+            app.proxy_controller.shutdown()
         if app_main and hasattr(app, "engine_thread") and app.engine_thread.isRunning():
             try:
                 app_main.QtCore.QMetaObject.invokeMethod(

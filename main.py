@@ -1207,6 +1207,7 @@ if __name__ == "__main__":
     app.global_version = APP_VERSION
     app.proxy_controller = GlobalProxyController(app.event_bus)
     proxy_settings = app.settings_manager.load_proxy_settings()
+    app.proxy_controller.apply_settings(proxy_settings)
 
     temp_folder = os.path.join(
         os.path.expanduser("~"), ".epub_translator_temp")
@@ -1271,6 +1272,8 @@ if __name__ == "__main__":
 
     # --- ЗАВЕРШЕНИЕ ---
     print(f"[INFO] Приложение завершает работу.")
+    if hasattr(app, 'proxy_controller'):
+        app.proxy_controller.shutdown()
     if hasattr(app, 'engine_thread') and app.engine_thread.isRunning():
         app.engine_thread.quit()
         app.engine_thread.wait()

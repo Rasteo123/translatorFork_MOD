@@ -71,7 +71,8 @@ def _bootstrap_application():
     app.task_manager = app_main.ChapterQueueManager(event_bus=app.event_bus)
     app.global_version = app_main.APP_VERSION
     app.proxy_controller = app_main.GlobalProxyController(app.event_bus)
-    app.settings_manager.load_proxy_settings()
+    proxy_settings = app.settings_manager.load_proxy_settings()
+    app.proxy_controller.apply_settings(proxy_settings)
 
     temp_folder = os.path.join(os.path.expanduser("~"), ".epub_translator_temp")
     os.makedirs(temp_folder, exist_ok=True)
@@ -143,6 +144,8 @@ def run_translator_only():
                 break
     finally:
         print("[INFO] Translator-only application is shutting down.")
+        if hasattr(app, "proxy_controller"):
+            app.proxy_controller.shutdown()
         if hasattr(app, "engine_thread") and app.engine_thread.isRunning():
             app.engine_thread.quit()
             app.engine_thread.wait()
