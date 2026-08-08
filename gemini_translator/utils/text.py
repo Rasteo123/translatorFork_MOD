@@ -2752,9 +2752,10 @@ def coerce_translated_body_block(original_html: str, translated_html: str) -> st
     if not isinstance(normalized, str) or not isinstance(original_html, str):
         return normalized
 
-    normalized_original = _normalize_epub_heading_for_validation(original_html)
-    normalized = _normalize_epub_heading_for_validation(normalized)
-    normalized = _coerce_first_heading_level(normalized_original, normalized)
+    soup_cache = {}
+    normalized_original = _normalize_epub_heading_for_validation(original_html, soup_cache)
+    normalized = _normalize_epub_heading_for_validation(normalized, soup_cache)
+    normalized = _coerce_first_heading_level(normalized_original, normalized, soup_cache)
 
     original_lower = normalized_original.lower()
     if '<body' not in original_lower or '</body>' not in original_lower:
@@ -2763,15 +2764,30 @@ def coerce_translated_body_block(original_html: str, translated_html: str) -> st
     normalized_lower = normalized.lower()
     if re.search(r'<body\b', normalized_lower) and re.search(r'</body>', normalized_lower):
         normalized = process_body_tag(normalized, return_parts=False, body_content_only=False)
-    return repair_missing_paragraph_tags(normalized_original, normalized)
+    return repair_missing_paragraph_tags(normalized_original, normalized, soup_cache)
 
 
-def _normalize_epub_heading_for_validation(html_content: str) -> str:
+def _parse_html_for_validation(html_content, soup_cache=None):
+    """Парсит HTML, переиспользуя soup одной и той же строки в рамках вызова.
+
+    Кэшированные soup — read-only: хелпер, которому нужно мутировать дерево,
+    обязан парсить свежую копию либо удалить ключ из кэша до мутации.
+    """
+    if soup_cache is None:
+        return BeautifulSoup(html_content, 'html.parser')
+    soup = soup_cache.get(html_content)
+    if soup is None:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        soup_cache[html_content] = soup
+    return soup
+
+
+def _normalize_epub_heading_for_validation(html_content: str, soup_cache=None) -> str:
     try:
         from .epub_tools import normalize_epub_chapter_heading_to_h1
     except Exception:
         return html_content
-    return normalize_epub_chapter_heading_to_h1(html_content)
+    return normalize_epub_chapter_heading_to_h1(html_content, soup_cache=soup_cache)
 
 
 def _first_heading_tag(soup):
@@ -2779,12 +2795,12 @@ def _first_heading_tag(soup):
     return root.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) if root else None
 
 
-def _coerce_first_heading_level(original_html: str, translated_html: str) -> str:
+def _coerce_first_heading_level(original_html: str, translated_html: str, soup_cache=None) -> str:
     if not isinstance(original_html, str) or not isinstance(translated_html, str):
         return translated_html
 
-    original_soup = BeautifulSoup(original_html, 'html.parser')
-    translated_soup = BeautifulSoup(translated_html, 'html.parser')
+    original_soup = _parse_html_for_validation(original_html, soup_cache)
+    translated_soup = _parse_html_for_validation(translated_html, soup_cache)
     original_heading = _first_heading_tag(original_soup)
     translated_heading = _first_heading_tag(translated_soup)
     if not original_heading or not translated_heading:
@@ -2799,6 +2815,9 @@ def _coerce_first_heading_level(original_html: str, translated_html: str) -> str
     if translated_soup.find('h1') is not None:
         return translated_html
 
+    if soup_cache is not None:
+        # Дерево сейчас мутирует и перестанет соответствовать translated_html.
+        soup_cache.pop(translated_html, None)
     translated_heading.name = original_name
     return str(translated_soup)
 
@@ -2862,7 +2881,35 @@ def _split_root_text_paragraphs(text: str) -> list[str]:
     return [normalized.strip()]
 
 
-def _wrap_body_root_text_as_paragraphs(html_content: str) -> tuple[str, bool]:
+def _body_has_wrappable_root_content(soup) -> bool:
+    """Read-only проверка условий, при которых _wrap_body_root_text_as_paragraphs
+    что-то меняет: голый текст, <br> или inline-тег с текстом в корне <body>."""
+    body = soup.body
+    if not body:
+        return False
+
+    ignored_nodes = (Comment, Declaration, ProcessingInstruction)
+    for child in body.contents:
+        if isinstance(child, ignored_nodes):
+            continue
+        if isinstance(child, NavigableString):
+            if str(child).strip():
+                return True
+            continue
+        child_name = getattr(child, 'name', None)
+        if child_name == 'br':
+            return True
+        if child_name in INLINE_BODY_START_TAGS and child.get_text(" ", strip=True):
+            return True
+    return False
+
+
+def _wrap_body_root_text_as_paragraphs(html_content: str, soup_cache=None) -> tuple[str, bool]:
+    probe_soup = _parse_html_for_validation(html_content, soup_cache)
+    if not _body_has_wrappable_root_content(probe_soup):
+        return html_content, False
+
+    # Мутирующий проход: всегда свежий парс, кэшированный soup не трогаем.
     soup = BeautifulSoup(html_content, 'html.parser')
     body = soup.body
     if not body:
@@ -2931,7 +2978,7 @@ def _wrap_body_root_text_as_paragraphs(html_content: str) -> tuple[str, bool]:
     return str(soup), True
 
 
-def repair_missing_paragraph_tags(original_html: str, translated_html: str) -> str:
+def repair_missing_paragraph_tags(original_html: str, translated_html: str, soup_cache=None) -> str:
     """
     Wrap translated root-level body text into <p> tags when the source used
     paragraphs and the model flattened them into plain text.
@@ -2943,8 +2990,8 @@ def repair_missing_paragraph_tags(original_html: str, translated_html: str) -> s
     if original_p_count <= 0:
         return translated_html
 
-    original_soup = BeautifulSoup(original_html, 'html.parser')
-    translated_soup = BeautifulSoup(translated_html, 'html.parser')
+    original_soup = _parse_html_for_validation(original_html, soup_cache)
+    translated_soup = _parse_html_for_validation(translated_html, soup_cache)
     if (
         not _find_leading_visible_text_before_expected_block(original_soup)
         and _find_leading_visible_text_before_expected_block(translated_soup)
@@ -2954,7 +3001,7 @@ def repair_missing_paragraph_tags(original_html: str, translated_html: str) -> s
             translated_html,
         )
 
-    repaired_html, repaired = _wrap_body_root_text_as_paragraphs(translated_html)
+    repaired_html, repaired = _wrap_body_root_text_as_paragraphs(translated_html, soup_cache)
     if not repaired:
         return translated_html
 
@@ -3155,14 +3202,16 @@ def validate_html_structure(original_html, translated_html):
     """
     if not translated_html or not translated_html.strip():
         return False, "API вернуло пустой ответ.", translated_html
-    
-    original_html = _normalize_epub_heading_for_validation(original_html)
-    final_translated_html = _normalize_epub_heading_for_validation(translated_html)
+
+    # Один парс на уникальную строку в рамках этого вызова (soup'ы read-only).
+    soup_cache = {}
+    original_html = _normalize_epub_heading_for_validation(original_html, soup_cache)
+    final_translated_html = _normalize_epub_heading_for_validation(translated_html, soup_cache)
     normalized_orig = prettify_html_for_ai(original_html)
     orig_lower = normalized_orig.lower().strip()
     final_translated_html = normalize_translated_body_wrapper(original_html, final_translated_html)
     final_translated_html = normalize_xhtml_tag_case(final_translated_html)
-    final_translated_html = _coerce_first_heading_level(original_html, final_translated_html)
+    final_translated_html = _coerce_first_heading_level(original_html, final_translated_html, soup_cache)
     trans_lower = final_translated_html.lower().strip()
 
     # --- ПРОВЕРКА 1: Целостность <body> (Regex) ---
@@ -3179,10 +3228,10 @@ def validate_html_structure(original_html, translated_html):
     
     # --- НАЧАЛО БЛОКА: Глубокая структурная валидация ---
     try:
-        soup_orig = BeautifulSoup(normalized_orig, 'html.parser')
-        soup_orig_raw = BeautifulSoup(original_html, 'html.parser')
+        soup_orig = _parse_html_for_validation(normalized_orig, soup_cache)
+        soup_orig_raw = _parse_html_for_validation(original_html, soup_cache)
         # Пока парсим оригинал перевода
-        soup_trans = BeautifulSoup(final_translated_html, 'html.parser')
+        soup_trans = _parse_html_for_validation(final_translated_html, soup_cache)
 
         # ПРОВЕРКА 2.1: Фундаментальные теги. Body-only output is valid here:
         # the pipeline intentionally coerces translated XHTML to a <body> block.
@@ -3224,16 +3273,16 @@ def validate_html_structure(original_html, translated_html):
             if p_balance_repaired == 0:
                 final_translated_html = repaired_html
                 # Обновляем soup для последующих структурных проверок
-                soup_trans = BeautifulSoup(final_translated_html, 'html.parser')
+                soup_trans = _parse_html_for_validation(final_translated_html, soup_cache)
                 # И обновляем lower версию для проверок тегов
                 trans_lower = repaired_lower
                 # Обновляем текущий баланс, чтобы пройти финальную проверку ниже
                 p_balance_trans = 0
 
-        paragraph_repaired_html = repair_missing_paragraph_tags(original_html, final_translated_html)
+        paragraph_repaired_html = repair_missing_paragraph_tags(original_html, final_translated_html, soup_cache)
         if paragraph_repaired_html != final_translated_html:
             final_translated_html = paragraph_repaired_html
-            soup_trans = BeautifulSoup(final_translated_html, 'html.parser')
+            soup_trans = _parse_html_for_validation(final_translated_html, soup_cache)
             trans_lower = final_translated_html.lower().strip()
             trans_p_open = len(re.findall(p_open_pat, trans_lower))
             trans_p_close = len(re.findall(p_close_pat, trans_lower))
@@ -3253,7 +3302,7 @@ def validate_html_structure(original_html, translated_html):
             )
             if repaired:
                 final_translated_html = repaired_html
-                soup_trans = BeautifulSoup(final_translated_html, 'html.parser')
+                soup_trans = _parse_html_for_validation(final_translated_html, soup_cache)
                 trans_lower = final_translated_html.lower().strip()
                 trans_leading_text = _find_leading_visible_text_before_expected_block(soup_trans)
             if trans_leading_text:
