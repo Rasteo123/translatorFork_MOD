@@ -12,6 +12,9 @@ from ...api import config as api_config
 from ...utils.document_importer import DOCUMENT_INPUT_FILTER, extract_document_chapters
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.dialogs.benchmark import BenchmarkRunWorker
+from gemini_translator.ui.widgets.dynamic_models_refresher import (
+    DynamicModelsRefresher,
+)
 
 
 class PromptBenchmarkPage(ShellPage):
@@ -33,6 +36,8 @@ class PromptBenchmarkPage(ShellPage):
         self._loading_prompt = False
         self._loading_model = False
         self._saved_run_focus: dict[str, str] = {}
+        self._models_refresher = DynamicModelsRefresher(self)
+        self._models_refresher.refreshed.connect(self._on_dynamic_models_refreshed)
         self._build_ui()
         self._load_ui_state()
         self._populate_from_config()
@@ -1425,9 +1430,17 @@ class PromptBenchmarkPage(ShellPage):
         self._populate_model_combo()
         self._update_model_id_hint()
 
+    def _on_dynamic_models_refreshed(self, provider_id: str):
+        if provider_id != str(self.model_provider_combo.currentData() or ""):
+            return
+        self._populate_model_combo(self.model_name_combo.currentText() or None)
+        self._update_model_id_hint()
+
     def _populate_model_combo(self, selected_model: str | None = None):
         provider_id = str(self.model_provider_combo.currentData() or "")
-        provider = api_config.ensure_dynamic_provider_models(provider_id) or {}
+        # Discovery моделей — в фоне; комбо заполняется из текущего реестра.
+        self._models_refresher.refresh_async(provider_id)
+        provider = api_config.api_providers_view().get(provider_id, {})
         models = provider.get("models", {}) if isinstance(provider, dict) else {}
         self.model_name_combo.blockSignals(True)
         self.model_name_combo.clear()

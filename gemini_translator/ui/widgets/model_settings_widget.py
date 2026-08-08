@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, pyqtSlot
 from .common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
 from .content_filter_fallback_panel import ContentFilterFallbackPanel
+from .dynamic_models_refresher import DynamicModelsRefresher
 from ..widgets.preset_widget import PresetWidget
 # --- Импорты из нашего проекта ---
 # Мы импортируем config напрямую, чтобы виджет был самодостаточным
@@ -419,6 +420,8 @@ class ModelSettingsWidget(QGroupBox):
         self._provider_event_source_id = None
         self._mcp_mode = False
         self._mcp_restore_provider_id = None
+        self._models_refresher = DynamicModelsRefresher(self)
+        self._models_refresher.refreshed.connect(self._on_dynamic_models_refreshed)
         # Виджету интересна только смена провайдера; не будимся на чужие события.
         self._event_topics = ('provider_changed', 'ai_provider_mode_changed')
         self._connect_to_bus()
@@ -1408,9 +1411,31 @@ class ModelSettingsWidget(QGroupBox):
         if not provider_id:
             return
 
+        # Явное действие пользователя — синхронно, список обновляется на глазах.
         api_config.refresh_dynamic_models(provider_id)
         self.set_available_models(provider_id)
         self._emit_settings_changed()
+
+    @pyqtSlot(str)
+    def _on_dynamic_models_refreshed(self, provider_id: str):
+        if provider_id != getattr(self, "_current_provider_id", None):
+            return
+        if self._combo_matches_provider_models(provider_id):
+            return
+        self.set_available_models(provider_id)
+
+    def _combo_matches_provider_models(self, provider_id: str) -> bool:
+        provider_config = api_config.api_providers_view().get(provider_id, {})
+        models = provider_config.get("models", {}) or {}
+        combo_items = [
+            (self.model_combo.itemText(i), self.model_combo.itemData(i))
+            for i in range(self.model_combo.count())
+        ]
+        registry_items = [
+            (display_name, (config or {}).get('id'))
+            for display_name, config in models.items()
+        ]
+        return combo_items == registry_items
     
     
     def _current_model_defaults(self):
@@ -1509,7 +1534,9 @@ class ModelSettingsWidget(QGroupBox):
         self._update_provider_specific_controls(provider_id)
         
         if provider_id:
-            api_config.ensure_dynamic_provider_models(provider_id)
+            # HTTP discovery — только в фоне: комбо заполняется сразу из
+            # текущего реестра, по сигналу refreshed список догоняет сервер.
+            self._models_refresher.refresh_async(provider_id)
             provider_config = api_config.api_providers_view().get(provider_id, {})
             models = provider_config.get("models", {})
             if models:

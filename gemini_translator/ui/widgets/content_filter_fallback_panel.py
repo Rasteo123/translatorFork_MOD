@@ -11,6 +11,9 @@ from gemini_translator.ui.widgets.common_widgets import (
     NoScrollDoubleSpinBox,
     NoScrollSpinBox,
 )
+from gemini_translator.ui.widgets.dynamic_models_refresher import (
+    DynamicModelsRefresher,
+)
 
 
 class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
@@ -20,6 +23,8 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
         super().__init__("Резерв при блокировке контента", parent)
         self.settings_manager = settings_manager
         self._restoring = False
+        self._models_refresher = DynamicModelsRefresher(self)
+        self._models_refresher.refreshed.connect(self._on_dynamic_models_refreshed)
         self._build_ui()
         self._connect_signals()
         self._populate_providers()
@@ -120,13 +125,20 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
     def _on_provider_changed(self, *args):
         provider_id = self.provider_combo.currentData()
         if provider_id:
-            try:
-                api_config.ensure_dynamic_provider_models(provider_id)
-            except Exception:
-                pass
+            self._models_refresher.refresh_async(provider_id)
         self._reload_models()
         self._update_enabled_state()
         self._emit_config_changed()
+
+    def _on_dynamic_models_refreshed(self, provider_id):
+        if provider_id != self.provider_combo.currentData():
+            return
+        selected_before = self.model_combo.currentText()
+        self._reload_models()
+        self._update_model_dependent_controls()
+        self._update_enabled_state()
+        if self.model_combo.currentText() != selected_before:
+            self._emit_config_changed()
 
     def _reload_models(self, selected_model=None):
         if selected_model is None:
@@ -269,10 +281,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
                 index = self.provider_combo.findData(provider_id)
                 if index != -1:
                     self.provider_combo.setCurrentIndex(index)
-                    try:
-                        api_config.ensure_dynamic_provider_models(provider_id)
-                    except Exception:
-                        pass
+                    self._models_refresher.refresh_async(provider_id)
 
             self._reload_models(settings.get("content_filter_fallback_model"))
 
