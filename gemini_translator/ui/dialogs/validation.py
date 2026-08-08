@@ -3791,16 +3791,6 @@ class TranslationValidatorPage(ShellPage):
         # Пересчитываем визуальные фильтры (цвета, скрытие), так как индексы сдвинулись
         self.reapply_filters()
 
-    def _load_default_exceptions(self):
-        try:
-            base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.abspath('.')
-            default_file = os.path.join(base_path, 'config', 'default_word_exceptions.txt')
-            if os.path.exists(default_file):
-                with open(default_file, 'r', encoding='utf-8') as f:
-                    self.default_exceptions_text = f.read()
-        except Exception as e:
-            print(f"[VALIDATOR_ERROR] Не удалось загрузить стандартный список исключений: {e}")
-    
     def reapply_filters(self):
         """
         Динамически пересчитывает статус для ВСЕХ строк.
@@ -4653,23 +4643,6 @@ class TranslationValidatorPage(ShellPage):
         should_hide = (visual_status == 'neutral') and (not show_all)
         self.table_results.setRowHidden(row_pos, should_hide)
     
-    def _update_data_from_view(self):
-        selected_items = self.table_results.selectedItems()
-        if not selected_items:
-            return
-        row = selected_items[0].row()
-        
-        if row in self.results_data:
-            # Получаем текущий контент в зависимости от активного режима
-            if self.is_code_view:
-                current_content = self.view_translated.toPlainText()
-            else:
-                # Преобразуем HTML-контент в 'очищенный' текст для хранения
-                current_content = self.view_translated.toHtml() 
-                
-            self.results_data[row]['translated_html'] = current_content
-    
-    
 # --- НАЧАЛО КОДА ДЛЯ ЗАМЕНЫ (два метода в классе TranslationValidatorDialog) ---
 
     def _are_any_translated_files_left(self):
@@ -4912,78 +4885,6 @@ class TranslationValidatorPage(ShellPage):
             
             self.view_translated.setReadOnly(not self.is_code_view)
 
-
-    def _inject_highlights_into_html(self, html_content, words_to_highlight=None, regex_matches=None):
-        """
-        Создает временную копию HTML и "внедряет" в нее теги подсветки.
-        Использует умные границы для слов, чтобы находить 'Word' внутри 'Word123'.
-        """
-        modified_html = html_content
-        tag_regex = re.compile(r"(<[^>]+>)", re.DOTALL)
-
-        # --- ЭТАП 1: Подсветка недоперевода ---
-        if words_to_highlight:
-            try:
-                # Сортируем по длине, чтобы сначала подсвечивать длинные фразы
-                sorted_words = sorted(words_to_highlight, key=len, reverse=True)
-                patterns = []
-                for w in sorted_words:
-                    if re.fullmatch(r'[a-zA-Z]+', w):
-                        # ЛЕКАРСТВО: Вместо \b используем lookaround. 
-                        # Ищем слово, перед которым и после которого НЕТ букв.
-                        # Это позволит найти "Level" внутри "Level5" или "Item_1".
-                        patterns.append(f"(?<![a-zA-Z]){re.escape(w)}(?![a-zA-Z])")
-                    else:
-                        patterns.append(re.escape(w))
-                
-                if patterns:
-                    giant_regex = re.compile(f"({'|'.join(patterns)})", re.IGNORECASE)
-                    
-                    def untranslated_replacer(match):
-                        return f'<span style="background-color: rgba(255, 140, 0, 0.5); border: 1px solid orange;">{match.group(0)}</span>'
-
-                    parts = tag_regex.split(modified_html)
-                    for i in range(0, len(parts), 2):
-                        # Пропускаем пустые части
-                        if not parts[i]: continue
-                        parts[i] = giant_regex.sub(untranslated_replacer, parts[i])
-                    modified_html = "".join(parts)
-            except re.error as e:
-                print(f"[Highlighter Error] Untranslated words regex failed: {e}")
-        
-        # --- ЭТАП 2: Подсветка Regex-поиска ---
-        if regex_matches:
-            # Итерируем по совпадениям в обратном порядке
-            for match in sorted(regex_matches, key=lambda m: m.capturedStart(0), reverse=True):
-                start, end = match.capturedStart(0), match.capturedEnd(0)
-                
-                matched_block = modified_html[start:end]
-                
-                parts = tag_regex.split(matched_block)
-                for i in range(0, len(parts), 2):
-                    if parts[i]: 
-                        parts[i] = f'<span style="background-color: rgba(0, 191, 255, 0.4);">{parts[i]}</span>'
-                
-                highlighted_block = "".join(parts)
-                modified_html = modified_html[:start] + highlighted_block + modified_html[end:]
-
-        return modified_html
-        
-    def _update_in_memory_data(self):
-        selected_items = self.table_results.selectedItems()
-        if not selected_items:
-            return
-        row = selected_items[0].row()
-        
-        if row in self.results_data:
-            # Получаем контент в зависимости от текущего режима
-            if self.is_code_view:
-                current_content = self.view_translated.toPlainText()
-            else:
-                current_content = self.view_translated.toHtml()
-            
-            self.results_data[row]['translated_html'] = current_content
-    
 
     @pyqtSlot()
     def on_selection_changed(self):

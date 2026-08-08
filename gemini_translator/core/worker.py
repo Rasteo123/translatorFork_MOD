@@ -19,7 +19,7 @@ import contextvars
 import uuid
 import asyncio
 
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, CancelledError
+from concurrent.futures import CancelledError
 
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QObject
@@ -29,8 +29,6 @@ from PyQt6.QtCore import QObject
 from gemini_translator.api import config as api_config
 
 from gemini_translator.utils.text import validate_html_structure
-
-from gemini_translator.core.task_manager import ChapterQueueManager # Наш новый класс
 
 # Импорт ошибок
 from gemini_translator.api.errors import (

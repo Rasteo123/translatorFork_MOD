@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QVBoxLayout,
     QHBoxLayout, QWidget, QTextEdit, QPushButton, QLabel,
     QProgressBar, QMessageBox, QInputDialog, QSplitter,
-    QListWidget, QListWidgetItem, QToolBar, QSlider,
+    QListWidget, QListWidgetItem, QToolBar,
     QSizePolicy, QCheckBox, QMenu, QComboBox, QSpinBox, QDoubleSpinBox,
     QDialog, QDialogButtonBox, QScrollArea, QTabWidget, QPlainTextEdit,
     QSystemTrayIcon
@@ -2885,33 +2885,6 @@ class BookManager:
         if filepath:
             self._import_book(filepath)
 
-    def _import_book_epub_legacy(self, filepath):
-        if epub is None or ebooklib is None:
-            raise RuntimeError("Для импорта EPUB требуется пакет ebooklib.")
-        filename = os.path.basename(filepath)
-        self.title = "".join([c for c in os.path.splitext(filename)[0] if c.isalnum() or c in (' ', '-', '_')]).strip()
-        self.book_dir = os.path.join(self.base_dir, self.title)
-        
-        if not os.path.exists(self.book_dir):
-            os.makedirs(self.book_dir)
-        
-        try:
-            shutil.copy(filepath, os.path.join(self.book_dir, filename))
-        except Exception as e:
-            logger.error(f"Ошибка при копировании файла: {e}")
-
-        try:
-            book = epub.read_epub(filepath)
-            for item_ref in book.spine:
-                item = book.get_item_with_id(item_ref[0])
-                # ИЗМЕНЕНИЕ: Улучшенная поддержка файлов .html и .htm, если они не помечены как DOCUMENT
-                if item and (item.get_type() == ebooklib.ITEM_DOCUMENT or item.get_name().lower().endswith(('.xhtml', '.html', '.htm'))):
-                    chap = Chapter(f"Chapter {len(self.chapters) + 1}", item.get_content())
-                    if chap.flat_sentences:
-                        self.chapters.append(chap)
-        except Exception as e:
-            logger.error(f"Epub Error: {e}")
-
     def _import_book(self, filepath):
         filename = os.path.basename(filepath)
         self.title = "".join([c for c in os.path.splitext(filename)[0] if c.isalnum() or c in (' ', '-', '_')]).strip()
@@ -3417,9 +3390,6 @@ class AudioPlayer(QThread):
             output=True
         )
 
-    def set_volume(self, v):
-        self.vol = float(v) / 100.0
-
     def run(self):
         while self.is_running:
             try:
@@ -3543,12 +3513,6 @@ class GeminiWorker(QThread):
                 return True
             await asyncio.sleep(min(remaining, READER_WORKER_SLEEP_STEP_SEC))
         return False
-
-    def update_chunk_size(self, v):
-        try:
-            self.chunk = max(1, int(round(float(v))))
-        except Exception:
-            self.chunk = 1
 
     def _reset_live_mp3_autosave(self):
         self._last_live_mp3_autosave_at = time.monotonic()
@@ -5318,11 +5282,6 @@ class DashboardRow(QWidget):
         # Устанавливаем значение прогресс-бара
         self.pbar.setValue(pct_chap)
 
-    def set_finished(self):
-        self.lbl_status.setText("ГОТОВО")
-        self.pbar.setValue(100)
-        self.hide()
-
 class ApiKeysDialog(QDialog):
     def __init__(self, keys_str, parent=None):
         super().__init__(parent)
@@ -6475,35 +6434,6 @@ class MainWindow(QMainWindow):
                 return self._api_key_required_model_ids([self._selected_preprocess_model_id()])
             return [model_id for model_id in [self._selected_model_id()] if model_id]
         return [model_id for model_id in [self._selected_model_id()] if model_id]
-
-    def _reader_request_count_for_key(self, api_key, model_id):
-        if not api_key or not model_id:
-            return 0
-        if self.settings_manager is not None:
-            try:
-                key_info = self.settings_manager.get_key_info(api_key)
-                if key_info:
-                    return int(self.settings_manager.get_request_count(key_info, model_id) or 0)
-            except Exception:
-                pass
-        if self.daily_request_limiter is not None:
-            try:
-                return int(self.daily_request_limiter.get_count(model_id, api_key=api_key) or 0)
-            except Exception:
-                pass
-        return 0
-
-    def _reader_request_limit_for_model(self, model_id):
-        try:
-            return int(_lookup_model_limit(model_id, "rpd", 0) or 0)
-        except Exception:
-            return 0
-
-    def _reader_key_model_quota_exhausted(self, api_key, model_id):
-        limit_value = self._reader_request_limit_for_model(model_id)
-        if limit_value <= 0:
-            return False
-        return self._reader_request_count_for_key(api_key, model_id) >= limit_value
 
     def _load_invalid_key_states(self):
         raw_state = {}
@@ -8987,9 +8917,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Видео", "Сначала выберите картинку для видео.")
             return
         self._start_audio_combiner(video_image_path=video_cover_path)
-
-    def on_vol(self, v):
-        if self.player: self.player.set_volume(v)
 
     def set_api_keys(self):
         dlg = ApiKeysDialog("\n".join(self.api_keys), self)

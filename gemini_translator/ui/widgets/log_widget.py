@@ -240,9 +240,6 @@ class LogWidget(QWidget):
 
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(file_path))
 
-    def _add_html_to_log(self, data: dict):
-        self._insert_html_batch(self._build_log_html(data))
-
     def _flush_pending_messages(self):
         if not self._pending_log_data:
             return

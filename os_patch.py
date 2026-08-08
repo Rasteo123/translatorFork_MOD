@@ -374,24 +374,6 @@ class PatientLock:
             
             self._cond.notify_all()
 
-    def _raise_timeout_error(self, me, owner_start, stack_start):
-        if me in self._waiters:
-            self._waiters.remove(me)
-            
-        # Извлекаем стек текущего владельца
-        current_owner_stack = "".join(self._owner_stack) if self._owner_stack else "<Стек недоступен>"
-            
-        error_details = [
-            f"💀 DEADLOCK: Таймаут ожидания истек.",
-            f"  - Жертва (тот, кто ждал): {me}",
-            f"  - Владелец сейчас: {self._owner}",
-            f"  - Очередь: {list(self._waiters)}",
-            f"\n📍 ГДЕ ВЛАДЕЛЕЦ ВЗЯЛ ЗАМОК (Возможная причина зависания):\n{'-'*60}\n{current_owner_stack.strip()}\n{'-'*60}"
-        ]
-        msg = "\n".join(error_details)
-        print(msg)
-        raise RuntimeError(msg)
-
     def __enter__(self):
         self.acquire()
 

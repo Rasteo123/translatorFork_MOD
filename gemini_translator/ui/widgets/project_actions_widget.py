@@ -69,8 +69,5 @@ class ProjectActionsWidget(QWidget):
     def set_build_epub_enabled(self, enabled):
         self.build_epub_btn.setEnabled(enabled)
 
-    def set_projects_enabled(self, enabled):
-        self.projects_btn.setEnabled(enabled)
-
     def set_sync_enabled(self, enabled):
         self.sync_project_btn.setEnabled(enabled)

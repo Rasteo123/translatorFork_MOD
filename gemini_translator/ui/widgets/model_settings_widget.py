@@ -1544,14 +1544,6 @@ class ModelSettingsWidget(QGroupBox):
             return self.model_combo.findText(model_name)
         return -1
         
-    def set_default_model(self, model_display_name: str): # <-- Принимает имя
-        """Устанавливает модель по умолчанию по ее ОТОБРАЖАЕМОМУ ИМЕНИ."""
-        index = self.model_combo.findText(model_display_name)
-        if index != -1:
-            self.model_combo.setCurrentIndex(index)
-        elif self.model_combo.count() > 0:
-            self.model_combo.setCurrentIndex(0)
-    
     def update_cjk_options_availability(self, enabled, is_cjk_recommended=False, error=False):
         """Обновляет состояние CJK-опций извне."""
         self.is_cjk_recommended = is_cjk_recommended

@@ -1868,39 +1868,6 @@ class UntranslatedFixerPage(ShellPage):
         self._update_tags_info_label()
         self.apply_filters()
 
-    def _prompt_and_add_phrase(self, list_type):
-        """Открывает диалог ввода произвольной фразы (1-3 слова) и добавляет в фильтр."""
-        from PyQt6.QtWidgets import QInputDialog
-        label = "Требовать (✅)" if list_type == 'white' else "Скрыть (❌)"
-        phrase, ok = QInputDialog.getText(
-            self,
-            f"Добавить фразу в «{label}»",
-            "Введите фразу (1–3 слова):",
-        )
-        if not ok or not phrase.strip():
-            return
-        words = phrase.strip().split()
-        if len(words) > 3:
-            QMessageBox.warning(
-                self,
-                "Слишком длинная фраза",
-                "Допускается не более 3 слов. Будут использованы первые три."
-            )
-            words = words[:3]
-        phrase_key = " ".join(words).lower()
-        if list_type == 'white':
-            self.whitelist_set.add(phrase_key)
-        else:
-            self.blacklist_set.add(phrase_key)
-        self._update_tags_info_label()
-        self.apply_filters()
-
-
-    def _set_whitelist_filter(self, term):
-        """Устанавливает термин в поле поиска и обновляет таблицу."""
-        self.whitelist_edit.setText(term)
-        # apply_filters вызовется автоматически через сигнал textChanged
-        
     def _on_cell_changed(self, row, col):
         """Обработка кликов по чекбоксам для обновления глобального множества."""
         if col == 0:

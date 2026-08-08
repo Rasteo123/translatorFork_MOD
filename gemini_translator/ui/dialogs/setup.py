@@ -256,40 +256,6 @@ def _create_tasks_tab_scroll_area(task_management_widget, translation_options_wi
     return tasks_scroll, tasks_splitter
 
 
-class PreflightEstimateDialog(QDialog):
-    """Compact dialog for previewing the session estimate before launch."""
-
-    def __init__(self, report_text: str, can_start: bool = False, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Предварительная оценка сессии")
-        self.setMinimumSize(760, 540)
-
-        layout = QVBoxLayout(self)
-
-        intro = QLabel(
-            "Ниже показана приблизительная оценка по текущим настройкам проекта. "
-            "Значения по времени и стоимости являются ориентировочными."
-        )
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        report_edit = QPlainTextEdit(self)
-        report_edit.setReadOnly(True)
-        report_edit.setPlainText(report_text)
-        report_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        layout.addWidget(report_edit, 1)
-
-        buttons = QDialogButtonBox(self)
-        if can_start:
-            start_button = buttons.addButton("Запустить", QDialogButtonBox.ButtonRole.AcceptRole)
-            start_button.setDefault(True)
-        close_label = "Отмена" if can_start else "Закрыть"
-        buttons.addButton(close_label, QDialogButtonBox.ButtonRole.RejectRole)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-
 class BaseGlossarySelectionDialog(QDialog):
     """Lets the user choose one or more built-in glossaries for an empty project."""
 
@@ -940,14 +906,6 @@ class InitialSetupPage(ShellPage):
                 self._refresh_dirty_window_title()
             QMessageBox.information(self, "Глоссарий добавлен", f"Добавлено записей: {added_total}.")
 
-    def _create_glossary_tab_content(self) -> QWidget:
-        """Просто возвращает уже созданный GlossaryWidget."""
-        return self.glossary_widget
-
-    def _create_prompt_tab_content(self) -> QWidget:
-        """Просто возвращает уже созданный PresetWidget."""
-        return self.preset_widget
-
     def _prepare_for_close(self, autosave_glossary: bool = False):
         """Обрабатывает несохраненные изменения перед закрытием окна."""
         location_worker = getattr(self, '_project_location_worker', None)
@@ -1151,23 +1109,6 @@ class InitialSetupPage(ShellPage):
             if isinstance(settings, dict) and QUEUE_AUTOSAVE_SETTING_KEY in settings:
                 return bool(settings.get(QUEUE_AUTOSAVE_SETTING_KEY))
         return True
-
-    def _save_queue_autosave_enabled(self, enabled: bool) -> None:
-        loader = getattr(self.settings_manager, "load_full_session_settings", None)
-        saver = getattr(self.settings_manager, "save_full_session_settings", None)
-        if not callable(loader) or not callable(saver):
-            loader = getattr(self.settings_manager, "load_settings", None)
-            saver = getattr(self.settings_manager, "save_settings", None)
-        if not callable(loader) or not callable(saver):
-            return
-
-        try:
-            settings = loader()
-            settings = dict(settings) if isinstance(settings, dict) else {}
-            settings[QUEUE_AUTOSAVE_SETTING_KEY] = bool(enabled)
-            saver(settings)
-        except Exception as exc:
-            print(f"[WARN] Не удалось сохранить настройку автосохранения очереди: {exc}")
 
     def _create_queue_persistence_group(self) -> QGroupBox:
         group = QGroupBox("Очередь задач")
@@ -1741,14 +1682,6 @@ class InitialSetupPage(ShellPage):
         self.distribution_label.setText(text)
 
 
-    # ЗАМЕНИТЕ ЭТОТ МЕТОД
-    def _calculate_potential_output_size(self, html_content, is_cjk):
-        """
-        Вычисляет потенциальный размер ответа модели на основе содержимого HTML.
-        Устаревший метод, используйте глобальную функцию calculate_potential_output_size.
-        """
-        return calculate_potential_output_size(html_content, is_cjk)
-
     def _build_chapter_size_map_for_task_unit(self, chapters, settings_or_unit=None):
         if isinstance(settings_or_unit, dict):
             task_size_unit = normalize_task_size_unit(settings_or_unit.get('task_size_unit'))
@@ -2107,21 +2040,6 @@ class InitialSetupPage(ShellPage):
             self._refresh_dirty_window_title()
 
         print(f"[SETTINGS] Глобальные настройки сохранены в: {self.settings_manager.config_file}")
-
-    def _save_current_ui_settings(self):
-        """Сохраняет текущее состояние UI в активный файл настроек."""
-        self._save_global_ui_settings()
-
-
-    @QtCore.pyqtSlot()
-    def _continue_loading_project_and_update_all(self):
-        """
-        Запускает полную асинхронную цепочку загрузки проекта.
-        Используется после создания нового проекта или принудительной перезагрузки.
-        """
-        # Этот метод теперь просто "пробрасывает" вызов дальше,
-        # обеспечивая единую точку входа для разных сценариев.
-        self._process_selected_file()
 
     def _ask_and_filter_chapters(self):
         """
@@ -2604,32 +2522,6 @@ class InitialSetupPage(ShellPage):
             f"Удалено неактуальных переводов: {files_deleted_count}.")
 
 
-    def _on_folder_sync_finished(self, is_project_ready, message):
-        """
-        Слот, который вызывается после завершения фоновой синхронизации папки.
-        Версия 2.0: Использует новые, централизованные методы для фильтрации и обновления.
-        """
-        if hasattr(self, 'wait_dialog') and self.wait_dialog:
-            self.wait_dialog.accept()
-
-        if not is_project_ready:
-            QMessageBox.warning(self, "Операция прервана", message)
-            self.output_folder = None
-            self.project_manager = None
-            self.paths_widget.set_folder_path(None)
-            self.check_ready()
-            return
-
-        # 1. Загружаем ассеты проекта (например, глоссарий).
-        self._process_project_folder(self.output_folder)
-
-        # 2. Вызываем "умный" диалог, который предложит отфильтровать список глав, если это необходимо.
-        self._ask_and_filter_chapters()
-
-        # 3. Вызываем единый "оркестратор" для обновления всего UI на основе
-        #    (возможно, измененного) списка глав.
-        self._on_project_data_changed()
-
     def _handle_backup_restore(self):
         """
         Обрабатывает нажатие на кнопку 'Очередь...'.
@@ -2841,199 +2733,6 @@ class InitialSetupPage(ShellPage):
                 )
                 self._on_project_data_changed()
 
-    def _get_preflight_task_payloads(self):
-        payloads = []
-        if self.engine and self.engine.task_manager:
-            payloads = [payload for _, payload in self.engine.task_manager.get_all_pending_tasks()]
-        if not payloads and self.selected_file and self.html_files:
-            payloads = [('epub', self.selected_file, chapter_path) for chapter_path in self.html_files]
-        return payloads
-
-    def _build_preflight_report(self, settings: dict | None = None) -> str:
-        settings = settings or self.get_settings()
-        task_payloads = self._get_preflight_task_payloads()
-        if not task_payloads:
-            return "Очередь пуста. Добавьте главы или пересоберите задачи перед оценкой."
-
-        token_counter = TokenCounter()
-        model_config = settings.get('model_config') or {}
-        model_name = settings.get('model') or model_config.get('id') or "Неизвестная модель"
-        prompt_tokens = token_counter.estimate_tokens(settings.get('custom_prompt'))
-        system_tokens = 0
-        if settings.get('use_system_instruction') and settings.get('system_instruction'):
-            system_tokens = token_counter.estimate_tokens(settings.get('system_instruction'))
-
-        glossary_blob = json.dumps(settings.get('full_glossary_data') or {}, ensure_ascii=False)
-        glossary_tokens = token_counter.estimate_tokens(glossary_blob)
-        glossary_factor = 0.2 if settings.get('dynamic_glossary') else 1.0
-        effective_glossary_tokens = int(round(glossary_tokens * glossary_factor))
-        per_task_overhead = prompt_tokens + system_tokens + effective_glossary_tokens
-
-        chapter_html_cache = {}
-        chapter_text_cache = {}
-        unique_chapters = set()
-        archive_error = None
-
-        try:
-            with zipfile.ZipFile(self.selected_file, 'r') as zf:
-                for payload in task_payloads:
-                    task_type = payload[0]
-                    if task_type == 'epub_chunk':
-                        unique_chapters.add(payload[2])
-                        continue
-                    if task_type == 'epub_batch':
-                        chapter_paths = payload[2]
-                    else:
-                        chapter_paths = [payload[2]]
-                    for chapter_path in chapter_paths:
-                        unique_chapters.add(chapter_path)
-                        if chapter_path in chapter_html_cache:
-                            continue
-                        content = zf.read(chapter_path).decode('utf-8', 'ignore')
-                        chapter_html_cache[chapter_path] = content
-                        chapter_text_cache[chapter_path] = BeautifulSoup(content, 'html.parser').get_text()
-        except Exception as e:
-            archive_error = str(e)
-
-        total_html_tokens = 0
-        total_output_tokens = 0
-        max_input_tokens = 0
-        max_output_tokens = 0
-        total_source_tokens = 0
-        task_type_counter = Counter()
-        chapter_occurrences = Counter()
-        cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
-        cjk_divider = 1.5
-
-        for payload in task_payloads:
-            task_type = payload[0]
-            task_type_counter[task_type] += 1
-            task_input_tokens = 0
-            task_output_tokens = 0
-            task_source_chars = 0
-
-            if task_type == 'epub_chunk':
-                chapter_occurrences[payload[2]] += 1
-                chunk_html = payload[3] or ""
-                chunk_text = BeautifulSoup(chunk_html, 'html.parser').get_text()
-                is_cjk = bool(cjk_pattern.search(chunk_text))
-                potential_size, tags_size = calculate_potential_output_size(chunk_html, is_cjk)
-                text_size = max(potential_size - tags_size, 0)
-                task_input_tokens = token_counter.estimate_tokens(chunk_html)
-                task_output_tokens = int(math.ceil(
-                    (tags_size / api_config.CHARS_PER_ASCII_TOKEN) +
-                    (text_size / (cjk_divider if is_cjk else api_config.CHARS_PER_CYRILLIC_TOKEN))
-                ))
-                task_source_chars = len(chunk_html)
-            else:
-                chapter_paths = payload[2] if task_type == 'epub_batch' else [payload[2]]
-                for chapter_path in chapter_paths:
-                    chapter_occurrences[chapter_path] += 1
-                    chapter_html = chapter_html_cache.get(chapter_path, "")
-                    chapter_text = chapter_text_cache.get(chapter_path, "")
-                    is_cjk = bool(cjk_pattern.search(chapter_text))
-                    potential_size, tags_size = calculate_potential_output_size(chapter_html, is_cjk)
-                    text_size = max(potential_size - tags_size, 0)
-                    task_input_tokens += token_counter.estimate_tokens(chapter_html)
-                    task_output_tokens += int(math.ceil(
-                        (tags_size / api_config.CHARS_PER_ASCII_TOKEN) +
-                        (text_size / (cjk_divider if is_cjk else api_config.CHARS_PER_CYRILLIC_TOKEN))
-                    ))
-                    task_source_chars += len(chapter_html)
-
-            task_total_input = task_input_tokens + per_task_overhead
-            total_html_tokens += task_input_tokens
-            total_output_tokens += task_output_tokens
-            total_source_tokens += task_input_tokens
-            max_input_tokens = max(max_input_tokens, task_total_input)
-            max_output_tokens = max(max_output_tokens, task_output_tokens)
-
-        total_input_tokens = total_html_tokens + (len(task_payloads) * per_task_overhead)
-        workers = max(1, settings.get('num_instances') or 1)
-        rpm_limit = settings.get('rpm_limit') or model_config.get('rpm') or 1
-        concurrency_hint = settings.get('max_concurrent_requests') or workers
-        effective_parallel = max(1, min(workers, concurrency_hint))
-        time_by_rpm = (len(task_payloads) / max(1, rpm_limit)) * 60.0
-        time_by_parallel = math.ceil(len(task_payloads) / effective_parallel) * 12.0
-        rough_duration = max(time_by_rpm, time_by_parallel)
-        rpm_floor = (len(task_payloads) / max(1, rpm_limit)) * 60.0
-
-        cost_text = "н/д для этой модели"
-        if 'gemini' in model_name.lower():
-            estimated_cost = token_counter.estimate_cost(total_input_tokens, total_output_tokens, model_name)
-            cost_text = f"${estimated_cost:.4f}"
-
-        model_output_limit = model_config.get('max_output_tokens', api_config.default_max_output_tokens())
-        safe_output_limit = int(model_output_limit * api_config.MODEL_OUTPUT_SAFETY_MARGIN)
-
-        risk_notes = []
-        if max_output_tokens > safe_output_limit:
-            risk_notes.append("Высокий риск упора в лимит ответа модели на самой большой задаче.")
-        elif max_output_tokens > safe_output_limit * 0.8:
-            risk_notes.append("Самая крупная задача близка к безопасному лимиту ответа модели.")
-
-        if rpm_limit < workers:
-            risk_notes.append("RPM ниже числа воркеров: часть параллелизма будет простаивать из-за лимита запросов.")
-
-        avg_html_tokens = total_html_tokens / max(1, len(task_payloads))
-        if per_task_overhead > avg_html_tokens:
-            risk_notes.append("Промпт и глоссарий тяжелее среднего HTML-входа, это заметно влияет на цену и время.")
-
-        if settings.get('dynamic_glossary') and glossary_tokens:
-            risk_notes.append("Глоссарий оценен с понижающим коэффициентом 20%, потому что включена динамическая фильтрация.")
-
-        if archive_error:
-            risk_notes.append(f"Не удалось полностью прочитать EPUB для точного прогноза: {archive_error}")
-
-        duplicated_chapters = sum(1 for count in chapter_occurrences.values() if count > 1)
-        report_lines = [
-            "Сводка",
-            f"Файл: {os.path.basename(self.selected_file)}",
-            f"Модель: {model_name}",
-            f"Очередь: {len(task_payloads)} запросов, {len(unique_chapters)} уникальных глав",
-            (
-                f"Типы задач: обычные {task_type_counter.get('epub', 0)}, "
-                f"пакеты {task_type_counter.get('epub_batch', 0)}, "
-                f"чанки {task_type_counter.get('epub_chunk', 0)}"
-            ),
-            "",
-            "Нагрузка",
-            f"Токенов исходника: ~{int(round(total_source_tokens)):,}".replace(",", " "),
-            f"Входные токены HTML: ~{int(round(total_html_tokens)):,}".replace(",", " "),
-            f"Служебные токены на запрос: ~{per_task_overhead:,}".replace(",", " "),
-            f"Общий вход: ~{int(round(total_input_tokens)):,} токенов".replace(",", " "),
-            f"Общий выход: ~{int(round(total_output_tokens)):,} токенов".replace(",", " "),
-            f"Макс. вход на задачу: ~{int(round(max_input_tokens)):,} токенов".replace(",", " "),
-            f"Макс. выход на задачу: ~{int(round(max_output_tokens)):,} токенов".replace(",", " "),
-            "",
-            "Время и лимиты",
-            f"Воркеров: {workers}, эффективный параллелизм: {effective_parallel}",
-            f"RPM лимит: {rpm_limit}",
-            f"Технический минимум по RPM: {_format_duration(rpm_floor)}",
-            f"Грубая оценка времени с учетом параллелизма: {_format_duration(rough_duration)}",
-            f"Безопасный лимит ответа модели: ~{safe_output_limit:,} токенов".replace(",", " "),
-            "",
-            "Стоимость",
-            f"Оценка стоимости: {cost_text}",
-            f"Промпт: ~{prompt_tokens:,} токенов".replace(",", " "),
-            f"System instruction: ~{system_tokens:,} токенов".replace(",", " "),
-            (
-                f"Глоссарий: ~{glossary_tokens:,} токенов "
-                f"(в расчете используется ~{effective_glossary_tokens:,})"
-            ).replace(",", " "),
-            "",
-            "Наблюдения",
-            f"Повторно встречающихся глав в очереди: {duplicated_chapters}",
-        ]
-
-        if risk_notes:
-            report_lines.append("Риски и заметки:")
-            report_lines.extend(f"- {note}" for note in risk_notes)
-        else:
-            report_lines.append("Риски и заметки:")
-            report_lines.append("- Критичных признаков перегруза по текущей конфигурации не найдено.")
-
-        return "\n".join(report_lines)
 
     def _emit_task_manipulation_signal(self, action: str, payload):
         """
@@ -3429,37 +3128,6 @@ class InitialSetupPage(ShellPage):
 
         return False # Файл не найден, глава не "готова"
 
-    def _ask_and_run_migration(self, migrator, file_count):
-        """Показывает диалог с предложением о миграции и запускает ее."""
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Обнаружен старый проект")
-        msg_box.setIcon(QMessageBox.Icon.Question)
-        msg_box.setText(f"В выбранной папке найдено {file_count} файлов в старом 'плоском' формате.")
-
-        msg_box.setInformativeText(
-            "Программа может попытаться автоматически преобразовать этот проект в новую структурированную систему "
-            "(с вложенными папками и файлом-картой 'translation_map.json').\n\n"
-            "Это позволит использовать новые функции, такие как 'Обновление EPUB'.\n\n"
-            "<b>Рекомендуется сделать резервную копию папки перед миграцией.</b>\n\n"
-            "Выполнить миграцию?"
-        )
-
-        migrate_button = msg_box.addButton("Да, мигрировать", QMessageBox.ButtonRole.YesRole)
-        cancel_button = msg_box.addButton("Нет, пропустить", QMessageBox.ButtonRole.NoRole)
-
-        msg_box.exec()
-
-        if msg_box.clickedButton() == migrate_button:
-            moved, errors = migrator.run_migration()
-
-            summary_message = f"Миграция завершена.\n\n- Успешно перемещено и зарегистрировано: {moved}\n- Ошибок (файлы оставлены на месте): {errors}"
-
-            if errors > 0:
-                QMessageBox.warning(self, "Миграция завершена с ошибками", summary_message)
-            else:
-                QMessageBox.information(self, "Миграция завершена успешно", summary_message)
-
-
     def _copy_original_chapters(self):
         """
         Копирует оригиналы выбранных глав, управляя пакетной обработкой
@@ -3825,15 +3493,6 @@ class InitialSetupPage(ShellPage):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить глоссарий проекта: {e}")
             return False
-
-    def _save_project_data(self):
-        """
-        Сохраняет ВСЕ данные проекта: и настройки UI, и глоссарий.
-        """
-        if not self.output_folder:
-            return
-        self._save_project_settings_only()
-        self._save_project_glossary_only()
 
     def check_ready(self):
         """
@@ -4485,19 +4144,6 @@ class InitialSetupPage(ShellPage):
             self.dry_run_btn.setText("Пробный запуск")
 
 
-    @pyqtSlot(str, object, bool, str, str, str)
-    def _on_chapter_status_update(self, session_id, task_info_result, success, err_type, msg, final_status):
-        """Обновляет статус задачи в UI."""
-        task_info, _ = (task_info_result, None)
-        if isinstance(task_info_result, tuple) and len(task_info_result) == 2:
-            task_info, _ = task_info_result
-
-        self.task_management_widget.update_task_status(task_info, final_status)
-
-        # Обновляем счетчики
-        self.status_bar.increment_status(final_status)
-
-
     # --- НОВЫЙ МЕТОД ДЛЯ ПРИЕМА ДАННЫХ ИЗ ВАЛИДАТОРА ---
     def add_files_for_retry(self, epub_path, chapter_paths):
         """
@@ -4823,43 +4469,6 @@ class InitialSetupPage(ShellPage):
             dialog.exec()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть менеджер EPUB: {e}")
-
-    def _validate_translation_map(self, project_manager):
-        """
-        Проверяет карту, спрашивает пользователя и, если нужно, СИНХРОННО выполняет очистку.
-        Возвращает True, если очистка была выполнена.
-        """
-        dead_entries = project_manager.validate_map_with_filesystem()
-        if not dead_entries:
-            return False
-
-        num_dead = len(dead_entries)
-        # --- ИСПРАВЛЕНИЕ: Создаем QMessageBox с родителем (self) для правильного стиля ---
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Синхронизация проекта")
-        msg_box.setIcon(QMessageBox.Icon.Warning)
-        msg_box.setText(f"Обнаружено {num_dead} записей о переводах, файлы которых отсутствуют.")
-
-        details = "\n".join([f"- {rel_path}" for _, _, rel_path in dead_entries[:5]])
-        if num_dead > 5:
-            details += f"\n… и еще {num_dead - 5}."
-
-        msg_box.setInformativeText(f"Рекомендуется очистить эти 'мертвые' записи из карты проекта.\n\nПримеры:\n{details}")
-
-        cleanup_button = msg_box.addButton("Очистить записи", QMessageBox.ButtonRole.AcceptRole)
-        msg_box.addButton("Оставить как есть", QMessageBox.ButtonRole.RejectRole)
-
-        msg_box.exec()
-
-        if msg_box.clickedButton() == cleanup_button:
-            # Выполняем запись в файл немедленно. Это гарантирует целостность данных.
-            project_manager.cleanup_dead_entries(dead_entries)
-            # --- ИСПРАВЛЕНИЕ: Убираем лишнее и проблемное окно "Выполнено" ---
-            return True
-
-        return False
-
-# gemini_translator/ui/dialogs/setup.py
 
     def _estimate_auto_task_size_limit(self, token_limit: int):
         return auto_workflow_helpers.estimate_auto_task_size_limit(token_limit)
@@ -6864,86 +6473,6 @@ class InitialSetupPage(ShellPage):
             self.dry_run_btn.setEnabled(True)
 
 
-    def check_unvalidated_chapters(self):
-        """Проверяет, какие главы уже переведены, и предлагает их исключить."""
-        if not self.output_folder or not self.html_files: return
-
-        # --- НАЧАЛО ИЗМЕНЕНИЯ: Используем новую, правильную логику ---
-        from ...api import config as api_config
-
-        validated_chapters, unvalidated_chapters, untranslated_chapters = set(), set(), []
-        epub_base_name = os.path.splitext(os.path.basename(self.selected_file))[0]
-        validated_folder = os.path.join(self.output_folder, "validated_ok")
-
-        for html_file in self.html_files:
-            safe_html_name = re.sub(r'[\\/*?:"<>|]', "_", os.path.splitext(os.path.basename(html_file))[0])
-            base_filename = f"{epub_base_name}_{safe_html_name}"
-
-            # 1. Приоритетная проверка: ищем готовую версию
-            validated_filepath = os.path.join(validated_folder, f"{base_filename}_validated.html")
-            if os.path.exists(validated_filepath):
-                validated_chapters.add(html_file)
-                continue
-
-            # 2. Вторая проверка: ищем любую переведенную версию
-            is_unvalidated = False
-            for suffix in api_config.all_translated_suffixes():
-                unvalidated_filepath = os.path.join(self.output_folder, f"{base_filename}{suffix}")
-                if os.path.exists(unvalidated_filepath):
-                    is_unvalidated = True
-                    break
-
-            if is_unvalidated:
-                unvalidated_chapters.add(html_file)
-            else:
-                untranslated_chapters.append(html_file)
-
-
-        if not validated_chapters and not unvalidated_chapters:
-            return
-
-        msg = QMessageBox()
-        msg.setWindowTitle("Обнаружены переведенные главы")
-        msg.setIcon(QtWidgets.QMessageBox.Icon.Information)
-
-        msg.setText(
-            f"<b>Анализ выбранных глав ({len(self.html_files)}):</b>\n\n"
-            f"✅ <font color='green'>Проверенные ('готовые'):</font> <b>{len(validated_chapters)}</b>\n"
-            f"🔵 <font color='blue'>Непроверенные ('переведенные'):</font> <b>{len(unvalidated_chapters)}</b>\n"
-            f"⚪ Непереведенные: <b>{len(untranslated_chapters)}</b>"
-        )
-        msg.setInformativeText("Выберите, какие главы вы хотите включить в текущую сессию перевода:")
-
-        btn_skip_all = msg.addButton("Пропустить всё переведенное", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        btn_retranslate_unvalidated = msg.addButton("Перевести непроверенные", QtWidgets.QMessageBox.ButtonRole.ActionRole)
-        btn_retranslate_all = msg.addButton("Перевести всё заново", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
-
-        btn_skip_all.setToolTip("Будут переведены только непереведенные главы.")
-        btn_retranslate_unvalidated.setToolTip("Перезапишет 'непроверенные', но сохранит 'готовые'.")
-        btn_retranslate_all.setToolTip("Полностью перезапишет все существующие переводы.")
-
-        msg.exec()
-
-        clicked_button = msg.clickedButton()
-        original_html_files = self.html_files.copy() # Сохраняем исходный выбор
-
-        if clicked_button == btn_skip_all:
-            self.html_files = untranslated_chapters
-            info = f"Выбрано глав: {len(self.html_files)} (все переведенные пропущены)"
-        elif clicked_button == btn_retranslate_unvalidated:
-            self.html_files = untranslated_chapters + list(unvalidated_chapters)
-            info = f"Выбрано глав: {len(self.html_files)} (пропущены только 'готовые')"
-        elif clicked_button == btn_retranslate_all:
-            self.html_files = original_html_files # Возвращаем исходный выбор
-            info = f"Выбрано глав: {len(self.html_files)} (все главы будут переведены заново)"
-        else:
-            self.html_files, self.selected_file = [], None
-            self.paths_widget.set_file_path(None)
-            info = ""
-
-        self._on_project_data_changed()
-
-
     def reject(self):
         """
         Перехватывает событие закрытия. Корректно проверяет наличие ИЗМЕНЕНИЙ
@@ -7194,30 +6723,6 @@ class InitialSetupPage(ShellPage):
         else:
             self.use_project_settings_btn.setText("Глобальные настройки")
             self.use_project_settings_btn.setToolTip("Используются глобальные настройки из домашней директории.\nНажмите, чтобы переключиться на настройки проекта (будет создан файл, если его нет).")
-
-    def update_keys_count(self):
-        """Обновляет счетчик API ключей"""
-        keys = [k.strip() for k in self.keys_edit.toPlainText().splitlines() if k.strip()]
-        unique_keys = list(set(keys))
-
-
-        num_keys = len(unique_keys)
-        self.instances_spin.setMaximum(num_keys if num_keys > 0 else 1)
-
-
-        if len(keys) != len(unique_keys):
-            self.keys_count_label.setText(f"Ключей: {len(unique_keys)} (уникальных из {len(keys)})")
-            self.keys_count_label.setStyleSheet(f"color: {theme_manager.color('warning')}; font-size: 10px;")
-        else:
-            self.keys_count_label.setText(f"Ключей: {len(keys)}")
-            self.keys_count_label.setStyleSheet(f"color: {theme_manager.color('info')}; font-size: 10px;")
-        self._update_distribution_info() # <--- ДОБАВЬ ЭТУ СТРОКУ
-
-
-    def update_glossary_count(self):
-        """Обновляет счетчик терминов в глоссарии"""
-        self.glossary_count_label.setText(f"Терминов: {self.glossary_table.rowCount()}")
-
 
     def _init_lazy_ui_skeleton(self):
         """Создает минимальный 'скелет' UI для мгновенного отображения."""

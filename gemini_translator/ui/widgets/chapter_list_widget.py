@@ -462,12 +462,6 @@ class ChapterListWidget(QWidget):
             return None
         return task_tuple_with_uuid
 
-    def _extract_task_id_from_row(self, row):
-        task_tuple_with_uuid = self._extract_task_tuple_from_item(self.table.item(row, 0))
-        if not task_tuple_with_uuid:
-            return None
-        return task_tuple_with_uuid[0]
-
     def _get_single_selected_batch_task(self):
         selected_rows = self.table.selectionModel().selectedRows()
         if len(selected_rows) != 1:
@@ -1007,10 +1001,6 @@ class ChapterListWidget(QWidget):
             brush = QtGui.QBrush(QtGui.QColor(color_hex))
             item_task.setForeground(brush)
             status_item.setForeground(brush)
-
-    def set_retry_button_visible(self, visible):
-        """Управляет видимостью кнопки 'Выбрать ошибочные'."""
-        self.retry_failed_btn.setVisible(visible)
 
     def set_copy_originals_visible(self, visible: bool):
         """Управляет видимостью кнопки 'Скопировать оригиналы'."""

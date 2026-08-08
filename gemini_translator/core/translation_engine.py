@@ -184,7 +184,6 @@ class TranslationEngine(QObject):
         self.task_statuses = {}
         self._finish_check_pending = False
         self.keys_map = {}
-        self.paused_keys = set()
         self.shutting_down_workers = set()
         
         self.ramp_up_timer = None
@@ -318,10 +317,6 @@ class TranslationEngine(QObject):
                     'event': 'stop_session_requested', 'source': 'TranslationEngine',
                     'session_id': event_session, 'data': {'reason': "Уничтожение Зомби Воркера"}
                 })
-                return
-
-            # Событие легитимно, только если воркер известен и активен.
-            if not worker_key or worker_id not in self.active_workers_map:
                 return
 
             # Если событие принесло ключ, он ДОЛЖЕН совпадать.
@@ -729,7 +724,6 @@ class TranslationEngine(QObject):
         self.is_session_finishing = False
         self.is_soft_stopping = False
         self.task_statuses.clear()
-        self.paused_keys.clear()
         self.shutting_down_workers.clear()
         self.key_warning_counters.clear()
         self._last_mcp_limit_reason = ""
@@ -1192,10 +1186,6 @@ class TranslationEngine(QObject):
         if session_id:
             print(f"[MANAGER LIFECYCLE] Объект TranslationEngine для сессии …{session_id[:8]} УНИЧТОЖЕН.")
         
-    def _internal_log(self, session_id: str, message: str):
-        if self.session_id and session_id == self.session_id:
-            self._post_event('log_message', {'message': message})
-
     def _check_if_session_finished(self):
         """
         Проверяет условия завершения сессии.

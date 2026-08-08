@@ -1033,31 +1033,6 @@ class GlossaryManagerPage(ShellPage):
         page.result_ready.connect(apply_frequency_result)
         self.request_push.emit(page)
     
-    def _add_table_row(self, entry_data: dict):
-        """Быстро добавляет одну строку в конец таблицы."""
-        self.table.blockSignals(True)
-        row_count = self.table.rowCount()
-        self.table.insertRow(row_count)
-        self._populate_table_row(row_count, entry_data)
-        self.table.scrollToBottom()
-        self.table.blockSignals(False)
-    
-    def _remove_table_row_by_id(self, db_id: str):
-        """Быстро находит и удаляет строку по ее ID из БД."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.data(self.DB_ID_ROLE) == db_id:
-                self.table.removeRow(row)
-                return
-    
-    def _update_table_row_from_data(self, entry_data: dict):
-        """Быстро находит строку по ID и обновляет ее данные."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.data(self.DB_ID_ROLE) == entry_data['id']:
-                self._populate_table_row(row, entry_data)
-                return
-
     def _populate_table_row(self, row, entry_data: dict):
         """Заполняет одну строку таблицы данными. Внутренний метод."""
         items = [
@@ -1460,53 +1435,8 @@ class GlossaryManagerPage(ShellPage):
         self._load_current_page()
 
     def _find_page_for_id(self, db_id: str) -> int:
-        """Находит номер страницы для ID с учетом сортировки И ФИЛЬТРА."""
-        conn = self._get_db_conn()
-        
-        filter_clause, filter_params = self._get_filter_sql()
-        
-        with conn:
-            # 1. Проверяем, попадает ли этот ID вообще в выборку фильтра
-            check_query = f"SELECT 1 FROM glossary_editor_state {filter_clause} AND id=?"
-            # SQLite не поддерживает WHERE ... AND WHERE, нужно умно добавить ID в условие
-            if filter_clause:
-                check_query = f"SELECT 1 FROM glossary_editor_state {filter_clause} AND id=?"
-            else:
-                check_query = "SELECT 1 FROM glossary_editor_state WHERE id=?"
-                
-            cursor = conn.execute(check_query, filter_params + [db_id])
-            if not cursor.fetchone():
-                return self.current_page # Элемент скрыт фильтром, остаемся где были
-
-            # 2. Получаем сам элемент для определения его значения сортировки
-            cursor = conn.execute("SELECT * FROM glossary_editor_state WHERE id=?", (db_id,))
-            target_item = cursor.fetchone()
-            if not target_item: return 0
-
-            column_map = {0: 'original', 1: 'rus', 2: 'note'}
-            sort_column_name = column_map.get(self.sort_column_index, 'sequence')
-            sort_value = target_item[sort_column_name]
-
-            order_op = '<' if self.sort_order == Qt.SortOrder.AscendingOrder else '>'
-            
-            # 3. Считаем ранг среди ОТФИЛЬТРОВАННЫХ записей
-            # Нужно добавить условие сортировки к условиям фильтра
-            if self.sort_criterion == 'length':
-                # Если сортируем по длине, то и сравнивать надо длину
-                sort_expr = f"LENGTH({sort_column_name})"
-                target_val = len(str(sort_value)) # Сравниваем с длиной искомого значения
-            else:
-                sort_expr = sort_column_name
-                target_val = sort_value
-
-            # 3. Считаем ранг
-            base_where = filter_clause if filter_clause else "WHERE 1=1"
-            
-            rank_query = f"SELECT COUNT(id) FROM glossary_editor_state {base_where} AND {sort_expr} {order_op} ?"
-            cursor = conn.execute(rank_query, filter_params + [target_val])
-            rank = cursor.fetchone()[0]
-            
-            return 0
+        # Единый вертикальный список — страница всегда одна.
+        return 0
             
     def _apply_highlights_chunk(self):
         CHUNK_SIZE = 100

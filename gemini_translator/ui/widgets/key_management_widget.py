@@ -800,10 +800,6 @@ class KeyManagementWidget(QWidget):
         event_name = event.get('event')
         data = event.get('data', {})
 
-        if event.get('source') == 'KeyManagementWidget' and event.get('event') == 'key_statuses_updated':
-            self._load_and_refresh_keys()
-            return
-
         if event.get('event') == 'model_changed':
             model_id = event.get('data', {}).get('model_id')
             if model_id:

@@ -733,24 +733,6 @@ class EpubHtmlSelectorDialog(QDialog):
             QtCore.QTimer.singleShot(50, self._async_initial_setup)
 
 
-    def _async_stage_1_populate_ui(self):
-        """ЭТАП 1: Строит UI, показывает его и запускает следующий этап."""
-        # 1. Строим "скелет" UI (виджеты)
-        self._populate_full_ui()
-        
-        # 2. "Подменяем" заглушку на готовый интерфейс
-        self.loading_label.setVisible(False)
-        self.main_content_widget.setVisible(True)
-        
-        # 3. --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
-        # Принудительно заставляем Qt обработать все события, включая
-        # отрисовку нового интерфейса. Это "размораживает" UI.
-        QtWidgets.QApplication.processEvents()
-    
-        # 4. Только теперь, когда UI гарантированно виден, запускаем загрузку данных.
-        # Это та же функция, что и раньше, но теперь она вызывается в правильный момент.
-        self._start_data_loading_chain()
-
     def _async_stage_1_build_ui_if_needed(self):
         """ЭТАП 1: Строит UI, только если он еще не был построен."""
         if not self._ui_is_built:
@@ -1315,54 +1297,6 @@ class EpubHtmlSelectorDialog(QDialog):
                 self.untranslated_chapters.append(chapter)
 
 
-    def _get_epub_spine_order(self, epub_zip_file):
-        """
-        Читает .opf файл и возвращает упорядоченный список глав.
-        Версия 2.0: Оптимизированный поиск .opf файла.
-        """
-        try:
-            opf_path = None
-            # 1. Быстрый эвристический поиск
-            opf_files = [f for f in epub_zip_file.namelist() if f.lower().endswith('.opf')]
-            
-            if len(opf_files) == 1:
-                opf_path = opf_files[0]
-            elif len(opf_files) > 1:
-                # 2. Если эвристика не сработала, используем медленный, но надежный метод
-                container_content = epub_zip_file.read('META-INF/container.xml')
-                root = SafeET.fromstring(container_content)
-                ns = {'cn': 'urn:oasis:names:tc:opendocument:xmlns:container'}
-                opf_path = root.find('.//cn:rootfile', ns).attrib['full-path']
-            
-            if not opf_path:
-                raise FileNotFoundError("OPF файл не найден в архиве.")
-
-            opf_dir = os.path.dirname(opf_path)
-            opf_content = epub_zip_file.read(opf_path)
-            opf_root = SafeET.fromstring(opf_content)
-            opf_ns = {'opf': 'http://www.idpf.org/2007/opf'}
-
-            manifest_items = {}
-            for item in opf_root.findall('.//opf:manifest/opf:item', opf_ns):
-                item_id = item.attrib.get('id')
-                href = item.attrib.get('href')
-                if item_id and href:
-                    # Корректно обрабатываем пути, которые могут быть относительными
-                    full_href = os.path.join(opf_dir, href)
-                    manifest_items[item_id] = full_href
-
-            spine_order = []
-            for itemref in opf_root.findall('.//opf:spine/opf:itemref', opf_ns):
-                idref = itemref.attrib.get('idref')
-                if idref in manifest_items:
-                    spine_order.append(manifest_items[idref])
-            
-            return spine_order
-        except (KeyError, ET.ParseError, FileNotFoundError, AttributeError) as e:
-            print(f"[WARN] Не удалось прочитать spine из EPUB: {e}. Возврат к сортировке по имени файла.")
-            return None
-            
-            
     def _reload_dialog_content(self):
         """
         Правильная перезагрузка: сбрасывает данные, показывает заглушку
@@ -1903,15 +1837,6 @@ class TranslatedChaptersManagerDialog(QDialog):
         new_ids: целевой список ID.
         """
         n, m = len(old_ids), len(new_ids)
-        
-        # --- Матрица DP ---
-        # Если есть Levenshtein, можно использовать editops, это C-скорость.
-        if LEVENSHTEIN_AVAILABLE:
-            # Levenshtein работает со строками или списками хэшируемых объектов
-            # editops возвращает список: ('delete', old_idx, new_idx), ('insert', ...), ('replace', ...)
-            # Но для replace нам нужно понимать, совпадают ли ID.
-            # Проще использовать матрицу Python, если данных < 5000, это занимает < 0.5 сек.
-            pass 
 
         # Используем твой проверенный алгоритм на Python
         dp = [[0] * (m + 1) for _ in range(n + 1)]
@@ -2143,17 +2068,6 @@ class TranslatedChaptersManagerDialog(QDialog):
             QtWidgets.QMessageBox.critical(self, "Ошибка загрузки", f"Ошибка: {e}\n{traceback.format_exc()}")
     
    
-    def add_external_file(self):
-        # --- Сохраняем прямо в папку проекта ---
-        filepath, _ = QFileDialog.getOpenFileName(self, "Выберите HTML файл", self.translated_folder, "HTML files (*.html *.htm)")
-        if filepath:
-            # Даем ему суффикс _validated, так как добавленные вручную файлы считаются готовыми
-            new_name = f"manual_{len(self.chapters_data) + 1}_validated.html"
-            # Копируем прямо в корень папки проекта
-            shutil.copy2(filepath, os.path.join(self.translated_folder, new_name))
-            # Нужно будет добавить логику регистрации в карте, но для простоты пока так
-            self.load_chapters()
-
     def replace_selected_file(self):
         current_row = self.table.currentRow()
         if current_row < 0: return
@@ -2241,27 +2155,6 @@ class TranslatedChaptersManagerDialog(QDialog):
         # (Чтобы при смене режима "Обновление/Создание" сработала полная проверка Diff)
         self._structure_modified = True
 
-
-    def view_chapter(self, index):
-        filepath = self.chapters_data[index]['filepath']
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"Просмотр: {os.path.basename(filepath)}")
-        dialog.setMinimumSize(800, 700)
-        layout = QVBoxLayout(dialog)
-        path_label = QLabel(filepath)
-        path_label.setWordWrap(True)
-        layout.addWidget(path_label)
-        text_edit = QTextEdit()
-        text_edit.setReadOnly(True)
-        text_edit.setFont(QtGui.QFont("Consolas", 10))
-        text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                text_edit.setPlainText(f.read())
-        except Exception as e:
-            text_edit.setPlainText(f"Ошибка чтения файла: {e}")
-        layout.addWidget(text_edit)
-        dialog.exec()
 
     def _get_selected_chapter_filepath(self):
         row = self.table.currentRow()
@@ -2753,146 +2646,6 @@ class EpubDuplicateAnalysisThread(QThread):
         except Exception:
             print(traceback.format_exc())
             self.analysis_finished.emit({'start_findings': [], 'boundary_findings': []})
-
-    def _collect_start_findings(self, chapter_infos):
-        findings_map = {}
-        for info in chapter_infos:
-            head_blocks = info['blocks'][:8]
-            grouped = {}
-            for block in head_blocks:
-                grouped.setdefault(block['norm_text'], []).append(block)
-
-            for group_blocks in grouped.values():
-                if len(group_blocks) < 2:
-                    continue
-
-                keeper = next((block for block in group_blocks if block['tag_name'] == 'h1'), group_blocks[0])
-                keeper_path = tuple(keeper['tag_path'])
-
-                for block in group_blocks:
-                    if tuple(block['tag_path']) == keeper_path or block['tag_name'] == 'h1':
-                        continue
-
-                    preview = (
-                        f"Глава: {info['name']}\n"
-                        f"Сохраняется: <{keeper['tag_name']}> {keeper['text']}\n"
-                        f"К удалению: <{block['tag_name']}> {block['text']}\n\n"
-                        f"Первые строки главы:\n{format_duplicate_preview_blocks(head_blocks, [block['tag_path']], [keeper['tag_path']])}"
-                    )
-                    finding = {
-                        'category': 'start',
-                        'chapter_path': info['path'],
-                        'chapter_name': info['name'],
-                        'chapter_index': info['index'] + 1,
-                        'tag_name': block['tag_name'],
-                        'tag_path': list(block['tag_path']),
-                        'text': block['text'],
-                        'location': f"Начало главы, блок {head_blocks.index(block) + 1}",
-                        'reason': "Повтор в первых строках главы. Первая копия сохранена.",
-                        'preview': preview,
-                    }
-                    merge_finding_entry(findings_map, (info['path'], tuple(block['tag_path'])), finding)
-
-        return sorted(
-            findings_map.values(),
-            key=lambda item: (item['chapter_index'], item['location'], item['text'].casefold())
-        )
-
-    def _collect_boundary_findings(self, chapter_infos):
-        findings_map = {}
-
-        for index in range(len(chapter_infos) - 1):
-            current = chapter_infos[index]
-            following = chapter_infos[index + 1]
-            current_tail = current['blocks'][-4:]
-            following_head = following['blocks'][:4]
-
-            for tail_block in current_tail:
-                for head_block in following_head:
-                    if tail_block['norm_text'] != head_block['norm_text']:
-                        continue
-
-                    if tail_block['tag_name'] != 'h1':
-                        preview = (
-                            f"Совпадение между главами:\n"
-                            f"{current['name']} -> {following['name']}\n\n"
-                            f"Хвост текущей главы:\n{format_duplicate_preview_blocks(current_tail, [tail_block['tag_path']])}\n\n"
-                            f"Начало следующей главы:\n{format_duplicate_preview_blocks(following_head, [head_block['tag_path']])}"
-                        )
-                        finding = {
-                            'category': 'boundary',
-                            'chapter_path': current['path'],
-                            'chapter_name': current['name'],
-                            'chapter_index': current['index'] + 1,
-                            'tag_name': tail_block['tag_name'],
-                            'tag_path': list(tail_block['tag_path']),
-                            'text': tail_block['text'],
-                            'location': "Конец главы",
-                            'reason': f"Совпадает с началом следующей главы: {following['name']}",
-                            'preview': preview,
-                        }
-                        merge_finding_entry(findings_map, (current['path'], tuple(tail_block['tag_path'])), finding)
-
-                    if head_block['tag_name'] != 'h1':
-                        preview = (
-                            f"Совпадение между главами:\n"
-                            f"{current['name']} -> {following['name']}\n\n"
-                            f"Хвост предыдущей главы:\n{format_duplicate_preview_blocks(current_tail, [tail_block['tag_path']])}\n\n"
-                            f"Начало текущей главы:\n{format_duplicate_preview_blocks(following_head, [head_block['tag_path']])}"
-                        )
-                        finding = {
-                            'category': 'boundary',
-                            'chapter_path': following['path'],
-                            'chapter_name': following['name'],
-                            'chapter_index': following['index'] + 1,
-                            'tag_name': head_block['tag_name'],
-                            'tag_path': list(head_block['tag_path']),
-                            'text': head_block['text'],
-                            'location': "Начало главы",
-                            'reason': f"Совпадает с концом предыдущей главы: {current['name']}",
-                            'preview': preview,
-                        }
-                        merge_finding_entry(findings_map, (following['path'], tuple(head_block['tag_path'])), finding)
-
-        ending_groups = {}
-        for info in chapter_infos:
-            for block in info['blocks'][-3:]:
-                ending_groups.setdefault(block['norm_text'], []).append((info, block))
-
-        for occurrences in ending_groups.values():
-            chapter_paths = {info['path'] for info, _ in occurrences}
-            if len(chapter_paths) < 2:
-                continue
-
-            chapter_names = ", ".join(sorted(os.path.basename(path) for path in chapter_paths))
-            for info, block in occurrences:
-                if block['tag_name'] == 'h1':
-                    continue
-
-                preview = (
-                    f"Глава: {info['name']}\n"
-                    f"Повторяющийся хвост: {block['text']}\n\n"
-                    f"Последние строки главы:\n{format_duplicate_preview_blocks(info['blocks'][-4:], [block['tag_path']])}\n\n"
-                    f"Также встречается в главах:\n{chapter_names}"
-                )
-                finding = {
-                    'category': 'boundary',
-                    'chapter_path': info['path'],
-                    'chapter_name': info['name'],
-                    'chapter_index': info['index'] + 1,
-                    'tag_name': block['tag_name'],
-                    'tag_path': list(block['tag_path']),
-                    'text': block['text'],
-                    'location': "Конец главы",
-                    'reason': f"Одинаковая концовка встречается в {len(chapter_paths)} главах.",
-                    'preview': preview,
-                }
-                merge_finding_entry(findings_map, (info['path'], tuple(block['tag_path'])), finding)
-
-        return sorted(
-            findings_map.values(),
-            key=lambda item: (item['chapter_index'], item['location'], item['text'].casefold())
-        )
 
 
 class EpubDuplicateCleanupThread(QThread):
