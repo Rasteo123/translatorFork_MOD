@@ -752,7 +752,7 @@ class GlossaryManagerPage(ShellPage):
         self.history_table.setItem(0, 1, QTableWidgetItem(data.get('description', '')))
         self.undo_button.setEnabled(True)
         self._schedule_auto_backup()
-        self._update_project_save_controls()
+        self._schedule_project_save_controls_update()
 
     def _snapshot_glossary_state(self, glossary_data=None) -> list:
         if glossary_data is None:
@@ -794,6 +794,19 @@ class GlossaryManagerPage(ShellPage):
             self._saved_to_project_in_session and
             not self._has_unsaved_glossary_changes()
         )
+
+    def _schedule_project_save_controls_update(self):
+        """Дебаунс индикатора несохранённых изменений: точная проверка — это
+        полный get_glossary + сравнение снапшотов, слишком дорого на каждую
+        правку ячейки."""
+        timer = getattr(self, '_project_save_controls_timer', None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(250)
+            timer.timeout.connect(self._update_project_save_controls)
+            self._project_save_controls_timer = timer
+        timer.start()
 
     def _update_project_save_controls(self):
         if not hasattr(self, 'project_save_button'):
@@ -1078,18 +1091,28 @@ class GlossaryManagerPage(ShellPage):
                 self.status_label.setStyleSheet(f"color: {theme_manager.color('success')};" if not status_parts else "")
                 self.analyze_button.setStyleSheet("")
         
-        # --- НАЧАЛО НОВОГО БЛОКА: Проверка на пустые столбцы ---
+        # --- Проверка на пустые столбцы (кнопка видима, если один из ключевых
+        # столбцов полностью пуст). Лёгкие EXISTS-запросы вместо полного
+        # get_glossary: метод дергается на каждую правку ячейки. ---
         if not self._is_glossary_empty():
-            current_glossary = self.get_glossary()
-            # Проверяем, что все значения в одном из ключевых столбцов - пустые
-            all_originals_empty = all(not entry.get('original', '').strip() for entry in current_glossary)
-            all_translations_empty = all(not entry.get('rus', '').strip() for entry in current_glossary)
-            
-            # Кнопка видима, если хотя бы один из столбцов полностью пуст
-            self.fix_with_importer_button.setVisible(all_originals_empty or all_translations_empty)
+            whitespace = ' \t\n\r\x0b\x0c'
+            conn = self._get_db_conn()
+            with conn:
+                has_filled_original = conn.execute(
+                    "SELECT 1 FROM glossary_editor_state "
+                    "WHERE TRIM(COALESCE(original, ''), ?) != '' LIMIT 1",
+                    (whitespace,),
+                ).fetchone() is not None
+                has_filled_translation = conn.execute(
+                    "SELECT 1 FROM glossary_editor_state "
+                    "WHERE TRIM(COALESCE(rus, ''), ?) != '' LIMIT 1",
+                    (whitespace,),
+                ).fetchone() is not None
+            self.fix_with_importer_button.setVisible(
+                not has_filled_original or not has_filled_translation
+            )
         else:
             self.fix_with_importer_button.setVisible(False)
-        # --- КОНЕЦ НОВОГО БЛОКА ---
 
         self.reflow_timer.start()
 
@@ -1505,7 +1528,8 @@ class GlossaryManagerPage(ShellPage):
         
         self.conflicting_term_keys -= affected_terms
         self.is_analysis_dirty = True
-        self._update_analysis_widgets()
+        # Перерисовку виджетов делают вызывающие: оба текущих call-site'а
+        # (_remove_selected_terms и _run_full_analysis) обновляют их после.
     
 
     def _update_analysis_ui(self):
@@ -1580,15 +1604,30 @@ class GlossaryManagerPage(ShellPage):
     
     
     def _get_analysis_snapshot(self):
-        """Создает и возвращает 'слепок' текущего состояния анализа."""
+        """Создает и возвращает 'слепок' текущего состояния анализа.
+
+        Структурные копии вместо copy.deepcopy: все листья — скаляры, поэтому
+        копирование каждого изменяемого уровня даёт тот же результат заметно
+        дешевле (снапшот делается на каждую запись в историю правок).
+        """
+        term_map = defaultdict(
+            self.term_to_conflict_keys_map.default_factory,
+            {
+                term: defaultdict(set, {key: set(values) for key, values in keys_map.items()})
+                for term, keys_map in self.term_to_conflict_keys_map.items()
+            },
+        )
         return {
-            'direct_conflicts': copy.deepcopy(self.direct_conflicts),
-            'reverse_issues': copy.deepcopy(self.reverse_issues),
-            'overlap_groups': copy.deepcopy(self.overlap_groups),
-            'inverted_overlaps': copy.deepcopy(self.inverted_overlaps),
+            'direct_conflicts': {k: [dict(e) for e in v] for k, v in self.direct_conflicts.items()},
+            'reverse_issues': {
+                k: {group: [dict(e) for e in entries] for group, entries in v.items()}
+                for k, v in self.reverse_issues.items()
+            },
+            'overlap_groups': {k: list(v) for k, v in self.overlap_groups.items()},
+            'inverted_overlaps': {k: list(v) for k, v in self.inverted_overlaps.items()},
             'conflicting_term_keys': self.conflicting_term_keys.copy(),
-            'conflict_map': copy.deepcopy(self.conflict_map),
-            'term_to_conflict_keys_map': copy.deepcopy(self.term_to_conflict_keys_map),
+            'conflict_map': defaultdict(set, {k: set(v) for k, v in self.conflict_map.items()}),
+            'term_to_conflict_keys_map': term_map,
             'is_analysis_dirty': self.is_analysis_dirty,
         }
 
