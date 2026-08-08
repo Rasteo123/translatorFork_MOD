@@ -104,7 +104,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
         self.provider_combo.blockSignals(True)
         try:
             self.provider_combo.clear()
-            for provider_id, provider_cfg in api_config.api_providers().items():
+            for provider_id, provider_cfg in api_config.api_providers_view().items():
                 self.provider_combo.addItem(
                     provider_cfg.get("display_name") or provider_id,
                     userData=provider_id,
@@ -133,7 +133,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
             selected_model = self.model_combo.currentText()
 
         provider_id = self.provider_combo.currentData()
-        provider_cfg = api_config.api_providers().get(provider_id, {})
+        provider_cfg = api_config.api_providers_view().get(provider_id, {})
         models = provider_cfg.get("models", {}) if isinstance(provider_cfg, dict) else {}
 
         was_blocked = self.model_combo.signalsBlocked()
@@ -161,7 +161,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
 
     def _current_model_config(self):
         model_name = self.model_combo.currentText()
-        model_cfg = api_config.all_models().get(model_name, {})
+        model_cfg = api_config.all_models_view().get(model_name, {})
         return model_cfg if isinstance(model_cfg, dict) else {}
 
     def _update_model_dependent_controls(self):

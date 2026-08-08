@@ -751,7 +751,7 @@ class GlossaryManagerPage(ShellPage):
         self.history_table.setItem(0, 0, QTableWidgetItem(data.get('action_name', action_type)))
         self.history_table.setItem(0, 1, QTableWidgetItem(data.get('description', '')))
         self.undo_button.setEnabled(True)
-        self._save_auto_backup()
+        self._schedule_auto_backup()
         self._update_project_save_controls()
 
     def _snapshot_glossary_state(self, glossary_data=None) -> list:
@@ -772,6 +772,7 @@ class GlossaryManagerPage(ShellPage):
         return self._snapshot_glossary_state() != self._saved_glossary_snapshot
 
     def can_leave(self) -> bool:
+        self._flush_pending_auto_backup()
         if self._has_unsaved_glossary_changes():
             answer = QMessageBox.question(
                 self, "Несохранённые изменения",
@@ -913,7 +914,7 @@ class GlossaryManagerPage(ShellPage):
 
         self.history_table.removeRow(0)
         self.undo_button.setEnabled(len(self.history) > 0)
-        self._save_auto_backup()
+        self._schedule_auto_backup()
         self._update_project_save_controls()
 
     
@@ -1512,28 +1513,18 @@ class GlossaryManagerPage(ShellPage):
         rows_processed = 0
         
         self.table.blockSignals(True)
-        
-        # Получаем актуальные данные один раз перед циклом
-        current_glossary = self.get_glossary()
-        
+
         while self._highlight_row_index < self.table.rowCount() and rows_processed < CHUNK_SIZE:
             row = self._highlight_row_index
             item = self.table.item(row, 0)
-    
+
             if item:
-                # Вместо real_index используем db_id для поиска в списке
-                db_id = item.data(self.DB_ID_ROLE)
-                # Находим термин по его оригинальному тексту, так как ID в списке нет
-                original_text = item.text()
-                
-                # Ищем термин в списке по оригинальному тексту
-                term_data = next((e for e in current_glossary if e.get('original') == original_text), None)
-                if term_data:
-                    term = term_data.get('original', '')
-                    conflict_types = self.conflict_map.get(term, set())
-                    item.setData(self.ConflictTypeRole, conflict_types)
-                    self._apply_row_highlight(row)
-            
+                # Ключ conflict_map — сам текст ячейки: прежний полный
+                # SELECT глоссария + линейный поиск на каждый чанк были O(N²).
+                conflict_types = self.conflict_map.get(item.text(), set())
+                item.setData(self.ConflictTypeRole, conflict_types)
+                self._apply_row_highlight(row)
+
             self._highlight_row_index += 1
             rows_processed += 1
         
@@ -3621,6 +3612,29 @@ class GlossaryManagerPage(ShellPage):
         self.current_page = 0
         self._pending_vertical_scroll_value = max(0, scroll_value)
 
+    def _schedule_auto_backup(self):
+        """Дебаунс авто-бэкапа: построчная правка раньше делала полный
+        SQLite-дамп на каждую ячейку синхронно в GUI-потоке. Таймер не
+        продлевается — дамп гарантированно случится не позже 2с после
+        первой несохранённой правки."""
+        if self.launch_mode == 'child' or not self.associated_project_path:
+            return
+        timer = getattr(self, '_auto_backup_timer', None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(2000)
+            timer.timeout.connect(self._save_auto_backup)
+            self._auto_backup_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _flush_pending_auto_backup(self):
+        timer = getattr(self, '_auto_backup_timer', None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self._save_auto_backup()
+
     def _save_auto_backup(self):
         """Создает SQLite-дамп текущего состояния глоссария в папке проекта."""
         if self.launch_mode == 'child' or not self.associated_project_path:
@@ -3675,6 +3689,7 @@ class GlossaryManagerPage(ShellPage):
         if hasattr(self, '_backup_asked') and self._backup_asked:
             return
         self._backup_asked = True
+        self._flush_pending_auto_backup()
         
         if self.launch_mode != 'child' and self.associated_project_path:
             backup_path = os.path.join(self.associated_project_path, "glossary_backup.db")

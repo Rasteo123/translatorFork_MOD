@@ -943,13 +943,30 @@ class EpubHtmlSelectorDialog(QDialog):
 
     def _load_chapter_title_cache(self):
         self._chapter_title_cache = {}
+        self._title_scan_index = None
         if not self.virtual_epub_path or not self.all_chapters:
             return
+        # Ленивая догрузка: не задерживаем появление списка распаковкой и
+        # декодированием ВСЕХ глав книги — сканируем батчами через очередь
+        # событий, подсказки дозаполняются по мере готовности.
+        self._title_scan_index = 0
+        QtCore.QTimer.singleShot(0, self._scan_chapter_titles_batch)
 
+    def _scan_chapter_titles_batch(self):
+        BATCH = 100
+        start = getattr(self, '_title_scan_index', None)
+        if start is None or not self.virtual_epub_path:
+            return
+        chapters = self.all_chapters[start:start + BATCH]
+        if not chapters:
+            self._title_scan_index = None
+            return
+
+        scanned = {}
         try:
             with open(self.virtual_epub_path, "rb") as epub_file, \
                     zipfile.ZipFile(epub_file, "r") as zf:
-                for file_path in self.all_chapters:
+                for file_path in chapters:
                     try:
                         content = zf.read(file_path).decode("utf-8", errors="ignore")
                     except Exception as e:
@@ -958,9 +975,29 @@ class EpubHtmlSelectorDialog(QDialog):
 
                     title = self._extract_h1_title(content)
                     if title:
-                        self._chapter_title_cache[file_path] = title
+                        scanned[file_path] = title
         except Exception as e:
             print(f"[WARN] Failed to load EPUB chapter titles: {e}")
+            self._title_scan_index = None
+            return
+
+        self._chapter_title_cache.update(scanned)
+        self._title_scan_index = start + BATCH
+        if scanned:
+            self._refresh_tooltips_for_paths(set(scanned))
+        QtCore.QTimer.singleShot(0, self._scan_chapter_titles_batch)
+
+    def _refresh_tooltips_for_paths(self, paths):
+        list_widget = getattr(self, 'list_widget', None)
+        if list_widget is None:
+            return
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            if item is None:
+                continue
+            file_path = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            if file_path in paths:
+                self._apply_chapter_item_tooltip(item, file_path)
 
     def _apply_chapter_item_tooltip(self, item, file_path):
         chapter_title = (self._chapter_title_cache.get(file_path) or "").strip()
@@ -1338,7 +1375,8 @@ class EpubHtmlSelectorDialog(QDialog):
         self.untranslated_chapters = []
         self._size_cache = {}
         self._chapter_title_cache = {}
-        
+        self._title_scan_index = None  # останавливает цепочку батч-скана заголовков
+
         # Показываем заглушку
         self.main_content_widget.setVisible(False)
         self.loading_label.setVisible(True)

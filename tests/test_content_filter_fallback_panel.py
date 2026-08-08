@@ -64,8 +64,8 @@ class ContentFilterFallbackPanelTests(unittest.TestCase):
             for name, model in provider["models"].items()
         }
         self.patches = [
-            patch.object(api_config, "api_providers", return_value=self.providers),
-            patch.object(api_config, "all_models", return_value=self.all_models),
+            patch.object(api_config, "api_providers_view", return_value=self.providers),
+            patch.object(api_config, "all_models_view", return_value=self.all_models),
             patch.object(api_config, "ensure_dynamic_provider_models"),
         ]
         for patcher in self.patches:

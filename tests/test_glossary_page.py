@@ -31,6 +31,9 @@ class GlossaryManagerPageContractTests(unittest.TestCase):
         class _Stub:
             def _has_unsaved_glossary_changes(self):
                 return True
+
+            def _flush_pending_auto_backup(self):
+                pass
         # call the unbound method against a stub; patch the modal to "No"
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
             self.assertFalse(GlossaryManagerPage.can_leave(_Stub()))

@@ -1416,7 +1416,7 @@ class PromptBenchmarkPage(ShellPage):
 
     def _populate_provider_combo(self):
         self.model_provider_combo.clear()
-        providers = api_config.api_providers()
+        providers = api_config.api_providers_view()
         for provider_id, provider in sorted(providers.items(), key=lambda item: str(item[1].get("display_name") or item[0])):
             display = str(provider.get("display_name") or provider_id)
             self.model_provider_combo.addItem(f"{display} ({provider_id})", provider_id)

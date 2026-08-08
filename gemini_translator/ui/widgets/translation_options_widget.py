@@ -651,7 +651,7 @@ class TranslationOptionsWidget(QGroupBox):
             self._update_info_text()
             return
 
-        model_config = api_config.all_models().get(model_name, {})
+        model_config = api_config.all_models_view().get(model_name, {})
         limit_out_tokens = model_config.get(
             "max_output_tokens", api_config.default_max_output_tokens()
         )
