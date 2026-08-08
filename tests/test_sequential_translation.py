@@ -407,6 +407,100 @@ class SequentialTranslationTests(unittest.TestCase):
         self.assertIn("готовый первый чанк", reference)
         self.assertNotIn("Previous translated chapter: Text/ch1.xhtml", reference)
 
+    def test_emerger_chunks_inherit_chain_from_parent_task(self):
+        """Чанки, созданные emerger'ом взамен главы, наследуют её chain_id и
+        занимают последовательные chain_index; хвост цепочки сдвигается."""
+        manager = ChapterQueueManager(event_bus=self.app.event_bus)
+        self.addCleanup(manager.clear_all_queues)
+        manager.clear_all_queues()
+        with manager._get_write_conn() as conn:
+            conn.execute("DELETE FROM chunk_results")
+
+        manager.set_pending_task_chains([
+            [
+                ("epub", "book.epub", "Text/ch1.xhtml"),
+                ("epub", "book.epub", "Text/ch2.xhtml"),
+                ("epub", "book.epub", "Text/ch3.xhtml"),
+            ]
+        ])
+
+        parent_task = manager.get_next_task("worker-1")
+        self.assertEqual(tuple(parent_task[1]), ("epub", "book.epub", "Text/ch1.xhtml"))
+
+        chunks = [
+            ("epub_chunk", "book.epub", "Text/ch1.xhtml", "<p>one</p>", 0, 2, "", ""),
+            ("epub_chunk", "book.epub", "Text/ch1.xhtml", "<p>two</p>", 1, 2, "", ""),
+        ]
+        manager.add_priority_tasks(chunks, parent_task_id=parent_task[0])
+        manager.task_failed_permanently("worker-1", parent_task)
+
+        with manager._get_read_only_conn() as conn:
+            rows = conn.execute(
+                "SELECT payload, status, chain_id, chain_index FROM tasks "
+                "WHERE status = 'pending' ORDER BY chain_index"
+            ).fetchall()
+        chain_ids = {row["chain_id"] for row in rows}
+        self.assertEqual(len(chain_ids), 1, "Все задачи должны остаться в одной цепочке")
+        self.assertIsNotNone(chain_ids.pop(), "Чанки не унаследовали chain_id родителя")
+        self.assertEqual(
+            [row["chain_index"] for row in rows],
+            [0, 1, 2, 3],
+            "Чанки должны занять позиции родителя, хвост цепочки — сдвинуться",
+        )
+
+        first_chunk = manager.get_next_task("worker-1")
+        self.assertEqual(tuple(first_chunk[1]), chunks[0])
+        manager.task_done_with_content(
+            "worker-1",
+            first_chunk,
+            "<body><p>перевод один</p></body>",
+            "gemini",
+        )
+        second_chunk = manager.get_next_task("worker-1")
+        self.assertEqual(tuple(second_chunk[1]), chunks[1])
+
+        self.assertEqual(
+            manager.get_completed_previous_chunk_translation(
+                second_chunk[0],
+                "Text/ch1.xhtml",
+                1,
+            ),
+            "<body><p>перевод один</p></body>",
+        )
+
+    def test_previous_chunk_fallback_without_chain_handles_non_ascii_paths(self):
+        """Fallback-поиск предыдущего чанка (без chain_id) должен находить
+        главы с не-ASCII путями: в payload они хранятся в \\uXXXX-виде."""
+        manager = ChapterQueueManager(event_bus=self.app.event_bus)
+        self.addCleanup(manager.clear_all_queues)
+        manager.clear_all_queues()
+        with manager._get_write_conn() as conn:
+            conn.execute("DELETE FROM chunk_results")
+
+        chunks = [
+            ("epub_chunk", "book.epub", "Text/глава_1.xhtml", "<p>один</p>", 0, 2, "", ""),
+            ("epub_chunk", "book.epub", "Text/глава_1.xhtml", "<p>два</p>", 1, 2, "", ""),
+        ]
+        manager.add_priority_tasks(chunks)
+
+        first_chunk = manager.get_next_task("worker-1")
+        manager.task_done_with_content(
+            "worker-1",
+            first_chunk,
+            "<body><p>перевод один</p></body>",
+            "gemini",
+        )
+        second_chunk = manager.get_next_task("worker-1")
+
+        self.assertEqual(
+            manager.get_completed_previous_chunk_translation(
+                second_chunk[0],
+                "Text/глава_1.xhtml",
+                1,
+            ),
+            "<body><p>перевод один</p></body>",
+        )
+
     def test_task_manager_runs_first_task_of_each_chain_in_parallel_only(self):
         manager = ChapterQueueManager(event_bus=self.app.event_bus)
         self.addCleanup(manager.clear_all_queues)

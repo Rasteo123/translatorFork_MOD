@@ -122,7 +122,11 @@ class EmergencyTask:
                     most_common_error = Counter(parent_errors).most_common(1)[0][0]
                     smart_history_to_pass = {'errors': {most_common_error: 1}}
                 
-                self.worker.task_manager.add_priority_tasks(new_tasks, parent_history=smart_history_to_pass)
+                self.worker.task_manager.add_priority_tasks(
+                    new_tasks,
+                    parent_history=smart_history_to_pass,
+                    parent_task_id=task_info[0],
+                )
                 self.worker._post_event('tasks_added', {'count': len(new_tasks)})
 
             return (task_info, False, 'SPLIT_FOR_RETRY', f"Разделено на {len(chunks)} частей")

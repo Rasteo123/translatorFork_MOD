@@ -524,8 +524,15 @@ class ChapterQueueManager(QObject):
         refreshed_payload = (payload[0], current_epub_path, *payload[2:])
         return self._normalize_payload(refreshed_payload)
 
-    def add_priority_tasks(self, tasks: list, parent_history: dict = None):
-        """Добавляет задачи в НАЧАЛО очереди (высокий priority)."""
+    def add_priority_tasks(self, tasks: list, parent_history: dict = None, parent_task_id=None):
+        """Добавляет задачи в НАЧАЛО очереди (высокий priority).
+
+        parent_task_id — задача, взамен которой создаются новые (например,
+        глава, разрезанная emerger'ом на чанки). Новые задачи наследуют её
+        chain_id и занимают последовательные chain_index начиная с
+        родительского (хвост цепочки сдвигается) — так последовательный
+        контекст между чанками находится по цепочке, без полного скана.
+        """
         # --- ЭТАП 1: Подготовка данных (вне транзакции) ---
         tasks_to_insert = []
         all_errors_to_insert = [] # <-- Единый список для ВСЕХ ошибок
@@ -534,27 +541,60 @@ class ChapterQueueManager(QObject):
             task_id_str = str(uuid.uuid4())
             payload = self._normalize_payload(task)
             tasks_to_insert.append((
-                task_id_str, 
-                json.dumps(payload, default=tuple_serializer), 
-                'pending', 
+                task_id_str,
+                json.dumps(payload, default=tuple_serializer),
+                'pending',
                 1, # priority
                 time.time() # sequence
             ))
-            
+
             if parent_history:
                 # Добавляем ошибки для ЭТОЙ задачи в ОБЩИЙ список
                 for error_type, count in parent_history.get('errors', {}).items():
                     for _ in range(count):
                         all_errors_to_insert.append((task_id_str, error_type, time.time()))
-        
+
         # --- ЭТАП 2: Атомарная запись в БД (внутри транзакции) ---
         if tasks_to_insert: # Проверяем, есть ли вообще что добавлять
             with self._get_write_conn() as conn:
-                # Сначала вставляем родительские задачи
-                conn.executemany(
-                    "INSERT OR IGNORE INTO tasks (task_id, payload, status, priority, sequence) VALUES (?, ?, ?, ?, ?)",
-                    tasks_to_insert
-                )
+                chain_id = None
+                base_chain_index = None
+                if parent_task_id is not None:
+                    parent_row = conn.execute(
+                        "SELECT chain_id, chain_index FROM tasks WHERE task_id = ?",
+                        (str(parent_task_id),),
+                    ).fetchone()
+                    if parent_row is not None:
+                        chain_id = parent_row['chain_id']
+                        base_chain_index = parent_row['chain_index']
+
+                if chain_id is not None and base_chain_index is not None:
+                    if len(tasks_to_insert) > 1:
+                        conn.execute(
+                            """
+                            UPDATE tasks
+                            SET chain_index = chain_index + ?
+                            WHERE chain_id = ?
+                              AND chain_index > ?
+                            """,
+                            (len(tasks_to_insert) - 1, chain_id, base_chain_index),
+                        )
+                    conn.executemany(
+                        """
+                        INSERT OR IGNORE INTO tasks
+                            (task_id, payload, status, priority, sequence, chain_id, chain_index)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (*task_row, chain_id, base_chain_index + index)
+                            for index, task_row in enumerate(tasks_to_insert)
+                        ],
+                    )
+                else:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO tasks (task_id, payload, status, priority, sequence) VALUES (?, ?, ?, ?, ?)",
+                        tasks_to_insert
+                    )
                 # Затем вставляем всю историю ошибок
                 if all_errors_to_insert:
                     conn.executemany(
@@ -751,14 +791,25 @@ class ChapterQueueManager(QObject):
                     if translated_content:
                         return translated_content
 
+            # Fallback для задач без chain_id: раньше он тянул ВСЕ завершённые
+            # чанки книги с переводами и парсил каждый payload в Python.
+            # Префильтр по LIKE оставляет только строки нужной главы; путь
+            # ищем в том виде, в каком он лежит в payload (json.dumps с
+            # ensure_ascii — не-ASCII символы экранированы как \\uXXXX).
+            json_fragment = json.dumps(chapter_path)[1:-1]
+            like_pattern = "%\"{}\"%".format(
+                json_fragment.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
             fallback_rows = conn.execute(
                 """
                 SELECT t.payload, cr.translated_content
                 FROM tasks AS t
                 JOIN chunk_results AS cr ON cr.task_id = t.task_id
                 WHERE t.status = 'completed'
+                  AND t.payload LIKE ? ESCAPE '\\'
                 ORDER BY t.sequence DESC
-                """
+                """,
+                (like_pattern,),
             ).fetchall()
             return self._translation_from_chunk_rows(
                 fallback_rows,
