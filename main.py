@@ -20,7 +20,7 @@ import importlib
 import subprocess
 from collections import deque
 from pathlib import Path
-from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6 import QtWidgets, QtCore, QtGui, sip
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 from gemini_translator.api.managers import ApiKeyManager
@@ -963,11 +963,33 @@ class EventBus(QtCore.QObject):
             return
         with self._topic_lock:
             entries = list(self._topic_subscribers.get(event_name, []))
+        dead_callbacks = None
         for callback in entries:
+            # Topic-подписки не чистятся Qt автоматически: bound-методы
+            # уничтоженных виджетов (deleteLater при pop страницы/закрытии
+            # диалога) остаются в словаре навсегда и держат обёртки живыми.
+            if self._is_dead_subscriber(callback):
+                if dead_callbacks is None:
+                    dead_callbacks = []
+                dead_callbacks.append(callback)
+                continue
             try:
                 self._dispatch_callback(callback, event)
             except Exception:
                 pass
+        if dead_callbacks:
+            for callback in dead_callbacks:
+                self._unsubscribe_all_impl(callback)
+
+    @staticmethod
+    def _is_dead_subscriber(callback) -> bool:
+        receiver = getattr(callback, "__self__", None)
+        if not isinstance(receiver, QtCore.QObject):
+            return False
+        try:
+            return sip.isdeleted(receiver)
+        except Exception:
+            return False
 
     def _dispatch_callback(self, callback, event: dict):
         receiver = getattr(callback, "__self__", None)

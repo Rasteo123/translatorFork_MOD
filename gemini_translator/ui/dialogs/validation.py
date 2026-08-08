@@ -2038,6 +2038,9 @@ class TranslationValidatorPage(ShellPage):
         self.untranslated_found_count = 0
         self.user_problem_terms_count = 0
         self.original_content_cache = {}
+        # full_path -> (fingerprint, sha256): чтобы не перечитывать главу с
+        # диска ради хэша, пока stat (mtime_ns+size) не изменился.
+        self._content_hash_cache = {}
         self.validation_snapshot_entries = {}
         self.validation_snapshot_available = False
         self.validation_snapshot_notice = ""
@@ -2214,6 +2217,32 @@ class TranslationValidatorPage(ShellPage):
         except Exception:
             return None
 
+    def _get_current_content_hash(self, full_path, snapshot_entry=None):
+        """Хэш текущего содержимого файла без лишнего чтения с диска.
+
+        Полный read+hash каждой главы на главном потоке — причина «окно
+        валидации открывается минуту» (холодный кэш ОС / iCloud-евикция:
+        каждое open().read() провоцирует докачку файла, а os.stat — нет).
+        Сверяем stat-отпечаток с внутрисессионным кэшем и с per-chapter
+        отпечатком из снапшота; читаем файл только при расхождении."""
+        fingerprint = build_file_fingerprint(full_path)
+        if fingerprint:
+            cached = self._content_hash_cache.get(full_path)
+            if cached and cached[0] == fingerprint:
+                return cached[1]
+            if snapshot_entry:
+                entry_fingerprint = snapshot_entry.get('file_fingerprint')
+                entry_hash = snapshot_entry.get('content_hash')
+                if entry_fingerprint and entry_hash and entry_fingerprint == fingerprint:
+                    self._content_hash_cache[full_path] = (fingerprint, entry_hash)
+                    return entry_hash
+
+        current_text = self._read_text_file(full_path)
+        current_hash = build_text_hash(current_text or "")
+        if fingerprint:
+            self._content_hash_cache[full_path] = (fingerprint, current_hash)
+        return current_hash
+
     def _invalidate_analysis_for_data(self, data):
         if not isinstance(data, dict):
             return
@@ -2355,8 +2384,8 @@ class TranslationValidatorPage(ShellPage):
         }
 
     def _build_row_data_for_file(self, internal_path, full_path, is_validated, preserved_data=None):
-        current_text = self._read_text_file(full_path)
-        current_hash = build_text_hash(current_text or "")
+        snapshot_entry = self.validation_snapshot_entries.get(internal_path) if self.validation_snapshot_available else None
+        current_hash = self._get_current_content_hash(full_path, snapshot_entry)
         base_data = self._create_base_result_data(full_path, internal_path, is_validated, current_hash)
 
         preserved_hash = None
@@ -2377,7 +2406,6 @@ class TranslationValidatorPage(ShellPage):
             data['has_cached_analysis'] = True
             return data, False
 
-        snapshot_entry = self.validation_snapshot_entries.get(internal_path) if self.validation_snapshot_available else None
         if snapshot_entry and snapshot_entry.get('content_hash') == current_hash:
             data = dict(base_data)
             data.update(restore_result_data(snapshot_entry.get('result')))
@@ -2526,10 +2554,18 @@ class TranslationValidatorPage(ShellPage):
                 except ValueError:
                     relative_path = None
 
+            file_fingerprint = None
+            if data.get('path') and data.get('current_content_hash') == analyzed_hash:
+                # Отпечаток пишем только когда содержимое на диске (по данным
+                # диалога) совпадает с проанализированным — иначе при следующем
+                # открытии stat-шорткат вернул бы неверный хэш.
+                file_fingerprint = build_file_fingerprint(data['path']) or None
+
             snapshot_entries[internal_path] = build_snapshot_entry(
                 data,
                 analyzed_hash,
                 relative_path=relative_path,
+                file_fingerprint=file_fingerprint,
             )
 
         payload = build_snapshot_payload(
@@ -4575,7 +4611,10 @@ class TranslationValidatorPage(ShellPage):
         if not analyzed_hash:
             analyzed_hash = build_text_hash(result.get('translated_html', ''))
             result['analyzed_content_hash'] = analyzed_hash
-        result['current_content_hash'] = build_text_hash(result.get('translated_html', ''))
+        # Анализ выполнялся по этому же translated_html — хэш идентичен
+        # analyzed_hash, пересчитывать sha256 на GUI-потоке не нужно.
+        if not result.get('current_content_hash'):
+            result['current_content_hash'] = analyzed_hash
 
         for key in ('validated_content', 'original_html'):
             if key not in result and key in previous_data:

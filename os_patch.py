@@ -185,6 +185,12 @@ class HybridPath:
                 # Это критично для device/UNC namespace путей вроде \\.\pipe\...,
                 # которые использует asyncio при создании subprocess pipe.
                 return func(path, *args, **kwargs)
+
+        # Кэшируем обёртку в instance dict: повторные os.path.<name> идут в обход
+        # __getattr__ (он вызывается только при промахе), маршрутизация mem://
+        # остаётся внутри wrapper.
+        wrapper.__name__ = name
+        setattr(self, name, wrapper)
         return wrapper
 
 # Отладочные стеки владельцев PatientLock (дорого: ~1 мс на захват).

@@ -458,7 +458,7 @@ subprocess.Popen([sys.executable, main_script], cwd=repo_root, **kwargs)
             if k.startswith('_PYI_'):
                 del env[k]
 
-        kwargs = {{}}
+        kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000 # subprocess.CREATE_NO_WINDOW
 

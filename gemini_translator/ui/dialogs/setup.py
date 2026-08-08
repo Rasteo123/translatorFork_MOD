@@ -425,6 +425,7 @@ class InitialSetupPage(ShellPage):
             'session_finished',
             'tasks_for_retry_ready',
             'task_state_changed',
+            'task_finished',
             'geoblock_detected',
         )
         self.engine = app.engine
@@ -4696,13 +4697,20 @@ class InitialSetupPage(ShellPage):
 
         # 3. Добавляем в лог все использованные параметры для полной прозрачности.
         fuzzy_mode_info = f"Fuzzy порог {current_threshold}%" if current_threshold < 100 else "Fuzzy выключен"
+        calibration_message = (
+            f"[INFO] Калибровка ({fuzzy_mode_info}, Jieba: {'Вкл' if use_jieba_for_test else 'Выкл'}) завершена за {time_taken:.4f} сек. "
+            f"Индекс: {self.cpu_performance_index:,.0f} (термин*сим)/сек."
+        )
         if not no_log:
-            print(f"[INFO] Калибровка ({fuzzy_mode_info}, Jieba: {'Вкл' if use_jieba_for_test else 'Выкл'}) завершена за {time_taken:.4f} сек. "
-              f"Индекс: {self.cpu_performance_index:,.0f} (термин*сим)/сек.")
+            print(calibration_message)
 
         self._update_fuzzy_status_display()
         if no_log == True:
-            QtCore.QTimer.singleShot(600, lambda: self._calibrate_cpu(no_log=False))
+            # Раньше здесь весь бенчмарк гонялся ВТОРОЙ раз (ещё один прогон
+            # SmartGlossaryFilter на GUI-потоке) только ради строки лога —
+            # печатаем её по уже посчитанному индексу. Пересчёт при смене
+            # настроек делает recalibrate_requested.
+            QtCore.QTimer.singleShot(600, lambda: print(calibration_message))
 
     @QtCore.pyqtSlot()
     def _update_fuzzy_status_display(self):
@@ -5718,6 +5726,41 @@ class InitialSetupPage(ShellPage):
         except Exception as exc:
             self._auto_log(f"Не удалось запустить параллельный filter redirect: {exc}", force=True)
             return False
+
+    def _shutdown_parallel_filter_redirect_runs(self):
+        """Гасит фоновые redirect-движки при уходе со страницы: без этого их
+        QThread'ы (дети страницы) уничтожаются работающими."""
+        runs = getattr(self, '_auto_filter_parallel_redirect_runs', None)
+        if not runs:
+            return
+        for run_id in list(runs.keys()):
+            runner = runs.pop(run_id, None)
+            if not runner:
+                continue
+            engine = runner.get('engine')
+            thread = runner.get('thread')
+            try:
+                if engine is not None and thread is not None and thread.isRunning():
+                    QtCore.QMetaObject.invokeMethod(
+                        engine,
+                        'cleanup',
+                        QtCore.Qt.ConnectionType.BlockingQueuedConnection,
+                    )
+            except Exception:
+                pass
+            if thread is not None:
+                thread.quit()
+                thread.wait(3000)
+            db_anchor = runner.get('db_anchor')
+            if db_anchor is not None:
+                try:
+                    db_anchor.close()
+                except Exception:
+                    pass
+            task_manager = runner.get('task_manager')
+            if task_manager is not None:
+                task_manager.deleteLater()
+            self._auto_filter_parallel_redirect_signatures.discard(runner.get('signature'))
 
     def _finish_parallel_filter_redirect_run(self, run_id: str, reason: str | None = None):
         runner = self._auto_filter_parallel_redirect_runs.pop(run_id, None)
@@ -7298,6 +7341,7 @@ class InitialSetupPage(ShellPage):
         if restart_timer is not None and restart_timer.isActive():
             self._auto_log("Ожидающий автоперезапуск отменён при выходе со страницы перевода.", force=True)
             self._reset_auto_workflow_state()
+        self._shutdown_parallel_filter_redirect_runs()
         self._disconnect_event_bus()
 
 

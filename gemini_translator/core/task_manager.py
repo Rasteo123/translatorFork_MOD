@@ -258,6 +258,23 @@ class ChapterQueueManager(QObject):
         clone_conn.row_factory = sqlite3.Row
         return clone_conn
 
+    def _execute_light_read(self, sql: str, params: tuple = ()) -> list:
+        """Быстрое чтение напрямую из мастер-БД под приоритетным замком.
+
+        Для проверок-существования и мелких выборок полный клон базы
+        (_get_read_only_conn -> backup всей БД) — лишние миллисекунды на
+        каждый вызов; здесь только один запрос под замком."""
+        self._chancellor_lock.acquire_priority()
+        try:
+            master_conn = sqlite3.connect(self.master_uri, uri=True)
+            try:
+                master_conn.row_factory = sqlite3.Row
+                return master_conn.execute(sql, params).fetchall()
+            finally:
+                master_conn.close()
+        finally:
+            self._chancellor_lock.release()
+
 
     def _create_schema(self, conn: sqlite3.Connection):
         with conn:
@@ -550,23 +567,21 @@ class ChapterQueueManager(QObject):
         
     def has_held_tasks(self) -> bool:
         """Проверяет, есть ли в очереди 'замороженные' задачи."""
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute("SELECT 1 FROM tasks WHERE status = 'held' LIMIT 1")
-            return cursor.fetchone() is not None
-    
+        rows = self._execute_light_read("SELECT 1 FROM tasks WHERE status = 'held' LIMIT 1")
+        return bool(rows)
+
     def peek_next_held_task(self) -> tuple | None:
         """
         Возвращает (id, payload) следующей 'замороженной' задачи, НЕ меняя ее статус.
         """
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute(
-                "SELECT task_id, payload FROM tasks WHERE status = 'held' ORDER BY sequence ASC LIMIT 1"
-            )
-            row = cursor.fetchone()
-            if row:
-                task_id = uuid.UUID(row['task_id'])
-                payload = json.loads(row['payload'], object_hook=tuple_deserializer)
-                return (task_id, payload)
+        rows = self._execute_light_read(
+            "SELECT task_id, payload FROM tasks WHERE status = 'held' ORDER BY sequence ASC LIMIT 1"
+        )
+        if rows:
+            row = rows[0]
+            task_id = uuid.UUID(row['task_id'])
+            payload = json.loads(row['payload'], object_hook=tuple_deserializer)
+            return (task_id, payload)
         return None
 
     def promote_held_task(self, task_id: uuid.UUID, new_payload: tuple):
@@ -1394,11 +1409,8 @@ class ChapterQueueManager(QObject):
         # 2. Проверка базы данных (только если флага нет)
         # Игнорируем 'held', так как в обычном режиме это остатки Dry Run,
         # а в управляемом мы бы вышли выше по флагу.
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute("SELECT 1 FROM tasks WHERE status IN ('pending', 'in_progress') LIMIT 1")
-            has_active_tasks = cursor.fetchone() is not None
-            
-        return not has_active_tasks
+        rows = self._execute_light_read("SELECT 1 FROM tasks WHERE status IN ('pending', 'in_progress') LIMIT 1")
+        return not rows
 
     # --- НАЧАЛО ВОССТАНОВЛЕННОГО БЛОКА КЭШИРОВАНИЯ ---
     @pyqtSlot()
@@ -1809,15 +1821,11 @@ class ChapterQueueManager(QObject):
         task_id_str = str(task_info[0])
         history = {'total_count': 0, 'errors': {}}
         
-        failes = [] # Инициализируем пустой список
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute(
-                "SELECT error_type, COUNT(*) as count FROM task_errors WHERE task_id = ? GROUP BY error_type",
-                (task_id_str,)
-            )
-            # --- ЗАХВАТЫВАЕМ ДАННЫЕ В ПРОСТОЙ СПИСОК ---
-            failes = cursor.fetchall()
-        
+        failes = self._execute_light_read(
+            "SELECT error_type, COUNT(*) as count FROM task_errors WHERE task_id = ? GROUP BY error_type",
+            (task_id_str,)
+        )
+
         # --- ОБРАБАТЫВАЕМ ДАННЫЕ ПОСЛЕ ЗАКРЫТИЯ СОЕДИНЕНИЯ ---
         for row in failes:
             # row['error_type'] и row['count'] теперь доступны безопасно
@@ -1988,10 +1996,8 @@ class ChapterQueueManager(QObject):
         Проверяет, есть ли задачи в очереди или активна ли управляемая сессия.
         """
         # Сначала проверяем наличие задач со статусом 'pending' в самой БД
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute("SELECT 1 FROM tasks WHERE status = 'pending' LIMIT 1")
-            if cursor.fetchone():
-                return True
+        if self._execute_light_read("SELECT 1 FROM tasks WHERE status = 'pending' LIMIT 1"):
+            return True
         
         # Если в БД задач нет, проверяем флаг управляемой сессии в шине событий
         if self.bus and hasattr(self.bus, '_data_store'):

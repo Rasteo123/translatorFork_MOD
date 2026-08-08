@@ -227,24 +227,37 @@ def wait_for_gui_ai_task(
     cancel_event=None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0.0, float(timeout_sec))
+    task_file = gui_ai_task_path(state_dir, task_id)
+    last_mtime_ns = None
+    interval = max(0.001, float(poll_interval))
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise GuiAiTaskCancelled(f"GUI AI task cancelled: {task_id}")
-        task = load_gui_ai_task(state_dir, task_id)
-        if task.status == "completed":
-            return {"ok": True, "task_id": task.id, "text": task.result_text}
-        if task.status in {"failed", "cancelled"}:
-            payload = {
-                "ok": False,
-                "task_id": task.id,
-                "error": task.error or f"task {task.status}",
-            }
-            payload.update(task.error_payload)
-            payload["error"] = task.error or str(payload.get("error") or f"task {task.status}")
-            return payload
+        # Задача может выполняться минуты: перечитываем и парсим JSON только
+        # когда файл реально изменился, а не 10 раз в секунду.
+        try:
+            mtime_ns = task_file.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        if last_mtime_ns is None or mtime_ns is None or mtime_ns != last_mtime_ns:
+            last_mtime_ns = mtime_ns
+            task = load_gui_ai_task(state_dir, task_id)
+            if task.status == "completed":
+                return {"ok": True, "task_id": task.id, "text": task.result_text}
+            if task.status in {"failed", "cancelled"}:
+                payload = {
+                    "ok": False,
+                    "task_id": task.id,
+                    "error": task.error or f"task {task.status}",
+                }
+                payload.update(task.error_payload)
+                payload["error"] = task.error or str(payload.get("error") or f"task {task.status}")
+                return payload
         if time.monotonic() >= deadline:
-            raise GuiAiTaskTimeout(f"GUI AI task timed out: {task.id}")
-        time.sleep(max(0.001, float(poll_interval)))
+            raise GuiAiTaskTimeout(f"GUI AI task timed out: {task_id}")
+        time.sleep(interval)
+        # Плавный откат к 1 сек: быстрые задачи ловим быстро, долгие не поллим.
+        interval = min(interval * 1.5, 1.0)
 
 
 def task_public_payload(task: GuiAiTask, *, include_prompt: bool = False) -> dict[str, Any]:

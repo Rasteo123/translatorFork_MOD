@@ -590,8 +590,10 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
         examples_db = prompts_config.get('translation_output_examples', {})
         
         # Очищаем HTML перед анализом (используем get_text, как указано в требовании)
-        # Берем срез, чтобы не анализировать слишком большие объемы
-        sample_text = BeautifulSoup(text_for_api, 'html.parser')
+        # Берем срез, чтобы не анализировать слишком большие объемы.
+        # Парсим только префикс: для пробы языка нужны первые 4000 видимых
+        # символов, а полный BS4-парс пакета глав стоил бы до секунды CPU.
+        sample_text = BeautifulSoup(text_for_api[:40000], 'html.parser')
         sample_text = sample_text.get_text()[:4000]
         
         # Считаем вес каждого языка (количество символов)

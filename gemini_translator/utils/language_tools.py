@@ -406,7 +406,14 @@ class SmartGlossaryFilter:
     """
 
     RELATED_SEARCH_THRESHOLD = 89      # Уровень 6: Включаем поиск "родственников" по глоссарию
-    
+
+    # Классовый кэш подготовки ordered-search: SmartGlossaryFilter создаётся
+    # заново на каждую главу, а карта терминов и giant-regex зависят только от
+    # набора терминов глоссария — пересобирать их на каждую главу дорого
+    # (нормализация тысяч терминов + компиляция мегабайтного паттерна).
+    _ORDERED_SEARCH_CACHE = {}
+    _ORDERED_SEARCH_CACHE_MAX = 4
+
     def __init__(self, chinese_processor=None):
         self.chinese_processor = chinese_processor or ChineseTextProcessor()
         self._universal_cleaner_re = re.compile(r'\W+', re.UNICODE)
@@ -808,40 +815,51 @@ class SmartGlossaryFilter:
         """
         if not glossary:
             return set()
-    
-        processed_to_originals_map = defaultdict(set)
-        for original_term in glossary.keys():
-            term = self._normalize_text(original_term)
-            term = self._universal_cleaner_re.sub(' ', term).strip().lower()
-            term_words = term.split()
-            if not term_words: continue
-    
-            # === НОВАЯ ЛОГИКА ВЫБОРА РЕЖИМА ===
-            if is_strict_mode:
-                # В строгом режиме мы не делаем НИКАКИХ преобразований
-                processed_words = term_words
-            else:
-                # В обычном режиме (для порога 99) мы все смягчаем
-                filtered_words = [w for w in term_words if w not in STOP_WORDS]
-                processed_words = [self._normalize_word(w) for w in filtered_words]
-            
-            final_processed_term = " ".join(" ".join(processed_words).split())
-    
-            if final_processed_term:
-                processed_to_originals_map[final_processed_term].add(original_term)
-    
+
+        cache_key = (bool(is_strict_mode), frozenset(glossary.keys()))
+        cached = SmartGlossaryFilter._ORDERED_SEARCH_CACHE.get(cache_key)
+        if cached is not None:
+            processed_to_originals_map, giant_regex = cached
+        else:
+            processed_to_originals_map = defaultdict(set)
+            for original_term in glossary.keys():
+                term = self._normalize_text(original_term)
+                term = self._universal_cleaner_re.sub(' ', term).strip().lower()
+                term_words = term.split()
+                if not term_words: continue
+
+                # === НОВАЯ ЛОГИКА ВЫБОРА РЕЖИМА ===
+                if is_strict_mode:
+                    # В строгом режиме мы не делаем НИКАКИХ преобразований
+                    processed_words = term_words
+                else:
+                    # В обычном режиме (для порога 99) мы все смягчаем
+                    filtered_words = [w for w in term_words if w not in STOP_WORDS]
+                    processed_words = [self._normalize_word(w) for w in filtered_words]
+
+                final_processed_term = " ".join(" ".join(processed_words).split())
+
+                if final_processed_term:
+                    processed_to_originals_map[final_processed_term].add(original_term)
+
+            giant_regex = None
+            if processed_to_originals_map:
+                escaped_terms = [re.escape(term) for term in processed_to_originals_map.keys()]
+                escaped_terms.sort(key=len, reverse=True)
+                giant_regex = re.compile(r'\b(' + '|'.join(escaped_terms) + r')\b')
+
+            if len(SmartGlossaryFilter._ORDERED_SEARCH_CACHE) >= SmartGlossaryFilter._ORDERED_SEARCH_CACHE_MAX:
+                oldest_key = next(iter(SmartGlossaryFilter._ORDERED_SEARCH_CACHE))
+                SmartGlossaryFilter._ORDERED_SEARCH_CACHE.pop(oldest_key, None)
+            SmartGlossaryFilter._ORDERED_SEARCH_CACHE[cache_key] = (processed_to_originals_map, giant_regex)
+
         if not processed_to_originals_map:
             return set()
-    
-        escaped_terms = [re.escape(term) for term in processed_to_originals_map.keys()]
-        escaped_terms.sort(key=len, reverse=True)
-        
-        giant_regex_pattern = r'\b(' + '|'.join(escaped_terms) + r')\b'
-        
+
         searchable_text = self._universal_cleaner_re.sub(' ', normalized_text.lower()).strip()
         searchable_text = " ".join(searchable_text.split())
-        
-        found_processed_terms = re.findall(giant_regex_pattern, searchable_text)
+
+        found_processed_terms = giant_regex.findall(searchable_text)
     
         found_originals = set()
         for found_term in found_processed_terms:

@@ -1469,6 +1469,20 @@ class CorrectionSessionPage(ShellPage):
 
 
     def update_token_estimation(self):
+        """Дебаунс-обёртка: пересчёт тяжёлый (полный get_glossary + анализ
+        паттернов, в худшем случае секунды), а valueChanged спинбоксов с
+        autorepeat зовёт его на каждый шаг. Реальный пересчёт — через 300мс
+        после последнего изменения."""
+        timer = getattr(self, '_token_estimation_timer', None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(300)
+            timer.timeout.connect(self._update_token_estimation_now)
+            self._token_estimation_timer = timer
+        timer.start()
+
+    def _update_token_estimation_now(self):
         if not self._ui_is_fully_loaded:
             return
         # Распаковываем все 7 значений

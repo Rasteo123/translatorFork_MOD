@@ -182,6 +182,7 @@ class TranslationEngine(QObject):
         self.pending_launches = 0    # Счетчик воркеров, ожидающих запуска в таймере
         
         self.task_statuses = {}
+        self._finish_check_pending = False
         self.keys_map = {}
         self.paused_keys = set()
         self.shutting_down_workers = set()
@@ -457,15 +458,27 @@ class TranslationEngine(QObject):
         elif event_name == 'fatal_error' and 'worker' in source:
             self._handle_fatal_error(worker_id, data.get('payload'), worker_session=event_session)
         
+        if event_name == 'task_finished':
+            task_info = data.get('task_info')
+            task_id = task_info[0] if isinstance(task_info, (list, tuple)) and task_info else None
+            if task_id is not None:
+                self.task_statuses[str(task_id)] = data.get('error_type')
+
         events_that_change_state = {
             'task_finished', 'assembly_finished', 'fatal_error', 'tasks_added',
             'managed_session_completed'
         }
         if event_name in events_that_change_state:
-            
-            QtCore.QTimer.singleShot(1000, 
-                                     lambda: self._check_if_session_finished())
-    
+            # Дебаунс: десяток событий подряд не должен порождать десяток
+            # проверок завершения (каждая — обращение к БД задач).
+            if not self._finish_check_pending:
+                self._finish_check_pending = True
+                QtCore.QTimer.singleShot(1000, self._run_debounced_finish_check)
+
+    def _run_debounced_finish_check(self):
+        self._finish_check_pending = False
+        self._check_if_session_finished()
+
     def _finalize_scheduled_launch(self, key, scheduled_session_id=None):
         """Обертка для запуска по таймеру, корректирующая счетчик ожидающих."""
         # Уменьшаем счетчик, так как этот запуск переходит из 'pending' в 'active' (внутри _launch_worker)

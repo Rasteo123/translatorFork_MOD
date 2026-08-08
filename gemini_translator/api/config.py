@@ -453,11 +453,13 @@ def _compose_runtime_providers() -> dict:
 
 
 _COMPOSED_PROVIDERS_CACHE = None
+_ALL_MODELS_VIEW_CACHE = None
 
 
 def _invalidate_composed_providers():
-    global _COMPOSED_PROVIDERS_CACHE
+    global _COMPOSED_PROVIDERS_CACHE, _ALL_MODELS_VIEW_CACHE
     _COMPOSED_PROVIDERS_CACHE = None
+    _ALL_MODELS_VIEW_CACHE = None
 
 
 def set_custom_provider_models(custom_provider_models):
@@ -1209,6 +1211,16 @@ def internal_prompts():
 def all_models():
     _ensure_configs_initialized()
     return _build_all_models(api_providers())
+
+def all_models_view():
+    """Кэшированная карта моделей БЕЗ копирования. Только для чтения:
+    вложенные структуры разделяются с реестром провайдеров — для изменений
+    берите all_models()."""
+    global _ALL_MODELS_VIEW_CACHE
+    _ensure_configs_initialized()
+    if _ALL_MODELS_VIEW_CACHE is None:
+        _ALL_MODELS_VIEW_CACHE = _build_all_models(api_providers_view())
+    return _ALL_MODELS_VIEW_CACHE
 
 def ensure_dynamic_provider_models(provider_id: str | None, force: bool = False):
     _ensure_configs_initialized()

@@ -134,10 +134,18 @@ def _mask_html_tags(text: str, token_prefix: str):
     return re.sub(r'<[^>]+>', mask_callback, text), tag_map
 
 
+# Ключи масок имеют вид "\0PREFIX_N\0" (TAG/B_TAG/TAG_INIT/TAG_FIN).
+_MASK_TOKEN_PATTERN = re.compile(r'\0[A-Za-z0-9_]+\0')
+
+
 def _restore_masked_segments(text: str, segment_map: dict[str, str]) -> str:
-    for key, value in segment_map.items():
-        text = text.replace(key, value)
-    return text
+    # Один проход вместо str.replace на каждый тег: на главе с сотнями
+    # тегов старый цикл копировал весь текст на каждой итерации.
+    if not segment_map:
+        return text
+    return _MASK_TOKEN_PATTERN.sub(
+        lambda m: segment_map.get(m.group(0), m.group(0)), text
+    )
 
 DASH_TO_ELLIPSIS_PATTERN = re.compile(
     # ЗАХВАТЫВАЕМ (Группа 1): тире и пробелы вокруг него, которые нужно заменить
@@ -790,10 +798,6 @@ def finalize_cleanup(html_content: str) -> str:
     content = END_COMMA_FIX_PATTERN.sub(ELLIPSIS_CHAR, content)
     content = MISSING_DOT_PATTERN.sub('.', content)
 
-    # 1. Разбиваем строку: ['текст', '<тег>', 'текст', '<тег>']
-    parts = re.split(r'(<[^>]+>)', content)
-
-    
     content, tag_map = _mask_html_tags(content, "TAG_FIN")
     content = ELLIPSIS_CHAOS_PATTERN.sub(ELLIPSIS_CHAR, content)
     
@@ -1548,7 +1552,9 @@ def refine_typography_in_html(html_content: str) -> str:
                 p_text = content[start_p if start_p != -1 else 0 : end_p if end_p != -1 else len(content)]
                 clean_p = re.sub(r'\0(B_)?TAG_\d+\0', '', p_text)
                 
-                clean_after = re.sub(r'\0(B_)?TAG_\d+\0', '', content[m.end():]).lstrip()
+                # resolve_comma_dash смотрит только на первые символы после тире
+                # (startswith), поэтому чистим окно, а не весь хвост документа.
+                clean_after = re.sub(r'\0(B_)?TAG_\d+\0', '', content[m.end():m.end() + 400]).lstrip()
                 
                 res = resolve_comma_dash(prev_sign + dash_seq, clean_after, quote_depth, dialogue_active, dialogue_started_by_operator, ai_uses_operators_globally, clean_p)
                 return ' ' + res.replace(prev_sign, '', 1).strip() + ' '
@@ -1566,9 +1572,8 @@ def refine_typography_in_html(html_content: str) -> str:
     content = re.sub(r' {2,}', ' ', content)
     content = re.sub(fr'(?<=[{ALL_LETTER_CHARS}0-9])\s*-\s*(?=[{ALL_LETTER_CHARS}0-9])', '-', content)
 
-    for key, val in tag_map.items():
-        content = content.replace(key, val)
-        
+    content = _restore_masked_segments(content, tag_map)
+
     return content.strip()
     
     

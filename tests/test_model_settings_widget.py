@@ -355,8 +355,8 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         }
 
         with patch.object(api_config, "ensure_dynamic_provider_models"), \
-             patch.object(api_config, "api_providers", return_value=provider_config), \
-             patch.object(api_config, "all_models", return_value=all_models):
+             patch.object(api_config, "api_providers_view", return_value=provider_config), \
+             patch.object(api_config, "all_models_view", return_value=all_models):
             widget.set_available_models("local")
 
             self.assertFalse(widget.temperature_override_checkbox.isChecked())
@@ -424,8 +424,8 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         }
 
         with patch.object(api_config, "ensure_dynamic_provider_models"), \
-             patch.object(api_config, "api_providers", return_value=provider_config), \
-             patch.object(api_config, "all_models", return_value={"Level Model": level_model}):
+             patch.object(api_config, "api_providers_view", return_value=provider_config), \
+             patch.object(api_config, "all_models_view", return_value={"Level Model": level_model}):
             widget.set_available_models("level_provider")
             widget.thinking_level_combo.setVisible(False)
             widget.set_settings(

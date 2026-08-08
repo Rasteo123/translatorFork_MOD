@@ -435,6 +435,7 @@ class GlossaryManagerPage(ShellPage):
         self.settings_manager = app.get_settings_manager()
         self.logic = GlossaryLogic()
         self.history = []
+        self.MAX_HISTORY_ENTRIES = 100
         
         
         self.direct_conflicts = {}
@@ -740,6 +741,12 @@ class GlossaryManagerPage(ShellPage):
             if data['change_type'] == 'add':
                 data['added_id'] = data['entry']['id']
         self.history.append({'type': action_type, 'data': data})
+        # Ограничиваем историю: wholesale-записи несут полный снапшот глоссария,
+        # без предела долгая сессия правок монотонно раздувает память.
+        if len(self.history) > self.MAX_HISTORY_ENTRIES:
+            self.history.pop(0)
+            if self.history_table.rowCount() > 0:
+                self.history_table.removeRow(self.history_table.rowCount() - 1)
         self.history_table.insertRow(0)
         self.history_table.setItem(0, 0, QTableWidgetItem(data.get('action_name', action_type)))
         self.history_table.setItem(0, 1, QTableWidgetItem(data.get('description', '')))
@@ -3078,19 +3085,30 @@ class GlossaryManagerPage(ShellPage):
         self.table.setColumnWidth(4, self._action_column_width_for_buttons(1))
         
     def _check_if_term_has_versions(self, term):
-        """Быстрая проверка наличия версий в файле JSON без полной загрузки."""
+        """Быстрая проверка наличия версий по кэшу glossary_versions.json.
+
+        Вызывается на каждую строку при перерисовке таблицы: без кэша это
+        N чтений+парсов файла на каждый редрав. Кэш инвалидируется по
+        mtime+size, поэтому правки из диалога версий подхватываются."""
         if not self.associated_project_path: return False
         v_file = os.path.join(self.associated_project_path, "glossary_versions.json")
-        if not os.path.exists(v_file): return False
-        
-        # Для оптимизации можно кэшировать этот файл при старте диалога,
-        # но для UI кнопок проще читать (файл обычно небольшой).
         try:
-            with open(v_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return term in data
-        except:
+            stat_result = os.stat(v_file)
+        except OSError:
+            self._versions_file_cache = None
             return False
+
+        cache_key = (v_file, stat_result.st_mtime_ns, stat_result.st_size)
+        cache = getattr(self, '_versions_file_cache', None)
+        if cache is None or cache[0] != cache_key:
+            try:
+                with open(v_file, 'r', encoding='utf-8') as f:
+                    terms_with_versions = set(json.load(f))
+            except Exception:
+                terms_with_versions = set()
+            cache = (cache_key, terms_with_versions)
+            self._versions_file_cache = cache
+        return term in cache[1]
 
     def _open_versioning_dialog(self, item_dict):
         """Открывает диалог версионирования."""

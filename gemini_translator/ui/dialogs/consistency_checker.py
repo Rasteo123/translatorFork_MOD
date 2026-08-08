@@ -2715,7 +2715,9 @@ class ConsistencyValidatorPage(ShellPage):
             )
             tmp_file = Path(temp_name)
             with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                # Без indent: сессия с трейсом — мегабайты, сериализуется на
+                # каждый чанк в GUI-потоке; отступы удваивают объём и CPU.
+                json.dump(data, f, ensure_ascii=False)
                 f.write("\n")
             os.replace(tmp_file, self.session_file)
                     
