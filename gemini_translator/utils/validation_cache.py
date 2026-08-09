@@ -86,13 +86,17 @@ def restore_result_data(serialized_result):
     return restored
 
 
-def build_snapshot_entry(result_data, content_hash, relative_path=None):
+def build_snapshot_entry(result_data, content_hash, relative_path=None, file_fingerprint=None):
     entry = {
         "content_hash": content_hash,
         "result": serialize_result_data(result_data),
     }
     if relative_path:
         entry["relative_path"] = relative_path.replace("\\", "/")
+    if file_fingerprint:
+        # stat-отпечаток файла перевода: позволяет при следующем открытии
+        # доверять content_hash без чтения файла (см. _get_current_content_hash).
+        entry["file_fingerprint"] = file_fingerprint
     return entry
 
 

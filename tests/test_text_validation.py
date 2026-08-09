@@ -150,6 +150,40 @@ def test_validate_html_structure_rejects_large_paragraph_collapse():
     assert "collapsed or disappeared" in reason
 
 
+def test_validate_html_structure_parses_each_unique_string_once(monkeypatch):
+    import bs4
+
+    from gemini_translator.utils import text as text_module
+
+    parse_log = []
+    real_soup = bs4.BeautifulSoup
+
+    def counting_soup(markup="", *args, **kwargs):
+        parse_log.append(str(markup)[:60])
+        return real_soup(markup, *args, **kwargs)
+
+    monkeypatch.setattr(bs4, "BeautifulSoup", counting_soup)
+    monkeypatch.setattr(text_module, "BeautifulSoup", counting_soup)
+
+    original = (
+        '<body class="chapter">'
+        '<h1>Chapter 7</h1>'
+        + "".join(f"<p>Paragraph {index}.</p>" for index in range(6))
+        + "</body>"
+    )
+    translated = (
+        '<body class="chapter">'
+        '<h1>Глава 7</h1>'
+        + "".join(f"<p>Абзац {index}.</p>" for index in range(6))
+        + "</body>"
+    )
+
+    is_valid, reason, _ = validate_html_structure(original, translated)
+
+    assert is_valid, reason
+    assert len(parse_log) <= 3, parse_log
+
+
 def test_normalize_translated_body_wrapper_repairs_inner_html_response():
     original = '<body id="main"><p>Source text.</p></body>'
     translated = '<p>Переведенный текст.</p>'

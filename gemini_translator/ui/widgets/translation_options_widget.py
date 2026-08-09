@@ -594,33 +594,6 @@ class TranslationOptionsWidget(QGroupBox):
             "version": CHAPTER_SIZE_CACHE_VERSION,
         }
 
-    def _load_cached_chapter_analysis(self, project_manager, epub_path):
-        if not project_manager:
-            return {}, {}
-
-        cache_data = project_manager.load_chapter_analysis_cache()
-        if not isinstance(cache_data, dict):
-            return {}, {}
-
-        current_metadata = self._build_epub_analysis_metadata(epub_path)
-        if not current_metadata or cache_data.get("metadata") != current_metadata:
-            return {}, current_metadata or {}
-
-        cached_chapters = cache_data.get("chapters", {})
-        if not isinstance(cached_chapters, dict):
-            cached_chapters = {}
-        return cached_chapters, current_metadata
-
-    def _save_cached_chapter_analysis(self, project_manager, metadata, chapters):
-        if not project_manager or not metadata:
-            return
-        project_manager.save_chapter_analysis_cache(
-            {
-                "metadata": metadata,
-                "chapters": chapters,
-            }
-        )
-
     def _analyze_chapters(self, epub_path, project_manager=None):
         signature = self._build_analysis_signature(epub_path)
         if signature and signature == self._analysis_signature and self.chapter_compositions:
@@ -651,7 +624,7 @@ class TranslationOptionsWidget(QGroupBox):
             self._update_info_text()
             return
 
-        model_config = api_config.all_models().get(model_name, {})
+        model_config = api_config.all_models_view().get(model_name, {})
         limit_out_tokens = model_config.get(
             "max_output_tokens", api_config.default_max_output_tokens()
         )

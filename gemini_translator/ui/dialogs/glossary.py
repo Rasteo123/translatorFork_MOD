@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 from .glossary_dialogs.ai_correction import CorrectionSessionDialog, CorrectionSessionPage
 from .glossary_dialogs.core_term_dialog import CoreTermAnalyzerDialog, CoreTermAnalyzerPage
 from .glossary_dialogs.versioning import TermVersioningDialog
+from .glossary_dialogs.action_delegate import ACTIONS_ROLE, GlossaryActionDelegate
 from .glossary_dialogs.residue_analyzer import ResidueAnalyzerDialog, ResidueAnalyzerPage
 from .glossary_dialogs.conflict_resolvers import (
     DirectConflictResolverDialog,
@@ -59,31 +60,25 @@ from ...utils.language_tools import (
 from gemini_translator.ui import theme_manager
 
 
-# --- Универсальный импорт Pymorphy с проверкой версии ---
-PYMORPHY_AVAILABLE = False
-morph_analyzer = None
-PYMORPHY_RECOMMENDATION = ""
+# --- Морфология: ленивая, через общий utils.morphology ---
+# Словари (~35МБ, ~секунда) больше не строятся при импорте модуля (то есть
+# при старте GUI): PYMORPHY_AVAILABLE — только проверка importability,
+# анализатор строится фоновым прогревом при открытии окна глоссария.
+from ...utils.morphology import (
+    PYMORPHY_AVAILABLE,
+    get_morph_analyzer,
+    warm_up_morphology_async,
+)
 
-try:
-    import pymorphy3
-    morph_analyzer = pymorphy3.MorphAnalyzer(lang='ru')
-    PYMORPHY_AVAILABLE = True
-    print("INFO: Используется библиотека pymorphy3.")
-except Exception:
-    try:
-        import pymorphy2
-        morph_analyzer = pymorphy2.MorphAnalyzer()
-        PYMORPHY_AVAILABLE = True
-        print("INFO: Используется библиотека pymorphy2 (рекомендуется обновиться до pymorphy3).")
-    except Exception:
-        PYMORPHY_AVAILABLE = False
-        if sys.version_info >= (3, 7):
+PYMORPHY_RECOMMENDATION = ""
+if not PYMORPHY_AVAILABLE:
+    if sys.version_info >= (3, 7):
             PYMORPHY_RECOMMENDATION = (
                 "<b>Внимание:</b> Pymorphy не найдена. Функционал ограничен.<br>"
                 "Для вашей версии Python рекомендуется установить <b>pymorphy3</b>:<br>"
                 "<code>pip install pymorphy3 pymorphy3-dicts-ru</code>"
             )
-        else:
+    else:
             PYMORPHY_RECOMMENDATION = (
                 "<b>Внимание:</b> Pymorphy не найдена. Функционал ограничен.<br>"
                 "Для вашей версии Python рекомендуется установить <b>pymorphy2</b>:<br>"
@@ -361,7 +356,11 @@ class GlossaryManagerPage(ShellPage):
 
     def __init__(self, parent=None, mode='standalone', project_path=None):
         super().__init__(parent)
-        
+
+        # Словари морфологии/jieba греются в фоне, пока пользователь смотрит
+        # на таблицу — первый клик по морфо-функциям не ловит паузу ~1с.
+        warm_up_morphology_async()
+
         app = QtWidgets.QApplication.instance()
         self.version = ""
         if app and app.global_version:
@@ -435,6 +434,7 @@ class GlossaryManagerPage(ShellPage):
         self.settings_manager = app.get_settings_manager()
         self.logic = GlossaryLogic()
         self.history = []
+        self.MAX_HISTORY_ENTRIES = 100
         
         
         self.direct_conflicts = {}
@@ -651,6 +651,21 @@ class GlossaryManagerPage(ShellPage):
         self.table.setHorizontalHeaderLabels(["Ориг. термин", "Перевод", "Примечание", "", ""])
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # Кнопки действий (примечание/версии/удаление) рисуются делегатом —
+        # без per-row виджетов (см. glossary_dialogs/action_delegate.py);
+        # клики hit-тестятся в eventFilter на viewport.
+        self._action_delegate = GlossaryActionDelegate(
+            self.table,
+            self.TABLE_ACTION_BUTTON_SIZE,
+            self.TABLE_ACTION_ICON_SIZE,
+            tooltip_provider=self._row_action_tooltip,
+            parent=self.table,
+        )
+        self.table.setItemDelegateForColumn(3, self._action_delegate)
+        self.table.setItemDelegateForColumn(4, self._action_delegate)
+        self.table.viewport().installEventFilter(self)
+        self.table.viewport().setMouseTracking(True)
         
         header = self.table.horizontalHeader()
         
@@ -740,12 +755,18 @@ class GlossaryManagerPage(ShellPage):
             if data['change_type'] == 'add':
                 data['added_id'] = data['entry']['id']
         self.history.append({'type': action_type, 'data': data})
+        # Ограничиваем историю: wholesale-записи несут полный снапшот глоссария,
+        # без предела долгая сессия правок монотонно раздувает память.
+        if len(self.history) > self.MAX_HISTORY_ENTRIES:
+            self.history.pop(0)
+            if self.history_table.rowCount() > 0:
+                self.history_table.removeRow(self.history_table.rowCount() - 1)
         self.history_table.insertRow(0)
         self.history_table.setItem(0, 0, QTableWidgetItem(data.get('action_name', action_type)))
         self.history_table.setItem(0, 1, QTableWidgetItem(data.get('description', '')))
         self.undo_button.setEnabled(True)
-        self._save_auto_backup()
-        self._update_project_save_controls()
+        self._schedule_auto_backup()
+        self._schedule_project_save_controls_update()
 
     def _snapshot_glossary_state(self, glossary_data=None) -> list:
         if glossary_data is None:
@@ -765,6 +786,7 @@ class GlossaryManagerPage(ShellPage):
         return self._snapshot_glossary_state() != self._saved_glossary_snapshot
 
     def can_leave(self) -> bool:
+        self._flush_pending_auto_backup()
         if self._has_unsaved_glossary_changes():
             answer = QMessageBox.question(
                 self, "Несохранённые изменения",
@@ -786,6 +808,19 @@ class GlossaryManagerPage(ShellPage):
             self._saved_to_project_in_session and
             not self._has_unsaved_glossary_changes()
         )
+
+    def _schedule_project_save_controls_update(self):
+        """Дебаунс индикатора несохранённых изменений: точная проверка — это
+        полный get_glossary + сравнение снапшотов, слишком дорого на каждую
+        правку ячейки."""
+        timer = getattr(self, '_project_save_controls_timer', None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(250)
+            timer.timeout.connect(self._update_project_save_controls)
+            self._project_save_controls_timer = timer
+        timer.start()
 
     def _update_project_save_controls(self):
         if not hasattr(self, 'project_save_button'):
@@ -906,7 +941,7 @@ class GlossaryManagerPage(ShellPage):
 
         self.history_table.removeRow(0)
         self.undo_button.setEnabled(len(self.history) > 0)
-        self._save_auto_backup()
+        self._schedule_auto_backup()
         self._update_project_save_controls()
 
     
@@ -1025,31 +1060,6 @@ class GlossaryManagerPage(ShellPage):
         page.result_ready.connect(apply_frequency_result)
         self.request_push.emit(page)
     
-    def _add_table_row(self, entry_data: dict):
-        """Быстро добавляет одну строку в конец таблицы."""
-        self.table.blockSignals(True)
-        row_count = self.table.rowCount()
-        self.table.insertRow(row_count)
-        self._populate_table_row(row_count, entry_data)
-        self.table.scrollToBottom()
-        self.table.blockSignals(False)
-    
-    def _remove_table_row_by_id(self, db_id: str):
-        """Быстро находит и удаляет строку по ее ID из БД."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.data(self.DB_ID_ROLE) == db_id:
-                self.table.removeRow(row)
-                return
-    
-    def _update_table_row_from_data(self, entry_data: dict):
-        """Быстро находит строку по ID и обновляет ее данные."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.data(self.DB_ID_ROLE) == entry_data['id']:
-                self._populate_table_row(row, entry_data)
-                return
-
     def _populate_table_row(self, row, entry_data: dict):
         """Заполняет одну строку таблицы данными. Внутренний метод."""
         items = [
@@ -1095,18 +1105,28 @@ class GlossaryManagerPage(ShellPage):
                 self.status_label.setStyleSheet(f"color: {theme_manager.color('success')};" if not status_parts else "")
                 self.analyze_button.setStyleSheet("")
         
-        # --- НАЧАЛО НОВОГО БЛОКА: Проверка на пустые столбцы ---
+        # --- Проверка на пустые столбцы (кнопка видима, если один из ключевых
+        # столбцов полностью пуст). Лёгкие EXISTS-запросы вместо полного
+        # get_glossary: метод дергается на каждую правку ячейки. ---
         if not self._is_glossary_empty():
-            current_glossary = self.get_glossary()
-            # Проверяем, что все значения в одном из ключевых столбцов - пустые
-            all_originals_empty = all(not entry.get('original', '').strip() for entry in current_glossary)
-            all_translations_empty = all(not entry.get('rus', '').strip() for entry in current_glossary)
-            
-            # Кнопка видима, если хотя бы один из столбцов полностью пуст
-            self.fix_with_importer_button.setVisible(all_originals_empty or all_translations_empty)
+            whitespace = ' \t\n\r\x0b\x0c'
+            conn = self._get_db_conn()
+            with conn:
+                has_filled_original = conn.execute(
+                    "SELECT 1 FROM glossary_editor_state "
+                    "WHERE TRIM(COALESCE(original, ''), ?) != '' LIMIT 1",
+                    (whitespace,),
+                ).fetchone() is not None
+                has_filled_translation = conn.execute(
+                    "SELECT 1 FROM glossary_editor_state "
+                    "WHERE TRIM(COALESCE(rus, ''), ?) != '' LIMIT 1",
+                    (whitespace,),
+                ).fetchone() is not None
+            self.fix_with_importer_button.setVisible(
+                not has_filled_original or not has_filled_translation
+            )
         else:
             self.fix_with_importer_button.setVisible(False)
-        # --- КОНЕЦ НОВОГО БЛОКА ---
 
         self.reflow_timer.start()
 
@@ -1452,81 +1472,26 @@ class GlossaryManagerPage(ShellPage):
         self._load_current_page()
 
     def _find_page_for_id(self, db_id: str) -> int:
-        """Находит номер страницы для ID с учетом сортировки И ФИЛЬТРА."""
-        conn = self._get_db_conn()
-        
-        filter_clause, filter_params = self._get_filter_sql()
-        
-        with conn:
-            # 1. Проверяем, попадает ли этот ID вообще в выборку фильтра
-            check_query = f"SELECT 1 FROM glossary_editor_state {filter_clause} AND id=?"
-            # SQLite не поддерживает WHERE ... AND WHERE, нужно умно добавить ID в условие
-            if filter_clause:
-                check_query = f"SELECT 1 FROM glossary_editor_state {filter_clause} AND id=?"
-            else:
-                check_query = "SELECT 1 FROM glossary_editor_state WHERE id=?"
-                
-            cursor = conn.execute(check_query, filter_params + [db_id])
-            if not cursor.fetchone():
-                return self.current_page # Элемент скрыт фильтром, остаемся где были
-
-            # 2. Получаем сам элемент для определения его значения сортировки
-            cursor = conn.execute("SELECT * FROM glossary_editor_state WHERE id=?", (db_id,))
-            target_item = cursor.fetchone()
-            if not target_item: return 0
-
-            column_map = {0: 'original', 1: 'rus', 2: 'note'}
-            sort_column_name = column_map.get(self.sort_column_index, 'sequence')
-            sort_value = target_item[sort_column_name]
-
-            order_op = '<' if self.sort_order == Qt.SortOrder.AscendingOrder else '>'
-            
-            # 3. Считаем ранг среди ОТФИЛЬТРОВАННЫХ записей
-            # Нужно добавить условие сортировки к условиям фильтра
-            if self.sort_criterion == 'length':
-                # Если сортируем по длине, то и сравнивать надо длину
-                sort_expr = f"LENGTH({sort_column_name})"
-                target_val = len(str(sort_value)) # Сравниваем с длиной искомого значения
-            else:
-                sort_expr = sort_column_name
-                target_val = sort_value
-
-            # 3. Считаем ранг
-            base_where = filter_clause if filter_clause else "WHERE 1=1"
-            
-            rank_query = f"SELECT COUNT(id) FROM glossary_editor_state {base_where} AND {sort_expr} {order_op} ?"
-            cursor = conn.execute(rank_query, filter_params + [target_val])
-            rank = cursor.fetchone()[0]
-            
-            return 0
+        # Единый вертикальный список — страница всегда одна.
+        return 0
             
     def _apply_highlights_chunk(self):
         CHUNK_SIZE = 100
         rows_processed = 0
         
         self.table.blockSignals(True)
-        
-        # Получаем актуальные данные один раз перед циклом
-        current_glossary = self.get_glossary()
-        
+
         while self._highlight_row_index < self.table.rowCount() and rows_processed < CHUNK_SIZE:
             row = self._highlight_row_index
             item = self.table.item(row, 0)
-    
+
             if item:
-                # Вместо real_index используем db_id для поиска в списке
-                db_id = item.data(self.DB_ID_ROLE)
-                # Находим термин по его оригинальному тексту, так как ID в списке нет
-                original_text = item.text()
-                
-                # Ищем термин в списке по оригинальному тексту
-                term_data = next((e for e in current_glossary if e.get('original') == original_text), None)
-                if term_data:
-                    term = term_data.get('original', '')
-                    conflict_types = self.conflict_map.get(term, set())
-                    item.setData(self.ConflictTypeRole, conflict_types)
-                    self._apply_row_highlight(row)
-            
+                # Ключ conflict_map — сам текст ячейки: прежний полный
+                # SELECT глоссария + линейный поиск на каждый чанк были O(N²).
+                conflict_types = self.conflict_map.get(item.text(), set())
+                item.setData(self.ConflictTypeRole, conflict_types)
+                self._apply_row_highlight(row)
+
             self._highlight_row_index += 1
             rows_processed += 1
         
@@ -1577,7 +1542,8 @@ class GlossaryManagerPage(ShellPage):
         
         self.conflicting_term_keys -= affected_terms
         self.is_analysis_dirty = True
-        self._update_analysis_widgets()
+        # Перерисовку виджетов делают вызывающие: оба текущих call-site'а
+        # (_remove_selected_terms и _run_full_analysis) обновляют их после.
     
 
     def _update_analysis_ui(self):
@@ -1652,15 +1618,30 @@ class GlossaryManagerPage(ShellPage):
     
     
     def _get_analysis_snapshot(self):
-        """Создает и возвращает 'слепок' текущего состояния анализа."""
+        """Создает и возвращает 'слепок' текущего состояния анализа.
+
+        Структурные копии вместо copy.deepcopy: все листья — скаляры, поэтому
+        копирование каждого изменяемого уровня даёт тот же результат заметно
+        дешевле (снапшот делается на каждую запись в историю правок).
+        """
+        term_map = defaultdict(
+            self.term_to_conflict_keys_map.default_factory,
+            {
+                term: defaultdict(set, {key: set(values) for key, values in keys_map.items()})
+                for term, keys_map in self.term_to_conflict_keys_map.items()
+            },
+        )
         return {
-            'direct_conflicts': copy.deepcopy(self.direct_conflicts),
-            'reverse_issues': copy.deepcopy(self.reverse_issues),
-            'overlap_groups': copy.deepcopy(self.overlap_groups),
-            'inverted_overlaps': copy.deepcopy(self.inverted_overlaps),
+            'direct_conflicts': {k: [dict(e) for e in v] for k, v in self.direct_conflicts.items()},
+            'reverse_issues': {
+                k: {group: [dict(e) for e in entries] for group, entries in v.items()}
+                for k, v in self.reverse_issues.items()
+            },
+            'overlap_groups': {k: list(v) for k, v in self.overlap_groups.items()},
+            'inverted_overlaps': {k: list(v) for k, v in self.inverted_overlaps.items()},
             'conflicting_term_keys': self.conflicting_term_keys.copy(),
-            'conflict_map': copy.deepcopy(self.conflict_map),
-            'term_to_conflict_keys_map': copy.deepcopy(self.term_to_conflict_keys_map),
+            'conflict_map': defaultdict(set, {k: set(v) for k, v in self.conflict_map.items()}),
+            'term_to_conflict_keys_map': term_map,
             'is_analysis_dirty': self.is_analysis_dirty,
         }
 
@@ -2188,7 +2169,8 @@ class GlossaryManagerPage(ShellPage):
         return list(build_molecules_recursively(0, []))
 
     def _generate_note_logic(self, translation_text, debug=False, return_raw_parse=False):
-        if not PYMORPHY_AVAILABLE or not translation_text: 
+        morph = get_morph_analyzer()
+        if morph is None or not translation_text:
             if return_raw_parse: return None, None, None
             return ""
         
@@ -2199,7 +2181,7 @@ class GlossaryManagerPage(ShellPage):
         if len(tokens) == 1 and tokens[0] not in ",;:": 
             if return_raw_parse:
                 # Для одного слова главный разбор - это просто первый разбор
-                parsed = self._convert_to_virtual_parses(tokens[0], morph_analyzer.parse(tokens[0]))[0]
+                parsed = self._convert_to_virtual_parses(tokens[0], morph.parse(tokens[0]))[0]
                 head_data = {'word': tokens[0], 'parses': [parsed]}
                 return None, head_data, parsed
             return self._generate_single_word_note(tokens[0])
@@ -2212,7 +2194,7 @@ class GlossaryManagerPage(ShellPage):
                 all_parses_data.append({'index': i, 'word': token, 'parses': [parse]})
             else:
                 # 1. Получаем "сырые" разборы от Pymorphy
-                raw_parses = morph_analyzer.parse(token)
+                raw_parses = morph.parse(token)
                 # 2. Немедленно конвертируем их в наши виртуальные объекты
                 virtual_parses = self._convert_to_virtual_parses(token, raw_parses)
                 all_parses_data.append({'index': i, 'word': token, 'parses': virtual_parses})
@@ -2324,7 +2306,10 @@ class GlossaryManagerPage(ShellPage):
     
     def _generate_single_word_note(self, word):
         # Ваша версия этой функции
-        parsed = morph_analyzer.parse(word)[0]
+        morph = get_morph_analyzer()
+        if morph is None:
+            return ""
+        parsed = morph.parse(word)[0]
         tag = parsed.tag; features = []
         if 'masc' in tag: features.append("муж. род")
         elif 'femn' in tag: features.append("жен. род")
@@ -2955,81 +2940,155 @@ class GlossaryManagerPage(ShellPage):
                 
         self.conflicting_term_keys = set(self.conflict_map.keys())
     
+    def _std_icon(self, pixmap):
+        """Кэш стандартных иконок: style().standardIcon на каждую кнопку
+        каждой строки — ~0.2мс × тысячи вызовов при заполнении таблицы."""
+        cache = getattr(self, '_std_icon_cache', None)
+        if cache is None:
+            cache = self._std_icon_cache = {}
+        icon = cache.get(pixmap)
+        if icon is None:
+            icon = cache[pixmap] = self.style().standardIcon(pixmap)
+        return icon
+
     def _create_row_buttons(self, row, item_dict):
+        """Записывает состав кнопок строки в данные item'ов колонок 3/4 —
+        рисует их GlossaryActionDelegate, виджеты не создаются."""
         if not isinstance(item_dict, dict): return
 
-        # ---------------------------------------------------------
-        # КОЛОНКА 3: Генерация примечаний + Версионирование
-        # ---------------------------------------------------------
-        col3_widget = QWidget()
-        # ВАЖНО: Запрещаем виджету сжиматься меньше содержимого
-        col3_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
-        
-        col3_layout = QHBoxLayout(col3_widget)
-        col3_layout.setContentsMargins(4, 2, 4, 2)
-        col3_layout.setSpacing(4)
-        col3_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # 1. Кнопка Pymorphy (Генерация)
+        col3_actions = []
         if PYMORPHY_AVAILABLE:
-            gen_btn = QToolButton()
-            gen_btn.setIcon(
-                self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
-            )
-            gen_btn.setToolTip("Сгенерировать примечание")
-            self._configure_table_action_button(gen_btn)
-            gen_btn.clicked.connect(lambda ch, r=row: self._on_generate_note_in_main_table_clicked(r))
-            col3_layout.addWidget(gen_btn)
-        
-        # 2. Кнопка Версии
+            col3_actions.append('gen')
         if self.associated_project_path and self.associated_epub_path:
-            version_btn = QToolButton()
-            version_btn.setIcon(
-                self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-            )
-            
             term = item_dict.get('original', '')
-            has_versions = self._check_if_term_has_versions(term)
-            
-            if has_versions:
-                self._configure_table_action_button(
-                    version_btn,
-                    f"background-color: {theme_manager.color('info')}; "
-                    f"color: {theme_manager.color('accent_text')}; "
-                    "font-weight: bold;",
-                )
-                version_btn.setToolTip("Управление версиями (ЕСТЬ АКТИВНЫЕ ПРАВИЛА)")
-            else:
-                self._configure_table_action_button(version_btn)
-                version_btn.setToolTip("Создать версии (переопределения для глав)")
-                
-            version_btn.clicked.connect(lambda ch, d=item_dict: self._open_versioning_dialog(d))
-            col3_layout.addWidget(version_btn)
+            col3_actions.append(
+                'version_active' if self._check_if_term_has_versions(term) else 'version'
+            )
 
-        self.table.setCellWidget(row, 3, col3_widget)
+        for column, actions in ((3, tuple(col3_actions)), (4, ('delete',))):
+            item = self.table.item(row, column)
+            if item is None:
+                item = QTableWidgetItem()
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                self.table.setItem(row, column, item)
+            item.setData(ACTIONS_ROLE, actions)
 
-        # ---------------------------------------------------------
-        # КОЛОНКА 4: Удаление
-        # ---------------------------------------------------------
-        col4_widget = QWidget()
-        col4_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
-        
-        col4_layout = QHBoxLayout(col4_widget)
-        col4_layout.setContentsMargins(4, 2, 4, 2)
-        col4_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    def _row_action_tooltip(self, row, kind) -> str:
+        if kind == 'gen':
+            return "Сгенерировать примечание"
+        if kind == 'version_active':
+            return "Управление версиями (ЕСТЬ АКТИВНЫЕ ПРАВИЛА)"
+        if kind == 'version':
+            return "Создать версии (переопределения для глав)"
+        if kind == 'delete':
+            first_item = self.table.item(row, 0)
+            term = first_item.text() if first_item else ''
+            return f"Удалить термин '{term}'"
+        return ""
 
-        delete_btn = QToolButton()
-        delete_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
-        delete_btn.setToolTip(f"Удалить термин '{item_dict.get('original','')}'")
-        self._configure_table_action_button(delete_btn)
-        
-        db_id = item_dict.get('id')
-        if db_id:
-            delete_btn.clicked.connect(lambda ch, current_id=db_id: self._remove_single_term_by_id(current_id))
-        
-        col4_layout.addWidget(delete_btn)
-        
-        self.table.setCellWidget(row, 4, col4_widget)
+    def _row_item_dict(self, row) -> dict:
+        """Актуальные данные строки для обработчиков (как раньше item_dict)."""
+        values = {}
+        for column, key in enumerate(('original', 'rus', 'note')):
+            item = self.table.item(row, column)
+            values[key] = item.text() if item else ''
+        first_item = self.table.item(row, 0)
+        values['id'] = first_item.data(self.DB_ID_ROLE) if first_item else None
+        return values
+
+    def _trigger_row_action(self, row, kind):
+        if kind == 'gen':
+            self._on_generate_note_in_main_table_clicked(row)
+        elif kind in ('version', 'version_active'):
+            self._open_versioning_dialog(self._row_item_dict(row))
+        elif kind == 'delete':
+            first_item = self.table.item(row, 0)
+            db_id = first_item.data(self.DB_ID_ROLE) if first_item else None
+            if db_id:
+                self._remove_single_term_by_id(db_id)
+
+    def eventFilter(self, obj, event):
+        table = getattr(self, 'table', None)
+        if table is not None and obj is table.viewport() and self._handle_action_button_event(event):
+            return True
+        return super().eventFilter(obj, event)
+
+    def _handle_action_button_event(self, event):
+        """True, если событие мыши попало в кнопку действия и «съедено»
+        (как раньше клик поглощала настоящая QToolButton)."""
+        event_type = event.type()
+
+        if event_type == QtCore.QEvent.Type.MouseMove:
+            self._update_action_hover(event.position().toPoint())
+            return False
+
+        if event_type == QtCore.QEvent.Type.Leave:
+            self._update_action_hover(None)
+            return False
+
+        if event_type in (QtCore.QEvent.Type.MouseButtonPress,
+                          QtCore.QEvent.Type.MouseButtonDblClick):
+            if event.button() != Qt.MouseButton.LeftButton or not self.table.isEnabled():
+                return False
+            hit = self._action_hit(event.position().toPoint())
+            if hit is None:
+                return False
+            self._action_delegate.pressed = hit[:3]
+            self._repaint_action_cell(hit[0], hit[1])
+            return True
+
+        if event_type == QtCore.QEvent.Type.MouseButtonRelease:
+            pressed = self._action_delegate.pressed
+            if pressed == (-1, -1, -1):
+                return False
+            self._action_delegate.pressed = (-1, -1, -1)
+            self._repaint_action_cell(pressed[0], pressed[1])
+            hit = self._action_hit(event.position().toPoint())
+            if hit is not None and hit[:3] == pressed:
+                self._trigger_row_action(hit[0], hit[3])
+            return True
+
+        return False
+
+    def _action_hit(self, pos):
+        """(row, column, button_index, kind) для точки viewport'а или None."""
+        index = self.table.indexAt(pos)
+        if not index.isValid() or index.column() not in (3, 4):
+            return None
+        actions = GlossaryActionDelegate.actions_for_index(index)
+        if not actions:
+            return None
+        cell_rect = self.table.visualRect(index)
+        for i, rect in enumerate(self._action_delegate.button_rects(cell_rect, len(actions))):
+            if rect.contains(pos):
+                return (index.row(), index.column(), i, actions[i])
+        return None
+
+    def _update_action_hover(self, pos):
+        hit = self._action_hit(pos) if pos is not None else None
+        new_state = hit[:3] if hit is not None else (-1, -1, -1)
+        old_state = self._action_delegate.hovered
+        if new_state == old_state:
+            return
+        self._action_delegate.hovered = new_state
+        for row, column in {(old_state[0], old_state[1]), (new_state[0], new_state[1])}:
+            if row >= 0:
+                self._repaint_action_cell(row, column)
+
+    def _repaint_action_cell(self, row, column):
+        index = self.table.model().index(row, column)
+        if index.isValid():
+            self.table.viewport().update(self.table.visualRect(index))
+
+    def changeEvent(self, event):
+        if event.type() in (QtCore.QEvent.Type.StyleChange,
+                            QtCore.QEvent.Type.PaletteChange,
+                            QtCore.QEvent.Type.FontChange):
+            delegate = getattr(self, '_action_delegate', None)
+            if delegate is not None:
+                delegate.invalidate_cache()
+                self.table.viewport().update()
+        super().changeEvent(event)
 
     def _configure_table_action_button(self, button: QToolButton, extra_style: str = ""):
         button.setFixedSize(self.TABLE_ACTION_BUTTON_SIZE)
@@ -3039,23 +3098,31 @@ class GlossaryManagerPage(ShellPage):
             QtWidgets.QSizePolicy.Policy.Fixed,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        button.setStyleSheet(
-            "QToolButton {"
-            "background: transparent;"
-            "border: 1px solid transparent;"
-            "border-radius: 6px;"
-            "padding: 0px;"
-            f"min-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
-            f"max-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
-            f"min-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
-            f"max-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
-            f"{extra_style}"
-            "}"
-            "QToolButton:hover {"
-            f"background-color: {theme_manager.color('accent_hover_soft')};"
-            f"border-color: {theme_manager.color('border_strong')};"
-            "}"
-        )
+        # Строка стиля одинакова для всех кнопок с одним extra_style —
+        # собираем один раз на страницу, а не на каждую кнопку каждой строки.
+        style_cache = getattr(self, '_action_btn_style_cache', None)
+        if style_cache is None:
+            style_cache = self._action_btn_style_cache = {}
+        stylesheet = style_cache.get(extra_style)
+        if stylesheet is None:
+            stylesheet = style_cache[extra_style] = (
+                "QToolButton {"
+                "background: transparent;"
+                "border: 1px solid transparent;"
+                "border-radius: 6px;"
+                "padding: 0px;"
+                f"min-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
+                f"max-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
+                f"min-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
+                f"max-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
+                f"{extra_style}"
+                "}"
+                "QToolButton:hover {"
+                f"background-color: {theme_manager.color('accent_hover_soft')};"
+                f"border-color: {theme_manager.color('border_strong')};"
+                "}"
+            )
+        button.setStyleSheet(stylesheet)
 
     def _action_column_width_for_buttons(self, button_count: int) -> int:
         if button_count <= 0:
@@ -3078,19 +3145,30 @@ class GlossaryManagerPage(ShellPage):
         self.table.setColumnWidth(4, self._action_column_width_for_buttons(1))
         
     def _check_if_term_has_versions(self, term):
-        """Быстрая проверка наличия версий в файле JSON без полной загрузки."""
+        """Быстрая проверка наличия версий по кэшу glossary_versions.json.
+
+        Вызывается на каждую строку при перерисовке таблицы: без кэша это
+        N чтений+парсов файла на каждый редрав. Кэш инвалидируется по
+        mtime+size, поэтому правки из диалога версий подхватываются."""
         if not self.associated_project_path: return False
         v_file = os.path.join(self.associated_project_path, "glossary_versions.json")
-        if not os.path.exists(v_file): return False
-        
-        # Для оптимизации можно кэшировать этот файл при старте диалога,
-        # но для UI кнопок проще читать (файл обычно небольшой).
         try:
-            with open(v_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return term in data
-        except:
+            stat_result = os.stat(v_file)
+        except OSError:
+            self._versions_file_cache = None
             return False
+
+        cache_key = (v_file, stat_result.st_mtime_ns, stat_result.st_size)
+        cache = getattr(self, '_versions_file_cache', None)
+        if cache is None or cache[0] != cache_key:
+            try:
+                with open(v_file, 'r', encoding='utf-8') as f:
+                    terms_with_versions = set(json.load(f))
+            except Exception:
+                terms_with_versions = set()
+            cache = (cache_key, terms_with_versions)
+            self._versions_file_cache = cache
+        return term in cache[1]
 
     def _open_versioning_dialog(self, item_dict):
         """Открывает диалог версионирования."""
@@ -3286,7 +3364,7 @@ class GlossaryManagerPage(ShellPage):
         self.table.setCurrentItem(None)
         if not self.direct_conflicts: return
         current_glossary = self.get_glossary()
-        dlg = DirectConflictResolverDialog(self.direct_conflicts, self, morph=morph_analyzer)
+        dlg = DirectConflictResolverDialog(self.direct_conflicts, self, morph=get_morph_analyzer())
         if dlg.exec() == QDialog.DialogCode.Accepted:
             resolved = dlg.resolved_glossary
             if not resolved: return
@@ -3356,7 +3434,7 @@ class GlossaryManagerPage(ShellPage):
         self.table.setCurrentItem(None)
         if not self.reverse_issues: return
         current_glossary = self.get_glossary()
-        page = ReverseConflictResolverPage(self.reverse_issues, current_glossary, self, morph=morph_analyzer)
+        page = ReverseConflictResolverPage(self.reverse_issues, current_glossary, self, morph=get_morph_analyzer())
 
         def apply_reverse_result(accepted, page=page):
             if accepted:
@@ -3603,6 +3681,29 @@ class GlossaryManagerPage(ShellPage):
         self.current_page = 0
         self._pending_vertical_scroll_value = max(0, scroll_value)
 
+    def _schedule_auto_backup(self):
+        """Дебаунс авто-бэкапа: построчная правка раньше делала полный
+        SQLite-дамп на каждую ячейку синхронно в GUI-потоке. Таймер не
+        продлевается — дамп гарантированно случится не позже 2с после
+        первой несохранённой правки."""
+        if self.launch_mode == 'child' or not self.associated_project_path:
+            return
+        timer = getattr(self, '_auto_backup_timer', None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(2000)
+            timer.timeout.connect(self._save_auto_backup)
+            self._auto_backup_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _flush_pending_auto_backup(self):
+        timer = getattr(self, '_auto_backup_timer', None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self._save_auto_backup()
+
     def _save_auto_backup(self):
         """Создает SQLite-дамп текущего состояния глоссария в папке проекта."""
         if self.launch_mode == 'child' or not self.associated_project_path:
@@ -3657,6 +3758,7 @@ class GlossaryManagerPage(ShellPage):
         if hasattr(self, '_backup_asked') and self._backup_asked:
             return
         self._backup_asked = True
+        self._flush_pending_auto_backup()
         
         if self.launch_mode != 'child' and self.associated_project_path:
             backup_path = os.path.join(self.associated_project_path, "glossary_backup.db")
@@ -3745,6 +3847,11 @@ class _GlossaryDialogMeta(type(QDialog)):
 
 class MainWindow(QDialog, metaclass=_GlossaryDialogMeta):
     """Thin modal wrapper hosting GlossaryManagerPage (preserves the old QDialog API + result)."""
+
+    @property
+    def morph_analyzer(self):
+        """Единый анализатор (ai_correction берёт его с окна глоссария)."""
+        return get_morph_analyzer()
 
     def __init__(self, parent=None, mode='standalone', project_path=None):
         super().__init__(parent)

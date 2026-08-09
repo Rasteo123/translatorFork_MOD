@@ -19,6 +19,16 @@ GEMINI_CYRILLIC_CHARS_PER_TOKEN = 2.2
 GEMINI_CJK_CHARS_PER_TOKEN = 1.5
 GEMINI_OTHER_CHARS_PER_TOKEN = 2.5
 
+_ASCII_RUN_PATTERN = re.compile(r'[\x00-\x7f]+')
+_CYRILLIC_RUN_PATTERN = re.compile(r'[\u0400-\u04ff]+')
+_CJK_RUN_PATTERN = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+')
+
+
+def _count_chars(pattern, text):
+    # \u0421\u0447\u0438\u0442\u0430\u0435\u043c \u0434\u043b\u0438\u043d\u044b \u043d\u0435\u043f\u0440\u0435\u0440\u044b\u0432\u043d\u044b\u0445 \u0441\u0435\u0440\u0438\u0439 \u0432\u043c\u0435\u0441\u0442\u043e findall \u043f\u043e \u043e\u0434\u043d\u043e\u043c\u0443 \u0441\u0438\u043c\u0432\u043e\u043b\u0443:
+    # findall \u043d\u0430 \u043f\u0440\u043e\u043c\u043f\u0442\u0435 \u0432 \u0441\u043e\u0442\u043d\u0438 \u041a\u0411 \u0430\u043b\u043b\u043e\u0446\u0438\u0440\u0443\u0435\u0442 \u0441\u043e\u0442\u043d\u0438 \u0442\u044b\u0441\u044f\u0447 \u0441\u0442\u0440\u043e\u043a-\u043e\u0434\u043d\u043e\u0441\u0438\u043c\u0432\u043e\u043b\u043e\u043a.
+    return sum(m.end() - m.start() for m in pattern.finditer(text))
+
 
 def estimate_gemini_tokens(text):
     """Estimate Gemini input tokens without an API round trip."""
@@ -26,9 +36,9 @@ def estimate_gemini_tokens(text):
         return 0
 
     text = str(text)
-    ascii_like_chars = len(re.findall(r'[\x00-\x7f]', text))
-    cyrillic_chars = len(re.findall(r'[\u0400-\u04ff]', text))
-    cjk_chars = len(re.findall(r'[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', text))
+    ascii_like_chars = _count_chars(_ASCII_RUN_PATTERN, text)
+    cyrillic_chars = _count_chars(_CYRILLIC_RUN_PATTERN, text)
+    cjk_chars = _count_chars(_CJK_RUN_PATTERN, text)
     other_chars = max(0, len(text) - ascii_like_chars - cyrillic_chars - cjk_chars)
 
     total_tokens = (

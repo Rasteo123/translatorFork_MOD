@@ -296,6 +296,13 @@ class McpStdioServer:
                 if self._client_session is not None:
                     params = request.get("params") or {}
                     capabilities = params.get("capabilities") if isinstance(params, dict) else None
+                    # Имя клиента из clientInfo — иначе в GUI все клиенты
+                    # выглядят одинаковым безликим «MCP client».
+                    client_info = params.get("clientInfo") if isinstance(params, dict) else None
+                    if isinstance(client_info, dict):
+                        name_setter = getattr(self._client_session, "set_client_identity", None)
+                        if callable(name_setter):
+                            name_setter(client_info.get("name"))
                     setter = getattr(self._client_session, "set_client_capabilities", None)
                     if callable(setter):
                         setter(capabilities if isinstance(capabilities, dict) else {})

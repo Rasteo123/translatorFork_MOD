@@ -119,6 +119,8 @@ class _ReplacementHarness:
     _active_required_model_ids = reader.MainWindow._active_required_model_ids
     _replacement_api_keys = reader.MainWindow._replacement_api_keys
     _connect_reader_worker_signals = reader.MainWindow._connect_reader_worker_signals
+    _add_dashboard_row = reader.MainWindow._add_dashboard_row
+    _build_live_worker = reader.MainWindow._build_live_worker
     _start_replacement_worker_if_possible = reader.MainWindow._start_replacement_worker_if_possible
     _flush_worker_progress = reader.MainWindow._flush_worker_progress
     _on_worker_finished = reader.MainWindow._on_worker_finished

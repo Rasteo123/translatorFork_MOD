@@ -118,6 +118,11 @@ class McpDaemon:
         self._pending_sse_requests: dict[str, Queue] = {}
         self._active_ai_request_cancellations: dict[str, threading.Event] = {}
         self._active_ai_request_tasks: dict[str, str] = {}
+        # Отмена может прийти РАНЬШЕ самого запроса (гонка на стороне клиента:
+        # CancelledError в воркере до того, как executor-поток отправил
+        # /ai/completions). Запоминаем такие request_id и убиваем запоздавший
+        # запрос сразу, иначе он создаст задачу-сироту и повиснет до таймаута.
+        self._ai_cancel_tombstones: dict[str, float] = {}
 
     @property
     def base_url(self) -> str:
@@ -623,6 +628,9 @@ class McpDaemon:
         cancel_event = threading.Event()
 
         with self._lock:
+            self._prune_ai_cancel_tombstones()
+            if self._ai_cancel_tombstones.pop(request_id, None) is not None:
+                raise _HttpError(499, f"AI request cancelled before start: {request_id}")
             if request_id in self._active_ai_request_cancellations:
                 raise _HttpError(409, f"AI completion request already active: {request_id}")
             self._active_ai_request_cancellations[request_id] = cancel_event
@@ -643,12 +651,27 @@ class McpDaemon:
             with self._lock:
                 self._active_ai_request_cancellations.pop(request_id, None)
 
+    _AI_CANCEL_TOMBSTONE_TTL_SEC = 600.0
+
+    def _prune_ai_cancel_tombstones(self, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        expired = [key for key, expiry in self._ai_cancel_tombstones.items() if expiry <= current]
+        for key in expired:
+            self._ai_cancel_tombstones.pop(key, None)
+
     def cancel_ai_completion_payload(self, request_id) -> dict:
         request_id = str(request_id or "")
         with self._lock:
             cancel_event = self._active_ai_request_cancellations.get(request_id)
+            if cancel_event is None and request_id:
+                # Запрос ещё не дошёл — оставляем tombstone, чтобы убить его
+                # на входе, когда (если) он придёт.
+                self._prune_ai_cancel_tombstones()
+                self._ai_cancel_tombstones[request_id] = (
+                    time.monotonic() + self._AI_CANCEL_TOMBSTONE_TTL_SEC
+                )
         if cancel_event is None:
-            return {"ok": True, "cancelled": False, "request_id": request_id}
+            return {"ok": True, "cancelled": False, "tombstoned": bool(request_id), "request_id": request_id}
         cancel_event.set()
         return {"ok": True, "cancelled": True, "request_id": request_id}
 

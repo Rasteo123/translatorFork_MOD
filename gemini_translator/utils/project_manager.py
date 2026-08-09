@@ -1,9 +1,50 @@
 # gemini_translator/utils/project_manager.py
 
+import atexit
 import os
 import json
 # --- ИЗМЕНЕНИЕ 1: Импортируем threading целиком ---
 import threading
+import weakref
+
+from . import fast_json
+
+try:
+    import zstandard as _zstd
+except ImportError:
+    _zstd = None
+
+# Живые экземпляры для страховочного flush отложенных регистраций при выходе
+# процесса (жёсткий kill теряет максимум окно дебаунса; файлы глав целы).
+_LIVE_PROJECT_MANAGERS = weakref.WeakSet()
+
+
+def _flush_all_project_managers():
+    for manager in list(_LIVE_PROJECT_MANAGERS):
+        try:
+            manager.flush()
+        except Exception:
+            pass
+
+
+def _flush_pending_for_map(map_file_path, exclude=None):
+    """Сливает отложенные регистрации всех живых менеджеров этой карты.
+
+    Новый экземпляр читает карту с диска и не видит pending чужих
+    экземпляров — перед чтением заставляем их сброситься (в пределах
+    процесса окно межэкземплярного отставания закрыто полностью)."""
+    target = os.path.abspath(map_file_path)
+    for manager in list(_LIVE_PROJECT_MANAGERS):
+        if manager is exclude:
+            continue
+        try:
+            if os.path.abspath(manager.map_file_path) == target:
+                manager.flush()
+        except Exception:
+            pass
+
+
+atexit.register(_flush_all_project_managers)
 
 try:
     # Попытка абсолютного импорта от корня (предпочтительно)
@@ -30,12 +71,26 @@ class TranslationProjectManager:
         self.glossary_map_path = os.path.join(project_folder, 'glossary_generation_map.json')
         self.user_problem_terms_path = os.path.join(project_folder, 'user_problem_terms.json')
         self.validation_cache_path = os.path.join(project_folder, 'validation_analysis_cache.json')
+        # Сжатое хранение того же кэша (МБы на большую книгу, жмётся ~5-10x)
+        self.validation_cache_zst_path = self.validation_cache_path + '.zst'
         self.term_frequency_cache_path = os.path.join(project_folder, 'term_frequency_cache.json')
         self.chapter_analysis_cache_path = os.path.join(project_folder, 'chapter_analysis_cache.json')
         self.lock = PatientLock()
+        # Отложенные регистрации: register_translation вызывается на каждую
+        # главу, а полная перезапись растущего файла на каждую делает
+        # суммарную запись за сессию квадратичной. Регистрации копятся здесь
+        # и сбрасываются дебаунс-таймером/flush(); _load_unsafe отдаёт
+        # «диск + pending», поэтому остальные писатели карты персистят
+        # отложенное автоматически.
+        self._pending_registrations = []
+        self._flush_timer = None
         self.data = self._load()
+        _LIVE_PROJECT_MANAGERS.add(self)
+
+    FLUSH_DEBOUNCE_SECONDS = 1.5
 
     def _load(self):
+        _flush_pending_for_map(self.map_file_path, exclude=self)
         with self.lock:
             if os.path.exists(self.map_file_path):
                 try:
@@ -44,49 +99,89 @@ class TranslationProjectManager:
                 except (json.JSONDecodeError, IOError): return {}
             return {}
 
+    def _write_map_file_unsafe(self, data_to_save):
+        """Атомарная запись карты: tmp-файл + os.replace (под блокировкой)."""
+        os.makedirs(os.path.dirname(self.map_file_path), exist_ok=True)
+        tmp_path = self.map_file_path + ".tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(data_to_save, f, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp_path, self.map_file_path)
+
     def _save_internal(self, data_to_save):
         with self.lock:
-            os.makedirs(os.path.dirname(self.map_file_path), exist_ok=True)
-            with open(self.map_file_path, 'w', encoding='utf-8') as f:
-                json.dump(data_to_save, f, ensure_ascii=False, indent=2, sort_keys=True)
-            self.data = data_to_save
-    
+            self._save_unsafe(data_to_save)
+
     def _save_unsafe(self, data_to_save):
-        """Внутренний метод, вызывается, когда блокировка уже установлена."""
-        os.makedirs(os.path.dirname(self.map_file_path), exist_ok=True)
-        with open(self.map_file_path, 'w', encoding='utf-8') as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=2, sort_keys=True)
+        """Внутренний метод, вызывается, когда блокировка уже установлена.
+
+        Сохраняемые данные получены через _load_unsafe и уже содержат
+        pending-регистрации — после записи очередь очищается."""
+        self._write_map_file_unsafe(data_to_save)
         self.data = data_to_save
-    
+        self._pending_registrations.clear()
+        self._cancel_flush_timer_unsafe()
+
+    def _apply_pending_unsafe(self, data):
+        for path1, version_suffix, path2 in self._pending_registrations:
+            if path1 not in data:
+                data[path1] = {}
+            data[path1][version_suffix] = path2
+        return data
+
     def _load_unsafe(self):
-        """Внутренний метод, вызывается, когда блокировка уже установлена или не нужна."""
+        """Внутренний метод, вызывается, когда блокировка уже установлена или не нужна.
+
+        Возвращает содержимое файла С НАЛОЖЕННЫМИ pending-регистрациями:
+        писатели карты, сохраняющие этот результат, персистят и их."""
+        data_to_load = {}
         if os.path.exists(self.map_file_path):
             try:
                 with open(self.map_file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    if not content: return {} # Обработка пустого файла
-                    
-                    data_to_load = json.loads(content)
-                    self.data = data_to_load
-                    return data_to_load
-
+                    if content:
+                        data_to_load = json.loads(content)
             except (json.JSONDecodeError, IOError):
                 print(f"[WARN] Не удалось прочитать или распарсить файл карты проекта: {self.map_file_path}. Файл может быть поврежден.")
-                return {}
-        return {}
+                data_to_load = {}
+        data_to_load = self._apply_pending_unsafe(data_to_load)
+        self.data = data_to_load
+        return data_to_load
+
+    def _cancel_flush_timer_unsafe(self):
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+
+    def _schedule_flush_unsafe(self):
+        # Таймер НЕ перезапускается на каждую регистрацию (не «скользящий»
+        # дебаунс): при непрерывном потоке глав сброс происходит не реже
+        # одного раза за интервал, отставание диска ограничено.
+        if self._flush_timer is not None and self._flush_timer.is_alive():
+            return
+        self._flush_timer = threading.Timer(self.FLUSH_DEBOUNCE_SECONDS, self.flush)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
+
+    def flush(self):
+        """Сливает отложенные регистрации на диск (merge с текущим файлом)."""
+        with self.lock:
+            if not self._pending_registrations:
+                self._cancel_flush_timer_unsafe()
+                return
+            self._save_unsafe(self._load_unsafe())
 
     def register_translation(self, original_internal_path, version_suffix, translated_relative_path):
-        """Атомарно регистрирует одну версию перевода."""
+        """Регистрирует версию перевода: немедленно в памяти, на диск — отложенно."""
         with self.lock:
-            current_data = self._load_unsafe() # 1. Читаем свежие данные
-            
             path1 = original_internal_path.replace('\\', '/')
             path2 = translated_relative_path.replace('\\', '/')
-            if path1 not in current_data:
-                current_data[path1] = {}
-            current_data[path1][version_suffix] = path2
-            
-            self._save_unsafe(current_data) # 2. Сохраняем измененные данные
+            self._pending_registrations.append((path1, version_suffix, path2))
+            # Локальное представление обновляем сразу: воркеры и prompt_builder
+            # читают карту через этот же экземпляр.
+            if path1 not in self.data:
+                self.data[path1] = {}
+            self.data[path1][version_suffix] = path2
+            self._schedule_flush_unsafe()
 
     def load_version_map(self):
         """
@@ -518,20 +613,41 @@ class TranslationProjectManager:
 
     def load_validation_cache(self):
         with self.lock:
+            if _zstd is not None and os.path.exists(self.validation_cache_zst_path):
+                try:
+                    with open(self.validation_cache_zst_path, 'rb') as f:
+                        raw = _zstd.ZstdDecompressor().decompress(f.read())
+                    return fast_json.loads(raw)
+                except Exception:
+                    # Битый сжатый кэш = как битый json: пересканируем.
+                    return {}
+
             if not os.path.exists(self.validation_cache_path):
                 return {}
 
             try:
                 with open(self.validation_cache_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    return fast_json.load(f)
             except (json.JSONDecodeError, IOError):
                 return {}
 
     def save_validation_cache(self, payload):
         with self.lock:
             os.makedirs(os.path.dirname(self.validation_cache_path), exist_ok=True)
-            with open(self.validation_cache_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+            serialized = fast_json.dumps(payload, indent=2, sort_keys=True)
+            if _zstd is not None:
+                tmp_path = self.validation_cache_zst_path + '.tmp'
+                with open(tmp_path, 'wb') as f:
+                    f.write(_zstd.ZstdCompressor(level=3).compress(serialized.encode('utf-8')))
+                os.replace(tmp_path, self.validation_cache_zst_path)
+                # Легаси-файл убираем, чтобы не разъезжался со сжатым.
+                try:
+                    os.remove(self.validation_cache_path)
+                except OSError:
+                    pass
+            else:
+                with open(self.validation_cache_path, 'w', encoding='utf-8') as f:
+                    f.write(serialized)
 
     def load_term_frequency_cache(self):
         with self.lock:
@@ -540,7 +656,7 @@ class TranslationProjectManager:
 
             try:
                 with open(self.term_frequency_cache_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    return fast_json.load(f)
             except (json.JSONDecodeError, IOError):
                 return {}
 
@@ -548,7 +664,7 @@ class TranslationProjectManager:
         with self.lock:
             os.makedirs(os.path.dirname(self.term_frequency_cache_path), exist_ok=True)
             with open(self.term_frequency_cache_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+                fast_json.dump(payload, f, indent=2, sort_keys=True)
 
     def get_all_originals(self):
         from .epub_tools import extract_number_from_path
@@ -815,7 +931,7 @@ class TranslationProjectManager:
             if os.path.exists(cache_path):
                 try:
                     with open(cache_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
+                        return fast_json.load(f)
                 except (json.JSONDecodeError, IOError):
                     return None # Возвращаем None при ошибке, чтобы инициировать пересчет
             return None
@@ -826,7 +942,7 @@ class TranslationProjectManager:
             if os.path.exists(self.chapter_analysis_cache_path):
                 try:
                     with open(self.chapter_analysis_cache_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
+                        return fast_json.load(f)
                 except (json.JSONDecodeError, IOError):
                     return None
             return None
@@ -837,7 +953,7 @@ class TranslationProjectManager:
             try:
                 os.makedirs(os.path.dirname(self.chapter_analysis_cache_path), exist_ok=True)
                 with open(self.chapter_analysis_cache_path, 'w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                    fast_json.dump(cache_data, f, indent=2)
             except IOError as e:
                 print(f"[ERROR] Не удалось сохранить кэш анализа глав: {e}")
 
@@ -848,6 +964,6 @@ class TranslationProjectManager:
             try:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 with open(cache_path, 'w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                    fast_json.dump(cache_data, f, indent=2)
             except IOError as e:
                 print(f"[ERROR] Не удалось сохранить кэш размеров глав: {e}")

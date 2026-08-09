@@ -7,6 +7,7 @@
 # который использует паттерн "Стратегия" для работы с различными API.
 # ---------------------------------------------------------------------------
     
+import copy
 import time
 import traceback
 
@@ -18,7 +19,7 @@ import contextvars
 import uuid
 import asyncio
 
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, CancelledError
+from concurrent.futures import CancelledError
 
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QObject
@@ -28,8 +29,6 @@ from PyQt6.QtCore import QObject
 from gemini_translator.api import config as api_config
 
 from gemini_translator.utils.text import validate_html_structure
-
-from gemini_translator.core.task_manager import ChapterQueueManager # Наш новый класс
 
 # Импорт ошибок
 from gemini_translator.api.errors import (
@@ -236,8 +235,11 @@ class UniversalWorker:
         self.rpm_limiter = RPMLimiter(rpm_limit=self.rpm_value)
 
         # B. API Handler
-        # Provider config берем из глобального конфига по имени
-        self.provider_config = api_config.api_providers()[self.api_provider_name]
+        # Provider config берем из глобального конфига по имени.
+        # Копируем только нужный провайдер, а не deepcopy всего реестра.
+        self.provider_config = copy.deepcopy(
+            api_config.api_providers_view()[self.api_provider_name]
+        )
         handler_name = self.provider_config["handler_class"]
         try:
             handler_class = get_api_handler_class(handler_name)
@@ -405,6 +407,9 @@ class UniversalWorker:
         дочерних задач + закрытие сессии + cancel()-контракт (паритет с run())."""
         self._worker_loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
+        # Выделенное событие отмены для _cancellation_checker в api/base.py:
+        # позволяет ждать отмену событийно вместо поллинга каждые 200мс.
+        self._cancel_async_event = asyncio.Event()
         try:
             self._setup_sync()
             if self.provider_config.get('needs_warmup', False) and getattr(self, 'use_warmup', False):
@@ -679,9 +684,7 @@ class UniversalWorker:
         if not task_info:
             self._handle_task_result((None, True, 'IGNORED_NONE', 'Получена пустая задача.'))
             return
-    
-        task_history = self.task_manager.get_failure_history(task_info)
-    
+
         try:
             # _execute_task теперь тоже async, так как вызывает async-хендлеры
             result = await self._execute_task(task_info)
@@ -697,6 +700,9 @@ class UniversalWorker:
             raise # Пробрасываем выше, чтобы цикл обработки завершился
     
         except Exception as exc:
+            # История ошибок нужна только на пути провала — на успешном пути
+            # это было бы лишним обращением к БД на каждую задачу.
+            task_history = self.task_manager.get_failure_history(task_info)
             action, error_type, original_exc = self.error_analyzer.analyze_and_act(exc, task_info, task_history)
 
             if self._split_batch_after_content_filter(task_info, error_type):
@@ -875,6 +881,13 @@ class UniversalWorker:
         """Публичный метод для внешней отмены операций воркера с полной очисткой."""
         # Устанавливаем флаг, который проверяется в основном асинхронном цикле
         self.is_cancelled = True
+        cancel_event = getattr(self, '_cancel_async_event', None)
+        loop = getattr(self, '_worker_loop', None)
+        if cancel_event is not None and loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(cancel_event.set)
+            except RuntimeError:
+                pass
         self.notify()
         self._disconnect_from_bus()
         

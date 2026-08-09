@@ -213,7 +213,7 @@ def _replace_heading_sequence_with_h1(soup, headings, title):
         heading.decompose()
 
 
-def normalize_epub_chapter_heading_to_h1(html_content):
+def normalize_epub_chapter_heading_to_h1(html_content, soup_cache=None):
     """
     Normalize split EPUB chapter headings to a plain h1.
 
@@ -221,6 +221,9 @@ def normalize_epub_chapter_heading_to_h1(html_content):
     <h2 class="head"><span class="chapter-sequence-number">第175章</span><br/>小姨到访</h2>
     becomes:
     <h1>第175章 小姨到访</h1>
+
+    soup_cache — опциональный кэш {html: soup} на время одного validate-вызова;
+    записанные туда soup считаются read-only, поэтому перед мутацией ключ удаляется.
     """
     if not html_content:
         return html_content
@@ -230,13 +233,21 @@ def normalize_epub_chapter_heading_to_h1(html_content):
     except ImportError:
         return html_content
 
-    soup = BeautifulSoup(html_content, "html.parser")
+    soup = soup_cache.get(html_content) if soup_cache is not None else None
+    if soup is None:
+        soup = BeautifulSoup(html_content, "html.parser")
+        if soup_cache is not None:
+            soup_cache[html_content] = soup
+
     heading = soup.find(_is_split_chapter_heading)
     if heading:
         title = extract_epub_heading_text(heading)
         if not title:
             return html_content
 
+        if soup_cache is not None:
+            # Дерево сейчас мутирует и перестанет соответствовать html_content.
+            soup_cache.pop(html_content, None)
         replacement = soup.new_tag("h1")
         heading_id = heading.attrs.get("id")
         if heading_id:
@@ -253,6 +264,8 @@ def normalize_epub_chapter_heading_to_h1(html_content):
     if not title:
         return html_content
 
+    if soup_cache is not None:
+        soup_cache.pop(html_content, None)
     _replace_heading_sequence_with_h1(soup, heading_sequence, title)
     return str(soup)
 

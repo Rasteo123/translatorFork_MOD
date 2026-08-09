@@ -30,6 +30,10 @@ def test_chapter_selection_tooltip_uses_h1_title(tmp_path):
         dialog.all_chapters = [chapter_path]
         dialog.list_widget = QtWidgets.QListWidget()
         dialog._load_chapter_title_cache()
+        # Кэш заголовков теперь заполняется лениво батчами — прогоняем скан
+        # синхронно до конца (по батчу за вызов), как это сделала бы очередь событий.
+        while dialog._title_scan_index is not None:
+            dialog._scan_chapter_titles_batch()
 
         dialog._populate_list_widget_preview()
         preview_tooltip = dialog.list_widget.item(0).toolTip()

@@ -501,6 +501,11 @@ class ConsistencyEngine(QObject):
     _CJK_RESIDUE_RE = re.compile(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+")
     _RATING_TOKEN_RE = re.compile(r"^[A-Sa-s][+-]?$")
 
+    # Кольцевой предел трейса запрос/ответ: каждая запись до ~24КБ (prompt +
+    # response по 12000 символов), без предела длинная сессия раздувает и
+    # память, и файл сессии, который сериализуется на каждый чанк.
+    MAX_TRACE_ENTRIES = 200
+
     def __init__(self, settings_manager, parent=None):
         super().__init__(parent)
         self.settings_manager = settings_manager
@@ -787,7 +792,7 @@ class ConsistencyEngine(QObject):
                 dict(item)
                 for item in trace
                 if isinstance(item, dict)
-            ]
+            ][-self.MAX_TRACE_ENTRIES:]
 
         self._restore_completed_chunk_keys(state.get("completed_chunks"))
 
@@ -889,6 +894,9 @@ class ConsistencyEngine(QObject):
             trace_entry['metadata'] = cleaned_metadata
         with self._state_lock:
             self.request_response_trace.append(trace_entry)
+            overflow = len(self.request_response_trace) - self.MAX_TRACE_ENTRIES
+            if overflow > 0:
+                del self.request_response_trace[:overflow]
 
     def get_request_response_trace(self) -> List[Dict[str, Any]]:
         with self._state_lock:
@@ -2423,7 +2431,9 @@ class ConsistencyEngine(QObject):
         if provider_name == "local":
             provider_info = api_config.ensure_dynamic_provider_models(provider_name)
         else:
-            provider_info = api_config.api_providers().get(provider_name, {})
+            # view: без deepcopy всего реестра на каждый запрос; наружу
+            # provider_info уходит через deepcopy в return ниже.
+            provider_info = api_config.api_providers_view().get(provider_name, {})
 
         if not isinstance(provider_info, dict) or not provider_info:
             raise ValueError(f"Provider {provider_name} not found in config")
@@ -2439,7 +2449,7 @@ class ConsistencyEngine(QObject):
             model_config = deepcopy(provider_info.get("models", {}).get(model_name, {}))
 
         if not model_config:
-            runtime_model_config = api_config.all_models().get(model_name)
+            runtime_model_config = api_config.all_models_view().get(model_name)
             runtime_provider = str((runtime_model_config or {}).get("provider") or "").strip()
             if isinstance(runtime_model_config, dict) and (not runtime_provider or runtime_provider == provider_name):
                 model_config = deepcopy(runtime_model_config)

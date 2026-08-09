@@ -67,6 +67,67 @@ def build_queue_snapshot_meta(counts_by_status: dict, saved_at: float | None = N
     }
 
 
+# --- Сжатие блобов переводов чанков (chunk_results.translated_content) ---
+# HTML жмётся zstd в 5-8 раз: меньше RSS длинных сессий и дешевле
+# backup-клоны/снапшоты (копируют всю базу). Формат самоопределяется по
+# zstd-magic: str — легаси-текст (старые снапшоты сессий, прямые вставки
+# в тестах) проходит насквозь. payload задач НЕ сжимать: на его JSON-тексте
+# построены generated-колонки (_PAYLOAD_DERIVED_COLUMNS).
+try:
+    import zstandard as _zstd
+except ImportError:
+    _zstd = None
+
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def compress_chunk_content(text):
+    if _zstd is None or not isinstance(text, str) or not text:
+        return text
+    return _zstd.ZstdCompressor(level=3).compress(text.encode("utf-8"))
+
+
+def decompress_chunk_content(value):
+    if isinstance(value, bytes):
+        if value[:4] == _ZSTD_MAGIC:
+            if _zstd is None:
+                # Сжатый блоб без установленного zstandard прочитать нечем;
+                # пустая строка деградирует до "нет предыдущего чанка".
+                return ""
+            return _zstd.ZstdDecompressor().decompress(value).decode("utf-8")
+        return value.decode("utf-8", "replace")
+    return value
+
+
+# Производные от payload колонки для точечных запросов вместо `payload LIKE`
+# (поиск предыдущего чанка без chain_id, финальная сборка глав). Колонки
+# generated (VIRTUAL): их невозможно рассинхронизировать с payload — они
+# пересчитываются при любом INSERT (точек вставки в tasks восемь) и при
+# замене payload в update_task. json_valid-гейт обязателен: восстановление
+# сессии вставляет payload с диска, и битая строка не должна валить INSERT
+# при вычислении индексируемого выражения. chapter_path/chunk_index ограничены
+# epub-типами, чтобы в индекс не попадали большие строки из чужих payload'ов.
+_PAYLOAD_DERIVED_COLUMNS = (
+    (
+        "task_type",
+        "TEXT GENERATED ALWAYS AS "
+        "(CASE WHEN json_valid(payload) THEN json_extract(payload, '$[0]') END) VIRTUAL",
+    ),
+    (
+        "chapter_path",
+        "TEXT GENERATED ALWAYS AS "
+        "(CASE WHEN json_valid(payload) AND json_extract(payload, '$[0]') IN ('epub', 'epub_chunk') "
+        "THEN json_extract(payload, '$[2]') END) VIRTUAL",
+    ),
+    (
+        "chunk_index",
+        "INTEGER GENERATED ALWAYS AS "
+        "(CASE WHEN json_valid(payload) AND json_extract(payload, '$[0]') = 'epub_chunk' "
+        "THEN json_extract(payload, '$[4]') END) VIRTUAL",
+    ),
+)
+
+
 def tuple_serializer(obj):
     if isinstance(obj, tuple): return {'__tuple__': True, 'items': list(obj)}
     if isinstance(obj, uuid.UUID): return str(obj)
@@ -226,10 +287,15 @@ class ChapterQueueManager(QObject):
 
     def _get_read_only_conn(self) -> sqlite3.Connection:
         """
-        Создает одноразовый in-memory клон только для чтения с замером времени.
+        Создает одноразовый in-memory клон только для чтения.
         Потокобезопасен благодаря использованию _chancellor_lock.
         Использует ПРИОРИТЕТНЫЙ захват (acquire_priority), чтобы быстрые читатели
         не ждали в конце очереди за долгими писателями.
+
+        Замок держится на время backup ВСЕЙ базы (включая блобы) — поэтому
+        клон оправдан только для объёмных чтений с долгой обработкой строк
+        (фоновый UI-кэш, дампы всей очереди). Для точечных выборок использовать
+        _light_read_conn/_execute_light_read.
         """
         clone_conn = sqlite3.connect(":memory:")
         
@@ -258,6 +324,34 @@ class ChapterQueueManager(QObject):
         clone_conn.row_factory = sqlite3.Row
         return clone_conn
 
+    @contextlib.contextmanager
+    def _light_read_conn(self):
+        """Прямое читающее соединение с мастер-БД под приоритетным замком.
+
+        Для точечных выборок полный клон (_get_read_only_conn -> backup ВСЕЙ
+        базы вместе с блобами translated_content) держит замок дольше и жжёт
+        память; здесь замок держится ровно на время самих запросов.
+
+        Контракт: внутри with — только запросы и дешёвые проверки; тяжёлую
+        обработку строк выносить за пределы блока (замок блокирует писателей).
+        Для объёмных чтений с обработкой (фоновый UI-кэш, дампы всей очереди)
+        по-прежнему использовать _get_read_only_conn."""
+        self._chancellor_lock.acquire_priority()
+        try:
+            master_conn = sqlite3.connect(self.master_uri, uri=True)
+            try:
+                master_conn.row_factory = sqlite3.Row
+                yield master_conn
+            finally:
+                master_conn.close()
+        finally:
+            self._chancellor_lock.release()
+
+    def _execute_light_read(self, sql: str, params: tuple = ()) -> list:
+        """Один быстрый запрос к мастер-БД под приоритетным замком."""
+        with self._light_read_conn() as conn:
+            return conn.execute(sql, params).fetchall()
+
 
     def _create_schema(self, conn: sqlite3.Connection):
         with conn:
@@ -274,14 +368,22 @@ class ChapterQueueManager(QObject):
                 );
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_seq ON tasks (status, priority DESC, sequence ASC);")
+            # table_xinfo, а не table_info: generated-колонки помечены hidden
+            # и в table_info не попадают — проверка существования сломалась бы.
             existing_columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+                row[1] for row in conn.execute("PRAGMA table_xinfo(tasks)").fetchall()
             }
             if 'chain_id' not in existing_columns:
                 conn.execute("ALTER TABLE tasks ADD COLUMN chain_id INTEGER")
             if 'chain_index' not in existing_columns:
                 conn.execute("ALTER TABLE tasks ADD COLUMN chain_index INTEGER")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_chain ON tasks (status, chain_id, chain_index);")
+            for column_name, column_def in _PAYLOAD_DERIVED_COLUMNS:
+                if column_name not in existing_columns:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {column_name} {column_def}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_chunk_lookup ON tasks (task_type, chapter_path, chunk_index);"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS task_errors (
                     error_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -507,8 +609,15 @@ class ChapterQueueManager(QObject):
         refreshed_payload = (payload[0], current_epub_path, *payload[2:])
         return self._normalize_payload(refreshed_payload)
 
-    def add_priority_tasks(self, tasks: list, parent_history: dict = None):
-        """Добавляет задачи в НАЧАЛО очереди (высокий priority)."""
+    def add_priority_tasks(self, tasks: list, parent_history: dict = None, parent_task_id=None):
+        """Добавляет задачи в НАЧАЛО очереди (высокий priority).
+
+        parent_task_id — задача, взамен которой создаются новые (например,
+        глава, разрезанная emerger'ом на чанки). Новые задачи наследуют её
+        chain_id и занимают последовательные chain_index начиная с
+        родительского (хвост цепочки сдвигается) — так последовательный
+        контекст между чанками находится по цепочке, без полного скана.
+        """
         # --- ЭТАП 1: Подготовка данных (вне транзакции) ---
         tasks_to_insert = []
         all_errors_to_insert = [] # <-- Единый список для ВСЕХ ошибок
@@ -517,27 +626,60 @@ class ChapterQueueManager(QObject):
             task_id_str = str(uuid.uuid4())
             payload = self._normalize_payload(task)
             tasks_to_insert.append((
-                task_id_str, 
-                json.dumps(payload, default=tuple_serializer), 
-                'pending', 
+                task_id_str,
+                json.dumps(payload, default=tuple_serializer),
+                'pending',
                 1, # priority
                 time.time() # sequence
             ))
-            
+
             if parent_history:
                 # Добавляем ошибки для ЭТОЙ задачи в ОБЩИЙ список
                 for error_type, count in parent_history.get('errors', {}).items():
                     for _ in range(count):
                         all_errors_to_insert.append((task_id_str, error_type, time.time()))
-        
+
         # --- ЭТАП 2: Атомарная запись в БД (внутри транзакции) ---
         if tasks_to_insert: # Проверяем, есть ли вообще что добавлять
             with self._get_write_conn() as conn:
-                # Сначала вставляем родительские задачи
-                conn.executemany(
-                    "INSERT OR IGNORE INTO tasks (task_id, payload, status, priority, sequence) VALUES (?, ?, ?, ?, ?)",
-                    tasks_to_insert
-                )
+                chain_id = None
+                base_chain_index = None
+                if parent_task_id is not None:
+                    parent_row = conn.execute(
+                        "SELECT chain_id, chain_index FROM tasks WHERE task_id = ?",
+                        (str(parent_task_id),),
+                    ).fetchone()
+                    if parent_row is not None:
+                        chain_id = parent_row['chain_id']
+                        base_chain_index = parent_row['chain_index']
+
+                if chain_id is not None and base_chain_index is not None:
+                    if len(tasks_to_insert) > 1:
+                        conn.execute(
+                            """
+                            UPDATE tasks
+                            SET chain_index = chain_index + ?
+                            WHERE chain_id = ?
+                              AND chain_index > ?
+                            """,
+                            (len(tasks_to_insert) - 1, chain_id, base_chain_index),
+                        )
+                    conn.executemany(
+                        """
+                        INSERT OR IGNORE INTO tasks
+                            (task_id, payload, status, priority, sequence, chain_id, chain_index)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (*task_row, chain_id, base_chain_index + index)
+                            for index, task_row in enumerate(tasks_to_insert)
+                        ],
+                    )
+                else:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO tasks (task_id, payload, status, priority, sequence) VALUES (?, ?, ?, ?, ?)",
+                        tasks_to_insert
+                    )
                 # Затем вставляем всю историю ошибок
                 if all_errors_to_insert:
                     conn.executemany(
@@ -550,23 +692,21 @@ class ChapterQueueManager(QObject):
         
     def has_held_tasks(self) -> bool:
         """Проверяет, есть ли в очереди 'замороженные' задачи."""
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute("SELECT 1 FROM tasks WHERE status = 'held' LIMIT 1")
-            return cursor.fetchone() is not None
-    
+        rows = self._execute_light_read("SELECT 1 FROM tasks WHERE status = 'held' LIMIT 1")
+        return bool(rows)
+
     def peek_next_held_task(self) -> tuple | None:
         """
         Возвращает (id, payload) следующей 'замороженной' задачи, НЕ меняя ее статус.
         """
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute(
-                "SELECT task_id, payload FROM tasks WHERE status = 'held' ORDER BY sequence ASC LIMIT 1"
-            )
-            row = cursor.fetchone()
-            if row:
-                task_id = uuid.UUID(row['task_id'])
-                payload = json.loads(row['payload'], object_hook=tuple_deserializer)
-                return (task_id, payload)
+        rows = self._execute_light_read(
+            "SELECT task_id, payload FROM tasks WHERE status = 'held' ORDER BY sequence ASC LIMIT 1"
+        )
+        if rows:
+            row = rows[0]
+            task_id = uuid.UUID(row['task_id'])
+            payload = json.loads(row['payload'], object_hook=tuple_deserializer)
+            return (task_id, payload)
         return None
 
     def promote_held_task(self, task_id: uuid.UUID, new_payload: tuple):
@@ -687,7 +827,7 @@ class ChapterQueueManager(QObject):
             except Exception:
                 continue
             if self._payload_is_chunk(payload, chapter_path, chunk_index):
-                return row['translated_content'] or ""
+                return decompress_chunk_content(row['translated_content']) or ""
         return ""
 
     def get_completed_previous_chunk_translation(self, current_task_id, chapter_path: str, chunk_index: int) -> str:
@@ -701,7 +841,7 @@ class ChapterQueueManager(QObject):
         current_task_id_str = str(current_task_id) if current_task_id else ""
         chapter_path = str(chapter_path)
 
-        with self._get_read_only_conn() as conn:
+        with self._light_read_conn() as conn:
             if current_task_id_str:
                 current_row = conn.execute(
                     "SELECT chain_id, chain_index FROM tasks WHERE task_id = ?",
@@ -736,14 +876,22 @@ class ChapterQueueManager(QObject):
                     if translated_content:
                         return translated_content
 
+            # Fallback для задач без chain_id: фильтруем по generated-колонкам
+            # из payload (_PAYLOAD_DERIVED_COLUMNS) вместо прежнего LIKE по
+            # JSON-тексту; json_extract сам декодирует \uXXXX-экранирование
+            # ensure_ascii, поэтому не-ASCII пути сравниваются напрямую.
             fallback_rows = conn.execute(
                 """
                 SELECT t.payload, cr.translated_content
                 FROM tasks AS t
                 JOIN chunk_results AS cr ON cr.task_id = t.task_id
                 WHERE t.status = 'completed'
+                  AND t.task_type = 'epub_chunk'
+                  AND t.chapter_path = ?
+                  AND t.chunk_index = ?
                 ORDER BY t.sequence DESC
-                """
+                """,
+                (chapter_path, target_chunk_index),
             ).fetchall()
             return self._translation_from_chunk_rows(
                 fallback_rows,
@@ -770,7 +918,7 @@ class ChapterQueueManager(QObject):
                 # 2. Выполняем вторую операцию в той же транзакции.
                 conn.execute(
                     "INSERT OR REPLACE INTO chunk_results (task_id, translated_content, provider_id) VALUES (?, ?, ?)",
-                    (task_id_str, translated_content, provider_id)
+                    (task_id_str, compress_chunk_content(translated_content), provider_id)
                 )
             
             # Логируем только после успешного коммита (замок здесь уже отпущен!)
@@ -990,7 +1138,7 @@ class ChapterQueueManager(QObject):
         updated_count = 0 
         
         try:
-            with self._get_read_only_conn() as conn:
+            with self._light_read_conn() as conn:
                 chunk_size = 900 # Лимит переменных SQLite
                 for i in range(0, len(batch_originals), chunk_size):
                     chunk = batch_originals[i:i + chunk_size]
@@ -1394,11 +1542,8 @@ class ChapterQueueManager(QObject):
         # 2. Проверка базы данных (только если флага нет)
         # Игнорируем 'held', так как в обычном режиме это остатки Dry Run,
         # а в управляемом мы бы вышли выше по флагу.
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute("SELECT 1 FROM tasks WHERE status IN ('pending', 'in_progress') LIMIT 1")
-            has_active_tasks = cursor.fetchone() is not None
-            
-        return not has_active_tasks
+        rows = self._execute_light_read("SELECT 1 FROM tasks WHERE status IN ('pending', 'in_progress') LIMIT 1")
+        return not rows
 
     # --- НАЧАЛО ВОССТАНОВЛЕННОГО БЛОКА КЭШИРОВАНИЯ ---
     @pyqtSlot()
@@ -1809,15 +1954,11 @@ class ChapterQueueManager(QObject):
         task_id_str = str(task_info[0])
         history = {'total_count': 0, 'errors': {}}
         
-        failes = [] # Инициализируем пустой список
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute(
-                "SELECT error_type, COUNT(*) as count FROM task_errors WHERE task_id = ? GROUP BY error_type",
-                (task_id_str,)
-            )
-            # --- ЗАХВАТЫВАЕМ ДАННЫЕ В ПРОСТОЙ СПИСОК ---
-            failes = cursor.fetchall()
-        
+        failes = self._execute_light_read(
+            "SELECT error_type, COUNT(*) as count FROM task_errors WHERE task_id = ? GROUP BY error_type",
+            (task_id_str,)
+        )
+
         # --- ОБРАБАТЫВАЕМ ДАННЫЕ ПОСЛЕ ЗАКРЫТИЯ СОЕДИНЕНИЯ ---
         for row in failes:
             # row['error_type'] и row['count'] теперь доступны безопасно
@@ -1988,10 +2129,8 @@ class ChapterQueueManager(QObject):
         Проверяет, есть ли задачи в очереди или активна ли управляемая сессия.
         """
         # Сначала проверяем наличие задач со статусом 'pending' в самой БД
-        with self._get_read_only_conn() as conn:
-            cursor = conn.execute("SELECT 1 FROM tasks WHERE status = 'pending' LIMIT 1")
-            if cursor.fetchone():
-                return True
+        if self._execute_light_read("SELECT 1 FROM tasks WHERE status = 'pending' LIMIT 1"):
+            return True
         
         # Если в БД задач нет, проверяем флаг управляемой сессии в шине событий
         if self.bus and hasattr(self.bus, '_data_store'):
@@ -2008,7 +2147,7 @@ class ChapterQueueManager(QObject):
         Возвращает None, если очередь пуста.
         """
         payload_json = None
-        with self._get_read_only_conn() as conn:
+        with self._light_read_conn() as conn:
             cursor = conn.execute(
                 self._eligible_pending_task_sql("t.payload")
             )
@@ -2058,11 +2197,11 @@ class ChapterQueueManager(QObject):
         Включает задачи со статусами 'pending' и 'held'.
         """
         raw_rows = []
-        with self._get_read_only_conn() as conn:
+        with self._light_read_conn() as conn:
             cursor = conn.execute(
                 """
-                SELECT task_id, payload FROM tasks 
-                WHERE status IN ('pending', 'held') 
+                SELECT task_id, payload FROM tasks
+                WHERE status IN ('pending', 'held')
                 ORDER BY priority DESC, sequence ASC
                 """
             )
@@ -2228,7 +2367,7 @@ class ChapterQueueManager(QObject):
         if return_raw and mode == 'accumulate':
             sql_query = "SELECT original, rus, note, timestamp FROM glossary_results ORDER BY timestamp ASC"
             try:
-                with self._get_read_only_conn() as conn:
+                with self._light_read_conn() as conn:
                     cursor = conn.execute(sql_query)
                     # Возвращаем "как есть", база выступает просто архивом
                     return [dict(row) for row in cursor.fetchall()]
@@ -2258,7 +2397,7 @@ class ChapterQueueManager(QObject):
         """
 
         try:
-            with self._get_read_only_conn() as conn:
+            with self._light_read_conn() as conn:
                 cursor = conn.execute(sql_query)
                 clean_data = [dict(row) for row in cursor.fetchall()]
                 

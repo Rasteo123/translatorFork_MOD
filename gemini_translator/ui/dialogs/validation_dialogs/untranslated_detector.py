@@ -13,6 +13,8 @@ import html
 from typing import Set, List, Tuple, Dict, Any
 from bs4 import BeautifulSoup, NavigableString, ProcessingInstruction, Comment, Declaration
 
+from gemini_translator.utils.html_text import extract_visible_text
+
 
 # =============================================================================
 # CJK and Unicode Character Ranges
@@ -116,24 +118,18 @@ class HTMLCleaner:
     def strip_html_tags_preserving_structure(html_content: str) -> str:
         """
         Remove HTML tags but keep text content intact.
-        
+
+        Делегирует utils.html_text (selectolax при наличии, иначе прежний
+        BS4-путь); семантика идентична, закреплена корпусным тестом.
+
         Args:
             html_content: Raw HTML content
             
         Returns:
             Plain text extracted from HTML
         """
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Remove script, style, and head elements
-            for tag in soup(['script', 'style', 'head', 'title', 'meta']):
-                tag.decompose()
-            
-            return soup.get_text(separator=' ', strip=True)
-        except Exception:
-            return html_content
-    
+        return extract_visible_text(html_content)
+
     @staticmethod
     def get_body_text(html_content: str) -> str:
         """

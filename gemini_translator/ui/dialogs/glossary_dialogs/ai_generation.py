@@ -2005,14 +2005,17 @@ class GenerationSessionPage(ShellPage):
         db_chapters = set()
         if self.engine and self.task_manager:
             try:
-                with self.task_manager._get_read_only_conn() as conn:
+                chapter_rows = []
+                with self.task_manager._light_read_conn() as conn:
                     # Проверяем наличие таблицы перед запросом, чтобы избежать ошибок при инициализации
                     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='glossary_results'")
                     if cursor.fetchone():
                         cursor = conn.execute("SELECT chapters_json FROM glossary_results")
-                        for row in cursor.fetchall():
-                            if row['chapters_json'] and row['chapters_json'] != '[]':
-                                db_chapters.update(json.loads(row['chapters_json']))
+                        chapter_rows = cursor.fetchall()
+                # json.loads — вне замка
+                for row in chapter_rows:
+                    if row['chapters_json'] and row['chapters_json'] != '[]':
+                        db_chapters.update(json.loads(row['chapters_json']))
             except Exception as e:
                 print(f"[UI ERROR] Не удалось прочитать карту глав из БД: {e}")
         
@@ -2440,20 +2443,33 @@ class GenerationSessionPage(ShellPage):
             if hasattr(self, '_is_rebuilding') and self._is_rebuilding:
                 self._redraw_task_list_and_update_map()
                 return
-            
-            # Обновляем прогресс задач всегда
-            self._redraw_task_list_and_update_map()
-            
-            # ВАЖНОЕ ИЗМЕНЕНИЕ: Обновляем глоссарий из БД ТОЛЬКО если сессия активна.
-            # Если сессия остановлена, пользователь может править таблицу вручную,
-            # и мы не должны перезаписывать его правки устаревшими данными из БД.
-            if self.is_session_active:
-                self._refresh_glossary_from_db()
 
-            # Автосохранение
-            if self.is_session_active:
-                self._perform_safe_recovery_save()
-    
+            # Дебаунс: во время сессии события идут пачками, а каждый проход —
+            # два обращения к БД, полный редрав двух виджетов и fsync
+            # recovery-файла. Коалесцируем в один заход раз в 400мс.
+            self._schedule_session_ui_refresh()
+
+    def _schedule_session_ui_refresh(self):
+        timer = getattr(self, '_session_ui_refresh_timer', None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(400)
+            timer.timeout.connect(self._perform_session_ui_refresh)
+            self._session_ui_refresh_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _perform_session_ui_refresh(self):
+        self._redraw_task_list_and_update_map()
+
+        # Обновляем глоссарий из БД ТОЛЬКО если сессия активна.
+        # Если сессия остановлена, пользователь может править таблицу вручную,
+        # и мы не должны перезаписывать его правки устаревшими данными из БД.
+        if self.is_session_active:
+            self._refresh_glossary_from_db()
+            self._perform_safe_recovery_save()
+
     def _on_start_stop_clicked(self):
         """Обрабатывает только нажатие на кнопку 'Начать'."""
         if self.engine and self.engine.session_id:
@@ -3055,8 +3071,28 @@ class GenerationSessionPage(ShellPage):
         # Обновляем состояние кнопок (Start и Apply)
         self._update_start_button_state()
             
+    def _stop_numerals_worker(self):
+        """Гасит QThread сканера числительных: без этого уход со страницы во
+        время сканирования уничтожает работающий поток (краш Qt)."""
+        worker = getattr(self, 'num_worker', None)
+        if worker is None:
+            return
+        try:
+            worker.progress.disconnect()
+            worker.finished.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            if worker.isRunning():
+                worker.is_running = False
+                worker.wait(3000)
+        except RuntimeError:
+            pass
+        self.num_worker = None
+
     def _cleanup(self, keep_recovery_file=False):
         """Централизованный метод для всей очистки перед закрытием."""
+        self._stop_numerals_worker()
         if self.bus:
             try:
                 self.bus.event_posted.disconnect(self._on_global_event)

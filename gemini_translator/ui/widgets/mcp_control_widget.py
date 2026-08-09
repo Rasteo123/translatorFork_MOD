@@ -144,7 +144,7 @@ class McpControlWidget(QtWidgets.QFrame):
 
         self._status_timer = QtCore.QTimer(self)
         self._status_timer.setInterval(2500)
-        self._status_timer.timeout.connect(self._poll_status_if_running)
+        self._status_timer.timeout.connect(self._poll_status)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -188,6 +188,14 @@ class McpControlWidget(QtWidgets.QFrame):
         layout.addWidget(self.config_button)
 
         self.apply_status(McpStatusSnapshot(running=False))
+        # Демон мог быть запущен до открытия GUI (или чужим клиентом) —
+        # проверяем сразу, не дожидаясь первого тика таймера. Дочерний таймер,
+        # а не QTimer.singleShot: он умирает вместе с виджетом и не дёргает
+        # слот удалённого объекта.
+        boot_probe = QtCore.QTimer(self)
+        boot_probe.setSingleShot(True)
+        boot_probe.timeout.connect(self._poll_status)
+        boot_probe.start(0)
         self.action_button.clicked.connect(lambda: self._dispatch_action("toggle"))
         self.config_button.clicked.connect(self.copy_codex_config)
         app = QtWidgets.QApplication.instance()
@@ -232,16 +240,29 @@ class McpControlWidget(QtWidgets.QFrame):
         self._sync_status_timer()
 
     def _sync_status_timer(self) -> None:
-        should_run = self._auto_refresh_enabled and self._running and self._worker_thread is None
+        # Таймер работает и когда карточка считает демона выключенным:
+        # демон автозапускается stdio-клиентами (claude/codex) через
+        # ensure_daemon_process, и раньше карточка этого никогда не узнавала —
+        # «не видит, что клиент подключился». Холостой тик дёшев: без
+        # daemon-info файла HTTP-запрос не делается (только stat).
+        should_run = self._auto_refresh_enabled and self._worker_thread is None
         if should_run and not self._status_timer.isActive():
             self._status_timer.start()
         elif not should_run and self._status_timer.isActive():
             self._status_timer.stop()
 
-    def _poll_status_if_running(self) -> None:
-        if not self._running or self._worker_thread is not None:
+    def _daemon_info_present(self) -> bool:
+        try:
+            from ...mcp.paths import daemon_file
+            return daemon_file(None).exists()
+        except Exception:
+            return False
+
+    def _poll_status(self) -> None:
+        if self._worker_thread is not None:
             return
-        self.refresh_status()
+        if self._running or self._daemon_info_present():
+            self.refresh_status()
 
     def _execute_action_sync(self, action: str) -> McpStatusSnapshot:
         was_running = self._running
@@ -311,6 +332,15 @@ class McpControlWidget(QtWidgets.QFrame):
         self._finish_worker_action(thread)
 
     def _finish_worker_action(self, thread) -> None:
+        # Воркер мог пережить виджет (deleteLater без closeEvent): трогать
+        # C++-удалённые кнопки нельзя.
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                _forget_mcp_worker(thread)
+                return
+        except ImportError:
+            pass
         result = self._pending_worker_result
         self._worker_thread = None
         self._worker = None

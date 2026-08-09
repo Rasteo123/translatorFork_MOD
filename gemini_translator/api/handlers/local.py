@@ -64,6 +64,28 @@ class LocalApiHandler(BaseApiHandler):
         
         return True
 
+    def _get_http_session(self):
+        """Персистентная requests.Session: переиспользует TCP-соединения между
+        вызовами вместо открытия нового на каждый запрос."""
+        session = getattr(self, "_http_session", None)
+        if session is None:
+            session = requests.Session()
+            self._http_session = session
+        return session
+
+    def _drop_http_session(self):
+        session = getattr(self, "_http_session", None)
+        self._http_session = None
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+    async def _close_thread_session_internal(self):
+        self._drop_http_session()
+        await super()._close_thread_session_internal()
+
     @staticmethod
     def _coerce_positive_int(value):
         if isinstance(value, bool) or value is None:
@@ -136,10 +158,10 @@ class LocalApiHandler(BaseApiHandler):
         try:
             # --- ГЛАВНЫЙ ВЫЗОВ ---
             # Передаем proxies, который пришел аргументом
-            response = requests.post(
-                self.base_url, 
-                headers=headers, 
-                json=payload, 
+            response = self._get_http_session().post(
+                self.base_url,
+                headers=headers,
+                json=payload,
                 proxies=self.prepared_proxies,
                 timeout=timeout_seconds
             )
@@ -208,10 +230,13 @@ class LocalApiHandler(BaseApiHandler):
         ):
             raise
         except requests.exceptions.Timeout:
+            self._drop_http_session()
             raise NetworkError(f"Таймаут запроса ({timeout_seconds}с). Модель думает слишком долго.", delay_seconds=30)
         except requests.exceptions.ConnectionError as e:
+            self._drop_http_session()
             raise NetworkError(f"Нет соединения с {self.base_url}. Сервер запущен? Ошибка: {e}", delay_seconds=60)
         except requests.exceptions.RequestException as e:
+            self._drop_http_session()
             raise NetworkError(f"Сетевая ошибка requests: {e}", delay_seconds=30)
         except Exception as e:
              raise Exception(f"Критическая ошибка в локальном хендлере: {e}")

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, pyqtSlot
 from .common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
 from .content_filter_fallback_panel import ContentFilterFallbackPanel
+from .dynamic_models_refresher import DynamicModelsRefresher
 from ..widgets.preset_widget import PresetWidget
 # --- Импорты из нашего проекта ---
 # Мы импортируем config напрямую, чтобы виджет был самодостаточным
@@ -419,6 +420,8 @@ class ModelSettingsWidget(QGroupBox):
         self._provider_event_source_id = None
         self._mcp_mode = False
         self._mcp_restore_provider_id = None
+        self._models_refresher = DynamicModelsRefresher(self)
+        self._models_refresher.refreshed.connect(self._on_dynamic_models_refreshed)
         # Виджету интересна только смена провайдера; не будимся на чужие события.
         self._event_topics = ('provider_changed', 'ai_provider_mode_changed')
         self._connect_to_bus()
@@ -1083,7 +1086,7 @@ class ModelSettingsWidget(QGroupBox):
     def _update_provider_specific_controls(self, provider_id):
         self._current_provider_id = provider_id
         is_workascii = provider_id == "workascii_chatgpt"
-        provider_config = api_config.api_providers().get(provider_id, {}) if provider_id else {}
+        provider_config = api_config.api_providers_view().get(provider_id, {}) if provider_id else {}
         is_dynamic_provider = provider_id == "local" or bool(provider_config.get("dynamic_model_discovery"))
         is_free_deepseek = provider_id == FREE_DEEPSEEK_PROVIDER_ID
         self.workascii_group.setVisible(is_workascii)
@@ -1408,14 +1411,36 @@ class ModelSettingsWidget(QGroupBox):
         if not provider_id:
             return
 
+        # Явное действие пользователя — синхронно, список обновляется на глазах.
         api_config.refresh_dynamic_models(provider_id)
         self.set_available_models(provider_id)
         self._emit_settings_changed()
+
+    @pyqtSlot(str)
+    def _on_dynamic_models_refreshed(self, provider_id: str):
+        if provider_id != getattr(self, "_current_provider_id", None):
+            return
+        if self._combo_matches_provider_models(provider_id):
+            return
+        self.set_available_models(provider_id)
+
+    def _combo_matches_provider_models(self, provider_id: str) -> bool:
+        provider_config = api_config.api_providers_view().get(provider_id, {})
+        models = provider_config.get("models", {}) or {}
+        combo_items = [
+            (self.model_combo.itemText(i), self.model_combo.itemData(i))
+            for i in range(self.model_combo.count())
+        ]
+        registry_items = [
+            (display_name, (config or {}).get('id'))
+            for display_name, config in models.items()
+        ]
+        return combo_items == registry_items
     
     
     def _current_model_defaults(self):
         model_name = self.model_combo.currentText()
-        model_config = api_config.all_models().get(model_name, {})
+        model_config = api_config.all_models_view().get(model_name, {})
         if not isinstance(model_config, dict):
             model_config = {}
 
@@ -1450,7 +1475,7 @@ class ModelSettingsWidget(QGroupBox):
         if not provider_id:
             return
 
-        provider_config = api_config.api_providers().get(provider_id, {})
+        provider_config = api_config.api_providers_view().get(provider_id, {})
         provider_display_name = provider_config.get("display_name") or provider_id
         dialog = CustomModelDialog(
             provider_display_name,
@@ -1497,7 +1522,7 @@ class ModelSettingsWidget(QGroupBox):
         saved_model_id = None
         try:
             saved_model_name = self.settings_manager.get_last_settings().get('model')
-            saved_model_config = api_config.all_models().get(saved_model_name)
+            saved_model_config = api_config.all_models_view().get(saved_model_name)
             if isinstance(saved_model_config, dict):
                 saved_model_id = saved_model_config.get('id')
         except Exception:
@@ -1509,8 +1534,10 @@ class ModelSettingsWidget(QGroupBox):
         self._update_provider_specific_controls(provider_id)
         
         if provider_id:
-            api_config.ensure_dynamic_provider_models(provider_id)
-            provider_config = api_config.api_providers().get(provider_id, {})
+            # HTTP discovery — только в фоне: комбо заполняется сразу из
+            # текущего реестра, по сигналу refreshed список догоняет сервер.
+            self._models_refresher.refresh_async(provider_id)
+            provider_config = api_config.api_providers_view().get(provider_id, {})
             models = provider_config.get("models", {})
             if models:
                 # --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Сохраняем ID в userData ---
@@ -1544,14 +1571,6 @@ class ModelSettingsWidget(QGroupBox):
             return self.model_combo.findText(model_name)
         return -1
         
-    def set_default_model(self, model_display_name: str): # <-- Принимает имя
-        """Устанавливает модель по умолчанию по ее ОТОБРАЖАЕМОМУ ИМЕНИ."""
-        index = self.model_combo.findText(model_display_name)
-        if index != -1:
-            self.model_combo.setCurrentIndex(index)
-        elif self.model_combo.count() > 0:
-            self.model_combo.setCurrentIndex(0)
-    
     def update_cjk_options_availability(self, enabled, is_cjk_recommended=False, error=False):
         """Обновляет состояние CJK-опций извне."""
         self.is_cjk_recommended = is_cjk_recommended
@@ -1595,13 +1614,13 @@ class ModelSettingsWidget(QGroupBox):
         recommended_rpm, recommended_max_concurrent, recommended_rpd = 10, 0, 0
         needs_warmup = False
     
-        if model_name in api_config.all_models():
-            model_cfg = api_config.all_models()[model_name]
+        if model_name in api_config.all_models_view():
+            model_cfg = api_config.all_models_view()[model_name]
             provider_id = model_cfg.get('provider')
             
             # Базовые настройки провайдера
             if provider_id:
-                provider_config = api_config.api_providers().get(provider_id, {})
+                provider_config = api_config.api_providers_view().get(provider_id, {})
                 needs_warmup = provider_config.get("needs_warmup", False)
                 # Берем RPD провайдера как базовый
                 recommended_rpd = provider_config.get("rpd", 0)
@@ -1711,7 +1730,7 @@ class ModelSettingsWidget(QGroupBox):
 
     def _model_default_temperature(self):
         model_name = self.model_combo.currentText()
-        model_cfg = api_config.all_models().get(model_name, {})
+        model_cfg = api_config.all_models_view().get(model_name, {})
         raw_value = model_cfg.get("default_temperature") if isinstance(model_cfg, dict) else None
         try:
             value = float(raw_value)

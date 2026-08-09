@@ -453,11 +453,13 @@ def _compose_runtime_providers() -> dict:
 
 
 _COMPOSED_PROVIDERS_CACHE = None
+_ALL_MODELS_VIEW_CACHE = None
 
 
 def _invalidate_composed_providers():
-    global _COMPOSED_PROVIDERS_CACHE
+    global _COMPOSED_PROVIDERS_CACHE, _ALL_MODELS_VIEW_CACHE
     _COMPOSED_PROVIDERS_CACHE = None
+    _ALL_MODELS_VIEW_CACHE = None
 
 
 def set_custom_provider_models(custom_provider_models):
@@ -1209,6 +1211,33 @@ def internal_prompts():
 def all_models():
     _ensure_configs_initialized()
     return _build_all_models(api_providers())
+
+def all_models_view():
+    """Кэшированная карта моделей БЕЗ копирования. Только для чтения:
+    вложенные структуры разделяются с реестром провайдеров — для изменений
+    берите all_models()."""
+    global _ALL_MODELS_VIEW_CACHE
+    _ensure_configs_initialized()
+    if _ALL_MODELS_VIEW_CACHE is None:
+        _ALL_MODELS_VIEW_CACHE = _build_all_models(api_providers_view())
+    return _ALL_MODELS_VIEW_CACHE
+
+def provider_needs_dynamic_model_refresh(provider_id: str | None) -> bool:
+    """True, если у провайдера динамический discovery и кэш моделей устарел.
+
+    Лёгкая проверка без HTTP: GUI использует её, чтобы решить, запускать ли
+    фоновое обновление (см. DynamicModelsRefresher), не блокируя поток."""
+    _ensure_configs_initialized()
+    normalized_provider = str(provider_id or "").strip()
+    if not normalized_provider or not _provider_uses_dynamic_model_discovery(normalized_provider):
+        return False
+    if not _local_model_discovery_enabled() or requests is None:
+        return False
+    with _DYNAMIC_PROVIDER_MODELS_LOCK:
+        if _DYNAMIC_PROVIDER_MODELS.get(normalized_provider) is None:
+            return True
+        cached_ts = _DYNAMIC_PROVIDER_MODELS_TS.get(normalized_provider, 0.0)
+    return (time.time() - cached_ts) >= _LOCAL_MODEL_DISCOVERY_TTL_SECONDS
 
 def ensure_dynamic_provider_models(provider_id: str | None, force: bool = False):
     _ensure_configs_initialized()

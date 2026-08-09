@@ -64,8 +64,8 @@ class ContentFilterFallbackPanelTests(unittest.TestCase):
             for name, model in provider["models"].items()
         }
         self.patches = [
-            patch.object(api_config, "api_providers", return_value=self.providers),
-            patch.object(api_config, "all_models", return_value=self.all_models),
+            patch.object(api_config, "api_providers_view", return_value=self.providers),
+            patch.object(api_config, "all_models_view", return_value=self.all_models),
             patch.object(api_config, "ensure_dynamic_provider_models"),
         ]
         for patcher in self.patches:
@@ -171,9 +171,14 @@ class ContentFilterFallbackPanelTests(unittest.TestCase):
 
         self.assertIn("Нет зелёных", panel.keys_label.text())
 
-    def test_set_config_ensures_dynamic_provider_models(self):
+    def test_set_config_schedules_dynamic_models_refresh(self):
+        """Discovery не должен блокировать GUI: set_config планирует фоновое
+        обновление моделей провайдера вместо синхронного ensure."""
         panel = self._create_panel(FakeSettings())
-        ensure_mock = api_config.ensure_dynamic_provider_models
+        refresh_calls = []
+        panel._models_refresher.refresh_async = (
+            lambda provider_id, force=False: refresh_calls.append(provider_id)
+        )
 
         panel.set_config(
             {
@@ -183,7 +188,7 @@ class ContentFilterFallbackPanelTests(unittest.TestCase):
             }
         )
 
-        ensure_mock.assert_called_with("nvidia")
+        self.assertEqual(refresh_calls, ["nvidia"])
 
     def test_budget_thinking_round_trips_zero(self):
         panel = self._create_panel(FakeSettings())

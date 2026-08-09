@@ -73,7 +73,7 @@ class ConsistencyEngineHandlerExecutionTests(unittest.TestCase):
             }
         }
 
-        with patch("gemini_translator.core.consistency_engine.api_config.api_providers", return_value=providers_config), \
+        with patch("gemini_translator.core.consistency_engine.api_config.api_providers_view", return_value=providers_config), \
              patch("gemini_translator.core.consistency_engine.get_api_handler_class", return_value=_SyncLocalLikeHandler):
             try:
                 result = engine._call_api("prompt", config, "local-key")

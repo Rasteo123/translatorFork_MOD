@@ -51,6 +51,7 @@ from ..shell import ShellPage
 from ...api import config as api_config
 from gemini_translator.ui import theme_manager
 from .validation_dialogs import UntranslatedWordDetector
+from .validation_dialogs.content_lru import ContentLru
 from .validation_dialogs.untranslated_fixer_dialog import (
     AITranslationDialog,
     UntranslatedFixerDialog,
@@ -475,6 +476,24 @@ def _line_review_visible_text(value) -> str:
     except Exception:
         text = str(value)
     return re.sub(r'\s+', ' ', text).strip()
+
+
+def retain_or_strip_heavy_fields(result, previous_data):
+    """Убирает полный HTML из строки результатов после анализа.
+
+    Держать original/translated/validated HTML на каждую строку — две полные
+    копии книги в памяти (источник пикового потребления окна валидации);
+    контент подгружается _ensure_row_*_loaded через ограниченные LRU-кэши.
+    Исключение: несохранённая правка пользователя (is_edited) переносится
+    вперёд при рескане — иначе save_changes потеряла бы её.
+    """
+    was_edited = previous_data.get('is_edited', False)
+    if was_edited and previous_data.get('translated_html'):
+        result['translated_html'] = previous_data['translated_html']
+    else:
+        result.pop('translated_html', None)
+    result.pop('original_html', None)
+    result.pop('validated_content', None)
 
 
 def ai_repair_candidate_warning(original_html: str, repaired_html: str) -> str:
@@ -1579,6 +1598,9 @@ class ValidationThread(QThread):
         self.word_exceptions = word_exceptions_set
         self.project_manager = project_manager
         self.files_to_scan = set(files_to_scan) if files_to_scan else None # Если None, сканируем всё
+        # Детектор stateless, а word_exceptions неизменны в рамках прогона —
+        # создаём один раз, а не на каждую главу (конструктор компилирует regex'ы).
+        self._detector = None
 
 
     def _analyze_html_content(self, original_content, translated_content, result_data):
@@ -1748,7 +1770,9 @@ class ValidationThread(QThread):
                     temp_text_trans = re.sub(pattern, ' ', temp_text_trans, flags=re.IGNORECASE)
                 
                 try:
-                    detector = UntranslatedWordDetector(self.word_exceptions)
+                    detector = self._detector
+                    if detector is None:
+                        detector = self._detector = UntranslatedWordDetector(self.word_exceptions)
                     untranslated_words_to_highlight.extend(detector.detect(translated_content))
                     mixed_script_results = detector.detect_mixed_script(translated_content)
                     if mixed_script_results:
@@ -2037,7 +2061,11 @@ class TranslationValidatorPage(ShellPage):
         self.is_code_view = False
         self.untranslated_found_count = 0
         self.user_problem_terms_count = 0
-        self.original_content_cache = {}
+        self.original_content_cache = ContentLru()
+        self.translated_content_cache = ContentLru()
+        # full_path -> (fingerprint, sha256): чтобы не перечитывать главу с
+        # диска ради хэша, пока stat (mtime_ns+size) не изменился.
+        self._content_hash_cache = {}
         self.validation_snapshot_entries = {}
         self.validation_snapshot_available = False
         self.validation_snapshot_notice = ""
@@ -2070,7 +2098,7 @@ class TranslationValidatorPage(ShellPage):
         self._update_highlighters() # Вызываем один раз для установки начального состояния
         
         self.is_comparing_validated = False
-        self.validated_content_cache = {}
+        self.validated_content_cache = ContentLru()
         
         self._perform_initial_cjk_scan()
 
@@ -2214,9 +2242,40 @@ class TranslationValidatorPage(ShellPage):
         except Exception:
             return None
 
+    def _get_current_content_hash(self, full_path, snapshot_entry=None):
+        """Хэш текущего содержимого файла без лишнего чтения с диска.
+
+        Полный read+hash каждой главы на главном потоке — причина «окно
+        валидации открывается минуту» (холодный кэш ОС / iCloud-евикция:
+        каждое open().read() провоцирует докачку файла, а os.stat — нет).
+        Сверяем stat-отпечаток с внутрисессионным кэшем и с per-chapter
+        отпечатком из снапшота; читаем файл только при расхождении."""
+        fingerprint = build_file_fingerprint(full_path)
+        if fingerprint:
+            cached = self._content_hash_cache.get(full_path)
+            if cached and cached[0] == fingerprint:
+                return cached[1]
+            if snapshot_entry:
+                entry_fingerprint = snapshot_entry.get('file_fingerprint')
+                entry_hash = snapshot_entry.get('content_hash')
+                if entry_fingerprint and entry_hash and entry_fingerprint == fingerprint:
+                    self._content_hash_cache[full_path] = (fingerprint, entry_hash)
+                    return entry_hash
+
+        current_text = self._read_text_file(full_path)
+        current_hash = build_text_hash(current_text or "")
+        if fingerprint:
+            self._content_hash_cache[full_path] = (fingerprint, current_hash)
+        return current_hash
+
     def _invalidate_analysis_for_data(self, data):
         if not isinstance(data, dict):
             return
+
+        # Файл мог быть перезаписан — кэшированная копия больше не свежая.
+        file_path = data.get('path')
+        if file_path:
+            self.translated_content_cache.pop(file_path, None)
 
         translated_html = data.get('translated_html')
         if translated_html is None:
@@ -2355,8 +2414,8 @@ class TranslationValidatorPage(ShellPage):
         }
 
     def _build_row_data_for_file(self, internal_path, full_path, is_validated, preserved_data=None):
-        current_text = self._read_text_file(full_path)
-        current_hash = build_text_hash(current_text or "")
+        snapshot_entry = self.validation_snapshot_entries.get(internal_path) if self.validation_snapshot_available else None
+        current_hash = self._get_current_content_hash(full_path, snapshot_entry)
         base_data = self._create_base_result_data(full_path, internal_path, is_validated, current_hash)
 
         preserved_hash = None
@@ -2377,7 +2436,6 @@ class TranslationValidatorPage(ShellPage):
             data['has_cached_analysis'] = True
             return data, False
 
-        snapshot_entry = self.validation_snapshot_entries.get(internal_path) if self.validation_snapshot_available else None
         if snapshot_entry and snapshot_entry.get('content_hash') == current_hash:
             data = dict(base_data)
             data.update(restore_result_data(snapshot_entry.get('result')))
@@ -2526,10 +2584,18 @@ class TranslationValidatorPage(ShellPage):
                 except ValueError:
                     relative_path = None
 
+            file_fingerprint = None
+            if data.get('path') and data.get('current_content_hash') == analyzed_hash:
+                # Отпечаток пишем только когда содержимое на диске (по данным
+                # диалога) совпадает с проанализированным — иначе при следующем
+                # открытии stat-шорткат вернул бы неверный хэш.
+                file_fingerprint = build_file_fingerprint(data['path']) or None
+
             snapshot_entries[internal_path] = build_snapshot_entry(
                 data,
                 analyzed_hash,
                 relative_path=relative_path,
+                file_fingerprint=file_fingerprint,
             )
 
         payload = build_snapshot_payload(
@@ -2589,6 +2655,7 @@ class TranslationValidatorPage(ShellPage):
         self.dirty_files.clear()
         self.original_content_cache.clear()
         self.validated_content_cache.clear()
+        self.translated_content_cache.clear()
         
         if not self.project_manager: 
             self.lbl_status.setText("Ошибка: Менеджер проекта не найден.")
@@ -3341,7 +3408,7 @@ class TranslationValidatorPage(ShellPage):
                 continue
 
             internal_path = result_data.get('internal_html_path')
-            raw_html = result_data.get('translated_html', '')
+            raw_html = self._ensure_row_translated_html_loaded(row) or ''
             normalized_html = raw_html.replace('\r\n', '\n').replace('\r', '\n')
             chapter_name = os.path.basename(internal_path or result_data.get('path', ''))
 
@@ -3755,16 +3822,6 @@ class TranslationValidatorPage(ShellPage):
         # Пересчитываем визуальные фильтры (цвета, скрытие), так как индексы сдвинулись
         self.reapply_filters()
 
-    def _load_default_exceptions(self):
-        try:
-            base_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.abspath('.')
-            default_file = os.path.join(base_path, 'config', 'default_word_exceptions.txt')
-            if os.path.exists(default_file):
-                with open(default_file, 'r', encoding='utf-8') as f:
-                    self.default_exceptions_text = f.read()
-        except Exception as e:
-            print(f"[VALIDATOR_ERROR] Не удалось загрузить стандартный список исключений: {e}")
-    
     def reapply_filters(self):
         """
         Динамически пересчитывает статус для ВСЕХ строк.
@@ -4036,6 +4093,7 @@ class TranslationValidatorPage(ShellPage):
         self.path_row_map.clear()
         self.original_content_cache.clear()
         self.validated_content_cache.clear()
+        self.translated_content_cache.clear()
         # dirty_files НЕ очищаем полностью, а пересчитаем ниже, 
         # но для чистоты начнем с пустого и добавим туда новые + старые dirty
         old_dirty_set = self.dirty_files.copy()
@@ -4575,11 +4633,12 @@ class TranslationValidatorPage(ShellPage):
         if not analyzed_hash:
             analyzed_hash = build_text_hash(result.get('translated_html', ''))
             result['analyzed_content_hash'] = analyzed_hash
-        result['current_content_hash'] = build_text_hash(result.get('translated_html', ''))
+        # Анализ выполнялся по этому же translated_html — хэш идентичен
+        # analyzed_hash, пересчитывать sha256 на GUI-потоке не нужно.
+        if not result.get('current_content_hash'):
+            result['current_content_hash'] = analyzed_hash
 
-        for key in ('validated_content', 'original_html'):
-            if key not in result and key in previous_data:
-                result[key] = previous_data[key]
+        retain_or_strip_heavy_fields(result, previous_data)
 
         self.results_data[row_pos] = result
         
@@ -4613,23 +4672,6 @@ class TranslationValidatorPage(ShellPage):
         show_all = self.check_show_all.isChecked()
         should_hide = (visual_status == 'neutral') and (not show_all)
         self.table_results.setRowHidden(row_pos, should_hide)
-    
-    def _update_data_from_view(self):
-        selected_items = self.table_results.selectedItems()
-        if not selected_items:
-            return
-        row = selected_items[0].row()
-        
-        if row in self.results_data:
-            # Получаем текущий контент в зависимости от активного режима
-            if self.is_code_view:
-                current_content = self.view_translated.toPlainText()
-            else:
-                # Преобразуем HTML-контент в 'очищенный' текст для хранения
-                current_content = self.view_translated.toHtml() 
-                
-            self.results_data[row]['translated_html'] = current_content
-    
     
 # --- НАЧАЛО КОДА ДЛЯ ЗАМЕНЫ (два метода в классе TranslationValidatorDialog) ---
 
@@ -4873,78 +4915,6 @@ class TranslationValidatorPage(ShellPage):
             
             self.view_translated.setReadOnly(not self.is_code_view)
 
-
-    def _inject_highlights_into_html(self, html_content, words_to_highlight=None, regex_matches=None):
-        """
-        Создает временную копию HTML и "внедряет" в нее теги подсветки.
-        Использует умные границы для слов, чтобы находить 'Word' внутри 'Word123'.
-        """
-        modified_html = html_content
-        tag_regex = re.compile(r"(<[^>]+>)", re.DOTALL)
-
-        # --- ЭТАП 1: Подсветка недоперевода ---
-        if words_to_highlight:
-            try:
-                # Сортируем по длине, чтобы сначала подсвечивать длинные фразы
-                sorted_words = sorted(words_to_highlight, key=len, reverse=True)
-                patterns = []
-                for w in sorted_words:
-                    if re.fullmatch(r'[a-zA-Z]+', w):
-                        # ЛЕКАРСТВО: Вместо \b используем lookaround. 
-                        # Ищем слово, перед которым и после которого НЕТ букв.
-                        # Это позволит найти "Level" внутри "Level5" или "Item_1".
-                        patterns.append(f"(?<![a-zA-Z]){re.escape(w)}(?![a-zA-Z])")
-                    else:
-                        patterns.append(re.escape(w))
-                
-                if patterns:
-                    giant_regex = re.compile(f"({'|'.join(patterns)})", re.IGNORECASE)
-                    
-                    def untranslated_replacer(match):
-                        return f'<span style="background-color: rgba(255, 140, 0, 0.5); border: 1px solid orange;">{match.group(0)}</span>'
-
-                    parts = tag_regex.split(modified_html)
-                    for i in range(0, len(parts), 2):
-                        # Пропускаем пустые части
-                        if not parts[i]: continue
-                        parts[i] = giant_regex.sub(untranslated_replacer, parts[i])
-                    modified_html = "".join(parts)
-            except re.error as e:
-                print(f"[Highlighter Error] Untranslated words regex failed: {e}")
-        
-        # --- ЭТАП 2: Подсветка Regex-поиска ---
-        if regex_matches:
-            # Итерируем по совпадениям в обратном порядке
-            for match in sorted(regex_matches, key=lambda m: m.capturedStart(0), reverse=True):
-                start, end = match.capturedStart(0), match.capturedEnd(0)
-                
-                matched_block = modified_html[start:end]
-                
-                parts = tag_regex.split(matched_block)
-                for i in range(0, len(parts), 2):
-                    if parts[i]: 
-                        parts[i] = f'<span style="background-color: rgba(0, 191, 255, 0.4);">{parts[i]}</span>'
-                
-                highlighted_block = "".join(parts)
-                modified_html = modified_html[:start] + highlighted_block + modified_html[end:]
-
-        return modified_html
-        
-    def _update_in_memory_data(self):
-        selected_items = self.table_results.selectedItems()
-        if not selected_items:
-            return
-        row = selected_items[0].row()
-        
-        if row in self.results_data:
-            # Получаем контент в зависимости от текущего режима
-            if self.is_code_view:
-                current_content = self.view_translated.toPlainText()
-            else:
-                current_content = self.view_translated.toHtml()
-            
-            self.results_data[row]['translated_html'] = current_content
-    
 
     @pyqtSlot()
     def on_selection_changed(self):
@@ -5296,10 +5266,15 @@ class TranslationValidatorPage(ShellPage):
 
         translated_html = result_data.get('translated_html', '')
         if translated_html:
+            # Закреплённый контент (несохранённая правка/AI-починка) — как есть.
             return translated_html
 
         file_path = result_data.get('path')
-        if not file_path or not os.path.exists(file_path):
+        if not file_path:
+            return ""
+        if file_path in self.translated_content_cache:
+            return self.translated_content_cache[file_path]
+        if not os.path.exists(file_path):
             return ""
 
         try:
@@ -5308,7 +5283,8 @@ class TranslationValidatorPage(ShellPage):
         except Exception:
             translated_html = ""
 
-        result_data['translated_html'] = translated_html
+        # В result_data не пишем: контент живёт только в ограниченном LRU.
+        self.translated_content_cache[file_path] = translated_html
         return translated_html
 
     def _ensure_row_original_html_loaded(self, row_index):
@@ -5334,7 +5310,6 @@ class TranslationValidatorPage(ShellPage):
                 original_html = ""
             self.original_content_cache[internal_path] = original_html
 
-        result_data['original_html'] = original_html
         return original_html
 
     def _ensure_row_validated_content_loaded(self, row_index):
@@ -5361,9 +5336,6 @@ class TranslationValidatorPage(ShellPage):
             else:
                 validated_content = ""
             self.validated_content_cache[internal_path] = validated_content
-
-        if validated_content:
-            result_data['validated_content'] = validated_content
         return validated_content
 
     def _build_user_problem_terms_payload(self):

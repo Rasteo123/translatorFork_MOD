@@ -21,7 +21,115 @@ TASK_TABLE_ROW_HEIGHT = 40
 REORDER_BUTTON_SIZE = 24
 STATUS_COLUMN_WIDTH = 136
 REORDER_COLUMN_WIDTH = 112
-REORDER_CELL_MIN_WIDTH = REORDER_BUTTON_SIZE * 2 + 14
+
+
+class _ReorderTemplateButton(QPushButton):
+    """Скрытая кнопка-шаблон для рендера стрелок делегатом.
+
+    Псевдосостояния QSS нельзя честно включить у скрытого виджета
+    (State_MouseOver в Qt6 требует underMouse() И активного окна), поэтому
+    нужные биты состояния инъецируются прямо в QStyleOption при отрисовке.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._add_state = QtWidgets.QStyle.StateFlag.State_None
+        self._remove_state = QtWidgets.QStyle.StateFlag.State_None
+
+    def set_forced_states(self, add_state, remove_state):
+        self._add_state = add_state
+        self._remove_state = remove_state
+
+    def paintEvent(self, _event):
+        painter = QtWidgets.QStylePainter(self)
+        option = QtWidgets.QStyleOptionButton()
+        self.initStyleOption(option)
+        option.state |= self._add_state
+        option.state &= ~self._remove_state
+        painter.drawControl(QtWidgets.QStyle.ControlElement.CE_PushButton, option)
+
+
+class ReorderArrowDelegate(QtWidgets.QStyledItemDelegate):
+    """Рисует кнопки ▲/▼ колонки «Порядок» без создания per-row виджетов.
+
+    Изображение кнопки рендерится со скрытой шаблонной QPushButton
+    с objectName "reorderButton" и кэшируется по состояниям, поэтому QSS-тема
+    (обычное/hover/pressed/disabled состояние, смена темы) применяется тем же
+    механизмом, что и к настоящей кнопке. Хит-тест кликов делает
+    ChapterListWidget через eventFilter на viewport по arrow_rects().
+    """
+
+    ARROW_SPACING = 4
+
+    def __init__(self, table, parent=None):
+        super().__init__(parent)
+        self._table = table
+        self._template = _ReorderTemplateButton(table)
+        self._template.setObjectName("reorderButton")
+        self._template.setFixedSize(REORDER_BUTTON_SIZE, REORDER_BUTTON_SIZE)
+        self._template.hide()
+        self._pixmaps = {}
+        self.hovered = (-1, None)  # (row, 'up'|'down') — стрелка под курсором
+        self.pressed = (-1, None)  # (row, 'up'|'down') — зажатая стрелка
+
+    @staticmethod
+    def arrow_rects(cell_rect):
+        """Пара прямоугольников ▲ и ▼: 24x24 с зазором, по центру ячейки
+        (та же геометрия, что была у layout'а со старыми QPushButton)."""
+        total_width = REORDER_BUTTON_SIZE * 2 + ReorderArrowDelegate.ARROW_SPACING
+        x = cell_rect.x() + max(0, (cell_rect.width() - total_width) // 2)
+        y = cell_rect.y() + max(0, (cell_rect.height() - REORDER_BUTTON_SIZE) // 2)
+        up_rect = QtCore.QRect(x, y, REORDER_BUTTON_SIZE, REORDER_BUTTON_SIZE)
+        down_rect = QtCore.QRect(
+            x + REORDER_BUTTON_SIZE + ReorderArrowDelegate.ARROW_SPACING, y,
+            REORDER_BUTTON_SIZE, REORDER_BUTTON_SIZE
+        )
+        return up_rect, down_rect
+
+    def invalidate_cache(self):
+        """Сбрасывает кэш pixmap'ов (нужно при смене темы/палитры/шрифта)."""
+        self._pixmaps.clear()
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        row = index.row()
+        enabled = bool(option.state & QtWidgets.QStyle.StateFlag.State_Enabled)
+        cell_hovered = bool(option.state & QtWidgets.QStyle.StateFlag.State_MouseOver)
+        for action, rect in zip(('up', 'down'), self.arrow_rects(option.rect)):
+            hovered = enabled and cell_hovered and self.hovered == (row, action)
+            pressed = enabled and self.pressed == (row, action)
+            painter.drawPixmap(rect.topLeft(), self._pixmap(action, hovered, pressed, enabled))
+
+    def _pixmap(self, action, hovered, pressed, enabled):
+        dpr = self._table.devicePixelRatioF()
+        key = (action, hovered, pressed, enabled, round(dpr * 100))
+        pixmap = self._pixmaps.get(key)
+        if pixmap is None:
+            pixmap = self._render_template(action, hovered, pressed, enabled, dpr)
+            self._pixmaps[key] = pixmap
+        return pixmap
+
+    def _render_template(self, action, hovered, pressed, enabled, dpr):
+        btn = self._template
+        btn.setText("▲" if action == 'up' else "▼")
+        add_state = QtWidgets.QStyle.StateFlag.State_None
+        remove_state = QtWidgets.QStyle.StateFlag.State_None
+        if hovered:
+            add_state |= QtWidgets.QStyle.StateFlag.State_MouseOver
+        if pressed:
+            add_state |= (QtWidgets.QStyle.StateFlag.State_MouseOver
+                          | QtWidgets.QStyle.StateFlag.State_Sunken)
+        if not enabled:
+            remove_state |= QtWidgets.QStyle.StateFlag.State_Enabled
+        btn.set_forced_states(add_state, remove_state)
+        btn.ensurePolished()
+        pixmap = QtGui.QPixmap(round(btn.width() * dpr), round(btn.height() * dpr))
+        pixmap.setDevicePixelRatio(dpr)
+        # Прозрачная подложка и рендер без DrawWindowBackground сохраняют
+        # скруглённые углы кнопки прозрачными поверх фона таблицы.
+        pixmap.fill(Qt.GlobalColor.transparent)
+        btn.render(pixmap, flags=QtWidgets.QWidget.RenderFlag.DrawChildren)
+        return pixmap
 
 
 class BatchChapterOrderDialog(QDialog):
@@ -313,39 +421,98 @@ class ChapterListWidget(QWidget):
         self.table.itemSelectionChanged.connect(self._on_selection_changed_for_buttons)
         self.table.itemDoubleClicked.connect(self._handle_item_double_click)
 
+        # Кнопки ▲▼ рисуются делегатом (без per-row виджетов); клики и hover
+        # обрабатываются в eventFilter по геометрии ReorderArrowDelegate.arrow_rects.
+        self._reorder_delegate = ReorderArrowDelegate(self.table, self.table)
+        self.table.setItemDelegateForColumn(2, self._reorder_delegate)
+        self.table.viewport().installEventFilter(self)
+        self.table.viewport().setMouseTracking(True)
 
         main_layout.addWidget(self.table, 1)
 
+    def eventFilter(self, obj, event):
+        if obj is self.table.viewport() and self._handle_reorder_arrow_event(event):
+            return True
+        return super().eventFilter(obj, event)
 
-    def _create_reorder_cell_widget(self, row):
-        """
-        Создает виджет с "умными" кнопками, которые определяют свою строку
-        в момент нажатия.
-        """
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(3, 2, 3, 2)
-        layout.setSpacing(4)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        widget.setMinimumWidth(REORDER_CELL_MIN_WIDTH)
+    def _handle_reorder_arrow_event(self, event):
+        """Возвращает True, если событие мыши попало в стрелку и «съедено»
+        (как раньше клик поглощала настоящая QPushButton, не трогая выделение)."""
+        event_type = event.type()
 
-        btn_up = QPushButton("▲")
-        btn_up.setObjectName("reorderButton")
-        btn_up.setFixedSize(REORDER_BUTTON_SIZE, REORDER_BUTTON_SIZE)
-        # --- ИЗМЕНЕНИЕ: Используем 'self' для поиска строки ---
-        btn_up.clicked.connect(lambda: self._emit_reorder_from_button('up', self.sender()))
+        if event_type == QtCore.QEvent.Type.MouseMove:
+            self._update_arrow_hover(event.position().toPoint())
+            return False
 
-        btn_down = QPushButton("▼")
-        btn_down.setObjectName("reorderButton")
-        btn_down.setFixedSize(REORDER_BUTTON_SIZE, REORDER_BUTTON_SIZE)
-        # --- ИЗМЕНЕНИЕ: Используем 'self' для поиска строки ---
-        btn_down.clicked.connect(lambda: self._emit_reorder_from_button('down', self.sender()))
+        if event_type == QtCore.QEvent.Type.Leave:
+            self._update_arrow_hover(None)
+            return False
 
-        layout.addWidget(btn_up)
-        layout.addWidget(btn_down)
-        return widget
+        if event_type in (QtCore.QEvent.Type.MouseButtonPress,
+                          QtCore.QEvent.Type.MouseButtonDblClick):
+            if event.button() != Qt.MouseButton.LeftButton or not self.table.isEnabled():
+                return False
+            hit = self._arrow_hit(event.position().toPoint())
+            if hit is None:
+                return False
+            self._reorder_delegate.pressed = hit
+            self._repaint_reorder_cell(hit[0])
+            return True
 
-    def _emit_reorder_from_button(self, action, button_widget):
+        if event_type == QtCore.QEvent.Type.MouseButtonRelease:
+            pressed = self._reorder_delegate.pressed
+            if pressed == (-1, None):
+                return False
+            self._reorder_delegate.pressed = (-1, None)
+            self._repaint_reorder_cell(pressed[0])
+            if self._arrow_hit(event.position().toPoint()) == pressed:
+                row, action = pressed
+                self._trigger_reorder_for_row(action, row)
+            return True
+
+        return False
+
+    def _arrow_hit(self, pos):
+        """(row, 'up'|'down'), если точка viewport'а внутри стрелки, иначе None."""
+        index = self.table.indexAt(pos)
+        if not index.isValid() or index.column() != 2:
+            return None
+        up_rect, down_rect = ReorderArrowDelegate.arrow_rects(self.table.visualRect(index))
+        if up_rect.contains(pos):
+            return (index.row(), 'up')
+        if down_rect.contains(pos):
+            return (index.row(), 'down')
+        return None
+
+    def _update_arrow_hover(self, pos):
+        hit = self._arrow_hit(pos) if pos is not None else None
+        new_state = hit if hit is not None else (-1, None)
+        old_state = self._reorder_delegate.hovered
+        if new_state == old_state:
+            return
+        self._reorder_delegate.hovered = new_state
+        for row in {old_state[0], new_state[0]}:
+            if row >= 0:
+                self._repaint_reorder_cell(row)
+
+    def _repaint_reorder_cell(self, row):
+        index = self.table.model().index(row, 2)
+        if index.isValid():
+            self.table.viewport().update(self.table.visualRect(index))
+
+    def changeEvent(self, event):
+        # Смена темы/палитры/шрифта приходит как StyleChange/PaletteChange —
+        # кэш отрендеренных кнопок делегата устаревает.
+        if event.type() in (QtCore.QEvent.Type.StyleChange,
+                            QtCore.QEvent.Type.PaletteChange,
+                            QtCore.QEvent.Type.FontChange):
+            delegate = getattr(self, "_reorder_delegate", None)
+            if delegate is not None:
+                delegate.invalidate_cache()
+                self.table.viewport().update()
+        super().changeEvent(event)
+
+    def _trigger_reorder_for_row(self, action, row):
         """
         Запускает атомарную операцию перемещения: блокирует UI, обновляет данные,
         анимирует скролл и разблокирует UI после завершения.
@@ -355,29 +522,26 @@ class ChapterListWidget(QWidget):
         if not self.table.isEnabled():
             return
 
+        item = self.table.item(row, 0)
+        data = item.data(QtCore.Qt.ItemDataRole.UserRole) if item else None
+        if not data:
+            return
+        task_id = data[0]
+
         self.table.setEnabled(False) # Делаем таблицу неактивной
 
-        for row in range(self.table.rowCount()):
-            if self.table.cellWidget(row, 2) == button_widget.parent():
-                item = self.table.item(row, 0)
-                if item and item.data(QtCore.Qt.ItemDataRole.UserRole):
-                    task_id = item.data(QtCore.Qt.ItemDataRole.UserRole)[0]
+        scrollbar = self.table.verticalScrollBar()
+        initial_scroll_value = scrollbar.value()
+        scroll_delta_in_rows = -1 if action == 'up' else 1
 
-                    scrollbar = self.table.verticalScrollBar()
-                    initial_scroll_value = scrollbar.value()
+        # === ШАГ 2: Запуск обновления данных ===
+        self.reorder_requested.emit(action, [task_id])
 
-                    scroll_delta_in_rows = -1 if action == 'up' else 1
-
-                    # === ШАГ 2: Запуск обновления данных ===
-                    self.reorder_requested.emit(action, [task_id])
-
-                    # === ШАГ 3: Планирование анимации и разблокировки ===
-                    # Мы ждем, пока UI обновится, и ТОЛЬКО ПОТОМ запускаем анимацию.
-                    QtCore.QTimer.singleShot(
-                        0, lambda: self._compensate_scroll(initial_scroll_value, scroll_delta_in_rows)
-                    )
-
-                break
+        # === ШАГ 3: Планирование анимации и разблокировки ===
+        # Мы ждем, пока UI обновится, и ТОЛЬКО ПОТОМ запускаем анимацию.
+        QtCore.QTimer.singleShot(
+            0, lambda: self._compensate_scroll(initial_scroll_value, scroll_delta_in_rows)
+        )
 
     def _compensate_scroll(self, initial_value, delta_in_rows):
         """
@@ -461,12 +625,6 @@ class ChapterListWidget(QWidget):
         if not isinstance(task_tuple_with_uuid, tuple) or len(task_tuple_with_uuid) < 2:
             return None
         return task_tuple_with_uuid
-
-    def _extract_task_id_from_row(self, row):
-        task_tuple_with_uuid = self._extract_task_tuple_from_item(self.table.item(row, 0))
-        if not task_tuple_with_uuid:
-            return None
-        return task_tuple_with_uuid[0]
 
     def _get_single_selected_batch_task(self):
         selected_rows = self.table.selectionModel().selectedRows()
@@ -752,15 +910,12 @@ class ChapterListWidget(QWidget):
                 current_row += 1
             elif op == 'keep':
                 task_item_data = new_data_map[new_task_ids[new_idx]]
-                # Оптимизация: обновляем данные, только если они реально изменились
-                # (предполагается, что _populate_row внутри достаточно умён,
-                # или update_only=True делает минимум работы)
-                self._populate_row(current_row, task_item_data, update_only=True)
+                self._populate_row(current_row, task_item_data)
                 current_row += 1
 
         self.table.blockSignals(False)
 
-    def _populate_row(self, row, task_item_data, update_only=False):
+    def _populate_row(self, row, task_item_data):
         """Заполняет или обновляет одну строку таблицы."""
         task_tuple_with_uuid, status, details = task_item_data
         task_id, task_payload = task_tuple_with_uuid
@@ -796,33 +951,19 @@ class ChapterListWidget(QWidget):
             status_item = QTableWidgetItem()
             self.table.setItem(row, 1, status_item)
 
-        # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: "УМНАЯ" ПРОВЕРКА СТАТУСА ---
-        # 1. Получаем текст, который ДОЛЖЕН БЫТЬ
-        new_display_text, _ = self._get_status_display_info(status, details, task_payload)
-
-        # 2. Сравниваем с тем, что ЕСТЬ СЕЙЧАС
-        if status_item.text() != new_display_text:
-            # 3. И только если они отличаются, вызываем "тяжелую" перерисовку
-            self._update_row_status(row, status, details)
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
-        if not update_only:
-            # Виджет с кнопками создаем только при полной вставке строки
-            self.table.setCellWidget(row, 2, self._create_reorder_cell_widget(row))
+        # Статусную ячейку диффует сам _update_row_status (текст+цвет+tooltip),
+        # поэтому зовём его безусловно: сравнения одного текста недостаточно —
+        # tooltip с историей ошибок меняется и при неизменном тексте статуса.
+        self._update_row_status(row, status, details)
 
     def _full_redraw(self, tasks_data):
-        """Выполняет полную перерисовку таблицы с нуля, используя _populate_row."""
+        """Выполняет полную перерисовку таблицы, переиспользуя существующие
+        строки: setRowCount только подгоняет длину, без сброса в 0 (сброс
+        уничтожал бы и создавал заново все QTableWidgetItem)."""
         self.table.blockSignals(True)
-        self.table.setRowCount(0)
-        if not tasks_data:
-            self.table.blockSignals(False)
-            return
-
         self.table.setRowCount(len(tasks_data))
         for i, task_item in enumerate(tasks_data):
             self._populate_row(i, task_item)
-
-
         self.table.blockSignals(False)
 
 
@@ -1007,10 +1148,6 @@ class ChapterListWidget(QWidget):
             brush = QtGui.QBrush(QtGui.QColor(color_hex))
             item_task.setForeground(brush)
             status_item.setForeground(brush)
-
-    def set_retry_button_visible(self, visible):
-        """Управляет видимостью кнопки 'Выбрать ошибочные'."""
-        self.retry_failed_btn.setVisible(visible)
 
     def set_copy_originals_visible(self, visible: bool):
         """Управляет видимостью кнопки 'Скопировать оригиналы'."""

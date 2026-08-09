@@ -4,33 +4,36 @@
 # -----------------------------------------------------------------------------
 
 if __name__ != "__main__":
-    from .browser import BrowserApiHandler
-    from .dry_run import DryRunApiHandler
-    from .gemini import GeminiApiHandler
-    from .huggingface import HuggingFaceApiHandler
-    from .deepseek import DeepseekApiHandler
-    from .nvidia import NvidiaApiHandler
-    from .openmodel import OpenModelApiHandler
-    from .local import LocalApiHandler
-    from .mcp import McpApiHandler
-    from .openrouter import OpenRouterApiHandler
-    from .qoder import QoderApiHandler
-    from .workascii_chatgpt import WorkAsciiChatGptApiHandler
+    # Ленивая загрузка (PEP 562): модуль хендлера импортируется при первом
+    # обращении к классу — import пакета не тянет curl_cffi/playwright/flask
+    # и прочие тяжёлые зависимости (~79МБ на старте GUI). PyInstaller ленивые
+    # импорты не видит: модули продублированы в HIDDEN_IMPORTS_BLOCK
+    # build_master.py.
+    _LAZY_HANDLER_MODULES = {
+        "BrowserApiHandler": ".browser",
+        "DryRunApiHandler": ".dry_run",
+        "GeminiApiHandler": ".gemini",
+        "HuggingFaceApiHandler": ".huggingface",
+        "DeepseekApiHandler": ".deepseek",
+        "NvidiaApiHandler": ".nvidia",
+        "OpenModelApiHandler": ".openmodel",
+        "LocalApiHandler": ".local",
+        "McpApiHandler": ".mcp",
+        "OpenRouterApiHandler": ".openrouter",
+        "QoderApiHandler": ".qoder",
+        "WorkAsciiChatGptApiHandler": ".workascii_chatgpt",
+    }
 
-    __all__ = [
-        "BrowserApiHandler",
-        "DryRunApiHandler",
-        "GeminiApiHandler",
-        "HuggingFaceApiHandler",
-        "DeepseekApiHandler",
-        "NvidiaApiHandler",
-        "OpenModelApiHandler",
-        "LocalApiHandler",
-        "McpApiHandler",
-        "OpenRouterApiHandler",
-        "QoderApiHandler",
-        "WorkAsciiChatGptApiHandler"
-    ]
+    __all__ = list(_LAZY_HANDLER_MODULES)
+
+    def __getattr__(name):
+        module_path = _LAZY_HANDLER_MODULES.get(name)
+        if module_path is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        import importlib
+        value = getattr(importlib.import_module(module_path, __name__), name)
+        globals()[name] = value  # кэш: дальше атрибут отдаётся без __getattr__
+        return value
 
 # =============================================================================
 #  SELF-MAINTENANCE SCRIPT (AUTOMATION LOGIC)
@@ -93,18 +96,24 @@ if __name__ == "__main__":
         lines.append("# -----------------------------------------------------------------------------")
         lines.append("")
         
-        # ВАЖНОЕ ИЗМЕНЕНИЕ: Оборачиваем импорты в условие
+        # ВАЖНОЕ ИЗМЕНЕНИЕ: генерируем ЛЕНИВУЮ секцию (PEP 562) — импорт
+        # пакета не должен тянуть тяжёлые зависимости хендлеров.
         lines.append('if __name__ != "__main__":')
-        
+        lines.append("    _LAZY_HANDLER_MODULES = {")
         for module, classname in handlers:
-            lines.append(f"    from .{module} import {classname}")
-        
+            lines.append(f'        "{classname}": ".{module}",')
+        lines.append("    }")
         lines.append("")
-        lines.append("    __all__ = [")
-        for i, (_, classname) in enumerate(handlers):
-            comma = "," if i < len(handlers) - 1 else ""
-            lines.append(f'        "{classname}"{comma}')
-        lines.append("    ]")
+        lines.append("    __all__ = list(_LAZY_HANDLER_MODULES)")
+        lines.append("")
+        lines.append("    def __getattr__(name):")
+        lines.append("        module_path = _LAZY_HANDLER_MODULES.get(name)")
+        lines.append("        if module_path is None:")
+        lines.append("            raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")")
+        lines.append("        import importlib")
+        lines.append("        value = getattr(importlib.import_module(module_path, __name__), name)")
+        lines.append("        globals()[name] = value")
+        lines.append("        return value")
         lines.append("")
         lines.append("")
 

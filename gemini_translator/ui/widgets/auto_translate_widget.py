@@ -593,10 +593,10 @@ class AutoTranslateWidget(QWidget):
 
         added_models = []
         if self._current_provider_id:
-            provider_config = api_config.api_providers().get(self._current_provider_id, {})
+            provider_config = api_config.api_providers_view().get(self._current_provider_id, {})
             model_names = list(provider_config.get("models", {}).keys())
         else:
-            model_names = list(api_config.all_models().keys())
+            model_names = list(api_config.all_models_view().keys())
 
         for model_name in model_names:
             self.model_override_combo.addItem(model_name, userData=model_name)
@@ -630,7 +630,7 @@ class AutoTranslateWidget(QWidget):
         self.filter_redirect_provider_combo.addItem(inherit_label, userData=None)
 
         added_providers = []
-        for provider_id, provider_config in api_config.api_providers().items():
+        for provider_id, provider_config in api_config.api_providers_view().items():
             if not provider_config.get("visible", True):
                 continue
             self.filter_redirect_provider_combo.addItem(
@@ -658,10 +658,10 @@ class AutoTranslateWidget(QWidget):
 
         provider_id = self._effective_filter_redirect_provider_id()
         if provider_id:
-            provider_config = api_config.api_providers().get(provider_id, {})
+            provider_config = api_config.api_providers_view().get(provider_id, {})
             model_names = list(provider_config.get("models", {}).keys())
         else:
-            model_names = list(api_config.all_models().keys())
+            model_names = list(api_config.all_models_view().keys())
 
         self.filter_redirect_model_combo.blockSignals(True)
         self.filter_redirect_model_combo.clear()
@@ -685,13 +685,13 @@ class AutoTranslateWidget(QWidget):
 
     def _get_effective_profile_model_config(self):
         model_name = self._get_effective_profile_model_name()
-        model_config = api_config.all_models().get(model_name)
+        model_config = api_config.all_models_view().get(model_name)
         return model_config if isinstance(model_config, dict) else {}
 
     def _describe_current_inherited_thinking(self):
         model_settings = self._current_model_settings if isinstance(self._current_model_settings, dict) else {}
         model_name = model_settings.get("model") or self._current_model_name
-        model_config = api_config.all_models().get(model_name, {}) if model_name else {}
+        model_config = api_config.all_models_view().get(model_name, {}) if model_name else {}
         min_budget_cfg = model_config.get("min_thinking_budget") if isinstance(model_config, dict) else False
         has_thinking_config = isinstance(model_config, dict) and (
             "thinkingLevel" in model_config or "min_thinking_budget" in model_config

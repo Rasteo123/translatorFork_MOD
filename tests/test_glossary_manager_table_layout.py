@@ -63,22 +63,29 @@ class GlossaryManagerTableLayoutTests(unittest.TestCase):
         page.show()
         self.app.processEvents()
 
+        # Кнопки действий рисуются делегатом (без per-row виджетов):
+        # проверяем, что под глобальной темой все кнопки помещаются в ячейку.
+        from gemini_translator.ui.dialogs.glossary_dialogs.action_delegate import (
+            GlossaryActionDelegate,
+        )
+
         for column in (3, 4):
-            cell_widget = page.table.cellWidget(0, column)
-            self.assertIsNotNone(cell_widget)
-            self.assertEqual(cell_widget.findChildren(QtWidgets.QPushButton), [])
-            self.assertGreaterEqual(
-                cell_widget.width(),
-                cell_widget.minimumSizeHint().width(),
-            )
-            tool_buttons = cell_widget.findChildren(QtWidgets.QToolButton)
-            self.assertGreaterEqual(len(tool_buttons), 1)
-            for button in tool_buttons:
-                self.assertGreaterEqual(
-                    button.width(),
-                    page.TABLE_ACTION_BUTTON_SIZE.width(),
-                )
-                self.assertLessEqual(button.height(), cell_widget.height())
+            self.assertIsNone(page.table.cellWidget(0, column))
+            index = page.table.model().index(0, column)
+            actions = GlossaryActionDelegate.actions_for_index(index)
+            self.assertGreaterEqual(len(actions), 1)
+            cell_rect = page.table.visualRect(index)
+            rects = page._action_delegate.button_rects(cell_rect, len(actions))
+            for rect in rects:
+                self.assertGreaterEqual(rect.width(), page.TABLE_ACTION_BUTTON_SIZE.width())
+                self.assertLessEqual(rect.right(), cell_rect.right())
+                self.assertGreaterEqual(rect.left(), cell_rect.left())
+        # У версии с привязанным проектом должна быть кнопка версий
+        col3_actions = GlossaryActionDelegate.actions_for_index(page.table.model().index(0, 3))
+        self.assertTrue(
+            {'version', 'version_active'} & set(col3_actions),
+            f"ожидалась кнопка версий, получено: {col3_actions}",
+        )
 
     def test_manager_loads_glossary_as_single_vertical_list(self):
         page = GlossaryManagerPage(mode="child")

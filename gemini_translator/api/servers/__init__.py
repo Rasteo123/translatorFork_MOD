@@ -4,11 +4,23 @@
 # -----------------------------------------------------------------------------
 
 if __name__ != "__main__":
-    from .perplexity import PerplexityServer
+    # Ленивая загрузка (PEP 562): PerplexityServer тянет flask (~19МБ) —
+    # грузим модуль при первом обращении. Для PyInstaller модули указаны
+    # в HIDDEN_IMPORTS_BLOCK build_master.py.
+    _LAZY_SERVER_MODULES = {
+        "PerplexityServer": ".perplexity",
+    }
 
-    __all__ = [
-        "PerplexityServer"
-    ]
+    __all__ = list(_LAZY_SERVER_MODULES)
+
+    def __getattr__(name):
+        module_path = _LAZY_SERVER_MODULES.get(name)
+        if module_path is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        import importlib
+        value = getattr(importlib.import_module(module_path, __name__), name)
+        globals()[name] = value
+        return value
 
 # =============================================================================
 #  SELF-MAINTENANCE SCRIPT (AUTOMATION LOGIC)
@@ -64,17 +76,22 @@ if __name__ == "__main__":
             'if __name__ != "__main__":'
         ]
 
+        # Генерируем ЛЕНИВУЮ секцию (PEP 562): импорт пакета не тянет flask.
+        lines.append("    _LAZY_SERVER_MODULES = {")
         for module, classname in servers:
-            lines.append(f"    from .{module} import {classname}")
-
+            lines.append(f'        "{classname}": ".{module}",')
+        lines.append("    }")
         lines.append("")
-        lines.append("    __all__ = [")
-
-        for i, (_, classname) in enumerate(servers):
-            comma = "," if i < len(servers) - 1 else ""
-            lines.append(f'        "{classname}"{comma}')
-
-        lines.append("    ]")
+        lines.append("    __all__ = list(_LAZY_SERVER_MODULES)")
+        lines.append("")
+        lines.append("    def __getattr__(name):")
+        lines.append("        module_path = _LAZY_SERVER_MODULES.get(name)")
+        lines.append("        if module_path is None:")
+        lines.append("            raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")")
+        lines.append("        import importlib")
+        lines.append("        value = getattr(importlib.import_module(module_path, __name__), name)")
+        lines.append("        globals()[name] = value")
+        lines.append("        return value")
         lines.append("")
         lines.append("")
 

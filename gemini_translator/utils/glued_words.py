@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import lru_cache
 from html.parser import HTMLParser
 
 
@@ -40,14 +39,11 @@ class GluedWordCandidate:
         return bool(self.replacement)
 
 
-@lru_cache(maxsize=1)
 def _default_morph_analyzer():
-    try:
-        import pymorphy3
-
-        return pymorphy3.MorphAnalyzer(lang="ru")
-    except Exception:
-        return None
+    # Общий анализатор приложения (utils.morphology) — раньше здесь строился
+    # ВТОРОЙ независимый словарь pymorphy3 (~35МБ дубликат).
+    from .morphology import get_morph_analyzer
+    return get_morph_analyzer()
 
 
 def _is_sentence_initial(text: str, start: int) -> bool:

@@ -10,6 +10,7 @@ from PyQt6 import QtCore
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 from ..api import config as api_config
 from ..utils.translated_paths import build_translated_output_path
+from .task_manager import decompress_chunk_content
 from ..utils.epub_tools import normalize_epub_chapter_heading_to_h1
 from ..utils.text import prettify_html, process_body_tag, validate_html_structure
 
@@ -375,7 +376,10 @@ class ChunkAssembler(QObject):
             # --- КОНЕЦ ЕДИНОЙ АТОМАРНОЙ ОПЕРАЦИИ. conn.commit() вызван автоматически ---
 
             # --- Теперь мы эксклюзивно владеем данными и можем спокойно работать вне транзакции ---
-            results_map = {row['task_id']: row['translated_content'] for row in results}
+            results_map = {
+                row['task_id']: decompress_chunk_content(row['translated_content'])
+                for row in results
+            }
             chunk_infos = [{'task_id': row['task_id'], 'payload': json.loads(row['payload'])} for row in chunk_infos_rows]
             
             sorted_infos = sorted(chunk_infos, key=lambda x: x['payload'][4])
@@ -451,14 +455,21 @@ class ChunkAssembler(QObject):
         app = QtWidgets.QApplication.instance()
         if not hasattr(app, 'task_manager'): return
 
-        with app.task_manager._get_read_only_conn() as conn: # Используем 'with conn' для автоматических транзакций при чтении
-            query = "SELECT task_id, payload, sequence FROM tasks WHERE status = 'completed' AND payload LIKE '%\"epub_chunk\"%'"
+        # Точечная выборка под коротким замком вместо клона всей БД
+        with app.task_manager._light_read_conn() as conn:
+            # task_type/chapter_path — generated-колонки из payload
+            # (task_manager._PAYLOAD_DERIVED_COLUMNS) вместо прежнего LIKE
+            # по JSON-тексту payload.
+            query = (
+                "SELECT task_id, payload, sequence FROM tasks "
+                "WHERE status = 'completed' AND task_type = 'epub_chunk'"
+            )
             params = []
             filtered_chapter_paths = [str(path) for path in (chapter_paths or []) if path]
             if filtered_chapter_paths:
-                like_clause = " OR ".join("payload LIKE ?" for _ in filtered_chapter_paths)
-                query += f" AND ({like_clause})"
-                params = [f'%"{path}"%' for path in filtered_chapter_paths]
+                placeholders = ", ".join("?" for _ in filtered_chapter_paths)
+                query += f" AND chapter_path IN ({placeholders})"
+                params = filtered_chapter_paths
             query += " ORDER BY sequence ASC"
             cursor = conn.execute(query, params)
             completed_chunks = cursor.fetchall()

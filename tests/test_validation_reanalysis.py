@@ -9,7 +9,11 @@ from gemini_translator.ui.dialogs.validation import (
     TranslationValidatorDialog,
     TranslationValidatorPage,
 )
-from gemini_translator.utils.validation_cache import build_snapshot_entry, build_text_hash
+from gemini_translator.utils.validation_cache import (
+    build_file_fingerprint,
+    build_snapshot_entry,
+    build_text_hash,
+)
 
 
 class _ComboStub:
@@ -69,6 +73,7 @@ class _ProblemCellTableStub:
 
 class _ValidationHarness:
     _read_text_file = TranslationValidatorDialog._read_text_file
+    _get_current_content_hash = TranslationValidatorDialog._get_current_content_hash
     _invalidate_analysis_for_data = TranslationValidatorDialog._invalidate_analysis_for_data
     _create_base_result_data = TranslationValidatorDialog._create_base_result_data
     _build_row_data_for_file = TranslationValidatorDialog._build_row_data_for_file
@@ -83,6 +88,7 @@ class _ValidationHarness:
     def __init__(self):
         self.validation_snapshot_entries = {}
         self.validation_snapshot_available = False
+        self._content_hash_cache = {}
         self.analysis_mode_combo = _ComboStub("all")
         self.check_revalidate_ok = _CheckStub(False)
         self.results_data = {}
@@ -199,6 +205,61 @@ class ValidationReanalysisTests(unittest.TestCase):
             self.assertEqual(data["len_orig"], 12)
             self.assertEqual(data["critical_reasons"], ["Mismatch"])
             self.assertEqual(data["analyzed_content_hash"], content_hash)
+        finally:
+            os.remove(html_path)
+
+    def test_build_row_data_uses_fingerprint_shortcut_without_reading_file(self):
+        harness = _ValidationHarness()
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".html", delete=False) as temp_file:
+            temp_file.write("<p>Hello world</p>")
+            html_path = temp_file.name
+
+        try:
+            internal_path = "Text/chapter_fp.xhtml"
+            content_hash = build_text_hash("<p>Hello world</p>")
+            harness.validation_snapshot_available = True
+            harness.validation_snapshot_entries[internal_path] = build_snapshot_entry(
+                {"len_orig": 12, "len_trans": 15, "critical_reasons": []},
+                content_hash,
+                file_fingerprint=build_file_fingerprint(html_path),
+            )
+            harness._read_text_file = lambda path: self.fail(
+                "файл не должен читаться при совпадении stat-отпечатка"
+            )
+
+            data, needs_analysis = harness._build_row_data_for_file(
+                internal_path,
+                html_path,
+                False,
+            )
+
+            self.assertFalse(needs_analysis)
+            self.assertTrue(data["has_cached_analysis"])
+            self.assertEqual(data["analyzed_content_hash"], content_hash)
+        finally:
+            os.remove(html_path)
+
+    def test_fingerprint_mismatch_falls_back_to_full_read(self):
+        harness = _ValidationHarness()
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".html", delete=False) as temp_file:
+            temp_file.write("<p>Hello world</p>")
+            html_path = temp_file.name
+
+        try:
+            stale_fingerprint = {"size": 1, "mtime_ns": 1}
+            entry = build_snapshot_entry(
+                {"len_orig": 12},
+                build_text_hash("<p>Old</p>"),
+                file_fingerprint=stale_fingerprint,
+            )
+            harness.validation_snapshot_available = True
+            harness.validation_snapshot_entries["Text/chapter_fp2.xhtml"] = entry
+
+            current_hash = harness._get_current_content_hash(html_path, entry)
+
+            self.assertEqual(current_hash, build_text_hash("<p>Hello world</p>"))
         finally:
             os.remove(html_path)
 

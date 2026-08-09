@@ -20,7 +20,7 @@ import importlib
 import subprocess
 from collections import deque
 from pathlib import Path
-from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6 import QtWidgets, QtCore, QtGui, sip
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 from gemini_translator.api.managers import ApiKeyManager
@@ -141,96 +141,6 @@ def patch_ranobelib_login_worker():
                     context.close()
         except Exception as error:
             return False, str(error)
-
-    def patched_run(self):
-        debug_log_path = None
-
-        def append_debug(message):
-            if not debug_log_path:
-                return
-            try:
-                debug_log_path.parent.mkdir(parents=True, exist_ok=True)
-                with debug_log_path.open("a", encoding="utf-8") as debug_file:
-                    debug_file.write(message.rstrip() + "\n")
-            except Exception:
-                pass
-
-        try:
-            profile_dir = (
-                workers_module.BROWSER_PROFILE_DIR
-                if self._site == "ranobelib"
-                else workers_module.BROWSER_RULATE_DIR
-            )
-            debug_log_path = Path(profile_dir).parent / "login_worker_debug.log"
-            start_url = (
-                "https://ranobelib.me"
-                if self._site == "ranobelib"
-                else "https://tl.rulate.ru"
-            )
-            site_label = "RanobeLib" if self._site == "ranobelib" else "Rulate"
-            append_debug(
-                f"[START] site={self._site} profile={profile_dir} "
-                f"browsers={os.environ.get('PLAYWRIGHT_BROWSERS_PATH', '')} "
-                f"node={os.environ.get('PLAYWRIGHT_NODEJS_PATH', '')} "
-                f"pkg={os.environ.get('PLAYWRIGHT_PACKAGE_ROOT', '')}"
-            )
-
-            from playwright.sync_api import sync_playwright
-
-            with sync_playwright() as playwright:
-                self._browser = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=False,
-                    args=workers_module.BROWSER_ARGS,
-                )
-                page = self._browser.pages[0] if self._browser.pages else self._browser.new_page()
-                try:
-                    page.goto(start_url, timeout=60000)
-                except Exception:
-                    pass
-                self.log_signal.emit(
-                    "WARNING",
-                    f">>> ВОЙДИТЕ В АККАУНТ {site_label} И ЗАКРОЙТЕ БРАУЗЕР <<<",
-                )
-                append_debug(f"[BROWSER_OPENED] site={self._site}")
-                try:
-                    while True:
-                        page.wait_for_timeout(1000)
-                except Exception:
-                    pass
-                append_debug(f"[BROWSER_CLOSED] site={self._site}")
-
-            if self._site == "ranobelib":
-                auth_detected, verify_error = verify_ranobelib_session(profile_dir)
-                if auth_detected:
-                    append_debug("[VERIFY_OK] ranobelib auth detected")
-                    self.log_signal.emit(
-                        "SUCCESS",
-                        "Авторизация RanobeLib сохранена. Браузер можно не открывать повторно.",
-                    )
-                elif verify_error:
-                    append_debug(f"[VERIFY_WARN] {verify_error}")
-                    self.log_signal.emit(
-                        "WARNING",
-                        f"Браузер RanobeLib закрыт, но проверить сохранённую сессию не удалось: {verify_error}",
-                    )
-                else:
-                    append_debug("[VERIFY_FAIL] ranobelib auth not found")
-                    self.log_signal.emit(
-                        "ERROR",
-                        "Авторизация RanobeLib не обнаружена в сохранённом профиле. "
-                        "Войдите в аккаунт и дождитесь полной загрузки страницы перед закрытием браузера.",
-                    )
-            else:
-                append_debug("[SUCCESS] rulate cookies saved")
-                self.log_signal.emit("SUCCESS", f"Браузер {site_label} закрыт. Куки сохранены.")
-        except Exception as error:
-            append_debug(f"[ERROR] {type(error).__name__}: {error}")
-            append_debug(traceback.format_exc())
-            self.log_signal.emit("ERROR", f"Ошибка авторизации: {error}")
-        finally:
-            append_debug("[FINISH]")
-            self.finished_signal.emit()
 
     def stable_patched_run(self):
         debug_log_path = None
@@ -963,11 +873,33 @@ class EventBus(QtCore.QObject):
             return
         with self._topic_lock:
             entries = list(self._topic_subscribers.get(event_name, []))
+        dead_callbacks = None
         for callback in entries:
+            # Topic-подписки не чистятся Qt автоматически: bound-методы
+            # уничтоженных виджетов (deleteLater при pop страницы/закрытии
+            # диалога) остаются в словаре навсегда и держат обёртки живыми.
+            if self._is_dead_subscriber(callback):
+                if dead_callbacks is None:
+                    dead_callbacks = []
+                dead_callbacks.append(callback)
+                continue
             try:
                 self._dispatch_callback(callback, event)
             except Exception:
                 pass
+        if dead_callbacks:
+            for callback in dead_callbacks:
+                self._unsubscribe_all_impl(callback)
+
+    @staticmethod
+    def _is_dead_subscriber(callback) -> bool:
+        receiver = getattr(callback, "__self__", None)
+        if not isinstance(receiver, QtCore.QObject):
+            return False
+        try:
+            return sip.isdeleted(receiver)
+        except Exception:
+            return False
 
     def _dispatch_callback(self, callback, event: dict):
         receiver = getattr(callback, "__self__", None)
@@ -1242,12 +1174,9 @@ if __name__ == "__main__":
         QtCore.Qt.ConnectionType.QueuedConnection
     )
 
-    try:
-        import jieba
-        print("[INFO] Warming up jieba dictionary…")
-        jieba.lcut("прогрев", cut_all=False)
-    except (ImportError, Exception) as e:
-        print(f"[WARN] Could not warm up jieba dictionary: {e}")
+    # jieba больше не греется на старте безусловно (~18МБ у всех сессий):
+    # словарь строится при первом CJK-вызове в воркере (незаметно на фоне
+    # сетевых секунд) либо фоновым прогревом при открытии окна глоссария.
 
     # --- ГЛАВНЫЙ ЦИКЛ ПРИЛОЖЕНИЯ ---
     from gemini_translator.ui.shell import MainShell
@@ -1282,6 +1211,15 @@ if __name__ == "__main__":
     if hasattr(app, 'proxy_controller'):
         app.proxy_controller.shutdown()
     if hasattr(app, 'engine_thread') and app.engine_thread.isRunning():
+        if hasattr(app, 'engine'):
+            try:
+                QtCore.QMetaObject.invokeMethod(
+                    app.engine,
+                    "cleanup",
+                    QtCore.Qt.ConnectionType.BlockingQueuedConnection,
+                )
+            except Exception:
+                pass
         app.engine_thread.quit()
         app.engine_thread.wait()
     sys.exit(0)

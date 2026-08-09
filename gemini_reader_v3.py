@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QVBoxLayout,
     QHBoxLayout, QWidget, QTextEdit, QPushButton, QLabel,
     QProgressBar, QMessageBox, QInputDialog, QSplitter,
-    QListWidget, QListWidgetItem, QToolBar, QSlider,
+    QListWidget, QListWidgetItem, QToolBar,
     QSizePolicy, QCheckBox, QMenu, QComboBox, QSpinBox, QDoubleSpinBox,
     QDialog, QDialogButtonBox, QScrollArea, QTabWidget, QPlainTextEdit,
     QSystemTrayIcon
@@ -2885,33 +2885,6 @@ class BookManager:
         if filepath:
             self._import_book(filepath)
 
-    def _import_book_epub_legacy(self, filepath):
-        if epub is None or ebooklib is None:
-            raise RuntimeError("Для импорта EPUB требуется пакет ebooklib.")
-        filename = os.path.basename(filepath)
-        self.title = "".join([c for c in os.path.splitext(filename)[0] if c.isalnum() or c in (' ', '-', '_')]).strip()
-        self.book_dir = os.path.join(self.base_dir, self.title)
-        
-        if not os.path.exists(self.book_dir):
-            os.makedirs(self.book_dir)
-        
-        try:
-            shutil.copy(filepath, os.path.join(self.book_dir, filename))
-        except Exception as e:
-            logger.error(f"Ошибка при копировании файла: {e}")
-
-        try:
-            book = epub.read_epub(filepath)
-            for item_ref in book.spine:
-                item = book.get_item_with_id(item_ref[0])
-                # ИЗМЕНЕНИЕ: Улучшенная поддержка файлов .html и .htm, если они не помечены как DOCUMENT
-                if item and (item.get_type() == ebooklib.ITEM_DOCUMENT or item.get_name().lower().endswith(('.xhtml', '.html', '.htm'))):
-                    chap = Chapter(f"Chapter {len(self.chapters) + 1}", item.get_content())
-                    if chap.flat_sentences:
-                        self.chapters.append(chap)
-        except Exception as e:
-            logger.error(f"Epub Error: {e}")
-
     def _import_book(self, filepath):
         filename = os.path.basename(filepath)
         self.title = "".join([c for c in os.path.splitext(filename)[0] if c.isalnum() or c in (' ', '-', '_')]).strip()
@@ -3417,9 +3390,6 @@ class AudioPlayer(QThread):
             output=True
         )
 
-    def set_volume(self, v):
-        self.vol = float(v) / 100.0
-
     def run(self):
         while self.is_running:
             try:
@@ -3543,12 +3513,6 @@ class GeminiWorker(QThread):
                 return True
             await asyncio.sleep(min(remaining, READER_WORKER_SLEEP_STEP_SEC))
         return False
-
-    def update_chunk_size(self, v):
-        try:
-            self.chunk = max(1, int(round(float(v))))
-        except Exception:
-            self.chunk = 1
 
     def _reset_live_mp3_autosave(self):
         self._last_live_mp3_autosave_at = time.monotonic()
@@ -5318,11 +5282,6 @@ class DashboardRow(QWidget):
         # Устанавливаем значение прогресс-бара
         self.pbar.setValue(pct_chap)
 
-    def set_finished(self):
-        self.lbl_status.setText("ГОТОВО")
-        self.pbar.setValue(100)
-        self.hide()
-
 class ApiKeysDialog(QDialog):
     def __init__(self, keys_str, parent=None):
         super().__init__(parent)
@@ -6475,35 +6434,6 @@ class MainWindow(QMainWindow):
                 return self._api_key_required_model_ids([self._selected_preprocess_model_id()])
             return [model_id for model_id in [self._selected_model_id()] if model_id]
         return [model_id for model_id in [self._selected_model_id()] if model_id]
-
-    def _reader_request_count_for_key(self, api_key, model_id):
-        if not api_key or not model_id:
-            return 0
-        if self.settings_manager is not None:
-            try:
-                key_info = self.settings_manager.get_key_info(api_key)
-                if key_info:
-                    return int(self.settings_manager.get_request_count(key_info, model_id) or 0)
-            except Exception:
-                pass
-        if self.daily_request_limiter is not None:
-            try:
-                return int(self.daily_request_limiter.get_count(model_id, api_key=api_key) or 0)
-            except Exception:
-                pass
-        return 0
-
-    def _reader_request_limit_for_model(self, model_id):
-        try:
-            return int(_lookup_model_limit(model_id, "rpd", 0) or 0)
-        except Exception:
-            return 0
-
-    def _reader_key_model_quota_exhausted(self, api_key, model_id):
-        limit_value = self._reader_request_limit_for_model(model_id)
-        if limit_value <= 0:
-            return False
-        return self._reader_request_count_for_key(api_key, model_id) >= limit_value
 
     def _load_invalid_key_states(self):
         raw_state = {}
@@ -8099,6 +8029,75 @@ class MainWindow(QMainWindow):
         worker.project_quota_signal.connect(self._on_project_quota_worker)
         worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
 
+    def _add_dashboard_row(self, worker_id):
+        row = DashboardRow(worker_id)
+        self.dash_layout.addWidget(row)
+        self.worker_widgets[worker_id] = row
+        return row
+
+    def _build_parallel_live_worker(self, worker_id, api_key):
+        return GeminiParallelChapterWorker(
+            worker_id,
+            api_key,
+            self.bm,
+            self._selected_model_id(),
+            self.combo_voices.currentData(),
+            self.combo_voice_secondary.currentData(),
+            self.combo_voice_tertiary.currentData(),
+            self.combo_speed.currentText(),
+            self._active_manager_queue,
+            self._parallel_live_state,
+            daily_request_limiter=self.daily_request_limiter,
+            voice_mode=self._selected_voice_mode(),
+            allow_edge_fallback=self.chk_edge_fallback.isChecked(),
+        )
+
+    def _build_flash_worker(self, worker_id, api_key, run_mode, live_playback):
+        return FlashTtsWorker(
+            worker_id,
+            api_key,
+            self.bm,
+            self.audio_queue if live_playback else None,
+            self._selected_model_id(),
+            self.combo_voices.currentData(),
+            self.combo_voice_secondary.currentData(),
+            self.combo_speed.currentText(),
+            self.chk_mp3.isChecked() if run_mode != "prepare" else False,
+            self.chk_fast.isChecked() if run_mode != "prepare" else True,
+            self.spin_chunk.value(),
+            self._active_manager_queue,
+            self._selected_preprocess_model_id(),
+            self.combo_preprocess_profile.currentData(),
+            self._selected_voice_mode(),
+            run_mode,
+            self.preprocess_directive,
+            self.tts_directive,
+            self.daily_request_limiter,
+            allow_edge_fallback=self.chk_edge_fallback.isChecked(),
+        )
+
+    def _build_live_worker(self, worker_id, api_key, live_playback):
+        return GeminiWorker(
+            worker_id,
+            api_key,
+            self.bm,
+            self.audio_queue if live_playback else None,
+            self._selected_model_id(),
+            self.combo_voices.currentData(),
+            "Ты диктор.",
+            self.combo_speed.currentText(),
+            self.chk_mp3.isChecked(),
+            self.chk_fast.isChecked(),
+            self.spin_chunk.value(),
+            self._selected_live_segment_mode(),
+            self._active_manager_queue,
+            daily_request_limiter=self.daily_request_limiter,
+            voice_mode=self._selected_voice_mode(),
+            secondary_voice=self.combo_voice_secondary.currentData(),
+            tertiary_voice=self.combo_voice_tertiary.currentData(),
+            allow_edge_fallback=self.chk_edge_fallback.isChecked(),
+        )
+
     def _start_replacement_worker_if_possible(self):
         if getattr(self, "_stop_requested", False):
             return False
@@ -8118,82 +8117,25 @@ class MainWindow(QMainWindow):
 
         worker_id = self._next_replacement_worker_id()
         api_key = replacement_keys[0]
-        row = DashboardRow(worker_id)
-        self.dash_layout.addWidget(row)
-        self.worker_widgets[worker_id] = row
+        row = self._add_dashboard_row(worker_id)
 
         try:
             if self._active_job_kind == "tts_parallel_live":
                 if self._parallel_live_state is None:
                     raise RuntimeError("Parallel live state is missing.")
-                worker = GeminiParallelChapterWorker(
-                    worker_id,
-                    api_key,
-                    self.bm,
-                    self._selected_model_id(),
-                    self.combo_voices.currentData(),
-                    self.combo_voice_secondary.currentData(),
-                    self.combo_voice_tertiary.currentData(),
-                    self.combo_speed.currentText(),
-                    self._active_manager_queue,
-                    self._parallel_live_state,
-                    daily_request_limiter=self.daily_request_limiter,
-                    voice_mode=self._selected_voice_mode(),
-                    allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-                )
+                worker = self._build_parallel_live_worker(worker_id, api_key)
                 self._connect_reader_worker_signals(worker)
             elif self._active_reader_engine == "flash_tts":
                 run_mode = self._active_flash_run_mode or self._selected_pipeline_mode()
                 live_playback = run_mode != "prepare" and self.player is not None
-                worker = FlashTtsWorker(
-                    worker_id,
-                    api_key,
-                    self.bm,
-                    self.audio_queue if live_playback else None,
-                    self._selected_model_id(),
-                    self.combo_voices.currentData(),
-                    self.combo_voice_secondary.currentData(),
-                    self.combo_speed.currentText(),
-                    self.chk_mp3.isChecked() if run_mode != "prepare" else False,
-                    self.chk_fast.isChecked() if run_mode != "prepare" else True,
-                    self.spin_chunk.value(),
-                    self._active_manager_queue,
-                    self._selected_preprocess_model_id(),
-                    self.combo_preprocess_profile.currentData(),
-                    self._selected_voice_mode(),
-                    run_mode,
-                    self.preprocess_directive,
-                    self.tts_directive,
-                    self.daily_request_limiter,
-                    allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-                )
+                worker = self._build_flash_worker(worker_id, api_key, run_mode, live_playback)
                 self._connect_reader_worker_signals(
                     worker,
                     chapter_done=True,
                     script_ready=True,
                 )
             elif self._active_reader_engine == "live":
-                live_playback = self.player is not None
-                worker = GeminiWorker(
-                    worker_id,
-                    api_key,
-                    self.bm,
-                    self.audio_queue if live_playback else None,
-                    self._selected_model_id(),
-                    self.combo_voices.currentData(),
-                    "Ты диктор.",
-                    self.combo_speed.currentText(),
-                    self.chk_mp3.isChecked(),
-                    self.chk_fast.isChecked(),
-                    self.spin_chunk.value(),
-                    self._selected_live_segment_mode(),
-                    self._active_manager_queue,
-                    daily_request_limiter=self.daily_request_limiter,
-                    voice_mode=self._selected_voice_mode(),
-                    secondary_voice=self.combo_voice_secondary.currentData(),
-                    tertiary_voice=self.combo_voice_tertiary.currentData(),
-                    allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-                )
+                worker = self._build_live_worker(worker_id, api_key, self.player is not None)
                 self._connect_reader_worker_signals(worker, chapter_done=True)
             else:
                 raise RuntimeError("Unknown active reader engine.")
@@ -8307,20 +8249,11 @@ class MainWindow(QMainWindow):
         except Exception:
             return True
 
-    def _attach_common_worker_signals(self, worker, row):
-        worker.worker_progress.connect(self._enqueue_worker_progress)
-        worker.finished_signal.connect(self._on_worker_finished)
-        worker.invalid_key_signal.connect(self._on_invalid_worker_key)
-        worker.quota_key_signal.connect(self._on_quota_worker_key)
-        worker.project_quota_signal.connect(self._on_project_quota_worker)
-        worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
-
     def _start_replacement_worker(self):
         if not self._queue_has_pending_work():
             return ""
 
         worker_id = self._next_worker_id()
-        worker = None
 
         if self._active_job_kind == "tts_parallel_live":
             if self._parallel_live_state is None:
@@ -8328,25 +8261,9 @@ class MainWindow(QMainWindow):
             replacement_key = self._available_replacement_key([self._selected_model_id()])
             if not replacement_key:
                 return ""
-            row = DashboardRow(worker_id)
-            self.dash_layout.addWidget(row)
-            self.worker_widgets[worker_id] = row
-            worker = GeminiParallelChapterWorker(
-                worker_id,
-                replacement_key,
-                self.bm,
-                self._selected_model_id(),
-                self.combo_voices.currentData(),
-                self.combo_voice_secondary.currentData(),
-                self.combo_voice_tertiary.currentData(),
-                self.combo_speed.currentText(),
-                self._active_manager_queue,
-                self._parallel_live_state,
-                daily_request_limiter=self.daily_request_limiter,
-                voice_mode=self._selected_voice_mode(),
-                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-            )
-            self._attach_common_worker_signals(worker, row)
+            self._add_dashboard_row(worker_id)
+            worker = self._build_parallel_live_worker(worker_id, replacement_key)
+            self._connect_reader_worker_signals(worker)
 
         elif self._is_flash_tts_mode() or self._active_job_kind == "prepare":
             required_model_ids = (
@@ -8357,67 +8274,19 @@ class MainWindow(QMainWindow):
             replacement_key = self._available_replacement_key(required_model_ids)
             if not replacement_key:
                 return ""
-            row = DashboardRow(worker_id)
-            self.dash_layout.addWidget(row)
-            self.worker_widgets[worker_id] = row
+            self._add_dashboard_row(worker_id)
             run_mode = "prepare" if self._active_job_kind == "prepare" else self._selected_pipeline_mode()
             live_playback = self.player is not None and run_mode != "prepare"
-            worker = FlashTtsWorker(
-                worker_id,
-                replacement_key,
-                self.bm,
-                self.audio_queue if live_playback else None,
-                self._selected_model_id(),
-                self.combo_voices.currentData(),
-                self.combo_voice_secondary.currentData(),
-                self.combo_speed.currentText(),
-                self.chk_mp3.isChecked() if run_mode != "prepare" else False,
-                self.chk_fast.isChecked() if run_mode != "prepare" else True,
-                self.spin_chunk.value(),
-                self._active_manager_queue,
-                self._selected_preprocess_model_id(),
-                self.combo_preprocess_profile.currentData(),
-                self._selected_voice_mode(),
-                run_mode,
-                self.preprocess_directive,
-                self.tts_directive,
-                self.daily_request_limiter,
-                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-            )
-            self._attach_common_worker_signals(worker, row)
-            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
-            worker.script_ready_signal.connect(self.on_script_ready_ui)
+            worker = self._build_flash_worker(worker_id, replacement_key, run_mode, live_playback)
+            self._connect_reader_worker_signals(worker, chapter_done=True, script_ready=True)
 
         else:
             replacement_key = self._available_replacement_key([self._selected_model_id()])
             if not replacement_key:
                 return ""
-            row = DashboardRow(worker_id)
-            self.dash_layout.addWidget(row)
-            self.worker_widgets[worker_id] = row
-            live_playback = self.player is not None
-            worker = GeminiWorker(
-                worker_id,
-                replacement_key,
-                self.bm,
-                self.audio_queue if live_playback else None,
-                self._selected_model_id(),
-                self.combo_voices.currentData(),
-                "Ты диктор.",
-                self.combo_speed.currentText(),
-                self.chk_mp3.isChecked(),
-                self.chk_fast.isChecked(),
-                self.spin_chunk.value(),
-                self._selected_live_segment_mode(),
-                self._active_manager_queue,
-                daily_request_limiter=self.daily_request_limiter,
-                voice_mode=self._selected_voice_mode(),
-                secondary_voice=self.combo_voice_secondary.currentData(),
-                tertiary_voice=self.combo_voice_tertiary.currentData(),
-                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-            )
-            self._attach_common_worker_signals(worker, row)
-            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
+            self._add_dashboard_row(worker_id)
+            worker = self._build_live_worker(worker_id, replacement_key, self.player is not None)
+            self._connect_reader_worker_signals(worker, chapter_done=True)
 
         worker.start_stagger_index = 0
         self.workers.append(worker)
@@ -8620,31 +8489,9 @@ class MainWindow(QMainWindow):
         )
 
         for i in range(num_workers):
-            row = DashboardRow(i)
-            self.dash_layout.addWidget(row)
-            self.worker_widgets[i] = row
-
-            worker = GeminiParallelChapterWorker(
-                i,
-                available_api_keys[i],
-                self.bm,
-                self._selected_model_id(),
-                self.combo_voices.currentData(),
-                self.combo_voice_secondary.currentData(),
-                self.combo_voice_tertiary.currentData(),
-                self.combo_speed.currentText(),
-                task_queue,
-                self._parallel_live_state,
-                daily_request_limiter=self.daily_request_limiter,
-                voice_mode=self._selected_voice_mode(),
-                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-            )
-            worker.worker_progress.connect(self._enqueue_worker_progress)
-            worker.finished_signal.connect(self._on_worker_finished)
-            worker.invalid_key_signal.connect(self._on_invalid_worker_key)
-            worker.quota_key_signal.connect(self._on_quota_worker_key)
-            worker.project_quota_signal.connect(self._on_project_quota_worker)
-            worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
+            self._add_dashboard_row(i)
+            worker = self._build_parallel_live_worker(i, available_api_keys[i])
+            self._connect_reader_worker_signals(worker)
             self.workers.append(worker)
             worker.start()
 
@@ -8714,37 +8561,9 @@ class MainWindow(QMainWindow):
         self._reset_dashboard()
 
         for i in range(num_workers):
-            row = DashboardRow(i)
-            self.dash_layout.addWidget(row)
-            self.worker_widgets[i] = row
-
-            worker = GeminiWorker(
-                i,
-                available_api_keys[i],
-                self.bm,
-                self.audio_queue if live_playback else None,
-                actual_model_id,
-                self.combo_voices.currentData(),
-                "Ты диктор.",
-                self.combo_speed.currentText(),
-                self.chk_mp3.isChecked(),
-                self.chk_fast.isChecked(),
-                self.spin_chunk.value(),
-                self._selected_live_segment_mode(),
-                q,
-                daily_request_limiter=self.daily_request_limiter,
-                voice_mode=self._selected_voice_mode(),
-                secondary_voice=self.combo_voice_secondary.currentData(),
-                tertiary_voice=self.combo_voice_tertiary.currentData(),
-                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-            )
-            worker.worker_progress.connect(self._enqueue_worker_progress)
-            worker.finished_signal.connect(self._on_worker_finished)
-            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
-            worker.invalid_key_signal.connect(self._on_invalid_worker_key)
-            worker.quota_key_signal.connect(self._on_quota_worker_key)
-            worker.project_quota_signal.connect(self._on_project_quota_worker)
-            worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
+            self._add_dashboard_row(i)
+            worker = self._build_live_worker(i, available_api_keys[i], live_playback)
+            self._connect_reader_worker_signals(worker, chapter_done=True)
             self.workers.append(worker)
             worker.start()
 
@@ -8821,40 +8640,9 @@ class MainWindow(QMainWindow):
         self._reset_dashboard()
 
         for i in range(num_workers):
-            row = DashboardRow(i)
-            self.dash_layout.addWidget(row)
-            self.worker_widgets[i] = row
-
-            worker = FlashTtsWorker(
-                i,
-                available_api_keys[i],
-                self.bm,
-                self.audio_queue if live_playback else None,
-                self._selected_model_id(),
-                self.combo_voices.currentData(),
-                self.combo_voice_secondary.currentData(),
-                self.combo_speed.currentText(),
-                self.chk_mp3.isChecked() if run_mode != "prepare" else False,
-                self.chk_fast.isChecked() if run_mode != "prepare" else True,
-                self.spin_chunk.value(),
-                q,
-                self._selected_preprocess_model_id(),
-                self.combo_preprocess_profile.currentData(),
-                self._selected_voice_mode(),
-                run_mode,
-                self.preprocess_directive,
-                self.tts_directive,
-                self.daily_request_limiter,
-                allow_edge_fallback=self.chk_edge_fallback.isChecked(),
-            )
-            worker.worker_progress.connect(self._enqueue_worker_progress)
-            worker.finished_signal.connect(self._on_worker_finished)
-            worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
-            worker.script_ready_signal.connect(self.on_script_ready_ui)
-            worker.invalid_key_signal.connect(self._on_invalid_worker_key)
-            worker.quota_key_signal.connect(self._on_quota_worker_key)
-            worker.project_quota_signal.connect(self._on_project_quota_worker)
-            worker.error_signal.connect(lambda _wid, msg: self.statusBar().showMessage(msg))
+            self._add_dashboard_row(i)
+            worker = self._build_flash_worker(i, available_api_keys[i], run_mode, live_playback)
+            self._connect_reader_worker_signals(worker, chapter_done=True, script_ready=True)
             self.workers.append(worker)
             worker.start()
 
@@ -8987,9 +8775,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Видео", "Сначала выберите картинку для видео.")
             return
         self._start_audio_combiner(video_image_path=video_cover_path)
-
-    def on_vol(self, v):
-        if self.player: self.player.set_volume(v)
 
     def set_api_keys(self):
         dlg = ApiKeysDialog("\n".join(self.api_keys), self)

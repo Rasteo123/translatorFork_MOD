@@ -11,6 +11,9 @@ from gemini_translator.ui.widgets.common_widgets import (
     NoScrollDoubleSpinBox,
     NoScrollSpinBox,
 )
+from gemini_translator.ui.widgets.dynamic_models_refresher import (
+    DynamicModelsRefresher,
+)
 
 
 class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
@@ -20,6 +23,8 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
         super().__init__("Резерв при блокировке контента", parent)
         self.settings_manager = settings_manager
         self._restoring = False
+        self._models_refresher = DynamicModelsRefresher(self)
+        self._models_refresher.refreshed.connect(self._on_dynamic_models_refreshed)
         self._build_ui()
         self._connect_signals()
         self._populate_providers()
@@ -104,7 +109,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
         self.provider_combo.blockSignals(True)
         try:
             self.provider_combo.clear()
-            for provider_id, provider_cfg in api_config.api_providers().items():
+            for provider_id, provider_cfg in api_config.api_providers_view().items():
                 self.provider_combo.addItem(
                     provider_cfg.get("display_name") or provider_id,
                     userData=provider_id,
@@ -120,20 +125,27 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
     def _on_provider_changed(self, *args):
         provider_id = self.provider_combo.currentData()
         if provider_id:
-            try:
-                api_config.ensure_dynamic_provider_models(provider_id)
-            except Exception:
-                pass
+            self._models_refresher.refresh_async(provider_id)
         self._reload_models()
         self._update_enabled_state()
         self._emit_config_changed()
+
+    def _on_dynamic_models_refreshed(self, provider_id):
+        if provider_id != self.provider_combo.currentData():
+            return
+        selected_before = self.model_combo.currentText()
+        self._reload_models()
+        self._update_model_dependent_controls()
+        self._update_enabled_state()
+        if self.model_combo.currentText() != selected_before:
+            self._emit_config_changed()
 
     def _reload_models(self, selected_model=None):
         if selected_model is None:
             selected_model = self.model_combo.currentText()
 
         provider_id = self.provider_combo.currentData()
-        provider_cfg = api_config.api_providers().get(provider_id, {})
+        provider_cfg = api_config.api_providers_view().get(provider_id, {})
         models = provider_cfg.get("models", {}) if isinstance(provider_cfg, dict) else {}
 
         was_blocked = self.model_combo.signalsBlocked()
@@ -161,7 +173,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
 
     def _current_model_config(self):
         model_name = self.model_combo.currentText()
-        model_cfg = api_config.all_models().get(model_name, {})
+        model_cfg = api_config.all_models_view().get(model_name, {})
         return model_cfg if isinstance(model_cfg, dict) else {}
 
     def _update_model_dependent_controls(self):
@@ -269,10 +281,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
                 index = self.provider_combo.findData(provider_id)
                 if index != -1:
                     self.provider_combo.setCurrentIndex(index)
-                    try:
-                        api_config.ensure_dynamic_provider_models(provider_id)
-                    except Exception:
-                        pass
+                    self._models_refresher.refresh_async(provider_id)
 
             self._reload_models(settings.get("content_filter_fallback_model"))
 

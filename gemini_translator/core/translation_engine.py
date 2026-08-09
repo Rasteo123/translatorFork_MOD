@@ -22,6 +22,28 @@ from ..api.managers import ApiKeyManager
 from ..core.chunk_assembler import ChunkAssembler
 from ..utils.power_inhibitor import PREVENT_SLEEP_SETTING_KEY, PowerInhibitor
 
+def shutdown_executor_with_deadline(executor, deadline_seconds: float) -> int:
+    """Останавливает пул, ожидая потоки не дольше deadline_seconds.
+
+    ThreadPoolExecutor.shutdown(wait=True) ждёт неограниченно: один зависший
+    поток (сетевой вызов с таймаутом в десятки минут) заморозил бы вызывающий
+    поток целиком. Возвращает число потоков, не завершившихся к дедлайну."""
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        # Python < 3.9: нет cancel_futures
+        executor.shutdown(wait=False)
+
+    threads = list(getattr(executor, "_threads", ()) or ())
+    deadline = time.monotonic() + max(0.0, float(deadline_seconds))
+    for thread in threads:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(timeout=remaining)
+    return sum(1 for thread in threads if thread.is_alive())
+
+
 def normalize_sequential_parallel_settings(settings: dict, log_callback=None):
     if not settings.get('sequential_translation'):
         return
@@ -182,8 +204,8 @@ class TranslationEngine(QObject):
         self.pending_launches = 0    # Счетчик воркеров, ожидающих запуска в таймере
         
         self.task_statuses = {}
+        self._finish_check_pending = False
         self.keys_map = {}
-        self.paused_keys = set()
         self.shutting_down_workers = set()
         
         self.ramp_up_timer = None
@@ -317,10 +339,6 @@ class TranslationEngine(QObject):
                     'event': 'stop_session_requested', 'source': 'TranslationEngine',
                     'session_id': event_session, 'data': {'reason': "Уничтожение Зомби Воркера"}
                 })
-                return
-
-            # Событие легитимно, только если воркер известен и активен.
-            if not worker_key or worker_id not in self.active_workers_map:
                 return
 
             # Если событие принесло ключ, он ДОЛЖЕН совпадать.
@@ -457,15 +475,27 @@ class TranslationEngine(QObject):
         elif event_name == 'fatal_error' and 'worker' in source:
             self._handle_fatal_error(worker_id, data.get('payload'), worker_session=event_session)
         
+        if event_name == 'task_finished':
+            task_info = data.get('task_info')
+            task_id = task_info[0] if isinstance(task_info, (list, tuple)) and task_info else None
+            if task_id is not None:
+                self.task_statuses[str(task_id)] = data.get('error_type')
+
         events_that_change_state = {
             'task_finished', 'assembly_finished', 'fatal_error', 'tasks_added',
             'managed_session_completed'
         }
         if event_name in events_that_change_state:
-            
-            QtCore.QTimer.singleShot(1000, 
-                                     lambda: self._check_if_session_finished())
-    
+            # Дебаунс: десяток событий подряд не должен порождать десяток
+            # проверок завершения (каждая — обращение к БД задач).
+            if not self._finish_check_pending:
+                self._finish_check_pending = True
+                QtCore.QTimer.singleShot(1000, self._run_debounced_finish_check)
+
+    def _run_debounced_finish_check(self):
+        self._finish_check_pending = False
+        self._check_if_session_finished()
+
     def _finalize_scheduled_launch(self, key, scheduled_session_id=None):
         """Обертка для запуска по таймеру, корректирующая счетчик ожидающих."""
         # Уменьшаем счетчик, так как этот запуск переходит из 'pending' в 'active' (внутри _launch_worker)
@@ -716,7 +746,6 @@ class TranslationEngine(QObject):
         self.is_session_finishing = False
         self.is_soft_stopping = False
         self.task_statuses.clear()
-        self.paused_keys.clear()
         self.shutting_down_workers.clear()
         self.key_warning_counters.clear()
         self._last_mcp_limit_reason = ""
@@ -1138,6 +1167,8 @@ class TranslationEngine(QObject):
             
         return False
 
+    EXECUTOR_SHUTDOWN_DEADLINE_SEC = 15.0
+
     def _terminate_all_workers(self):
         if not self.executor and not self.runtime:
             return
@@ -1152,17 +1183,23 @@ class TranslationEngine(QObject):
             self.runtime.stop()
             self.runtime = None
 
-        # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: wait=True ---
-        # Теперь этот вызов будет БЛОКИРУЮЩИМ. Он не вернет управление,
-        # пока все запущенные задачи не завершатся (успешно или с ошибкой).
-        # Это безопасно, так как TranslationEngine работает в своем собственном потоке (QThread)
-        # и не заморозит графический интерфейс.
+        # Ожидание пула ОГРАНИЧЕНО по времени. Раньше здесь был
+        # shutdown(wait=True): зависший в пуле поток (например, осиротевший
+        # HTTP-запрос MCP с таймаутом до 30 минут) блокировал поток движка,
+        # Qt-слоты движка переставали обрабатываться и интерфейс сессии
+        # застревал в состоянии «остановка…» до перезапуска приложения.
         if self.executor is not None:
-            try:
-                self.executor.shutdown(wait=True, cancel_futures=True)
-            except TypeError:
-                # Fallback для версий Python < 3.9, где нет cancel_futures
-                self.executor.shutdown(wait=True)
+            lingering = shutdown_executor_with_deadline(
+                self.executor, deadline_seconds=self.EXECUTOR_SHUTDOWN_DEADLINE_SEC
+            )
+            if lingering:
+                self._post_event('log_message', {
+                    'message': (
+                        f"[MANAGER] ⚠️ {lingering} поток(а) пула не завершились за "
+                        f"{int(self.EXECUTOR_SHUTDOWN_DEADLINE_SEC)}с — продолжаем без ожидания "
+                        f"(зависший сетевой вызов доработает в фоне)."
+                    )
+                })
             self.executor = None
         self.active_workers_map.clear()
         self._post_event('log_message', {'message': "[MANAGER] Пул потоков полностью остановлен."})
@@ -1179,10 +1216,6 @@ class TranslationEngine(QObject):
         if session_id:
             print(f"[MANAGER LIFECYCLE] Объект TranslationEngine для сессии …{session_id[:8]} УНИЧТОЖЕН.")
         
-    def _internal_log(self, session_id: str, message: str):
-        if self.session_id and session_id == self.session_id:
-            self._post_event('log_message', {'message': message})
-
     def _check_if_session_finished(self):
         """
         Проверяет условия завершения сессии.

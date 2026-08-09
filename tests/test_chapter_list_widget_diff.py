@@ -6,8 +6,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from PyQt6.QtTest import QTest
+
 from gemini_translator.ui.themes import LIGHT_DEFAULT_THEME_COLORS, build_stylesheet
-from gemini_translator.ui.widgets.chapter_list_widget import ChapterListWidget
+from gemini_translator.ui.widgets.chapter_list_widget import (
+    REORDER_BUTTON_SIZE,
+    ChapterListWidget,
+    ReorderArrowDelegate,
+)
 
 
 class _SpyItem:
@@ -142,7 +148,7 @@ class DiffGateTests(unittest.TestCase):
         task_item.setData = lambda role, v: (data_calls.append((role, v)), orig_set_data(role, v))[1]
 
         # Same data again → expect zero setToolTip and zero setData calls.
-        widget._populate_row(0, task_data, update_only=True)
+        widget._populate_row(0, task_data)
 
         self.assertEqual(tooltip_calls, [], "tooltip setter should be skipped when value unchanged")
         # setData(UserRole+1, status) still allowed even if equal — we only gate the heavy ones.
@@ -161,16 +167,17 @@ class DiffGateTests(unittest.TestCase):
         self.assertEqual(header.sectionResizeMode(2), QtWidgets.QHeaderView.ResizeMode.Fixed)
         self.assertGreaterEqual(widget.table.columnWidth(2), 96)
 
-        reorder_widget = widget._create_reorder_cell_widget(0)
-        self.addCleanup(reorder_widget.deleteLater)
-        buttons = reorder_widget.findChildren(QtWidgets.QPushButton)
+        cell = QtCore.QRect(0, 0, widget.table.columnWidth(2),
+                            widget.table.verticalHeader().defaultSectionSize())
+        up_rect, down_rect = ReorderArrowDelegate.arrow_rects(cell)
 
-        self.assertEqual(len(buttons), 2)
-        self.assertTrue(all(button.size() == QtCore.QSize(24, 24) for button in buttons))
-        self.assertLessEqual(reorder_widget.sizeHint().height(), widget.table.verticalHeader().defaultSectionSize())
-        self.assertLessEqual(reorder_widget.sizeHint().width(), widget.table.columnWidth(2))
+        for rect in (up_rect, down_rect):
+            self.assertEqual(rect.size(), QtCore.QSize(REORDER_BUTTON_SIZE, REORDER_BUTTON_SIZE))
+            self.assertTrue(cell.contains(rect), "стрелка должна помещаться в ячейку")
+        self.assertFalse(up_rect.intersects(down_rect))
 
-    def test_populated_reorder_cell_has_vertical_room_under_light_theme(self):
+    def test_reorder_arrows_render_under_light_theme(self):
+        """Делегат должен рендерить стрелки со стилем QPushButton#reorderButton."""
         app = QtWidgets.QApplication.instance()
         previous_stylesheet = app.styleSheet()
         app.setStyleSheet(build_stylesheet(LIGHT_DEFAULT_THEME_COLORS))
@@ -191,10 +198,23 @@ class DiffGateTests(unittest.TestCase):
         widget.show()
         app.processEvents()
 
-        reorder_widget = widget.table.cellWidget(0, 2)
+        delegate = widget.table.itemDelegateForColumn(2)
+        self.assertIsInstance(delegate, ReorderArrowDelegate)
+        self.assertIsNone(widget.table.cellWidget(0, 2), "виджеты в колонке не создаются")
 
-        self.assertIsNotNone(reorder_widget)
-        self.assertGreaterEqual(reorder_widget.height(), reorder_widget.sizeHint().height())
+        def image_bytes(pixmap):
+            self.assertFalse(pixmap.isNull())
+            image = pixmap.toImage()
+            center = image.pixelColor(image.width() // 2, image.height() // 2)
+            self.assertGreater(center.alpha(), 0, "в центре должна быть видимая кнопка")
+            return bytes(image.constBits().asarray(image.sizeInBytes()))
+
+        normal = image_bytes(delegate._pixmap('up', hovered=False, pressed=False, enabled=True))
+        hovered = image_bytes(delegate._pixmap('up', hovered=True, pressed=False, enabled=True))
+        # Тема задаёт QPushButton#reorderButton:hover — hover обязан выглядеть
+        # иначе (WA_UnderMouse для скрытого шаблона не срабатывает, поэтому
+        # состояния инъецируются принудительно; этот тест ловит регрессию).
+        self.assertNotEqual(normal, hovered, "hover-состояние должно рендериться отлично от обычного")
 
     def test_display_text_includes_chapter_char_count_when_enabled(self):
         widget = self._make_widget()
@@ -231,6 +251,227 @@ class DiffGateTests(unittest.TestCase):
 
 
 import uuid
+
+
+class FullRedrawRowReuseTests(unittest.TestCase):
+    """_full_redraw на большом списке — главный источник подвисаний GUI:
+    сброс setRowCount(0) уничтожал и пересоздавал 3 виджета (▲▼) на строку.
+    Эти тесты закрепляют переиспользование строк и виджетов."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def _stub_engine(self):
+        app = QtWidgets.QApplication.instance()
+        prev_engine = getattr(app, "engine", "__missing__")
+        app.engine = None
+        if prev_engine == "__missing__":
+            self.addCleanup(lambda: delattr(app, "engine"))
+        else:
+            self.addCleanup(lambda: setattr(app, "engine", prev_engine))
+
+    def _make_tasks(self, n, status="pending", details=None):
+        tasks = []
+        for i in range(n):
+            tid = uuid.UUID(int=i + 1)
+            payload = ("epub", f"/tmp/{i}.epub", f"/tmp/{i}.html")
+            tasks.append(((tid, payload), status, dict(details or {})))
+        return tasks
+
+    def _make_widget_with_rows(self, n=3):
+        widget = ChapterListWidget()
+        self.addCleanup(widget.close)
+        self._stub_engine()
+        tasks = self._make_tasks(n)
+        widget._full_redraw(tasks)
+        return widget, tasks
+
+    def test_full_redraw_reuses_row_items_and_creates_no_widgets(self):
+        widget, tasks = self._make_widget_with_rows(4)
+        items_before = [widget.table.item(r, 0) for r in range(4)]
+        self.assertTrue(all(item is not None for item in items_before))
+
+        rotated = tasks[1:] + tasks[:1]
+        widget._full_redraw(rotated)
+
+        items_after = [widget.table.item(r, 0) for r in range(4)]
+        self.assertEqual(
+            items_before, items_after,
+            "QTableWidgetItem должны переиспользоваться при полной перерисовке"
+        )
+        for row in range(4):
+            self.assertIsNone(
+                widget.table.cellWidget(row, 2),
+                "кнопки ▲▼ рисует делегат — per-row виджетов быть не должно"
+            )
+
+    def test_full_redraw_reused_rows_show_new_tasks(self):
+        widget, tasks = self._make_widget_with_rows(3)
+
+        rotated = tasks[1:] + tasks[:1]
+        widget._full_redraw(rotated)
+
+        self.assertEqual(widget.table.rowCount(), 3)
+        for row, (task_tuple, _status, _details) in enumerate(rotated):
+            item = widget.table.item(row, 0)
+            expected_text, _ = widget._get_display_texts(task_tuple[1])
+            self.assertEqual(item.text(), expected_text)
+            self.assertEqual(item.data(QtCore.Qt.ItemDataRole.UserRole)[0], task_tuple[0])
+
+    def test_full_redraw_handles_shrink_and_grow(self):
+        widget, tasks = self._make_widget_with_rows(3)
+
+        widget._full_redraw(tasks[:1])
+        self.assertEqual(widget.table.rowCount(), 1)
+        self.assertIsNotNone(widget.table.item(0, 0))
+
+        grown = self._make_tasks(5)
+        widget._full_redraw(grown)
+        self.assertEqual(widget.table.rowCount(), 5)
+        for row in range(5):
+            self.assertIsNotNone(widget.table.item(row, 0), f"row {row}: нет ячейки задачи")
+            self.assertIsNotNone(widget.table.item(row, 1), f"row {row}: нет ячейки статуса")
+
+    def test_full_redraw_to_empty_clears_table(self):
+        widget, _tasks = self._make_widget_with_rows(2)
+        widget._full_redraw([])
+        self.assertEqual(widget.table.rowCount(), 0)
+
+    def test_populate_row_update_only_refreshes_tooltip_on_same_status_text(self):
+        """Текст статуса '❌ Ошибка' не меняется, а история ошибок в tooltip —
+        меняется. Текстовый гейт в _populate_row такое пропускал."""
+        widget = ChapterListWidget()
+        self.addCleanup(widget.close)
+        self._stub_engine()
+
+        task = self._make_tasks(1, status="error", details={"errors": {"NETWORK": 1}})[0]
+        widget._full_redraw([task])
+        self.assertIn("NETWORK: 1", widget.table.item(0, 1).toolTip())
+
+        task_tuple, _status, _details = task
+        widget._populate_row(0, (task_tuple, "error", {"errors": {"NETWORK": 2}}))
+        self.assertIn(
+            "NETWORK: 2", widget.table.item(0, 1).toolTip(),
+            "tooltip с историей ошибок должен обновляться и при неизменном тексте статуса"
+        )
+
+
+class ReorderArrowInteractionTests(unittest.TestCase):
+    """Клики по рисованным стрелкам должны вести себя как старые QPushButton:
+    попадание — reorder_requested без смены выделения, промах — обычный клик."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def _make_widget(self, n=3):
+        widget = ChapterListWidget()
+        self.addCleanup(widget.close)
+
+        app = QtWidgets.QApplication.instance()
+        prev_engine = getattr(app, "engine", "__missing__")
+        app.engine = None
+        if prev_engine == "__missing__":
+            self.addCleanup(lambda: delattr(app, "engine"))
+        else:
+            self.addCleanup(lambda: setattr(app, "engine", prev_engine))
+
+        tasks = []
+        for i in range(n):
+            tid = uuid.UUID(int=i + 1)
+            payload = ("epub", f"/tmp/{i}.epub", f"/tmp/{i}.html")
+            tasks.append(((tid, payload), "pending", {}))
+
+        widget.resize(900, 600)
+        widget._full_redraw(tasks)
+        widget.show()
+        app.processEvents()
+        return widget, tasks
+
+    def _arrow_center(self, widget, row, action):
+        index = widget.table.model().index(row, 2)
+        cell = widget.table.visualRect(index)
+        up_rect, down_rect = ReorderArrowDelegate.arrow_rects(cell)
+        return (up_rect if action == 'up' else down_rect).center()
+
+    def _click(self, widget, pos):
+        QTest.mouseClick(
+            widget.table.viewport(),
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            pos,
+        )
+
+    def test_click_up_arrow_emits_reorder_for_that_row(self):
+        widget, tasks = self._make_widget()
+        received = []
+        widget.reorder_requested.connect(lambda action, ids: received.append((action, ids)))
+
+        self._click(widget, self._arrow_center(widget, 1, 'up'))
+
+        self.assertEqual(received, [('up', [tasks[1][0][0]])])
+
+    def test_click_down_arrow_emits_reorder_for_that_row(self):
+        widget, tasks = self._make_widget()
+        received = []
+        widget.reorder_requested.connect(lambda action, ids: received.append((action, ids)))
+
+        self._click(widget, self._arrow_center(widget, 0, 'down'))
+
+        self.assertEqual(received, [('down', [tasks[0][0][0]])])
+
+    def test_arrow_click_does_not_change_selection(self):
+        widget, _tasks = self._make_widget()
+        widget.table.selectRow(0)
+        selection_before = {i.row() for i in widget.table.selectionModel().selectedRows()}
+        self.assertEqual(selection_before, {0})
+
+        self._click(widget, self._arrow_center(widget, 2, 'up'))
+
+        selection_after = {i.row() for i in widget.table.selectionModel().selectedRows()}
+        self.assertEqual(
+            selection_after, {0},
+            "клик по стрелке должен съедаться, не трогая выделение (как QPushButton раньше)"
+        )
+
+    def test_click_beside_arrows_selects_row_without_reorder(self):
+        widget, _tasks = self._make_widget()
+        received = []
+        widget.reorder_requested.connect(lambda action, ids: received.append((action, ids)))
+
+        index = widget.table.model().index(1, 2)
+        cell = widget.table.visualRect(index)
+        pos = QtCore.QPoint(cell.left() + 2, cell.center().y())  # мимо стрелок
+        up_rect, down_rect = ReorderArrowDelegate.arrow_rects(cell)
+        self.assertFalse(up_rect.contains(pos) or down_rect.contains(pos))
+
+        self._click(widget, pos)
+
+        self.assertEqual(received, [], "промах мимо стрелок не должен запускать перемещение")
+        selection = {i.row() for i in widget.table.selectionModel().selectedRows()}
+        self.assertEqual(selection, {1}, "обычный клик по ячейке выделяет строку")
+
+    def test_reorder_click_locks_table_until_animation(self):
+        widget, _tasks = self._make_widget()
+        self.assertTrue(widget.table.isEnabled())
+
+        self._click(widget, self._arrow_center(widget, 1, 'down'))
+
+        self.assertFalse(
+            widget.table.isEnabled(),
+            "на время перестановки таблица блокируется (защита от даблкликов)"
+        )
+
+    def test_hover_tracking_updates_delegate_state(self):
+        widget, _tasks = self._make_widget()
+        delegate = widget.table.itemDelegateForColumn(2)
+
+        widget._update_arrow_hover(self._arrow_center(widget, 0, 'down'))
+        self.assertEqual(delegate.hovered, (0, 'down'))
+
+        widget._update_arrow_hover(QtCore.QPoint(5, 5))  # колонка «Задача»
+        self.assertEqual(delegate.hovered, (-1, None))
 
 
 class SelectiveUpdateChangedIdsTests(unittest.TestCase):

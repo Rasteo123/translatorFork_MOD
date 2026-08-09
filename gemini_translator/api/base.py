@@ -532,7 +532,15 @@ class BaseApiHandler:
             await self._cancel_and_drain_tasks(checker_task, api_task)
 
     async def _cancellation_checker(self):
-        """Пингует флаг отмены каждые 200мс."""
+        """Ждёт отмену событийно (cancel() взводит _cancel_async_event через
+        call_soon_threadsafe). Поллинг каждые 200мс остаётся только как
+        fallback для legacy-пути run() без выделенного события — иначе это
+        5 холостых пробуждений/сек на каждый запрос в полёте."""
+        cancel_event = getattr(self.worker, '_cancel_async_event', None)
+        if cancel_event is not None:
+            while not self.worker.is_cancelled:
+                await cancel_event.wait()
+            return
         while not self.worker.is_cancelled:
             await asyncio.sleep(0.2)
 
