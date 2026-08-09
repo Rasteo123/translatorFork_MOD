@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel,
     QWidget, QGroupBox, QHBoxLayout, QGridLayout, QTableWidget, QHeaderView,
     QTableWidgetItem, QMessageBox, QListWidget, QListWidgetItem, QSplitter,
-    QComboBox, QLineEdit, QButtonGroup, QStackedWidget, QStyle
+    QComboBox, QLineEdit, QButtonGroup, QStackedWidget, QStyle,
+    QStyledItemDelegate,
 )
 from PyQt6.QtCore import Qt
 
@@ -20,6 +21,86 @@ from ...shell import ShellPage
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gemini_translator.ui.dialogs.glossary import MainWindow, GlossaryLogic
+
+
+PATTERN_TEXT_ROLE = Qt.ItemDataRole.UserRole + 11
+PATTERN_COUNT_ROLE = Qt.ItemDataRole.UserRole + 12
+PATTERN_TRANSLATION_ROLE = Qt.ItemDataRole.UserRole + 13
+
+
+class PatternListDelegate(QStyledItemDelegate):
+    """Рисует элемент списка паттернов (жирный паттерн + счётчик, серый
+    перевод второй строкой) без per-item виджетов."""
+
+    PAD_X = 6
+    PAD_Y = 4
+    LINE_SPACING = 1
+    MIN_HEIGHT = 35
+
+    def paint(self, painter, option, index):
+        from PyQt6.QtWidgets import QApplication, QStyleOptionViewItem
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+
+        pattern = str(index.data(PATTERN_TEXT_ROLE) or "")
+        count = index.data(PATTERN_COUNT_ROLE) or 0
+        translation = str(index.data(PATTERN_TRANSLATION_ROLE) or "")
+
+        painter.save()
+        rect = option.rect.adjusted(self.PAD_X, self.PAD_Y, -self.PAD_X, -self.PAD_Y)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        palette = option.palette
+        text_color = palette.color(
+            QtGui.QPalette.ColorRole.HighlightedText if selected
+            else QtGui.QPalette.ColorRole.Text
+        )
+
+        bold_font = QtGui.QFont(option.font)
+        bold_font.setBold(True)
+        bold_metrics = QtGui.QFontMetrics(bold_font)
+        painter.setFont(bold_font)
+        painter.setPen(text_color)
+        first_line = bold_metrics.elidedText(
+            f"'{pattern}' ({count} терм.)", Qt.TextElideMode.ElideRight, rect.width()
+        )
+        painter.drawText(
+            QtCore.QRect(rect.x(), rect.y(), rect.width(), bold_metrics.height()),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            first_line,
+        )
+
+        if translation:
+            grey = text_color if selected else palette.color(
+                QtGui.QPalette.ColorGroup.Disabled, QtGui.QPalette.ColorRole.Text
+            )
+            normal_metrics = QtGui.QFontMetrics(option.font)
+            painter.setFont(option.font)
+            painter.setPen(grey)
+            second_line = normal_metrics.elidedText(
+                translation, Qt.TextElideMode.ElideRight, rect.width() - 15
+            )
+            painter.drawText(
+                QtCore.QRect(
+                    rect.x() + 15,
+                    rect.y() + bold_metrics.height() + self.LINE_SPACING,
+                    rect.width() - 15,
+                    normal_metrics.height(),
+                ),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                second_line,
+            )
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        bold_font = QtGui.QFont(option.font)
+        bold_font.setBold(True)
+        height = self.PAD_Y * 2 + QtGui.QFontMetrics(bold_font).height()
+        if index.data(PATTERN_TRANSLATION_ROLE):
+            height += self.LINE_SPACING + option.fontMetrics.height()
+        return QtCore.QSize(option.rect.width(), max(height, self.MIN_HEIGHT))
 
 
 class CoreTermAnalyzerPage(ShellPage):
@@ -123,6 +204,7 @@ class CoreTermAnalyzerPage(ShellPage):
 
         self.left_list = QListWidget()
         self.left_list.setAlternatingRowColors(True)
+        self.left_list.setItemDelegate(PatternListDelegate(self.left_list))
         self.left_list.currentItemChanged.connect(self._on_left_list_item_changed)
         left_layout.addWidget(self.left_list)
         return left_panel
@@ -281,7 +363,9 @@ class CoreTermAnalyzerPage(ShellPage):
 
         return editor_layout
     def _populate_left_list(self):
-        """Заполняет левый список кастомными виджетами для каждого паттерна."""
+        """Заполняет левый список. Элементы рисует PatternListDelegate по
+        данным ролей — без per-item виджетов: на тысячах паттернов создание
+        QWidget+QLabel+adjustSize на каждый давало секунды фриза."""
         self.left_list.clear()
 
         sorted_patterns = sorted(
@@ -293,40 +377,10 @@ class CoreTermAnalyzerPage(ShellPage):
         for lcs_tuple, data in sorted_patterns:
             list_item = QListWidgetItem(self.left_list)
             list_item.setData(Qt.ItemDataRole.UserRole, lcs_tuple)
-            # Виджет теперь создается новым, более простым методом
-            widget = self._create_pattern_widget(lcs_tuple, data)
-            widget.adjustSize()
-
-            # Гарантируем минимальную высоту, чтобы избежать схлопывания в линию
-            height = max(widget.sizeHint().height(), 35)
-            list_item.setSizeHint(QtCore.QSize(0, height))
-
-            self.left_list.addItem(list_item)
-            self.left_list.setItemWidget(list_item, widget)
-
-    def _create_pattern_widget(self, lcs_tuple, data):
-        """
-        Создает кастомный виджет для одного элемента в левом списке.
-        """
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(1)
-
-        pattern_str = " ".join(lcs_tuple)
-        count = len(data['members'])
-
-        main_label = QLabel(f"<b>'{pattern_str}'</b> ({count} терм.)")
-        main_label.setStyleSheet("padding: 2px; background-color: transparent;")
-        layout.addWidget(main_label)
-
-        if data['pattern_exists_as_term'] and data['pattern_translation']:
-            translation_label = QLabel(f"→ {data['pattern_translation']}")
-            translation_label.setStyleSheet("padding-left: 15px; color: grey; border: none;")
-            layout.addWidget(translation_label)
-
-        widget.setLayout(layout)
-        return widget
+            list_item.setData(PATTERN_TEXT_ROLE, " ".join(lcs_tuple))
+            list_item.setData(PATTERN_COUNT_ROLE, len(data['members']))
+            if data['pattern_exists_as_term'] and data['pattern_translation']:
+                list_item.setData(PATTERN_TRANSLATION_ROLE, f"→ {data['pattern_translation']}")
 
     def _save_new_pattern_as_term(self):
         """Сохраняет данные из 'Редактора Паттерна' как новый термин."""
@@ -959,24 +1013,13 @@ class CoreTermAnalyzerPage(ShellPage):
             self._display_group_for_editing(self.current_lcs_tuple)
 
     def _update_left_list_item_by_tuple(self, pattern_tuple):
-        """
-        Находит элемент в левом списке по его кортежу-ключу и обновляет
-        его виджет (в частности, счетчик терминов).
-        """
+        """Обновляет счётчик терминов элемента списка (данные ролей делегата)."""
         for i in range(self.left_list.count()):
             item = self.left_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == pattern_tuple:
-                # Нашли нужный элемент
-                widget = self.left_list.itemWidget(item)
-                if widget:
-                    # Находим кнопку внутри виджета
-                    button = widget.findChild(QPushButton)
-                    if button:
-                        # Обновляем счетчик
-                        data = self.analysis_data[pattern_tuple]
-                        pattern_str = " ".join(pattern_tuple)
-                        new_count = len(data['members'])
-                        button.setText(f"'{pattern_str}' ({new_count} терм.)")
+                data = self.analysis_data.get(pattern_tuple)
+                if data is not None:
+                    item.setData(PATTERN_COUNT_ROLE, len(data['members']))
                 break # Прерываем цикл, так как элемент найден
 
     def showEvent(self, event):
