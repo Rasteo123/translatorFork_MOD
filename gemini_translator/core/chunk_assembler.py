@@ -452,13 +452,19 @@ class ChunkAssembler(QObject):
         if not hasattr(app, 'task_manager'): return
 
         with app.task_manager._get_read_only_conn() as conn: # Используем 'with conn' для автоматических транзакций при чтении
-            query = "SELECT task_id, payload, sequence FROM tasks WHERE status = 'completed' AND payload LIKE '%\"epub_chunk\"%'"
+            # task_type/chapter_path — generated-колонки из payload
+            # (task_manager._PAYLOAD_DERIVED_COLUMNS) вместо прежнего LIKE
+            # по JSON-тексту payload.
+            query = (
+                "SELECT task_id, payload, sequence FROM tasks "
+                "WHERE status = 'completed' AND task_type = 'epub_chunk'"
+            )
             params = []
             filtered_chapter_paths = [str(path) for path in (chapter_paths or []) if path]
             if filtered_chapter_paths:
-                like_clause = " OR ".join("payload LIKE ?" for _ in filtered_chapter_paths)
-                query += f" AND ({like_clause})"
-                params = [f'%"{path}"%' for path in filtered_chapter_paths]
+                placeholders = ", ".join("?" for _ in filtered_chapter_paths)
+                query += f" AND chapter_path IN ({placeholders})"
+                params = filtered_chapter_paths
             query += " ORDER BY sequence ASC"
             cursor = conn.execute(query, params)
             completed_chunks = cursor.fetchall()

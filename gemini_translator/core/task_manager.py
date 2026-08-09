@@ -67,6 +67,35 @@ def build_queue_snapshot_meta(counts_by_status: dict, saved_at: float | None = N
     }
 
 
+# Производные от payload колонки для точечных запросов вместо `payload LIKE`
+# (поиск предыдущего чанка без chain_id, финальная сборка глав). Колонки
+# generated (VIRTUAL): их невозможно рассинхронизировать с payload — они
+# пересчитываются при любом INSERT (точек вставки в tasks восемь) и при
+# замене payload в update_task. json_valid-гейт обязателен: восстановление
+# сессии вставляет payload с диска, и битая строка не должна валить INSERT
+# при вычислении индексируемого выражения. chapter_path/chunk_index ограничены
+# epub-типами, чтобы в индекс не попадали большие строки из чужих payload'ов.
+_PAYLOAD_DERIVED_COLUMNS = (
+    (
+        "task_type",
+        "TEXT GENERATED ALWAYS AS "
+        "(CASE WHEN json_valid(payload) THEN json_extract(payload, '$[0]') END) VIRTUAL",
+    ),
+    (
+        "chapter_path",
+        "TEXT GENERATED ALWAYS AS "
+        "(CASE WHEN json_valid(payload) AND json_extract(payload, '$[0]') IN ('epub', 'epub_chunk') "
+        "THEN json_extract(payload, '$[2]') END) VIRTUAL",
+    ),
+    (
+        "chunk_index",
+        "INTEGER GENERATED ALWAYS AS "
+        "(CASE WHEN json_valid(payload) AND json_extract(payload, '$[0]') = 'epub_chunk' "
+        "THEN json_extract(payload, '$[4]') END) VIRTUAL",
+    ),
+)
+
+
 def tuple_serializer(obj):
     if isinstance(obj, tuple): return {'__tuple__': True, 'items': list(obj)}
     if isinstance(obj, uuid.UUID): return str(obj)
@@ -291,14 +320,22 @@ class ChapterQueueManager(QObject):
                 );
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_seq ON tasks (status, priority DESC, sequence ASC);")
+            # table_xinfo, а не table_info: generated-колонки помечены hidden
+            # и в table_info не попадают — проверка существования сломалась бы.
             existing_columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+                row[1] for row in conn.execute("PRAGMA table_xinfo(tasks)").fetchall()
             }
             if 'chain_id' not in existing_columns:
                 conn.execute("ALTER TABLE tasks ADD COLUMN chain_id INTEGER")
             if 'chain_index' not in existing_columns:
                 conn.execute("ALTER TABLE tasks ADD COLUMN chain_index INTEGER")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status_chain ON tasks (status, chain_id, chain_index);")
+            for column_name, column_def in _PAYLOAD_DERIVED_COLUMNS:
+                if column_name not in existing_columns:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {column_name} {column_def}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_chunk_lookup ON tasks (task_type, chapter_path, chunk_index);"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS task_errors (
                     error_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -791,25 +828,22 @@ class ChapterQueueManager(QObject):
                     if translated_content:
                         return translated_content
 
-            # Fallback для задач без chain_id: раньше он тянул ВСЕ завершённые
-            # чанки книги с переводами и парсил каждый payload в Python.
-            # Префильтр по LIKE оставляет только строки нужной главы; путь
-            # ищем в том виде, в каком он лежит в payload (json.dumps с
-            # ensure_ascii — не-ASCII символы экранированы как \\uXXXX).
-            json_fragment = json.dumps(chapter_path)[1:-1]
-            like_pattern = "%\"{}\"%".format(
-                json_fragment.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            )
+            # Fallback для задач без chain_id: фильтруем по generated-колонкам
+            # из payload (_PAYLOAD_DERIVED_COLUMNS) вместо прежнего LIKE по
+            # JSON-тексту; json_extract сам декодирует \uXXXX-экранирование
+            # ensure_ascii, поэтому не-ASCII пути сравниваются напрямую.
             fallback_rows = conn.execute(
                 """
                 SELECT t.payload, cr.translated_content
                 FROM tasks AS t
                 JOIN chunk_results AS cr ON cr.task_id = t.task_id
                 WHERE t.status = 'completed'
-                  AND t.payload LIKE ? ESCAPE '\\'
+                  AND t.task_type = 'epub_chunk'
+                  AND t.chapter_path = ?
+                  AND t.chunk_index = ?
                 ORDER BY t.sequence DESC
                 """,
-                (like_pattern,),
+                (chapter_path, target_chunk_index),
             ).fetchall()
             return self._translation_from_chunk_rows(
                 fallback_rows,
