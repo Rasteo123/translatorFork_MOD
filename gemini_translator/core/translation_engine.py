@@ -22,6 +22,28 @@ from ..api.managers import ApiKeyManager
 from ..core.chunk_assembler import ChunkAssembler
 from ..utils.power_inhibitor import PREVENT_SLEEP_SETTING_KEY, PowerInhibitor
 
+def shutdown_executor_with_deadline(executor, deadline_seconds: float) -> int:
+    """Останавливает пул, ожидая потоки не дольше deadline_seconds.
+
+    ThreadPoolExecutor.shutdown(wait=True) ждёт неограниченно: один зависший
+    поток (сетевой вызов с таймаутом в десятки минут) заморозил бы вызывающий
+    поток целиком. Возвращает число потоков, не завершившихся к дедлайну."""
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        # Python < 3.9: нет cancel_futures
+        executor.shutdown(wait=False)
+
+    threads = list(getattr(executor, "_threads", ()) or ())
+    deadline = time.monotonic() + max(0.0, float(deadline_seconds))
+    for thread in threads:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(timeout=remaining)
+    return sum(1 for thread in threads if thread.is_alive())
+
+
 def normalize_sequential_parallel_settings(settings: dict, log_callback=None):
     if not settings.get('sequential_translation'):
         return
@@ -1145,6 +1167,8 @@ class TranslationEngine(QObject):
             
         return False
 
+    EXECUTOR_SHUTDOWN_DEADLINE_SEC = 15.0
+
     def _terminate_all_workers(self):
         if not self.executor and not self.runtime:
             return
@@ -1159,17 +1183,23 @@ class TranslationEngine(QObject):
             self.runtime.stop()
             self.runtime = None
 
-        # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: wait=True ---
-        # Теперь этот вызов будет БЛОКИРУЮЩИМ. Он не вернет управление,
-        # пока все запущенные задачи не завершатся (успешно или с ошибкой).
-        # Это безопасно, так как TranslationEngine работает в своем собственном потоке (QThread)
-        # и не заморозит графический интерфейс.
+        # Ожидание пула ОГРАНИЧЕНО по времени. Раньше здесь был
+        # shutdown(wait=True): зависший в пуле поток (например, осиротевший
+        # HTTP-запрос MCP с таймаутом до 30 минут) блокировал поток движка,
+        # Qt-слоты движка переставали обрабатываться и интерфейс сессии
+        # застревал в состоянии «остановка…» до перезапуска приложения.
         if self.executor is not None:
-            try:
-                self.executor.shutdown(wait=True, cancel_futures=True)
-            except TypeError:
-                # Fallback для версий Python < 3.9, где нет cancel_futures
-                self.executor.shutdown(wait=True)
+            lingering = shutdown_executor_with_deadline(
+                self.executor, deadline_seconds=self.EXECUTOR_SHUTDOWN_DEADLINE_SEC
+            )
+            if lingering:
+                self._post_event('log_message', {
+                    'message': (
+                        f"[MANAGER] ⚠️ {lingering} поток(а) пула не завершились за "
+                        f"{int(self.EXECUTOR_SHUTDOWN_DEADLINE_SEC)}с — продолжаем без ожидания "
+                        f"(зависший сетевой вызов доработает в фоне)."
+                    )
+                })
             self.executor = None
         self.active_workers_map.clear()
         self._post_event('log_message', {'message': "[MANAGER] Пул потоков полностью остановлен."})

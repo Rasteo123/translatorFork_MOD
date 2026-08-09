@@ -87,6 +87,11 @@ class McpClientSession:
         self._closed = False
         self.touch("started")
 
+    def set_client_identity(self, client_name) -> None:
+        name = str(client_name or "").strip()
+        if name:
+            self.client_name = name[:120]
+
     def set_client_capabilities(self, capabilities: dict | None) -> None:
         self.client_capabilities = dict(capabilities or {})
         self.supports_sampling = isinstance(self.client_capabilities.get("sampling"), dict)

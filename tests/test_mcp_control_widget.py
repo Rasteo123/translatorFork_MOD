@@ -140,17 +140,23 @@ class McpControlWidgetTests(unittest.TestCase):
         self.assertEqual(widget.detail_label.text(), "127.0.0.1:5000")
         self.assertEqual(widget.action_button.text(), "Остановить")
 
-    def test_auto_refresh_timer_runs_only_when_enabled_and_daemon_running(self):
+    def test_auto_refresh_timer_runs_whenever_enabled(self):
+        """Таймер работает и при «выключенном» демоне: демон автозапускается
+        stdio-клиентами (claude/codex), и карточка обязана это замечать.
+        Холостой тик без daemon-info файла не делает HTTP (только stat)."""
         widget = McpControlWidget(backend=_FakeBackend())
         self.addCleanup(widget.close)
 
         widget.apply_status(McpStatusSnapshot(running=True, detail="127.0.0.1:5000"))
-        self.assertFalse(widget._status_timer.isActive())
+        self.assertFalse(widget._status_timer.isActive())  # auto_refresh ещё выключен
 
         widget.set_auto_refresh_enabled(True)
         self.assertTrue(widget._status_timer.isActive())
 
         widget.apply_status(McpStatusSnapshot(running=False))
+        self.assertTrue(widget._status_timer.isActive())
+
+        widget.set_auto_refresh_enabled(False)
         self.assertFalse(widget._status_timer.isActive())
 
     def test_apply_error_status_keeps_card_usable(self):

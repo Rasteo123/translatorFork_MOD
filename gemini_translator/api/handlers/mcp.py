@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 import re
+import threading
 import time
 import uuid
 
@@ -125,15 +126,28 @@ class McpApiHandler(BaseApiHandler):
             self._raise_mcp_error(str(exc), getattr(exc, "payload", None) or {"error": str(exc)})
 
     def _cancel_completion(self, request_id):
+        """Просит демон отменить запрос. Выполняется в фоновом daemon-потоке:
+        вызов происходит из обработчика CancelledError на event-loop-потоке,
+        синхронный HTTP здесь блокировал бы весь loop. Повторяем дважды —
+        одиночный проглоченный сбой оставлял запрос висеть до таймаута."""
         if not request_id:
             return
-        try:
-            client = load_client()
-            cancel = getattr(client, "cancel_ai_completion", None)
-            if callable(cancel):
-                cancel(str(request_id))
-        except DaemonClientError:
-            return
+
+        def _send_cancel():
+            for attempt in range(2):
+                try:
+                    client = load_client()
+                    cancel = getattr(client, "cancel_ai_completion", None)
+                    if callable(cancel):
+                        cancel(str(request_id))
+                    return
+                except DaemonClientError:
+                    if attempt == 0:
+                        time.sleep(0.5)
+
+        threading.Thread(
+            target=_send_cancel, name="mcp-cancel", daemon=True
+        ).start()
 
     def _extract_response_text(self, response):
         if not isinstance(response, dict):
