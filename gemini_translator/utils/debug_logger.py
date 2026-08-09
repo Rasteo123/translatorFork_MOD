@@ -140,12 +140,26 @@ def _slugify(value: str | None, fallback: str, max_length: int = 64) -> str:
     return text[:max_length]
 
 
+_CREATED_LOG_DIRS: set[str] = set()
+
+
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(payload, ensure_ascii=False, default=str)
     with _WRITE_LOCK:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, default=str))
-            handle.write("\n")
+        parent = str(path.parent)
+        if parent not in _CREATED_LOG_DIRS:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _CREATED_LOG_DIRS.add(parent)
+        try:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+                handle.write("\n")
+        except FileNotFoundError:
+            # Папку логов удалили на лету — пересоздаём и повторяем один раз.
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+                handle.write("\n")
 
 
 def _write_json_if_missing(path: Path, payload: dict[str, Any]) -> None:
