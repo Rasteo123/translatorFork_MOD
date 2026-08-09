@@ -2365,7 +2365,7 @@ class CorrectionSessionPage(ShellPage):
         try:
             # --- ЭТАП 1: Чтение (неблокирующая операция) ---
             all_term_rows = []
-            with app.engine.task_manager._get_read_only_conn() as conn:
+            with app.engine.task_manager._light_read_conn() as conn:
                 cursor = conn.execute("SELECT original, rus, note FROM glossary_results")
                 all_term_rows = cursor.fetchall()
 

@@ -563,7 +563,7 @@ def _safe_settings_for_output(settings: dict) -> dict:
 def _queue_status_counts(task_manager) -> dict[str, int]:
     counts = {"pending": 0, "in_progress": 0, "failed": 0, "completed": 0, "held": 0}
     try:
-        with task_manager._get_read_only_conn() as conn:
+        with task_manager._light_read_conn() as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS count FROM tasks GROUP BY status").fetchall()
         for row in rows:
             counts[str(row["status"])] = int(row["count"])
@@ -1645,7 +1645,7 @@ def command_glossary_generate(args) -> dict:
     glossary_rows = 0
     unique_terms = 0
     try:
-        with app.task_manager._get_read_only_conn() as conn:
+        with app.task_manager._light_read_conn() as conn:
             glossary_rows = int(conn.execute("SELECT COUNT(*) FROM glossary_results").fetchone()[0] or 0)
             unique_terms = int(conn.execute("SELECT COUNT(DISTINCT LOWER(TRIM(original))) FROM glossary_results").fetchone()[0] or 0)
     except Exception:

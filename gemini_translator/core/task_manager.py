@@ -67,6 +67,38 @@ def build_queue_snapshot_meta(counts_by_status: dict, saved_at: float | None = N
     }
 
 
+# --- Сжатие блобов переводов чанков (chunk_results.translated_content) ---
+# HTML жмётся zstd в 5-8 раз: меньше RSS длинных сессий и дешевле
+# backup-клоны/снапшоты (копируют всю базу). Формат самоопределяется по
+# zstd-magic: str — легаси-текст (старые снапшоты сессий, прямые вставки
+# в тестах) проходит насквозь. payload задач НЕ сжимать: на его JSON-тексте
+# построены generated-колонки (_PAYLOAD_DERIVED_COLUMNS).
+try:
+    import zstandard as _zstd
+except ImportError:
+    _zstd = None
+
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def compress_chunk_content(text):
+    if _zstd is None or not isinstance(text, str) or not text:
+        return text
+    return _zstd.ZstdCompressor(level=3).compress(text.encode("utf-8"))
+
+
+def decompress_chunk_content(value):
+    if isinstance(value, bytes):
+        if value[:4] == _ZSTD_MAGIC:
+            if _zstd is None:
+                # Сжатый блоб без установленного zstandard прочитать нечем;
+                # пустая строка деградирует до "нет предыдущего чанка".
+                return ""
+            return _zstd.ZstdDecompressor().decompress(value).decode("utf-8")
+        return value.decode("utf-8", "replace")
+    return value
+
+
 # Производные от payload колонки для точечных запросов вместо `payload LIKE`
 # (поиск предыдущего чанка без chain_id, финальная сборка глав). Колонки
 # generated (VIRTUAL): их невозможно рассинхронизировать с payload — они
@@ -255,10 +287,15 @@ class ChapterQueueManager(QObject):
 
     def _get_read_only_conn(self) -> sqlite3.Connection:
         """
-        Создает одноразовый in-memory клон только для чтения с замером времени.
+        Создает одноразовый in-memory клон только для чтения.
         Потокобезопасен благодаря использованию _chancellor_lock.
         Использует ПРИОРИТЕТНЫЙ захват (acquire_priority), чтобы быстрые читатели
         не ждали в конце очереди за долгими писателями.
+
+        Замок держится на время backup ВСЕЙ базы (включая блобы) — поэтому
+        клон оправдан только для объёмных чтений с долгой обработкой строк
+        (фоновый UI-кэш, дампы всей очереди). Для точечных выборок использовать
+        _light_read_conn/_execute_light_read.
         """
         clone_conn = sqlite3.connect(":memory:")
         
@@ -287,22 +324,33 @@ class ChapterQueueManager(QObject):
         clone_conn.row_factory = sqlite3.Row
         return clone_conn
 
-    def _execute_light_read(self, sql: str, params: tuple = ()) -> list:
-        """Быстрое чтение напрямую из мастер-БД под приоритетным замком.
+    @contextlib.contextmanager
+    def _light_read_conn(self):
+        """Прямое читающее соединение с мастер-БД под приоритетным замком.
 
-        Для проверок-существования и мелких выборок полный клон базы
-        (_get_read_only_conn -> backup всей БД) — лишние миллисекунды на
-        каждый вызов; здесь только один запрос под замком."""
+        Для точечных выборок полный клон (_get_read_only_conn -> backup ВСЕЙ
+        базы вместе с блобами translated_content) держит замок дольше и жжёт
+        память; здесь замок держится ровно на время самих запросов.
+
+        Контракт: внутри with — только запросы и дешёвые проверки; тяжёлую
+        обработку строк выносить за пределы блока (замок блокирует писателей).
+        Для объёмных чтений с обработкой (фоновый UI-кэш, дампы всей очереди)
+        по-прежнему использовать _get_read_only_conn."""
         self._chancellor_lock.acquire_priority()
         try:
             master_conn = sqlite3.connect(self.master_uri, uri=True)
             try:
                 master_conn.row_factory = sqlite3.Row
-                return master_conn.execute(sql, params).fetchall()
+                yield master_conn
             finally:
                 master_conn.close()
         finally:
             self._chancellor_lock.release()
+
+    def _execute_light_read(self, sql: str, params: tuple = ()) -> list:
+        """Один быстрый запрос к мастер-БД под приоритетным замком."""
+        with self._light_read_conn() as conn:
+            return conn.execute(sql, params).fetchall()
 
 
     def _create_schema(self, conn: sqlite3.Connection):
@@ -779,7 +827,7 @@ class ChapterQueueManager(QObject):
             except Exception:
                 continue
             if self._payload_is_chunk(payload, chapter_path, chunk_index):
-                return row['translated_content'] or ""
+                return decompress_chunk_content(row['translated_content']) or ""
         return ""
 
     def get_completed_previous_chunk_translation(self, current_task_id, chapter_path: str, chunk_index: int) -> str:
@@ -793,7 +841,7 @@ class ChapterQueueManager(QObject):
         current_task_id_str = str(current_task_id) if current_task_id else ""
         chapter_path = str(chapter_path)
 
-        with self._get_read_only_conn() as conn:
+        with self._light_read_conn() as conn:
             if current_task_id_str:
                 current_row = conn.execute(
                     "SELECT chain_id, chain_index FROM tasks WHERE task_id = ?",
@@ -870,7 +918,7 @@ class ChapterQueueManager(QObject):
                 # 2. Выполняем вторую операцию в той же транзакции.
                 conn.execute(
                     "INSERT OR REPLACE INTO chunk_results (task_id, translated_content, provider_id) VALUES (?, ?, ?)",
-                    (task_id_str, translated_content, provider_id)
+                    (task_id_str, compress_chunk_content(translated_content), provider_id)
                 )
             
             # Логируем только после успешного коммита (замок здесь уже отпущен!)
@@ -1090,7 +1138,7 @@ class ChapterQueueManager(QObject):
         updated_count = 0 
         
         try:
-            with self._get_read_only_conn() as conn:
+            with self._light_read_conn() as conn:
                 chunk_size = 900 # Лимит переменных SQLite
                 for i in range(0, len(batch_originals), chunk_size):
                     chunk = batch_originals[i:i + chunk_size]
@@ -2099,7 +2147,7 @@ class ChapterQueueManager(QObject):
         Возвращает None, если очередь пуста.
         """
         payload_json = None
-        with self._get_read_only_conn() as conn:
+        with self._light_read_conn() as conn:
             cursor = conn.execute(
                 self._eligible_pending_task_sql("t.payload")
             )
@@ -2149,11 +2197,11 @@ class ChapterQueueManager(QObject):
         Включает задачи со статусами 'pending' и 'held'.
         """
         raw_rows = []
-        with self._get_read_only_conn() as conn:
+        with self._light_read_conn() as conn:
             cursor = conn.execute(
                 """
-                SELECT task_id, payload FROM tasks 
-                WHERE status IN ('pending', 'held') 
+                SELECT task_id, payload FROM tasks
+                WHERE status IN ('pending', 'held')
                 ORDER BY priority DESC, sequence ASC
                 """
             )
@@ -2319,7 +2367,7 @@ class ChapterQueueManager(QObject):
         if return_raw and mode == 'accumulate':
             sql_query = "SELECT original, rus, note, timestamp FROM glossary_results ORDER BY timestamp ASC"
             try:
-                with self._get_read_only_conn() as conn:
+                with self._light_read_conn() as conn:
                     cursor = conn.execute(sql_query)
                     # Возвращаем "как есть", база выступает просто архивом
                     return [dict(row) for row in cursor.fetchall()]
@@ -2349,7 +2397,7 @@ class ChapterQueueManager(QObject):
         """
 
         try:
-            with self._get_read_only_conn() as conn:
+            with self._light_read_conn() as conn:
                 cursor = conn.execute(sql_query)
                 clean_data = [dict(row) for row in cursor.fetchall()]
                 

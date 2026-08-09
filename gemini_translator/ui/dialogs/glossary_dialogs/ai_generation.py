@@ -2005,14 +2005,17 @@ class GenerationSessionPage(ShellPage):
         db_chapters = set()
         if self.engine and self.task_manager:
             try:
-                with self.task_manager._get_read_only_conn() as conn:
+                chapter_rows = []
+                with self.task_manager._light_read_conn() as conn:
                     # Проверяем наличие таблицы перед запросом, чтобы избежать ошибок при инициализации
                     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='glossary_results'")
                     if cursor.fetchone():
                         cursor = conn.execute("SELECT chapters_json FROM glossary_results")
-                        for row in cursor.fetchall():
-                            if row['chapters_json'] and row['chapters_json'] != '[]':
-                                db_chapters.update(json.loads(row['chapters_json']))
+                        chapter_rows = cursor.fetchall()
+                # json.loads — вне замка
+                for row in chapter_rows:
+                    if row['chapters_json'] and row['chapters_json'] != '[]':
+                        db_chapters.update(json.loads(row['chapters_json']))
             except Exception as e:
                 print(f"[UI ERROR] Не удалось прочитать карту глав из БД: {e}")
         
