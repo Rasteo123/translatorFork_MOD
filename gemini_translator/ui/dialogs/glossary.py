@@ -59,31 +59,25 @@ from ...utils.language_tools import (
 from gemini_translator.ui import theme_manager
 
 
-# --- Универсальный импорт Pymorphy с проверкой версии ---
-PYMORPHY_AVAILABLE = False
-morph_analyzer = None
-PYMORPHY_RECOMMENDATION = ""
+# --- Морфология: ленивая, через общий utils.morphology ---
+# Словари (~35МБ, ~секунда) больше не строятся при импорте модуля (то есть
+# при старте GUI): PYMORPHY_AVAILABLE — только проверка importability,
+# анализатор строится фоновым прогревом при открытии окна глоссария.
+from ...utils.morphology import (
+    PYMORPHY_AVAILABLE,
+    get_morph_analyzer,
+    warm_up_morphology_async,
+)
 
-try:
-    import pymorphy3
-    morph_analyzer = pymorphy3.MorphAnalyzer(lang='ru')
-    PYMORPHY_AVAILABLE = True
-    print("INFO: Используется библиотека pymorphy3.")
-except Exception:
-    try:
-        import pymorphy2
-        morph_analyzer = pymorphy2.MorphAnalyzer()
-        PYMORPHY_AVAILABLE = True
-        print("INFO: Используется библиотека pymorphy2 (рекомендуется обновиться до pymorphy3).")
-    except Exception:
-        PYMORPHY_AVAILABLE = False
-        if sys.version_info >= (3, 7):
+PYMORPHY_RECOMMENDATION = ""
+if not PYMORPHY_AVAILABLE:
+    if sys.version_info >= (3, 7):
             PYMORPHY_RECOMMENDATION = (
                 "<b>Внимание:</b> Pymorphy не найдена. Функционал ограничен.<br>"
                 "Для вашей версии Python рекомендуется установить <b>pymorphy3</b>:<br>"
                 "<code>pip install pymorphy3 pymorphy3-dicts-ru</code>"
             )
-        else:
+    else:
             PYMORPHY_RECOMMENDATION = (
                 "<b>Внимание:</b> Pymorphy не найдена. Функционал ограничен.<br>"
                 "Для вашей версии Python рекомендуется установить <b>pymorphy2</b>:<br>"
@@ -361,7 +355,11 @@ class GlossaryManagerPage(ShellPage):
 
     def __init__(self, parent=None, mode='standalone', project_path=None):
         super().__init__(parent)
-        
+
+        # Словари морфологии/jieba греются в фоне, пока пользователь смотрит
+        # на таблицу — первый клик по морфо-функциям не ловит паузу ~1с.
+        warm_up_morphology_async()
+
         app = QtWidgets.QApplication.instance()
         self.version = ""
         if app and app.global_version:
@@ -2155,7 +2153,8 @@ class GlossaryManagerPage(ShellPage):
         return list(build_molecules_recursively(0, []))
 
     def _generate_note_logic(self, translation_text, debug=False, return_raw_parse=False):
-        if not PYMORPHY_AVAILABLE or not translation_text: 
+        morph = get_morph_analyzer()
+        if morph is None or not translation_text:
             if return_raw_parse: return None, None, None
             return ""
         
@@ -2166,7 +2165,7 @@ class GlossaryManagerPage(ShellPage):
         if len(tokens) == 1 and tokens[0] not in ",;:": 
             if return_raw_parse:
                 # Для одного слова главный разбор - это просто первый разбор
-                parsed = self._convert_to_virtual_parses(tokens[0], morph_analyzer.parse(tokens[0]))[0]
+                parsed = self._convert_to_virtual_parses(tokens[0], morph.parse(tokens[0]))[0]
                 head_data = {'word': tokens[0], 'parses': [parsed]}
                 return None, head_data, parsed
             return self._generate_single_word_note(tokens[0])
@@ -2179,7 +2178,7 @@ class GlossaryManagerPage(ShellPage):
                 all_parses_data.append({'index': i, 'word': token, 'parses': [parse]})
             else:
                 # 1. Получаем "сырые" разборы от Pymorphy
-                raw_parses = morph_analyzer.parse(token)
+                raw_parses = morph.parse(token)
                 # 2. Немедленно конвертируем их в наши виртуальные объекты
                 virtual_parses = self._convert_to_virtual_parses(token, raw_parses)
                 all_parses_data.append({'index': i, 'word': token, 'parses': virtual_parses})
@@ -2291,7 +2290,10 @@ class GlossaryManagerPage(ShellPage):
     
     def _generate_single_word_note(self, word):
         # Ваша версия этой функции
-        parsed = morph_analyzer.parse(word)[0]
+        morph = get_morph_analyzer()
+        if morph is None:
+            return ""
+        parsed = morph.parse(word)[0]
         tag = parsed.tag; features = []
         if 'masc' in tag: features.append("муж. род")
         elif 'femn' in tag: features.append("жен. род")
@@ -3264,7 +3266,7 @@ class GlossaryManagerPage(ShellPage):
         self.table.setCurrentItem(None)
         if not self.direct_conflicts: return
         current_glossary = self.get_glossary()
-        dlg = DirectConflictResolverDialog(self.direct_conflicts, self, morph=morph_analyzer)
+        dlg = DirectConflictResolverDialog(self.direct_conflicts, self, morph=get_morph_analyzer())
         if dlg.exec() == QDialog.DialogCode.Accepted:
             resolved = dlg.resolved_glossary
             if not resolved: return
@@ -3334,7 +3336,7 @@ class GlossaryManagerPage(ShellPage):
         self.table.setCurrentItem(None)
         if not self.reverse_issues: return
         current_glossary = self.get_glossary()
-        page = ReverseConflictResolverPage(self.reverse_issues, current_glossary, self, morph=morph_analyzer)
+        page = ReverseConflictResolverPage(self.reverse_issues, current_glossary, self, morph=get_morph_analyzer())
 
         def apply_reverse_result(accepted, page=page):
             if accepted:
@@ -3747,6 +3749,11 @@ class _GlossaryDialogMeta(type(QDialog)):
 
 class MainWindow(QDialog, metaclass=_GlossaryDialogMeta):
     """Thin modal wrapper hosting GlossaryManagerPage (preserves the old QDialog API + result)."""
+
+    @property
+    def morph_analyzer(self):
+        """Единый анализатор (ai_correction берёт его с окна глоссария)."""
+        return get_morph_analyzer()
 
     def __init__(self, parent=None, mode='standalone', project_path=None):
         super().__init__(parent)

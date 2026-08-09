@@ -1174,12 +1174,9 @@ if __name__ == "__main__":
         QtCore.Qt.ConnectionType.QueuedConnection
     )
 
-    try:
-        import jieba
-        print("[INFO] Warming up jieba dictionary…")
-        jieba.lcut("прогрев", cut_all=False)
-    except (ImportError, Exception) as e:
-        print(f"[WARN] Could not warm up jieba dictionary: {e}")
+    # jieba больше не греется на старте безусловно (~18МБ у всех сессий):
+    # словарь строится при первом CJK-вызове в воркере (незаметно на фоне
+    # сетевых секунд) либо фоновым прогревом при открытии окна глоссария.
 
     # --- ГЛАВНЫЙ ЦИКЛ ПРИЛОЖЕНИЯ ---
     from gemini_translator.ui.shell import MainShell
