@@ -288,9 +288,9 @@ class TaskManagementWidget(QWidget):
         QtCore.QTimer.singleShot(100, self.check_and_update_retry_button_visibility)
 
     def _do_redraw(self):
-        # Hidden QTabWidget page: rebuilding the invisible task table (setCellWidget
-        # churn on every status reorder) wastes CPU and screen compositing while the
-        # user is looking at another tab. Defer until the tab is shown again.
+        # Hidden QTabWidget page: rebuilding the invisible task table wastes CPU
+        # and screen compositing while the user is looking at another tab.
+        # Defer until the tab is shown again.
         # Mirrors the log widget's isVisible() guard.
         if not self.isVisible():
             self._redraw_pending = True
