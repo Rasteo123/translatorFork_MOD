@@ -13,6 +13,7 @@ from json import JSONDecodeError
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag, UnicodeDammit
 
+from . import fast_json
 from .text import process_body_tag
 
 
@@ -1159,9 +1160,9 @@ def json_model_to_epub(book_model, output_path):
 
 def save_json_model(book_model, json_path):
     with open(json_path, "w", encoding="utf-8") as json_file:
-        json.dump(book_model, json_file, ensure_ascii=False, indent=2)
+        fast_json.dump(book_model, json_file, indent=2)
 
 
 def load_json_model(json_path):
     with open(json_path, "r", encoding="utf-8") as json_file:
-        return json.load(json_file)
+        return fast_json.load(json_file)

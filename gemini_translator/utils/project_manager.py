@@ -5,6 +5,8 @@ import json
 # --- ИЗМЕНЕНИЕ 1: Импортируем threading целиком ---
 import threading
 
+from . import fast_json
+
 try:
     # Попытка абсолютного импорта от корня (предпочтительно)
     import os_patch
@@ -523,7 +525,7 @@ class TranslationProjectManager:
 
             try:
                 with open(self.validation_cache_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    return fast_json.load(f)
             except (json.JSONDecodeError, IOError):
                 return {}
 
@@ -531,7 +533,7 @@ class TranslationProjectManager:
         with self.lock:
             os.makedirs(os.path.dirname(self.validation_cache_path), exist_ok=True)
             with open(self.validation_cache_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+                fast_json.dump(payload, f, indent=2, sort_keys=True)
 
     def load_term_frequency_cache(self):
         with self.lock:
@@ -540,7 +542,7 @@ class TranslationProjectManager:
 
             try:
                 with open(self.term_frequency_cache_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    return fast_json.load(f)
             except (json.JSONDecodeError, IOError):
                 return {}
 
@@ -548,7 +550,7 @@ class TranslationProjectManager:
         with self.lock:
             os.makedirs(os.path.dirname(self.term_frequency_cache_path), exist_ok=True)
             with open(self.term_frequency_cache_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+                fast_json.dump(payload, f, indent=2, sort_keys=True)
 
     def get_all_originals(self):
         from .epub_tools import extract_number_from_path
@@ -815,7 +817,7 @@ class TranslationProjectManager:
             if os.path.exists(cache_path):
                 try:
                     with open(cache_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
+                        return fast_json.load(f)
                 except (json.JSONDecodeError, IOError):
                     return None # Возвращаем None при ошибке, чтобы инициировать пересчет
             return None
@@ -826,7 +828,7 @@ class TranslationProjectManager:
             if os.path.exists(self.chapter_analysis_cache_path):
                 try:
                     with open(self.chapter_analysis_cache_path, 'r', encoding='utf-8') as f:
-                        return json.load(f)
+                        return fast_json.load(f)
                 except (json.JSONDecodeError, IOError):
                     return None
             return None
@@ -837,7 +839,7 @@ class TranslationProjectManager:
             try:
                 os.makedirs(os.path.dirname(self.chapter_analysis_cache_path), exist_ok=True)
                 with open(self.chapter_analysis_cache_path, 'w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                    fast_json.dump(cache_data, f, indent=2)
             except IOError as e:
                 print(f"[ERROR] Не удалось сохранить кэш анализа глав: {e}")
 
@@ -848,6 +850,6 @@ class TranslationProjectManager:
             try:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 with open(cache_path, 'w', encoding='utf-8') as f:
-                    json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                    fast_json.dump(cache_data, f, indent=2)
             except IOError as e:
                 print(f"[ERROR] Не удалось сохранить кэш размеров глав: {e}")
