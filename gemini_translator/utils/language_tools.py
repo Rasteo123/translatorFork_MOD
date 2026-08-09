@@ -22,15 +22,10 @@ except ImportError:
     print("INFO: jieba library not found. Chinese text segmentation will be limited.")
     print("Install it using: pip install jieba")
 
-try:
-    from fuzzywuzzy import fuzz
-    try:
-        import Levenshtein
-    except:
-        pass
-    FUZZYWUZZY_AVAILABLE = True
-except ImportError:
-    FUZZYWUZZY_AVAILABLE = False
+# Fuzzy-скоринг: rapidfuzz через прослойку fuzzy_compat (fuzzywuzzy — фолбэк);
+# скоры байт-в-байт совместимы, пороги ниже по файлу калибровать не нужно.
+from .fuzzy_compat import FUZZ_AVAILABLE as FUZZYWUZZY_AVAILABLE
+from . import fuzzy_compat as fuzz
 
 try:
     from opencc import OpenCC
@@ -575,7 +570,16 @@ class SmartGlossaryFilter:
         # --- ЭТАП 3: "ТЯЖЕЛЫЙ" НЕЧЕТКИЙ ПОИСК ПО ОСТАТКАМ ---
         # Этот блок выполняется, только если порог ниже 99 и в глоссарии еще что-то осталось
         if fuzzy_threshold < ORDERED_SEARCH_THRESHOLD and glossary_to_process:
-            
+
+            # Пороговые константы зависят только от fuzzy_threshold — вынесены
+            # из внутренних циклов (раньше пересчитывались на каждую пару
+            # термин×окно).
+            ratio = fuzzy_threshold / 100.0
+            gatekeeper_set_coverage_threshold = ratio * 0.75
+            gatekeeper_freq_coverage_threshold = ratio * 0.6
+            leeway = 1.0 - ratio
+            strict_freq_coverage_threshold = 0.9 * (ratio ** 2)
+
             prepared_glossary = {}
             glossary_index = defaultdict(set)
             for original_term in glossary_to_process.keys():
@@ -589,16 +593,24 @@ class SmartGlossaryFilter:
                     'len_words': len(words), 'len_chars': len(term_no_spaces),
                     'char_set': set(term_no_spaces), 'counter_chars': Counter(term_no_spaces),
                     'word_counter': Counter(words),
-                    'first_bigrams': {w[:2] for w in words if len(w) > 1}
+                    'first_bigrams': {w[:2] for w in words if len(w) > 1},
+                    # Границы длины окна: выражения намеренно те же, что были
+                    # в цикле, — совпадение float-арифметики байт-в-байт.
+                    'min_len': len(term_no_spaces) * (ratio - leeway * 0.5),
+                    'max_len': len(term_no_spaces) * (1.0 + leeway * 0.5) * 1.2,
                 }
                 prepared_glossary[original_term] = term_data
                 for bigram in term_data['first_bigrams']:
                     glossary_index[bigram].add(original_term)
-        
+
             text_words_list = self._universal_cleaner_re.sub(' ', normalized_text.lower()).strip().split()
             text_len = len(text_words_list)
-            WINDOW_SHIFT_RADIUS = 2 
+            WINDOW_SHIFT_RADIUS = 2
             checked_windows = set()
+            # Профиль окна зависит только от (позиция, длина в словах) и
+            # разделяется всеми терминами этой длины: строку, set и Counter'ы
+            # окна считаем один раз, а не на каждую пару термин×окно.
+            window_profiles = {}
         
             for i in range(text_len):
                 current_word = text_words_list[i]
@@ -624,44 +636,51 @@ class SmartGlossaryFilter:
                         
                         if start_pos + term_len_words > text_len:
                             continue
-                        
-                        window_words = text_words_list[start_pos : start_pos + term_len_words]
-                        
+
+                        window_key = (start_pos, term_len_words)
+                        profile = window_profiles.get(window_key)
+                        if profile is None:
+                            window_words = text_words_list[start_pos : start_pos + term_len_words]
+                            window_text_no_spaces = "".join(window_words)
+                            # [строка, set, Counter букв (лениво), Counter слов
+                            # (лениво), слова] — Counter'ы нужны только парам,
+                            # прошедшим дешёвые фильтры, поэтому не считаем их
+                            # для каждого окна заранее.
+                            profile = [window_text_no_spaces, set(window_text_no_spaces),
+                                       None, None, window_words]
+                            window_profiles[window_key] = profile
+                        window_text_no_spaces = profile[0]
+                        window_char_set = profile[1]
+
                         # --- Фильтры-предохранители ---
-                        ratio = fuzzy_threshold / 100.0
-                        gatekeeper_set_coverage_threshold = ratio * 0.75
-                        gatekeeper_freq_coverage_threshold = ratio * 0.6
-                        
-                        window_text_no_spaces = "".join(window_words)
-                        
-                        leeway = 1.0 - ratio 
-                        min_len = term_data['len_chars'] * (ratio - leeway * 0.5)
-                        max_len = term_data['len_chars'] * (1.0 + leeway * 0.5) * 1.2
-                        if not (min_len <= len(window_text_no_spaces) <= max_len):
+                        if not (term_data['min_len'] <= len(window_text_no_spaces) <= term_data['max_len']):
                             continue
-                        
-                        window_char_set = set(window_text_no_spaces)
+
                         shared_chars = term_data['char_set'].intersection(window_char_set)
                         set_coverage = len(shared_chars) / len(term_data['char_set']) if term_data['char_set'] else 0
                         if set_coverage < gatekeeper_set_coverage_threshold:
                             continue
-        
-                        window_counter_chars = Counter(window_text_no_spaces)
+
+                        window_counter_chars = profile[2]
+                        if window_counter_chars is None:
+                            window_counter_chars = profile[2] = Counter(window_text_no_spaces)
                         common_chars = term_data['counter_chars'] & window_counter_chars
                         freq_coverage = sum(common_chars.values()) / term_data['len_chars'] if term_data['len_chars'] > 0 else 0
                         if freq_coverage < gatekeeper_freq_coverage_threshold:
                             continue
-        
+
                         # === Накопительный каскад проверок ===
                         if fuzzy_threshold <= UNORDERED_WORDS_THRESHOLD:
-                            if Counter(window_words) == term_data['word_counter']:
+                            window_word_counter = profile[3]
+                            if window_word_counter is None:
+                                window_word_counter = profile[3] = Counter(profile[4])
+                            if window_word_counter == term_data['word_counter']:
                                 found_originals.add(term_key)
-                                break 
-        
+                                break
+
                         if term_key in found_originals: break
-        
+
                         if fuzzy_threshold <= CHAR_SIMILARITY_THRESHOLD:
-                            strict_freq_coverage_threshold = 0.9 * (ratio ** 2)
                             if freq_coverage >= strict_freq_coverage_threshold:
                                 found_originals.add(term_key)
                                 break
@@ -673,7 +692,10 @@ class SmartGlossaryFilter:
                             expanded_end = min(text_len, i + term_len_words + 2)
                             expanded_window_text = " ".join(text_words_list[expanded_start:expanded_end])
                             
-                            score = fuzz.token_set_ratio(term_data['clean_str'], expanded_window_text) + 5
+                            # clean_str и expanded_window_text уже прошли
+                            # \W+-очистку и lower (universal_cleaner) —
+                            # используем быстрый вход без препроцессинга.
+                            score = fuzz.token_set_ratio_preclean(term_data['clean_str'], expanded_window_text) + 5
                             if score >= fuzzy_threshold:
                                 found_originals.add(term_key)
                                 break

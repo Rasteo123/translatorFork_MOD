@@ -20,6 +20,7 @@ lxml
 nltk
 num2words
 opencc-python-reimplemented
+orjson
 playwright
 PyAudio
 pydantic>=2.0.0
@@ -34,10 +35,13 @@ qoder-agent-sdk>=1.0.8
 python-docx
 python-Levenshtein
 pytz
+rapidfuzz
 recognizers-text
 recognizers-text-number
 requests
+selectolax
 setuptools<81
+zstandard
 soupsieve>=2.8.4
 urllib3>=2.7.0
 websockets

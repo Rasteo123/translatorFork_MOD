@@ -104,12 +104,9 @@ from ..shell import ShellPage
 from .chapter_selection_dialog import ChapterSelectionDialog
 from gemini_translator.ui import theme_manager
 
-# Импорт для fuzzy matching (опционально)
-try:
-    from fuzzywuzzy import fuzz
-    FUZZYWUZZY_AVAILABLE = True
-except ImportError:
-    FUZZYWUZZY_AVAILABLE = False
+# Fuzzy matching: rapidfuzz через прослойку fuzzy_compat (fuzzywuzzy — фолбэк)
+from ...utils.fuzzy_compat import FUZZ_AVAILABLE as FUZZYWUZZY_AVAILABLE
+from ...utils import fuzzy_compat as fuzz
 
 logger = logging.getLogger(__name__)
 
