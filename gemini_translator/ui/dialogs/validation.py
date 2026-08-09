@@ -51,6 +51,7 @@ from ..shell import ShellPage
 from ...api import config as api_config
 from gemini_translator.ui import theme_manager
 from .validation_dialogs import UntranslatedWordDetector
+from .validation_dialogs.content_lru import ContentLru
 from .validation_dialogs.untranslated_fixer_dialog import (
     AITranslationDialog,
     UntranslatedFixerDialog,
@@ -475,6 +476,24 @@ def _line_review_visible_text(value) -> str:
     except Exception:
         text = str(value)
     return re.sub(r'\s+', ' ', text).strip()
+
+
+def retain_or_strip_heavy_fields(result, previous_data):
+    """Убирает полный HTML из строки результатов после анализа.
+
+    Держать original/translated/validated HTML на каждую строку — две полные
+    копии книги в памяти (источник пикового потребления окна валидации);
+    контент подгружается _ensure_row_*_loaded через ограниченные LRU-кэши.
+    Исключение: несохранённая правка пользователя (is_edited) переносится
+    вперёд при рескане — иначе save_changes потеряла бы её.
+    """
+    was_edited = previous_data.get('is_edited', False)
+    if was_edited and previous_data.get('translated_html'):
+        result['translated_html'] = previous_data['translated_html']
+    else:
+        result.pop('translated_html', None)
+    result.pop('original_html', None)
+    result.pop('validated_content', None)
 
 
 def ai_repair_candidate_warning(original_html: str, repaired_html: str) -> str:
@@ -2042,7 +2061,8 @@ class TranslationValidatorPage(ShellPage):
         self.is_code_view = False
         self.untranslated_found_count = 0
         self.user_problem_terms_count = 0
-        self.original_content_cache = {}
+        self.original_content_cache = ContentLru()
+        self.translated_content_cache = ContentLru()
         # full_path -> (fingerprint, sha256): чтобы не перечитывать главу с
         # диска ради хэша, пока stat (mtime_ns+size) не изменился.
         self._content_hash_cache = {}
@@ -2078,7 +2098,7 @@ class TranslationValidatorPage(ShellPage):
         self._update_highlighters() # Вызываем один раз для установки начального состояния
         
         self.is_comparing_validated = False
-        self.validated_content_cache = {}
+        self.validated_content_cache = ContentLru()
         
         self._perform_initial_cjk_scan()
 
@@ -2251,6 +2271,11 @@ class TranslationValidatorPage(ShellPage):
     def _invalidate_analysis_for_data(self, data):
         if not isinstance(data, dict):
             return
+
+        # Файл мог быть перезаписан — кэшированная копия больше не свежая.
+        file_path = data.get('path')
+        if file_path:
+            self.translated_content_cache.pop(file_path, None)
 
         translated_html = data.get('translated_html')
         if translated_html is None:
@@ -2630,6 +2655,7 @@ class TranslationValidatorPage(ShellPage):
         self.dirty_files.clear()
         self.original_content_cache.clear()
         self.validated_content_cache.clear()
+        self.translated_content_cache.clear()
         
         if not self.project_manager: 
             self.lbl_status.setText("Ошибка: Менеджер проекта не найден.")
@@ -3382,7 +3408,7 @@ class TranslationValidatorPage(ShellPage):
                 continue
 
             internal_path = result_data.get('internal_html_path')
-            raw_html = result_data.get('translated_html', '')
+            raw_html = self._ensure_row_translated_html_loaded(row) or ''
             normalized_html = raw_html.replace('\r\n', '\n').replace('\r', '\n')
             chapter_name = os.path.basename(internal_path or result_data.get('path', ''))
 
@@ -4067,6 +4093,7 @@ class TranslationValidatorPage(ShellPage):
         self.path_row_map.clear()
         self.original_content_cache.clear()
         self.validated_content_cache.clear()
+        self.translated_content_cache.clear()
         # dirty_files НЕ очищаем полностью, а пересчитаем ниже, 
         # но для чистоты начнем с пустого и добавим туда новые + старые dirty
         old_dirty_set = self.dirty_files.copy()
@@ -4611,9 +4638,7 @@ class TranslationValidatorPage(ShellPage):
         if not result.get('current_content_hash'):
             result['current_content_hash'] = analyzed_hash
 
-        for key in ('validated_content', 'original_html'):
-            if key not in result and key in previous_data:
-                result[key] = previous_data[key]
+        retain_or_strip_heavy_fields(result, previous_data)
 
         self.results_data[row_pos] = result
         
@@ -5241,10 +5266,15 @@ class TranslationValidatorPage(ShellPage):
 
         translated_html = result_data.get('translated_html', '')
         if translated_html:
+            # Закреплённый контент (несохранённая правка/AI-починка) — как есть.
             return translated_html
 
         file_path = result_data.get('path')
-        if not file_path or not os.path.exists(file_path):
+        if not file_path:
+            return ""
+        if file_path in self.translated_content_cache:
+            return self.translated_content_cache[file_path]
+        if not os.path.exists(file_path):
             return ""
 
         try:
@@ -5253,7 +5283,8 @@ class TranslationValidatorPage(ShellPage):
         except Exception:
             translated_html = ""
 
-        result_data['translated_html'] = translated_html
+        # В result_data не пишем: контент живёт только в ограниченном LRU.
+        self.translated_content_cache[file_path] = translated_html
         return translated_html
 
     def _ensure_row_original_html_loaded(self, row_index):
@@ -5279,7 +5310,6 @@ class TranslationValidatorPage(ShellPage):
                 original_html = ""
             self.original_content_cache[internal_path] = original_html
 
-        result_data['original_html'] = original_html
         return original_html
 
     def _ensure_row_validated_content_loaded(self, row_index):
@@ -5306,9 +5336,6 @@ class TranslationValidatorPage(ShellPage):
             else:
                 validated_content = ""
             self.validated_content_cache[internal_path] = validated_content
-
-        if validated_content:
-            result_data['validated_content'] = validated_content
         return validated_content
 
     def _build_user_problem_terms_payload(self):
