@@ -1857,13 +1857,18 @@ def find_stray_angle_bracket_snippets(html_content: str, limit: int = 3) -> list
     return snippets[:limit]
 
 
-def repair_ai_html_artifacts(original_html: str, translated_html: str) -> str:
+def repair_ai_html_artifacts(
+    original_html: str,
+    translated_html: str,
+    protected_terms=None,
+) -> str:
     """
     Repairs common AI HTML artifacts without changing translation wording:
     missing body wrapper, duplicated tag prefixes, stray angle brackets,
     unbalanced <p>, and direct visible text inside <body> that should be
-    wrapped in paragraphs. A complete translated XHTML shell is preserved
-    byte-for-byte around the repaired body.
+    wrapped in paragraphs. It also restores confident missing separators in
+    Russian words. A complete translated XHTML shell is preserved byte-for-byte
+    around the repaired body.
     """
     if not isinstance(translated_html, str) or not translated_html.strip():
         return translated_html
@@ -1891,7 +1896,10 @@ def repair_ai_html_artifacts(original_html: str, translated_html: str) -> str:
     repaired = repair_missing_paragraph_tags(original_html, repaired)
     repaired = _coerce_first_heading_level(original_html, repaired)
     repaired = coerce_translated_body_block(original_html, repaired)
-    repaired, _glued_word_candidates = repair_glued_russian_words_in_html(repaired)
+    repaired, _glued_word_candidates = repair_glued_russian_words_in_html(
+        repaired,
+        protected_terms=protected_terms,
+    )
     repaired = RAW_AMPERSAND_PATTERN.sub('&amp;', repaired)
 
     if preserved_shell and re.search(r'<body\b', repaired, re.IGNORECASE):

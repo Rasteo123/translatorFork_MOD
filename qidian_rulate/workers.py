@@ -2525,6 +2525,23 @@ def _cover_source_extension(image_data: bytes) -> str:
     return ".jpg"
 
 
+def _load_cover_image_from_data(
+    image_data: bytes,
+    *,
+    source: str = "memory",
+) -> CoverImageDownload | None:
+    content = bytes(image_data or b"")
+    width, height = _image_dimensions(content)
+    if not width or not height:
+        return None
+    return CoverImageDownload(
+        url=source,
+        content=content,
+        width=width,
+        height=height,
+    )
+
+
 def _load_cover_image_from_file(image_path: str | Path) -> CoverImageDownload | None:
     path = Path(image_path).expanduser()
     if not path.is_file():
@@ -2533,14 +2550,9 @@ def _load_cover_image_from_file(image_path: str | Path) -> CoverImageDownload | 
         content = path.read_bytes()
     except OSError:
         return None
-    width, height = _image_dimensions(content)
-    if not width or not height:
-        return None
-    return CoverImageDownload(
-        url=str(path.resolve()),
-        content=content,
-        width=width,
-        height=height,
+    return _load_cover_image_from_data(
+        content,
+        source=str(path.resolve()),
     )
 
 
@@ -2642,6 +2654,7 @@ class CodexCoverTranslateWorker(QThread):
         *,
         referer: str = "",
         source_image_path: str | Path = "",
+        source_image_data: bytes = b"",
         output_dir: str | Path | None = None,
     ):
         super().__init__()
@@ -2649,6 +2662,7 @@ class CodexCoverTranslateWorker(QThread):
         self.title_ru = (title_ru or "").strip()
         self.referer = (referer or "").strip()
         self.source_image_path = str(source_image_path or "").strip()
+        self.source_image_data = bytes(source_image_data or b"")
         self.output_dir = Path(output_dir) if output_dir else _project_root() / "output" / "codex_covers"
 
     def log(self, level: str, message: str) -> None:
@@ -2660,7 +2674,7 @@ class CodexCoverTranslateWorker(QThread):
 
     def run(self) -> None:
         try:
-            if not self.cover_url and not self.source_image_path:
+            if not self.cover_url and not self.source_image_path and not self.source_image_data:
                 raise ValueError("Сначала загрузите или укажите URL исходной обложки.")
             if not self.title_ru:
                 raise ValueError("Сначала заполните русское название.")
@@ -2671,16 +2685,25 @@ class CodexCoverTranslateWorker(QThread):
             if self.source_image_path:
                 self.log("INFO", f"Codex: использую локальную исходную обложку: {self.source_image_path}")
                 cover_image = _load_cover_image_from_file(self.source_image_path)
-                if not cover_image and not self.cover_url:
+                if not cover_image and not self.cover_url and not self.source_image_data:
                     raise RuntimeError("Не удалось прочитать локальную исходную обложку.")
                 if not cover_image:
-                    self.log("WARNING", "Codex: локальная исходная обложка не прочитана, пробую скачать по URL.")
+                    self.log("WARNING", "Codex: локальная исходная обложка не прочитана, пробую другие источники.")
+
+            if not cover_image and self.source_image_data:
+                self.log("INFO", "Codex: использую уже загруженную исходную обложку из превью.")
+                cover_image = _load_cover_image_from_data(
+                    self.source_image_data,
+                    source=self.cover_url or "preview",
+                )
+                if not cover_image:
+                    self.log("WARNING", "Codex: данные обложки из превью повреждены, пробую скачать по URL.")
 
             if not cover_image:
                 self.log("INFO", "Codex: скачиваю исходную обложку для редактирования...")
                 cover_image = _download_best_cover_image(self.cover_url, referer=self.referer)
             if not cover_image:
-                raise RuntimeError("Не удалось скачать исходную обложку.")
+                raise RuntimeError("Не удалось получить исходную обложку из превью, файла или URL.")
             if self.cover_url and cover_image.url != self.cover_url:
                 self.log("INFO", f"Codex: выбран более крупный URL обложки: {cover_image.url}")
             self.log(

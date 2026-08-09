@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, deque
 
 # --- Импорты из PyQt6 ---
 from PyQt6 import QtWidgets, QtCore, QtGui
@@ -660,11 +660,11 @@ class ReverseConflictResolverPage(ShellPage):
 
     def __init__(self, reverse_issues, original_glossary, parent=None, morph=None):
         super().__init__(parent)
-        self.reverse_issues = reverse_issues
         self.original_glossary_list = original_glossary
         self.morph = morph
-        
-        self.entry_map = { self._get_entry_id(e): e for e in self.original_glossary_list }
+
+        self.entry_map = {}
+        self.reverse_issues = self._build_issue_records(reverse_issues)
         
         self.pending_changes = {}
         self.deleted_entries = set()
@@ -679,8 +679,47 @@ class ReverseConflictResolverPage(ShellPage):
         self.setMinimumSize(1200, 800)
         self.init_ui()
 
+    @staticmethod
+    def _entry_signature(entry):
+        return tuple(
+            entry.get(key)
+            for key in ('original', 'rus', 'note', 'timestamp')
+        )
+
+    def _build_issue_records(self, reverse_issues):
+        """Привязывает каждую строку конфликта к отдельной строке в БД."""
+        available_rows = defaultdict(deque)
+        for index, entry in enumerate(self.original_glossary_list):
+            entry_id = entry.get('_db_id') or ('glossary-row', index)
+            available_rows[self._entry_signature(entry)].append((entry_id, entry))
+
+        prepared_issues = {}
+        fallback_index = 0
+        for translation, issue_data in reverse_issues.items():
+            prepared_issue = dict(issue_data)
+            for group_name in ('complete', 'orphans'):
+                prepared_entries = []
+                for entry in issue_data.get(group_name, []):
+                    candidates = available_rows[self._entry_signature(entry)]
+                    if candidates:
+                        entry_id, current_entry = candidates.popleft()
+                    else:
+                        entry_id = ('issue-row', fallback_index)
+                        current_entry = entry
+                        fallback_index += 1
+
+                    prepared_entry = entry.copy()
+                    prepared_entry['_resolver_id'] = entry_id
+                    prepared_entries.append(prepared_entry)
+                    self.entry_map[entry_id] = current_entry
+
+                prepared_issue[group_name] = prepared_entries
+            prepared_issues[translation] = prepared_issue
+
+        return prepared_issues
+
     def _get_entry_id(self, entry):
-        return tuple(entry.get(k, '') for k in ['original', 'rus', 'note'])
+        return entry.get('_resolver_id')
 
     def init_ui(self):
         main_layout = QHBoxLayout(self)

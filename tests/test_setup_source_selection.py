@@ -126,6 +126,26 @@ class _SnapshotHarness:
         return os.path.join(self.output_folder, "queue_snapshot.db")
 
 
+class _RetryFilesHarness:
+    add_files_for_retry = InitialSetupDialog.add_files_for_retry
+
+    def __init__(self):
+        self.selected_file = "current.epub"
+        self.html_files = []
+        self.events = []
+        self.data_changed_calls = []
+        self.ready_checks = 0
+
+    def _post_event(self, name, data=None):
+        self.events.append((name, data or {}))
+
+    def _on_project_data_changed(self, offer_snapshot_restore=True):
+        self.data_changed_calls.append(offer_snapshot_restore)
+
+    def check_ready(self):
+        self.ready_checks += 1
+
+
 def test_selecting_file_after_project_folder_opens_chapter_selection(tmp_path):
     project_folder = tmp_path / "project"
     project_folder.mkdir()
@@ -298,3 +318,38 @@ def test_snapshot_restore_is_not_offered_for_different_epub_signature(tmp_path, 
 
     assert question_calls == []
     assert harness._snapshot_prompted_projects == set()
+
+
+def test_snapshot_restore_is_not_offered_while_auto_workflow_is_running(tmp_path, monkeypatch):
+    snapshot_path = tmp_path / "queue_snapshot.db"
+    snapshot_path.write_bytes(b"placeholder")
+    harness = _SnapshotHarness(
+        str(snapshot_path),
+        {
+            "epub_sig": "current",
+            "saved_task_count": 3,
+            "saved_at": 123.0,
+        },
+    )
+    harness._auto_workflow_enabled_for_session = True
+
+    def fail_question(*args, **kwargs):
+        raise AssertionError("snapshot restore must not interrupt the auto workflow")
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", fail_question)
+
+    harness._maybe_offer_snapshot_restore()
+
+    assert harness.engine.task_manager.meta_reads == 0
+    assert harness._snapshot_prompted_projects == set()
+
+
+def test_retry_files_refresh_does_not_offer_snapshot_restore():
+    harness = _RetryFilesHarness()
+    chapters = ["Text/chapter-1.xhtml"]
+
+    harness.add_files_for_retry("current.epub", chapters)
+
+    assert harness.html_files == chapters
+    assert harness.data_changed_calls == [False]
+    assert harness.ready_checks == 1

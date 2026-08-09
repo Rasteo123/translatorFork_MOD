@@ -15,6 +15,7 @@ from qidian_rulate.workers import (
     _build_codex_cover_exec_command,
     _find_generated_cover,
     _first_meaningful_select_option,
+    _load_cover_image_from_data,
     _load_cover_image_from_file,
     _cover_url_candidates,
     _is_browser_missing_error,
@@ -39,6 +40,7 @@ from qidian_rulate.workers import (
     RULATE_CHINESE_CATEGORY_TITLE,
     RULATE_INFO_URL,
     RULATE_PROFILE_DIR,
+    CodexCoverTranslateWorker,
     RulateFillWorker,
     build_ai_prompt,
     build_catalog_prompt,
@@ -855,6 +857,60 @@ def test_load_cover_image_from_file_reads_local_source_cover(tmp_path):
     assert cover_image.height == 3
     assert cover_image.content
     assert cover_image.url == str(image_path.resolve())
+
+
+def test_load_cover_image_from_data_reuses_preview_bytes(tmp_path):
+    image = QImage(2, 3, QImage.Format.Format_RGB32)
+    image.fill(0xFF336699)
+    image_path = tmp_path / "preview.png"
+    assert image.save(str(image_path), "PNG")
+    image_data = image_path.read_bytes()
+
+    cover_image = _load_cover_image_from_data(image_data, source="https://example.com/cover.png")
+
+    assert cover_image is not None
+    assert cover_image.width == 2
+    assert cover_image.height == 3
+    assert cover_image.content == image_data
+    assert cover_image.url == "https://example.com/cover.png"
+
+
+def test_codex_cover_translation_uses_preview_bytes_without_redownloading(monkeypatch, tmp_path):
+    image = QImage(2, 3, QImage.Format.Format_RGB32)
+    image.fill(0xFF336699)
+    image_path = tmp_path / "preview.png"
+    assert image.save(str(image_path), "PNG")
+
+    def fail_download(*_args, **_kwargs):
+        raise AssertionError("The cover URL must not be downloaded when preview bytes are available")
+
+    monkeypatch.setattr(workers, "_download_best_cover_image", fail_download)
+    monkeypatch.setattr(workers, "_build_codex_cover_exec_command", lambda *_args, **_kwargs: ["codex"])
+    monkeypatch.setattr(workers, "_append_codex_prompt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        workers.subprocess,
+        "run",
+        lambda *_args, **_kwargs: workers.subprocess.CompletedProcess(["codex"], 0, "", ""),
+    )
+    monkeypatch.setattr(
+        workers,
+        "_find_generated_cover",
+        lambda *_args, **_kwargs: tmp_path / "translated.png",
+    )
+    worker = CodexCoverTranslateWorker(
+        "https://example.com/expired-cover.png",
+        "Небесная башня",
+        source_image_data=image_path.read_bytes(),
+        output_dir=tmp_path,
+    )
+    logs = []
+    worker.log = lambda level, message: logs.append((level, message))
+
+    worker.run()
+
+    assert list(tmp_path.glob("*_source_*.png"))
+    assert any("из превью" in message for _level, message in logs)
+    assert not any(level == "ERROR" for level, _message in logs)
 
 
 def test_qidian_cover_url_candidates_try_larger_yuewen_sizes_first():

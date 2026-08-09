@@ -2405,6 +2405,19 @@ class GlossaryManagerPage(ShellPage):
             # Обязательно выбираем timestamp для сохранения в файл
             cursor = conn.execute("SELECT original, rus, note, timestamp FROM glossary_editor_state ORDER BY sequence ASC")
             return [dict(row) for row in cursor.fetchall()]
+
+    def _get_glossary_with_db_ids(self) -> list:
+        """Возвращает строки для внутренних редакторов с устойчивым ID из БД."""
+        conn = self._get_db_conn()
+        with conn:
+            cursor = conn.execute(
+                """
+                SELECT id AS _db_id, original, rus, note, timestamp
+                FROM glossary_editor_state
+                ORDER BY sequence ASC
+                """
+            )
+            return [dict(row) for row in cursor.fetchall()]
     
     def _remove_selected_terms(self):
         selected_indexes = self.table.selectionModel().selectedIndexes()
@@ -2858,15 +2871,17 @@ class GlossaryManagerPage(ShellPage):
             for original in affected_originals:
                 if not original: continue
                 related = [e for e in current_glossary if e.get('original') == original]
-                if len({(e.get('rus', ''), e.get('note', '')) for e in related}) > 1:
+                if len(related) > 1:
                     self.direct_conflicts[original] = [{'rus': e.get('rus', ''), 'note': e.get('note', '')} for e in related]
 
             affected_translations = translations_before.union(translations_after)
             for trans in affected_translations:
                 if not trans: continue
                 related = [e for e in current_glossary if e.get('rus') == trans]
-                if len([e for e in related if e.get('original')]) > 1 or ([e for e in related if e.get('original')] and [e for e in related if not e.get('original')]):
-                    self.reverse_issues[trans] = {'complete': [e for e in related if e.get('original')], 'orphans': [e for e in related if not e.get('original')]}
+                complete = [e for e in related if e.get('original')]
+                orphans = [e for e in related if not e.get('original')]
+                if len({e.get('original', '').strip() for e in complete}) > 1 or (complete and orphans):
+                    self.reverse_issues[trans] = {'complete': complete, 'orphans': orphans}
                 elif trans in self.reverse_issues:
                     del self.reverse_issues[trans]
 
@@ -3363,8 +3378,16 @@ class GlossaryManagerPage(ShellPage):
     def resolve_direct_conflicts(self):
         self.table.setCurrentItem(None)
         if not self.direct_conflicts: return
-        current_glossary = self.get_glossary()
-        dlg = DirectConflictResolverDialog(self.direct_conflicts, self, morph=get_morph_analyzer())
+        current_glossary = (
+            self._get_glossary_with_db_ids()
+            if hasattr(self, '_get_glossary_with_db_ids')
+            else self.get_glossary()
+        )
+        dlg = DirectConflictResolverDialog(
+            self.direct_conflicts,
+            self,
+            morph=get_morph_analyzer(),
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             resolved = dlg.resolved_glossary
             if not resolved: return
@@ -3433,8 +3456,17 @@ class GlossaryManagerPage(ShellPage):
     def resolve_reverse_conflicts(self):
         self.table.setCurrentItem(None)
         if not self.reverse_issues: return
-        current_glossary = self.get_glossary()
-        page = ReverseConflictResolverPage(self.reverse_issues, current_glossary, self, morph=get_morph_analyzer())
+        current_glossary = (
+            self._get_glossary_with_db_ids()
+            if hasattr(self, '_get_glossary_with_db_ids')
+            else self.get_glossary()
+        )
+        page = ReverseConflictResolverPage(
+            self.reverse_issues,
+            current_glossary,
+            self,
+            morph=get_morph_analyzer(),
+        )
 
         def apply_reverse_result(accepted, page=page):
             if accepted:
@@ -3497,8 +3529,26 @@ class GlossaryManagerPage(ShellPage):
                 before, after = change.get('before'), change.get('after')
                 
                 if before and not after: # Удаление
-                    conn.execute("DELETE FROM glossary_editor_state WHERE original=? AND rus=? AND note=?",
-                                 (before['original'], before['rus'], before['note']))
+                    if db_id := before.get('_db_id'):
+                        conn.execute(
+                            "DELETE FROM glossary_editor_state WHERE id=?",
+                            (db_id,),
+                        )
+                    else:
+                        # Один элемент патча представляет одну строку. LIMIT 1 не
+                        # дает одинаковым записям удаляться всем скопом.
+                        conn.execute(
+                            """
+                            DELETE FROM glossary_editor_state
+                            WHERE id = (
+                                SELECT id FROM glossary_editor_state
+                                WHERE original=? AND rus=? AND note=?
+                                ORDER BY sequence ASC
+                                LIMIT 1
+                            )
+                            """,
+                            (before['original'], before['rus'], before['note']),
+                        )
                 
                 elif not before and after: # Добавление новой записи
                     cursor = conn.execute("SELECT MAX(sequence) FROM glossary_editor_state")
@@ -3515,12 +3565,32 @@ class GlossaryManagerPage(ShellPage):
                 
                 elif before and after: # Обновление существующей записи
                     # При обновлении НЕ меняем timestamp в БД, чтобы сохранить дату создания
-                    conn.execute("""
-                        UPDATE glossary_editor_state 
-                        SET original=?, rus=?, note=? 
-                        WHERE original=? AND rus=? AND note=?
-                    """, (after['original'], after['rus'], after['note'], 
-                          before['original'], before['rus'], before['note']))
+                    if db_id := before.get('_db_id'):
+                        conn.execute(
+                            """
+                            UPDATE glossary_editor_state
+                            SET original=?, rus=?, note=?
+                            WHERE id=?
+                            """,
+                            (after['original'], after['rus'], after['note'], db_id),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            UPDATE glossary_editor_state
+                            SET original=?, rus=?, note=?
+                            WHERE id = (
+                                SELECT id FROM glossary_editor_state
+                                WHERE original=? AND rus=? AND note=?
+                                ORDER BY sequence ASC
+                                LIMIT 1
+                            )
+                            """,
+                            (
+                                after['original'], after['rus'], after['note'],
+                                before['original'], before['rus'], before['note'],
+                            ),
+                        )
 
         self._load_current_page()
     

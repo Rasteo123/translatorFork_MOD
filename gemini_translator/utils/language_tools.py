@@ -1254,9 +1254,16 @@ class GlossaryLogic:
             if original: term_map[original].append(entry)
         direct_conflicts = {}
         for term, entries in term_map.items():
-            normalized_entries = set((_glossary_text(e.get('rus')), _glossary_text(e.get('note'))) for e in entries)
-            if len(normalized_entries) > 1:
-                direct_conflicts[term] = [{'rus': t, 'note': n} for t, n in normalized_entries]
+            if len(entries) > 1:
+                # Keep every occurrence: exact duplicates are still a conflict and
+                # their multiplicity is used by the resolver's frequency logic.
+                direct_conflicts[term] = [
+                    {
+                        'rus': _glossary_text(entry.get('rus')),
+                        'note': _glossary_text(entry.get('note')),
+                    }
+                    for entry in entries
+                ]
         return {}, direct_conflicts
 
     def find_reverse_issues(self, glossary_list):
@@ -1267,7 +1274,17 @@ class GlossaryLogic:
             if not rus: continue
             if original: issues[rus]['complete'].append(entry)
             elif _glossary_text(entry.get('note')): issues[rus]['orphans'].append(entry)
-        return {t: d for t, d in issues.items() if len(d['complete']) > 1 or (d['complete'] and d['orphans'])}
+        return {
+            translation: issue
+            for translation, issue in issues.items()
+            if (
+                len({
+                    _glossary_text(entry.get('original'))
+                    for entry in issue['complete']
+                }) > 1
+                or (issue['complete'] and issue['orphans'])
+            )
+        }
     
     def find_overlap_groups(self, glossary_list):
         terms_set = {_glossary_text(e.get('original')) for e in glossary_list if _glossary_text(e.get('original'))}

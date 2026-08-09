@@ -6,6 +6,7 @@ from gemini_translator.ui.dialogs.validation import (
     LINE_REVIEW_RISK_ROLE,
     ValidationThread,
     ai_repair_candidate_warning,
+    ai_repair_protected_terms_from_glossary,
     apply_line_review_selection,
     build_line_review_segments,
     line_review_change_risk,
@@ -240,6 +241,15 @@ def test_ai_repair_candidate_warning_flags_removed_xhtml_shell():
 
     assert "<html>" in warning
     assert "<head>" in warning
+
+
+def test_ai_repair_extracts_protected_russian_glossary_terms():
+    protected = ai_repair_protected_terms_from_glossary([
+        {"original": "SeaGuard", "rus": "Стражморя", "aliases": ["Морской страж"]},
+        {"original": "Небесный Путь", "rus": ""},
+    ])
+
+    assert protected == {"Стражморя", "Морской страж", "Небесный Путь"}
 
 
 def test_ai_repair_review_updates_selection_summary_and_manual_edit_risk():

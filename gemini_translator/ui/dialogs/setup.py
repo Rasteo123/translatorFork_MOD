@@ -2667,7 +2667,12 @@ class InitialSetupPage(ShellPage):
             self._snapshot_restore_in_progress = False
 
     def _maybe_offer_snapshot_restore(self):
-        if self._snapshot_restore_in_progress or self.is_session_active:
+        if (
+            self._snapshot_restore_in_progress
+            or self.is_session_active
+            or getattr(self, '_auto_workflow_enabled_for_session', False)
+            or getattr(self, '_auto_followup_running', False)
+        ):
             return
         if not (self.selected_file and self.output_folder and self.engine and self.engine.task_manager):
             return
@@ -4162,8 +4167,10 @@ class InitialSetupPage(ShellPage):
         # 2. Логируем действие
         self._post_event('log_message', {'message': f"[INFO] Загружено {len(chapter_paths)} глав для повторного перевода из Валидатора."})
 
-        # 3. Полностью обновляем UI на основе нового списка глав
-        self._on_project_data_changed()
+        # 3. Полностью обновляем UI на основе нового списка глав. Это локальная
+        # операция внутри текущего проекта, поэтому сохраненный снимок очереди
+        # здесь предлагать нельзя: модальный вопрос остановит автодоперевод.
+        self._on_project_data_changed(offer_snapshot_restore=False)
 
         # Перепроверяем готовность к запуску
         self.check_ready()

@@ -135,6 +135,7 @@ class QidianCreatorPage(ShellPage):
         self._prepare_ai_worker: AiPrepareWorker | None = None
         self._prepare_ai_cancel_requested = False
         self._local_source_cover_path = ""
+        self._source_cover_image_data = b""
         self._generated_cover_path = ""
         self._workers = []
 
@@ -511,7 +512,8 @@ class QidianCreatorPage(ShellPage):
     def _translate_cover_in_codex(self) -> None:
         cover_url = self.cover_url_edit.text().strip()
         source_image_path = getattr(self, "_local_source_cover_path", "")
-        if not cover_url and not source_image_path:
+        source_image_data = getattr(self, "_source_cover_image_data", b"")
+        if not cover_url and not source_image_path and not source_image_data:
             QMessageBox.warning(
                 self,
                 "Codex",
@@ -533,6 +535,7 @@ class QidianCreatorPage(ShellPage):
             title_ru,
             referer=self.source_url_edit.text().strip() or self.qidian_url_edit.text().strip(),
             source_image_path=source_image_path,
+            source_image_data=source_image_data,
         )
         worker.log_signal.connect(self._log)
         worker.cover_ready.connect(self._apply_codex_cover)
@@ -844,6 +847,7 @@ class QidianCreatorPage(ShellPage):
     def _set_cover_preview(self, image_data: bytes) -> None:
         pixmap = QPixmap()
         if image_data and pixmap.loadFromData(image_data):
+            self._source_cover_image_data = bytes(image_data)
             scaled = pixmap.scaled(
                 self.cover_preview_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -852,6 +856,7 @@ class QidianCreatorPage(ShellPage):
             self.cover_preview_label.setPixmap(scaled)
             self.cover_preview_label.setToolTip(SOURCE_COVER_DROP_TOOLTIP)
             return
+        self._source_cover_image_data = b""
         self.cover_preview_label.clear()
         self.cover_preview_label.setText("Обложка не загружена")
         self.cover_preview_label.setToolTip(SOURCE_COVER_DROP_TOOLTIP)

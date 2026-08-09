@@ -29,6 +29,7 @@ from ...utils.text import (
     is_well_formed_xml,
     repair_ai_html_artifacts,
 )
+from ...utils.glued_words import repair_glued_russian_words_in_html
 from ...utils.project_migrator import ProjectMigrator
 from ...utils.translation_versions import (
     select_target_translation_version,
@@ -541,6 +542,59 @@ def ai_repair_candidate_warning(original_html: str, repaired_html: str) -> str:
     return "; ".join(dict.fromkeys(warnings))
 
 
+def ai_repair_protected_terms_from_glossary(glossary_data) -> set[str]:
+    """Extract user-approved Russian names and terms that must not be split."""
+    if isinstance(glossary_data, dict):
+        entries = glossary_data.values()
+    elif isinstance(glossary_data, (list, tuple, set)):
+        entries = glossary_data
+    else:
+        entries = ()
+
+    protected_terms = set()
+    for entry in entries:
+        if isinstance(entry, str):
+            values = [entry]
+        elif isinstance(entry, dict):
+            values = [
+                entry.get("rus"),
+                entry.get("translation"),
+                entry.get("target"),
+                entry.get("term"),
+                entry.get("name"),
+                entry.get("original"),
+            ]
+            aliases = entry.get("aliases")
+            if isinstance(aliases, str):
+                values.append(aliases)
+            elif isinstance(aliases, (list, tuple, set)):
+                values.extend(aliases)
+        else:
+            continue
+
+        for value in values:
+            normalized = re.sub(r"\s+", " ", str(value or "").strip())
+            if normalized and re.search(r"[А-Яа-яЁё]", normalized):
+                protected_terms.add(normalized)
+
+    return protected_terms
+
+
+def format_ambiguous_glued_word_preview(items, limit=6) -> str:
+    previews = []
+    for item in items or []:
+        candidate = item.get("candidate") if isinstance(item, dict) else None
+        if not candidate:
+            continue
+        alternatives = " / ".join(candidate.alternatives[:4])
+        chapter = str(item.get("chapter") or "").strip()
+        prefix = f"{chapter}: " if chapter else ""
+        previews.append(f"{prefix}{candidate.original} → {alternatives}")
+        if len(previews) >= max(1, int(limit)):
+            break
+    return "\n".join(previews)
+
+
 def line_review_change_risk(change) -> str:
     kind = change.get("kind")
     old_text = change.get("old_text")
@@ -1050,6 +1104,9 @@ class AIRepairReviewPage(ShellPage):
         warning = candidate.get("warning") or line_review_change_risk(change)
         if warning:
             blocks.append(f"Проверить вручную: {warning}")
+        notes = str(candidate.get("notes") or "").strip()
+        if notes:
+            blocks.append(notes)
 
         old_context = self._context_lines(candidate.get("original_html") or "", change.get("old_line_no"))
         new_context = self._context_lines(candidate.get("repaired_html") or "", change.get("new_line_no"))
@@ -2777,6 +2834,11 @@ class TranslationValidatorPage(ShellPage):
         
         self.check_structure = QCheckBox("Структура (теги, заголовки)")
         self.btn_fix_ai_artifacts = QPushButton("Исправить ошибки ИИ")
+        self.btn_fix_ai_artifacts.setToolTip(
+            "Исправляет структурные артефакты и уверенно разделяет склеенные русские слова. "
+            "Обрабатывает выделенные строки, а без выделения — все видимые. "
+            "Все изменения будут показаны перед применением."
+        )
         self.btn_fix_ai_artifacts.clicked.connect(self._repair_ai_artifacts_for_selection)
         self.check_length_ratio = QCheckBox("Соотношение длин (перевод / оригинал)")
         
@@ -2918,8 +2980,9 @@ class TranslationValidatorPage(ShellPage):
         self.check_structure.setToolTip(structure_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
         ai_repair_tooltip = (
             "Исправляет типовые ошибки ИИ в HTML: дублированные части тегов, лишние символы < или >, "
-            "текст напрямую внутри body без p, потерянную обёртку body и баланс p. "
-            "XHTML-обвязка сохраняется, а каждое изменение показывается перед применением."
+            "текст напрямую внутри body без p, потерянную обёртку body, баланс p и склеенные русские слова. "
+            "Имена сверяются с глоссарием, неоднозначные склейки остаются без изменений, "
+            "а каждое исправление показывается перед применением."
         )
         self.btn_fix_ai_artifacts.setToolTip(ai_repair_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
         
@@ -3203,14 +3266,11 @@ class TranslationValidatorPage(ShellPage):
             return selected_rows, True
 
         target_rows = []
-        if not self.check_structure.isChecked():
-            return target_rows, False
-
         for row in range(self.table_results.rowCount()):
             if self.table_results.isRowHidden(row):
                 continue
             data = self.results_data.get(row, {})
-            if data.get('structural_errors'):
+            if isinstance(data, dict):
                 target_rows.append(row)
 
         return target_rows, False
@@ -3246,19 +3306,59 @@ class TranslationValidatorPage(ShellPage):
         self.update_row_color(row, 'edited')
         self._fixer_stale_rows.add(row)
 
+    def _get_ai_repair_protected_terms(self):
+        protected_terms = set()
+
+        current = self
+        visited = set()
+        for _ in range(10):
+            if current is None or id(current) in visited:
+                break
+            visited.add(id(current))
+            glossary_widget = getattr(current, "glossary_widget", None)
+            if glossary_widget and hasattr(glossary_widget, "get_glossary"):
+                try:
+                    commit_editor = getattr(glossary_widget, "commit_active_editor", None)
+                    if callable(commit_editor):
+                        commit_editor()
+                    protected_terms.update(
+                        ai_repair_protected_terms_from_glossary(glossary_widget.get_glossary())
+                    )
+                except Exception as exc:
+                    print(f"[Validator WARN] Не удалось получить термины из редактора: {exc}")
+                break
+            parent_getter = getattr(current, "parent", None)
+            current = parent_getter() if callable(parent_getter) else None
+
+        project_folder = getattr(getattr(self, "project_manager", None), "project_folder", None)
+        if project_folder:
+            glossary_path = os.path.join(project_folder, "project_glossary.json")
+            if os.path.exists(glossary_path):
+                try:
+                    with open(glossary_path, "r", encoding="utf-8") as glossary_file:
+                        protected_terms.update(
+                            ai_repair_protected_terms_from_glossary(json.load(glossary_file))
+                        )
+                except Exception as exc:
+                    print(f"[Validator WARN] Не удалось прочитать глоссарий для автоправки: {exc}")
+
+        return protected_terms
+
     def _repair_ai_artifacts_for_selection(self):
         rows, used_selection = self._get_ai_repair_target_rows()
         if not rows:
             QMessageBox.information(
                 self,
                 "Автоправка",
-                "Выделите строки для исправления или запустите проверку, чтобы появились структурные проблемы."
+                "Нет доступных строк. Загрузите файлы или запустите проверку."
             )
             return
 
         review_candidates = []
         unchanged_count = 0
         errors = []
+        ambiguous_glued_words = []
+        protected_terms = TranslationValidatorPage._get_ai_repair_protected_terms(self)
 
         for row in rows:
             data = self.results_data.get(row)
@@ -3272,19 +3372,43 @@ class TranslationValidatorPage(ShellPage):
                     unchanged_count += 1
                     continue
 
-                repaired_html = repair_ai_html_artifacts(original_html, translated_html)
+                chapter_name = os.path.basename(
+                    data.get('internal_html_path') or data.get('path') or f"row {row}"
+                )
+                repaired_html = repair_ai_html_artifacts(
+                    original_html,
+                    translated_html,
+                    protected_terms=protected_terms,
+                )
+                _, remaining_glued_candidates = repair_glued_russian_words_in_html(
+                    repaired_html,
+                    protected_terms=protected_terms,
+                )
+                chapter_ambiguous = [
+                    {"chapter": chapter_name, "candidate": candidate}
+                    for candidate in remaining_glued_candidates
+                    if not candidate.confident
+                ]
+                ambiguous_glued_words.extend(chapter_ambiguous)
                 if repaired_html != translated_html:
                     segments, changes = build_line_review_segments(translated_html, repaired_html)
                     if changes:
                         warning = ai_repair_candidate_warning(translated_html, repaired_html)
+                        ambiguity_preview = format_ambiguous_glued_word_preview(chapter_ambiguous)
                         review_candidates.append({
                             "row": row,
-                            "chapter": os.path.basename(data.get('internal_html_path') or data.get('path') or f"row {row}"),
+                            "chapter": chapter_name,
                             "original_html": translated_html,
                             "repaired_html": repaired_html,
                             "segments": segments,
                             "changes": changes,
                             "warning": warning,
+                            "notes": (
+                                "Неоднозначные склейки оставлены без изменений:\n"
+                                + ambiguity_preview
+                                if ambiguity_preview
+                                else ""
+                            ),
                         })
                     else:
                         unchanged_count += 1
@@ -3296,14 +3420,35 @@ class TranslationValidatorPage(ShellPage):
 
         if not review_candidates:
             message = "Автоправка не нашла изменений для выбранных строк."
+            if ambiguous_glued_words:
+                message += (
+                    f"\n\nНайдено неоднозначных склеек: {len(ambiguous_glued_words)}. "
+                    "Они не изменены автоматически.\n"
+                    + format_ambiguous_glued_word_preview(ambiguous_glued_words)
+                )
             if errors:
                 message += "\n\nОшибки:\n" + "\n".join(errors[:5])
             QMessageBox.information(self, "Автоправка", message)
             return
 
-        TranslationValidatorPage._push_ai_repair_review_page(self, review_candidates, used_selection, unchanged_count, errors)
+        TranslationValidatorPage._push_ai_repair_review_page(
+            self,
+            review_candidates,
+            used_selection,
+            unchanged_count,
+            errors,
+            ambiguous_glued_words,
+        )
 
-    def _push_ai_repair_review_page(self, review_candidates, used_selection, unchanged_count, errors):
+    def _push_ai_repair_review_page(
+        self,
+        review_candidates,
+        used_selection,
+        unchanged_count,
+        errors,
+        ambiguous_glued_words=None,
+    ):
+        ambiguous_glued_words = list(ambiguous_glued_words or [])
         page = AIRepairReviewPage(review_candidates, self)
 
         def apply_review_result(accepted, page=page):
@@ -3335,13 +3480,18 @@ class TranslationValidatorPage(ShellPage):
                 self._fixer_data_fingerprint = None
                 self.reapply_filters()
                 self.update_comparison_view()
-                scope_text = "выделенных строках" if used_selection else "видимых проблемных строках"
+                scope_text = "выделенных строках" if used_selection else "видимых строках"
                 message = (
                     f"Применено к главам: {len(changed_rows)} в {scope_text}.\n"
                     f"Глав с предложениями: {len(review_candidates)}.\n"
                     f"Без изменений: {unchanged_count}.\n\n"
                     "Проверьте результат справа и нажмите «Сохранить изменения»."
                 )
+                if ambiguous_glued_words:
+                    message += (
+                        f"\n\nНеоднозначных склеек пропущено: {len(ambiguous_glued_words)}.\n"
+                        + format_ambiguous_glued_word_preview(ambiguous_glued_words)
+                    )
                 if errors:
                     message += "\n\nОшибки:\n" + "\n".join(errors[:5])
                     if len(errors) > 5:
