@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 TESTS_DIR = os.path.dirname(__file__)
@@ -26,6 +26,30 @@ def _api_worker(chapter):
         price=0,
         force_num=True,
     )
+
+
+def test_format_publish_at_converts_aware_datetime_to_utc():
+    publish_at = datetime(
+        2026,
+        7,
+        30,
+        9,
+        10,
+        tzinfo=timezone(timedelta(hours=4)),
+    )
+
+    assert api_upload._format_publish_at(publish_at) == "2026-07-30 05:10:00"
+
+
+def test_format_publish_at_treats_naive_datetime_as_local_time():
+    publish_at = datetime(2026, 7, 30, 9, 10)
+    expected = publish_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:00")
+
+    assert api_upload._format_publish_at(publish_at) == expected
+
+
+def test_format_publish_at_preserves_empty_schedule():
+    assert api_upload._format_publish_at(None) is None
 
 
 def test_api_upload_retries_chapter_after_transient_error(monkeypatch):

@@ -3,7 +3,7 @@ import logging
 import re
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -368,7 +368,12 @@ def _content_to_doc(content: str) -> dict:
 def _format_publish_at(dt: datetime | None) -> str | None:
     if dt is None:
         return None
-    return dt.strftime("%Y-%m-%d %H:%M:00")
+
+    # RanobeLib interprets this timezone-less API field as UTC.  The UI gives
+    # us a naive datetime in the system's local timezone, while callers may
+    # also provide an aware datetime, so normalize both forms before removing
+    # the offset from the serialized value.
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:00")
 
 
 def _build_payload(
