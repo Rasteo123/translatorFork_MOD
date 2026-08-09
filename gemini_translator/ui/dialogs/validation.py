@@ -1579,6 +1579,9 @@ class ValidationThread(QThread):
         self.word_exceptions = word_exceptions_set
         self.project_manager = project_manager
         self.files_to_scan = set(files_to_scan) if files_to_scan else None # Если None, сканируем всё
+        # Детектор stateless, а word_exceptions неизменны в рамках прогона —
+        # создаём один раз, а не на каждую главу (конструктор компилирует regex'ы).
+        self._detector = None
 
 
     def _analyze_html_content(self, original_content, translated_content, result_data):
@@ -1748,7 +1751,9 @@ class ValidationThread(QThread):
                     temp_text_trans = re.sub(pattern, ' ', temp_text_trans, flags=re.IGNORECASE)
                 
                 try:
-                    detector = UntranslatedWordDetector(self.word_exceptions)
+                    detector = self._detector
+                    if detector is None:
+                        detector = self._detector = UntranslatedWordDetector(self.word_exceptions)
                     untranslated_words_to_highlight.extend(detector.detect(translated_content))
                     mixed_script_results = detector.detect_mixed_script(translated_content)
                     if mixed_script_results:

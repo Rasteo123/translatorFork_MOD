@@ -62,7 +62,7 @@ class LocalApiHandlerTests(unittest.TestCase):
             captured_payloads.append(json)
             return _DummyResponse()
 
-        with patch("gemini_translator.api.handlers.local.requests.post", side_effect=fake_post):
+        with patch("gemini_translator.api.handlers.local.requests.Session.post", side_effect=fake_post):
             result = handler.call_api("prompt", "log", allow_incomplete=True)
 
         self.assertEqual(result, "ok")
@@ -76,7 +76,7 @@ class LocalApiHandlerTests(unittest.TestCase):
             captured_payloads.append(json)
             return _DummyResponse()
 
-        with patch("gemini_translator.api.handlers.local.requests.post", side_effect=fake_post):
+        with patch("gemini_translator.api.handlers.local.requests.Session.post", side_effect=fake_post):
             result = handler.call_api("prompt", "log", allow_incomplete=True)
 
         self.assertEqual(result, "ok")
@@ -91,7 +91,7 @@ class LocalApiHandlerTests(unittest.TestCase):
             captured_payloads.append(json)
             return _DummyResponse()
 
-        with patch("gemini_translator.api.handlers.local.requests.post", side_effect=fake_post):
+        with patch("gemini_translator.api.handlers.local.requests.Session.post", side_effect=fake_post):
             result = handler.call_api("prompt", "log", allow_incomplete=True)
 
         self.assertEqual(result, "ok")
@@ -105,7 +105,7 @@ class LocalApiHandlerTests(unittest.TestCase):
             captured_headers.append(headers)
             return _DummyResponse()
 
-        with patch("gemini_translator.api.handlers.local.requests.post", side_effect=fake_post):
+        with patch("gemini_translator.api.handlers.local.requests.Session.post", side_effect=fake_post):
             result = handler.call_api("prompt", "log")
 
         self.assertEqual(result, "ok")
@@ -121,7 +121,7 @@ class LocalApiHandlerTests(unittest.TestCase):
             captured_headers.append(headers)
             return _DummyResponse()
 
-        with patch("gemini_translator.api.handlers.local.requests.post", side_effect=fake_post):
+        with patch("gemini_translator.api.handlers.local.requests.Session.post", side_effect=fake_post):
             result = handler.call_api("prompt", "log")
 
         self.assertEqual(result, "ok")
@@ -133,7 +133,7 @@ class LocalApiHandlerTests(unittest.TestCase):
         def fake_post(url, headers=None, json=None, proxies=None, timeout=None):
             return _DummyResponse(finish_reason="length", content='{"broken":')
 
-        with patch("gemini_translator.api.handlers.local.requests.post", side_effect=fake_post):
+        with patch("gemini_translator.api.handlers.local.requests.Session.post", side_effect=fake_post):
             with self.assertRaises(PartialGenerationError) as caught:
                 handler.call_api("prompt", "log", allow_incomplete=True)
 

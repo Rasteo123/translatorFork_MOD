@@ -1214,6 +1214,15 @@ if __name__ == "__main__":
     if hasattr(app, 'proxy_controller'):
         app.proxy_controller.shutdown()
     if hasattr(app, 'engine_thread') and app.engine_thread.isRunning():
+        if hasattr(app, 'engine'):
+            try:
+                QtCore.QMetaObject.invokeMethod(
+                    app.engine,
+                    "cleanup",
+                    QtCore.Qt.ConnectionType.BlockingQueuedConnection,
+                )
+            except Exception:
+                pass
         app.engine_thread.quit()
         app.engine_thread.wait()
     sys.exit(0)
