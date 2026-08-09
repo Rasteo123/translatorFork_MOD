@@ -199,14 +199,26 @@ def _manual_colors(settings_manager) -> dict:
     return extract_theme_colors(_read_settings(settings_manager))
 
 
+_fallback_palette: dict | None = None
+
+
 def palette(app=None) -> dict:
-    """The active resolved palette (~30 tokens). Falls back to the dark preset."""
+    """The active resolved palette (~30 tokens). Falls back to the dark preset.
+
+    Фолбэк кэшируется: build_theme_palette — это сотни смешиваний цветов, и
+    до применения темы (apply) каждый color() пересобирал палитру заново —
+    заполнение таблицы глоссария делало это тысячи раз."""
     from PyQt6.QtWidgets import QApplication
     from .themes import build_theme_palette, DARK_DEFAULT_THEME_COLORS
 
     app = app or QApplication.instance()
     pal = getattr(app, "_theme_palette", None) if app is not None else None
-    return pal if isinstance(pal, dict) else build_theme_palette(DARK_DEFAULT_THEME_COLORS)
+    if isinstance(pal, dict):
+        return pal
+    global _fallback_palette
+    if _fallback_palette is None:
+        _fallback_palette = build_theme_palette(DARK_DEFAULT_THEME_COLORS)
+    return _fallback_palette
 
 
 def color(name: str, app=None) -> str:

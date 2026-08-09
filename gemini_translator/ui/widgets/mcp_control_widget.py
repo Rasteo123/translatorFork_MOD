@@ -189,8 +189,13 @@ class McpControlWidget(QtWidgets.QFrame):
 
         self.apply_status(McpStatusSnapshot(running=False))
         # Демон мог быть запущен до открытия GUI (или чужим клиентом) —
-        # проверяем сразу, не дожидаясь первого тика таймера.
-        QtCore.QTimer.singleShot(0, self._poll_status)
+        # проверяем сразу, не дожидаясь первого тика таймера. Дочерний таймер,
+        # а не QTimer.singleShot: он умирает вместе с виджетом и не дёргает
+        # слот удалённого объекта.
+        boot_probe = QtCore.QTimer(self)
+        boot_probe.setSingleShot(True)
+        boot_probe.timeout.connect(self._poll_status)
+        boot_probe.start(0)
         self.action_button.clicked.connect(lambda: self._dispatch_action("toggle"))
         self.config_button.clicked.connect(self.copy_codex_config)
         app = QtWidgets.QApplication.instance()
@@ -327,6 +332,15 @@ class McpControlWidget(QtWidgets.QFrame):
         self._finish_worker_action(thread)
 
     def _finish_worker_action(self, thread) -> None:
+        # Воркер мог пережить виджет (deleteLater без closeEvent): трогать
+        # C++-удалённые кнопки нельзя.
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                _forget_mcp_worker(thread)
+                return
+        except ImportError:
+            pass
         result = self._pending_worker_result
         self._worker_thread = None
         self._worker = None

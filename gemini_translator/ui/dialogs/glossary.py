@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 from .glossary_dialogs.ai_correction import CorrectionSessionDialog, CorrectionSessionPage
 from .glossary_dialogs.core_term_dialog import CoreTermAnalyzerDialog, CoreTermAnalyzerPage
 from .glossary_dialogs.versioning import TermVersioningDialog
+from .glossary_dialogs.action_delegate import ACTIONS_ROLE, GlossaryActionDelegate
 from .glossary_dialogs.residue_analyzer import ResidueAnalyzerDialog, ResidueAnalyzerPage
 from .glossary_dialogs.conflict_resolvers import (
     DirectConflictResolverDialog,
@@ -650,6 +651,21 @@ class GlossaryManagerPage(ShellPage):
         self.table.setHorizontalHeaderLabels(["Ориг. термин", "Перевод", "Примечание", "", ""])
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # Кнопки действий (примечание/версии/удаление) рисуются делегатом —
+        # без per-row виджетов (см. glossary_dialogs/action_delegate.py);
+        # клики hit-тестятся в eventFilter на viewport.
+        self._action_delegate = GlossaryActionDelegate(
+            self.table,
+            self.TABLE_ACTION_BUTTON_SIZE,
+            self.TABLE_ACTION_ICON_SIZE,
+            tooltip_provider=self._row_action_tooltip,
+            parent=self.table,
+        )
+        self.table.setItemDelegateForColumn(3, self._action_delegate)
+        self.table.setItemDelegateForColumn(4, self._action_delegate)
+        self.table.viewport().installEventFilter(self)
+        self.table.viewport().setMouseTracking(True)
         
         header = self.table.horizontalHeader()
         
@@ -2924,81 +2940,155 @@ class GlossaryManagerPage(ShellPage):
                 
         self.conflicting_term_keys = set(self.conflict_map.keys())
     
+    def _std_icon(self, pixmap):
+        """Кэш стандартных иконок: style().standardIcon на каждую кнопку
+        каждой строки — ~0.2мс × тысячи вызовов при заполнении таблицы."""
+        cache = getattr(self, '_std_icon_cache', None)
+        if cache is None:
+            cache = self._std_icon_cache = {}
+        icon = cache.get(pixmap)
+        if icon is None:
+            icon = cache[pixmap] = self.style().standardIcon(pixmap)
+        return icon
+
     def _create_row_buttons(self, row, item_dict):
+        """Записывает состав кнопок строки в данные item'ов колонок 3/4 —
+        рисует их GlossaryActionDelegate, виджеты не создаются."""
         if not isinstance(item_dict, dict): return
 
-        # ---------------------------------------------------------
-        # КОЛОНКА 3: Генерация примечаний + Версионирование
-        # ---------------------------------------------------------
-        col3_widget = QWidget()
-        # ВАЖНО: Запрещаем виджету сжиматься меньше содержимого
-        col3_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
-        
-        col3_layout = QHBoxLayout(col3_widget)
-        col3_layout.setContentsMargins(4, 2, 4, 2)
-        col3_layout.setSpacing(4)
-        col3_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # 1. Кнопка Pymorphy (Генерация)
+        col3_actions = []
         if PYMORPHY_AVAILABLE:
-            gen_btn = QToolButton()
-            gen_btn.setIcon(
-                self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
-            )
-            gen_btn.setToolTip("Сгенерировать примечание")
-            self._configure_table_action_button(gen_btn)
-            gen_btn.clicked.connect(lambda ch, r=row: self._on_generate_note_in_main_table_clicked(r))
-            col3_layout.addWidget(gen_btn)
-        
-        # 2. Кнопка Версии
+            col3_actions.append('gen')
         if self.associated_project_path and self.associated_epub_path:
-            version_btn = QToolButton()
-            version_btn.setIcon(
-                self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-            )
-            
             term = item_dict.get('original', '')
-            has_versions = self._check_if_term_has_versions(term)
-            
-            if has_versions:
-                self._configure_table_action_button(
-                    version_btn,
-                    f"background-color: {theme_manager.color('info')}; "
-                    f"color: {theme_manager.color('accent_text')}; "
-                    "font-weight: bold;",
-                )
-                version_btn.setToolTip("Управление версиями (ЕСТЬ АКТИВНЫЕ ПРАВИЛА)")
-            else:
-                self._configure_table_action_button(version_btn)
-                version_btn.setToolTip("Создать версии (переопределения для глав)")
-                
-            version_btn.clicked.connect(lambda ch, d=item_dict: self._open_versioning_dialog(d))
-            col3_layout.addWidget(version_btn)
+            col3_actions.append(
+                'version_active' if self._check_if_term_has_versions(term) else 'version'
+            )
 
-        self.table.setCellWidget(row, 3, col3_widget)
+        for column, actions in ((3, tuple(col3_actions)), (4, ('delete',))):
+            item = self.table.item(row, column)
+            if item is None:
+                item = QTableWidgetItem()
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                self.table.setItem(row, column, item)
+            item.setData(ACTIONS_ROLE, actions)
 
-        # ---------------------------------------------------------
-        # КОЛОНКА 4: Удаление
-        # ---------------------------------------------------------
-        col4_widget = QWidget()
-        col4_widget.setSizePolicy(QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Minimum)
-        
-        col4_layout = QHBoxLayout(col4_widget)
-        col4_layout.setContentsMargins(4, 2, 4, 2)
-        col4_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    def _row_action_tooltip(self, row, kind) -> str:
+        if kind == 'gen':
+            return "Сгенерировать примечание"
+        if kind == 'version_active':
+            return "Управление версиями (ЕСТЬ АКТИВНЫЕ ПРАВИЛА)"
+        if kind == 'version':
+            return "Создать версии (переопределения для глав)"
+        if kind == 'delete':
+            first_item = self.table.item(row, 0)
+            term = first_item.text() if first_item else ''
+            return f"Удалить термин '{term}'"
+        return ""
 
-        delete_btn = QToolButton()
-        delete_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
-        delete_btn.setToolTip(f"Удалить термин '{item_dict.get('original','')}'")
-        self._configure_table_action_button(delete_btn)
-        
-        db_id = item_dict.get('id')
-        if db_id:
-            delete_btn.clicked.connect(lambda ch, current_id=db_id: self._remove_single_term_by_id(current_id))
-        
-        col4_layout.addWidget(delete_btn)
-        
-        self.table.setCellWidget(row, 4, col4_widget)
+    def _row_item_dict(self, row) -> dict:
+        """Актуальные данные строки для обработчиков (как раньше item_dict)."""
+        values = {}
+        for column, key in enumerate(('original', 'rus', 'note')):
+            item = self.table.item(row, column)
+            values[key] = item.text() if item else ''
+        first_item = self.table.item(row, 0)
+        values['id'] = first_item.data(self.DB_ID_ROLE) if first_item else None
+        return values
+
+    def _trigger_row_action(self, row, kind):
+        if kind == 'gen':
+            self._on_generate_note_in_main_table_clicked(row)
+        elif kind in ('version', 'version_active'):
+            self._open_versioning_dialog(self._row_item_dict(row))
+        elif kind == 'delete':
+            first_item = self.table.item(row, 0)
+            db_id = first_item.data(self.DB_ID_ROLE) if first_item else None
+            if db_id:
+                self._remove_single_term_by_id(db_id)
+
+    def eventFilter(self, obj, event):
+        table = getattr(self, 'table', None)
+        if table is not None and obj is table.viewport() and self._handle_action_button_event(event):
+            return True
+        return super().eventFilter(obj, event)
+
+    def _handle_action_button_event(self, event):
+        """True, если событие мыши попало в кнопку действия и «съедено»
+        (как раньше клик поглощала настоящая QToolButton)."""
+        event_type = event.type()
+
+        if event_type == QtCore.QEvent.Type.MouseMove:
+            self._update_action_hover(event.position().toPoint())
+            return False
+
+        if event_type == QtCore.QEvent.Type.Leave:
+            self._update_action_hover(None)
+            return False
+
+        if event_type in (QtCore.QEvent.Type.MouseButtonPress,
+                          QtCore.QEvent.Type.MouseButtonDblClick):
+            if event.button() != Qt.MouseButton.LeftButton or not self.table.isEnabled():
+                return False
+            hit = self._action_hit(event.position().toPoint())
+            if hit is None:
+                return False
+            self._action_delegate.pressed = hit[:3]
+            self._repaint_action_cell(hit[0], hit[1])
+            return True
+
+        if event_type == QtCore.QEvent.Type.MouseButtonRelease:
+            pressed = self._action_delegate.pressed
+            if pressed == (-1, -1, -1):
+                return False
+            self._action_delegate.pressed = (-1, -1, -1)
+            self._repaint_action_cell(pressed[0], pressed[1])
+            hit = self._action_hit(event.position().toPoint())
+            if hit is not None and hit[:3] == pressed:
+                self._trigger_row_action(hit[0], hit[3])
+            return True
+
+        return False
+
+    def _action_hit(self, pos):
+        """(row, column, button_index, kind) для точки viewport'а или None."""
+        index = self.table.indexAt(pos)
+        if not index.isValid() or index.column() not in (3, 4):
+            return None
+        actions = GlossaryActionDelegate.actions_for_index(index)
+        if not actions:
+            return None
+        cell_rect = self.table.visualRect(index)
+        for i, rect in enumerate(self._action_delegate.button_rects(cell_rect, len(actions))):
+            if rect.contains(pos):
+                return (index.row(), index.column(), i, actions[i])
+        return None
+
+    def _update_action_hover(self, pos):
+        hit = self._action_hit(pos) if pos is not None else None
+        new_state = hit[:3] if hit is not None else (-1, -1, -1)
+        old_state = self._action_delegate.hovered
+        if new_state == old_state:
+            return
+        self._action_delegate.hovered = new_state
+        for row, column in {(old_state[0], old_state[1]), (new_state[0], new_state[1])}:
+            if row >= 0:
+                self._repaint_action_cell(row, column)
+
+    def _repaint_action_cell(self, row, column):
+        index = self.table.model().index(row, column)
+        if index.isValid():
+            self.table.viewport().update(self.table.visualRect(index))
+
+    def changeEvent(self, event):
+        if event.type() in (QtCore.QEvent.Type.StyleChange,
+                            QtCore.QEvent.Type.PaletteChange,
+                            QtCore.QEvent.Type.FontChange):
+            delegate = getattr(self, '_action_delegate', None)
+            if delegate is not None:
+                delegate.invalidate_cache()
+                self.table.viewport().update()
+        super().changeEvent(event)
 
     def _configure_table_action_button(self, button: QToolButton, extra_style: str = ""):
         button.setFixedSize(self.TABLE_ACTION_BUTTON_SIZE)
@@ -3008,23 +3098,31 @@ class GlossaryManagerPage(ShellPage):
             QtWidgets.QSizePolicy.Policy.Fixed,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        button.setStyleSheet(
-            "QToolButton {"
-            "background: transparent;"
-            "border: 1px solid transparent;"
-            "border-radius: 6px;"
-            "padding: 0px;"
-            f"min-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
-            f"max-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
-            f"min-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
-            f"max-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
-            f"{extra_style}"
-            "}"
-            "QToolButton:hover {"
-            f"background-color: {theme_manager.color('accent_hover_soft')};"
-            f"border-color: {theme_manager.color('border_strong')};"
-            "}"
-        )
+        # Строка стиля одинакова для всех кнопок с одним extra_style —
+        # собираем один раз на страницу, а не на каждую кнопку каждой строки.
+        style_cache = getattr(self, '_action_btn_style_cache', None)
+        if style_cache is None:
+            style_cache = self._action_btn_style_cache = {}
+        stylesheet = style_cache.get(extra_style)
+        if stylesheet is None:
+            stylesheet = style_cache[extra_style] = (
+                "QToolButton {"
+                "background: transparent;"
+                "border: 1px solid transparent;"
+                "border-radius: 6px;"
+                "padding: 0px;"
+                f"min-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
+                f"max-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
+                f"min-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
+                f"max-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
+                f"{extra_style}"
+                "}"
+                "QToolButton:hover {"
+                f"background-color: {theme_manager.color('accent_hover_soft')};"
+                f"border-color: {theme_manager.color('border_strong')};"
+                "}"
+            )
+        button.setStyleSheet(stylesheet)
 
     def _action_column_width_for_buttons(self, button_count: int) -> int:
         if button_count <= 0:
