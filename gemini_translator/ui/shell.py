@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
+from .overlay_host import OverlayHost
 from .window_resize import WindowResizeController
 
 
@@ -213,6 +214,7 @@ class MainShell(QtWidgets.QMainWindow):
         self.resize_controller = WindowResizeController(
             self, self.navigation, self._stack
         )
+        self.overlay_host = OverlayHost(self, blocked=central)
         self.navigation.stack_changed.connect(self._sync_nav_bar)
         self._sync_nav_bar()
 
