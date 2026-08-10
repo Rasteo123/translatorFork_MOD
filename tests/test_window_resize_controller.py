@@ -138,6 +138,37 @@ class WindowResizeControllerTests(unittest.TestCase):
         self.assertGreaterEqual(shell.width(), 600)
         self.assertGreaterEqual(shell.height(), 500)
 
+    def test_resize_grows_from_window_center(self):
+        shell = self._shell()
+        avail = shell.screen().availableGeometry()
+        # Ставим окно так, чтобы рост 320x260 -> 500x400 не упирался в края.
+        shell.move(avail.center().x() - 160, avail.center().y() - 130)
+        shell.set_home(SmallPage())
+        _drain(self.app)
+        old_center = shell.geometry().center()
+        shell.navigation.push(PreferredPage())
+        _drain(self.app)
+        new_center = shell.geometry().center()
+        self.assertLessEqual(abs(new_center.x() - old_center.x()), 1)
+        self.assertLessEqual(abs(new_center.y() - old_center.y()), 1)
+
+    def test_growth_stops_at_screen_edge(self):
+        shell = self._shell()
+        avail = shell.screen().availableGeometry()
+        # Окно прижато к правому краю: рост должен упереться в границу,
+        # а центр — сместиться влево, не вылезая за экран.
+        shell.move(avail.right() - shell.width() - 5, avail.top() + 50)
+        shell.set_home(SmallPage())
+        _drain(self.app)
+        shell.navigation.push(PreferredPage())
+        _drain(self.app)
+        geo = shell.geometry()
+        self.assertLessEqual(geo.right(), avail.right())
+        self.assertGreaterEqual(geo.left(), avail.left())
+        self.assertLessEqual(geo.bottom(), avail.bottom())
+        self.assertGreaterEqual(geo.top(), avail.top())
+        self.assertEqual(geo.size(), QtCore.QSize(500, 400))
+
     def test_growth_to_minimum_is_animated_not_instant(self):
         from PyQt6 import QtTest
 

@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from PyQt6 import QtCore
+from PyQt6 import QtCore, QtGui
 
 
 class WindowResizeController(QtCore.QObject):
@@ -35,6 +35,11 @@ class WindowResizeController(QtCore.QObject):
         self._duration = self.ANIMATION_MS if duration_ms is None else duration_ms
         self._remembered: dict[str, QtCore.QSize] = {}
         self._animation: QtCore.QPropertyAnimation | None = None
+        # Wayland не разрешает программно двигать окна — там анимируется
+        # только размер (якорь — левый верхний угол), на остальных
+        # платформах окно растёт из своего центра.
+        platform = QtGui.QGuiApplication.platformName().lower()
+        self._can_move = "wayland" not in platform
         navigation.stack_about_to_change.connect(self._snapshot_current_page_size)
         navigation.stack_changed.connect(self._on_stack_changed)
 
@@ -54,7 +59,8 @@ class WindowResizeController(QtCore.QObject):
         if self._animation is not None:
             # Быстрый переход посреди анимации: за страницей закрепляется
             # размер, в котором она бы устоялась, а не промежуточный кадр.
-            size = self._animation.endValue()
+            end = self._animation.endValue()
+            size = end.size() if isinstance(end, QtCore.QRect) else end
         else:
             size = self._window.size()
         self._remembered[self._page_key(page)] = QtCore.QSize(size)
@@ -116,21 +122,62 @@ class WindowResizeController(QtCore.QObject):
             return None
         return QtCore.QSize(target)
 
+    def _target_rect(self, size: QtCore.QSize) -> QtCore.QRect:
+        """Геометрия окна для нового размера: рост из центра, в экране.
+
+        Центр остаётся на месте; если край упирается в границу экрана,
+        окно прижимается к ней, и центр смещается соответственно.
+        """
+        current = self._window.geometry()
+        rect = QtCore.QRect(QtCore.QPoint(0, 0), size)
+        rect.moveCenter(current.center())
+        screen = self._window.screen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            # Рамка окна (заголовок) тоже должна остаться на экране:
+            # ужимаем доступную область на поля рамки вокруг клиентской.
+            frame = self._window.frameGeometry()
+            avail = avail.adjusted(
+                current.left() - frame.left(),
+                current.top() - frame.top(),
+                current.right() - frame.right(),
+                current.bottom() - frame.bottom(),
+            )
+            if rect.right() > avail.right():
+                rect.moveRight(avail.right())
+            if rect.bottom() > avail.bottom():
+                rect.moveBottom(avail.bottom())
+            if rect.left() < avail.left():
+                rect.moveLeft(avail.left())
+            if rect.top() < avail.top():
+                rect.moveTop(avail.top())
+        return rect
+
     # -- анимация -------------------------------------------------------
 
     def _animate_to(self, target: QtCore.QSize) -> None:
+        if not self._can_move:
+            self._animate_property(b"size", self._window.size(), target)
+            return
+        rect = self._target_rect(target)
+        self._animate_property(b"geometry", self._window.geometry(), rect)
+
+    def _animate_property(self, prop: bytes, start, end) -> None:
         if self._duration <= 0:
-            self._window.resize(target)
+            if prop == b"geometry":
+                self._window.setGeometry(end)
+            else:
+                self._window.resize(end)
             self._stack.set_size_hint_override(None)
             return
         # Минимум стека заморожен с stack_about_to_change, иначе Qt мгновенно
         # распахнёт окно до минимума новой страницы вместо плавного роста;
         # заморозка снимается по завершении анимации.
         self._stack.set_size_hint_override(QtCore.QSize(0, 0))
-        animation = QtCore.QPropertyAnimation(self._window, b"size", self)
+        animation = QtCore.QPropertyAnimation(self._window, prop, self)
         animation.setDuration(self._duration)
-        animation.setStartValue(self._window.size())
-        animation.setEndValue(target)
+        animation.setStartValue(start)
+        animation.setEndValue(end)
         animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
         animation.finished.connect(self._on_animation_finished)
         self._animation = animation

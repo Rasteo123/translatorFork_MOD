@@ -44,6 +44,7 @@ class OverlayHostTests(unittest.TestCase):
     def _shell(self):
         shell = MainShell()
         shell.resize_controller.set_duration(0)
+        shell.overlay_host.set_animation_durations(0, 0, 0)
         self.addCleanup(shell.close)
         self.addCleanup(shell.hide)
         page = ShellPage()
@@ -93,7 +94,7 @@ class OverlayHostTests(unittest.TestCase):
         _drain(self.app)
         self.assertEqual(results, [QDialog.DialogCode.Rejected])
 
-    def test_nested_dialogs_stack_and_unwind(self):
+    def test_nested_dialogs_morph_in_single_card(self):
         shell = self._shell()
         first = SimpleDialog()
         second = SimpleDialog()
@@ -102,11 +103,14 @@ class OverlayHostTests(unittest.TestCase):
         _drain(self.app)
         shell.overlay_host.present(second, lambda r: order.append(("second", r)))
         _drain(self.app)
-        # Пока открыта верхняя карточка, нижняя заблокирована.
-        self.assertFalse(first.isEnabled())
+        # Карточка одна: вложенный диалог подменяет содержимое, а не
+        # ложится второй карточкой поверх.
+        self.assertIs(first.parentWidget(), second.parentWidget())
+        self.assertFalse(first.isVisible())
+        self.assertTrue(second.isVisible())
         second.reject()
         _drain(self.app)
-        self.assertTrue(first.isEnabled())
+        self.assertTrue(first.isVisible())
         self.assertTrue(shell.overlay_host.isVisible())
         first.accept()
         _drain(self.app)
@@ -119,13 +123,34 @@ class OverlayHostTests(unittest.TestCase):
         )
         self.assertFalse(shell.overlay_host.isVisible())
 
+    def test_sequential_dialogs_keep_overlay_shown(self):
+        # Цепочка «закрылся A — сразу открылся B» не должна мигать
+        # затемнением: закрытие откладывается и отменяется новым present.
+        shell = self._shell()
+        host = shell.overlay_host
+        first = SimpleDialog()
+        host.present(first)
+        _drain(self.app)
+        first.accept()
+        # Без прогона событий, как в реальной цепочке exec_dialog -> exec_dialog.
+        second = SimpleDialog()
+        host.present(second)
+        _drain(self.app)
+        self.assertTrue(host.isVisible())
+        self.assertTrue(second.isVisible())
+        self.assertFalse(shell.centralWidget().isEnabled())
+        second.reject()
+        _drain(self.app)
+        self.assertFalse(host.isVisible())
+        self.assertTrue(shell.centralWidget().isEnabled())
+
     def test_card_clamped_to_host_size(self):
         shell = self._shell()
         dialog = SimpleDialog()
         dialog.resize(5000, 4000)
         shell.overlay_host.present(dialog)
         _drain(self.app)
-        card = dialog.parentWidget()
+        card = shell.overlay_host._card
         self.assertLessEqual(card.width(), shell.overlay_host.width())
         self.assertLessEqual(card.height(), shell.overlay_host.height())
 
@@ -162,6 +187,7 @@ class ExecDialogTests(unittest.TestCase):
     def _shell(self):
         shell = MainShell()
         shell.resize_controller.set_duration(0)
+        shell.overlay_host.set_animation_durations(0, 0, 0)
         self.addCleanup(shell.close)
         self.addCleanup(shell.hide)
         shell.set_home(ShellPage())
@@ -179,10 +205,13 @@ class ExecDialogTests(unittest.TestCase):
         QtCore.QTimer.singleShot(0, dialog.accept)
         result = exec_dialog(page, dialog)
         self.assertEqual(result, int(QDialog.DialogCode.Accepted))
-        self.assertFalse(shell.overlay_host.isVisible())
         # Виджеты диалога ещё живы сразу после возврата (deleteLater
         # обрабатывается позже) — вызывающий код может читать значения.
         self.assertEqual(dialog.edit.text(), "")
+        # Закрытие оверлея отложено на тик (анти-мерцание для цепочек).
+        for _ in range(5):
+            self.app.processEvents()
+        self.assertFalse(shell.overlay_host.isVisible())
 
     def test_exec_dialog_falls_back_to_native_exec_without_host(self):
         parent = QtWidgets.QWidget()
@@ -204,6 +233,7 @@ class MessageBoxOverlayTests(unittest.TestCase):
     def _shell(self):
         shell = MainShell()
         shell.resize_controller.set_duration(0)
+        shell.overlay_host.set_animation_durations(0, 0, 0)
         self.addCleanup(shell.close)
         self.addCleanup(shell.hide)
         shell.set_home(ShellPage())
@@ -211,6 +241,34 @@ class MessageBoxOverlayTests(unittest.TestCase):
         for _ in range(5):
             self.app.processEvents()
         return shell
+
+    def test_message_box_from_unparented_widget_uses_active_window(self):
+        # Виджет ещё не вставлен в шелл (конструирование страницы) —
+        # бокс должен уйти в overlay активного окна, а не в отдельное окно.
+        shell = self._shell()
+        orphan = QtWidgets.QWidget()
+        self.addCleanup(orphan.deleteLater)
+        original = QtWidgets.QApplication.activeWindow
+        QtWidgets.QApplication.activeWindow = staticmethod(lambda: shell)
+        self.addCleanup(
+            lambda: setattr(QtWidgets.QApplication, "activeWindow", original)
+        )
+        box = QtWidgets.QMessageBox(orphan)
+        box.setText("Восстановить из резервной копии?")
+        yes = box.addButton("Да", QtWidgets.QMessageBox.ButtonRole.YesRole)
+        box.addButton("Нет", QtWidgets.QMessageBox.ButtonRole.NoRole)
+        seen = {}
+
+        def _capture():
+            seen["overlay_visible"] = shell.overlay_host.isVisible()
+            seen["is_window"] = box.isWindow()
+            yes.click()
+
+        QtCore.QTimer.singleShot(0, _capture)
+        box.exec()
+        self.assertTrue(seen["overlay_visible"])
+        self.assertFalse(seen["is_window"])
+        self.assertIs(box.clickedButton(), yes)
 
     def test_information_shows_as_overlay_card(self):
         shell = self._shell()
@@ -234,6 +292,9 @@ class MessageBoxOverlayTests(unittest.TestCase):
         self.assertTrue(seen["overlay_visible"])
         self.assertFalse(seen["is_window"])
         self.assertEqual(result, QtWidgets.QMessageBox.StandardButton.Ok)
+        # Закрытие оверлея отложено на тик (анти-мерцание для цепочек).
+        for _ in range(5):
+            self.app.processEvents()
         self.assertFalse(shell.overlay_host.isVisible())
 
     def test_question_returns_chosen_button(self):

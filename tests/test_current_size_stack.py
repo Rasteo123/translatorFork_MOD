@@ -50,9 +50,11 @@ class CurrentSizeStackTests(unittest.TestCase):
         stack.set_size_hint_override(None)
         self.assertEqual(stack.minimumSizeHint(), QtCore.QSize(900, 700))
 
-    def test_layout_hint_wins_over_smaller_explicit_minimum(self):
+    def test_real_min_hint_covers_layout_needs_but_is_not_enforced(self):
         # Страница с setMinimumSize меньше реальных потребностей layout-а:
-        # окно должно уметь дорасти до полного содержимого.
+        # цель анимации (real_minimum_size_hint) покрывает контент, но
+        # жёсткий минимум остаётся явным — иначе окно дёргается при
+        # подгрузке контента и не сжимается вручную.
         stack = CurrentSizeStack()
         self.addCleanup(stack.deleteLater)
         page = QtWidgets.QWidget()
@@ -64,9 +66,10 @@ class CurrentSizeStackTests(unittest.TestCase):
         layout.addWidget(content)
         stack.addWidget(page)
         stack.setCurrentIndex(0)
-        hint = stack.minimumSizeHint()
-        self.assertGreaterEqual(hint.width(), 400)
-        self.assertGreaterEqual(hint.height(), 300)
+        real = stack.real_minimum_size_hint()
+        self.assertGreaterEqual(real.width(), 400)
+        self.assertGreaterEqual(real.height(), 300)
+        self.assertEqual(stack.minimumSizeHint(), QtCore.QSize(100, 80))
 
     def test_window_can_shrink_after_leaving_big_page(self):
         window = QtWidgets.QMainWindow()

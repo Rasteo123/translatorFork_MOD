@@ -6,10 +6,13 @@
 отключённого интерфейса — в духе листов App Store / Claude Desktop —
 не создавая отдельных окон ОС.
 
-Точка входа — :func:`present_dialog`: если в окне есть хост, диалог
-встраивается в карточку; иначе показывается обычным window-modal
-``QDialog.open()``. Результат всегда доставляется колбэком, вложенный
-цикл событий ``exec()`` не используется.
+Карточка одна: вложенные и последовательные диалоги не громоздятся
+стопкой и не мигают затемнением, а «морфятся» — содержимое карточки
+подменяется, геометрия плавно анимируется под новый диалог, затемнение
+появляется и уходит плавным фейдом.
+
+Точка входа — :func:`present_dialog` (колбэк) или :func:`exec_dialog`
+(синхронная drop-in замена ``exec()``). Без хоста поведение нативное.
 
 Модальность обеспечивает сам хост: на время показа фоновый контент
 получает ``setEnabled(False)``, что блокирует и мышь, и Tab-фокус,
@@ -23,38 +26,62 @@ from typing import Callable, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-#: Затемнение фона под карточками.
+#: Затемнение фона под карточкой (альфа — при полностью проявленном фоне).
 DIM_COLOR = QtGui.QColor(0, 0, 0, 110)
 #: Карточка не занимает больше этой доли окна.
 CARD_MAX_FRACTION = 0.9
 #: Внутренний отступ карточки вокруг встроенного диалога.
 CARD_PADDING = 12
+#: Анимация геометрии карточки (морфинг между диалогами).
+MORPH_MS = 180
+#: Фейд затемнения при появлении/уходе.
+FADE_MS = 150
+#: Пауза перед закрытием пустого оверлея: если за это время открывается
+#: следующий диалог, затемнение не мигает, а карточка морфится дальше.
+CLOSE_LINGER_MS = 120
 
 
 @dataclass
 class _OverlayEntry:
-    card: QtWidgets.QFrame
     dialog: QtWidgets.QDialog
     previous_focus: Optional[QtWidgets.QWidget]
     callback: Optional[Callable[[int], None]]
 
 
 class OverlayHost(QtWidgets.QWidget):
-    """Hosts stacked modal cards over the window content.
-
-    Хост закрывает всё окно, пока показан; пустой — скрыт. Сам рисует
-    затемнение и глотает события мыши, чтобы фон был недоступен даже
-    там, где нет карточки.
-    """
+    """Hosts modal dialogs in a single morphing card over the window."""
 
     def __init__(self, window: QtWidgets.QWidget, blocked: QtWidgets.QWidget):
         super().__init__(window)
-        # ``blocked`` отключается на время показа карточек: это и есть
+        # ``blocked`` отключается на время показа карточки: это и есть
         # модальность (клики, фокус, шорткаты).
         self._blocked = blocked
         self._entries: list[_OverlayEntry] = []
+        self._card: Optional[QtWidgets.QFrame] = None
+        self._card_stack: Optional[QtWidgets.QStackedWidget] = None
+        self._dim = 0.0
+        self._dim_animation: Optional[QtCore.QVariantAnimation] = None
+        self._geometry_animation: Optional[QtCore.QPropertyAnimation] = None
+        self._close_timer: Optional[QtCore.QTimer] = None
+        self._restore_focus_to: Optional[QtWidgets.QWidget] = None
+        self._morph_ms = MORPH_MS
+        self._fade_ms = FADE_MS
+        self._linger_ms = CLOSE_LINGER_MS
         window.installEventFilter(self)
         self.hide()
+
+    def set_animation_durations(
+        self,
+        morph_ms: int | None = None,
+        fade_ms: int | None = None,
+        linger_ms: int | None = None,
+    ) -> None:
+        if morph_ms is not None:
+            self._morph_ms = max(0, int(morph_ms))
+        if fade_ms is not None:
+            self._fade_ms = max(0, int(fade_ms))
+        if linger_ms is not None:
+            self._linger_ms = max(0, int(linger_ms))
 
     # -- публичный API --------------------------------------------------
 
@@ -63,38 +90,52 @@ class OverlayHost(QtWidgets.QWidget):
         dialog: QtWidgets.QDialog,
         on_finished: Optional[Callable[[int], None]] = None,
     ) -> None:
-        """Показывает ``dialog`` карточкой поверх затемнённого окна.
+        """Показывает ``dialog`` в карточке поверх затемнённого окна.
 
-        Диалог перевоспитывается в child-виджет карточки; его
-        ``finished(int)`` закрывает карточку и вызывает ``on_finished``.
-        Карточка владеет диалогом и удаляет его после закрытия.
+        Если карточка уже показана (вложенный или следующий по цепочке
+        диалог), её содержимое подменяется, а геометрия плавно анимируется
+        под новый диалог. Карточка владеет диалогом и удаляет его после
+        закрытия; ``finished(int)`` доставляет результат в ``on_finished``.
         """
+        self._cancel_pending_close()
         entry = _OverlayEntry(
-            card=self._build_card(dialog),
             dialog=dialog,
             previous_focus=QtWidgets.QApplication.focusWidget(),
             callback=on_finished,
         )
-        if self._entries:
-            # Нижняя карточка блокируется, пока открыта новая.
-            self._entries[-1].card.setEnabled(False)
+        appearing = not self.isVisible()
+        if self._card is None:
+            self._build_card()
+        card_was_hidden = not self._card.isVisible()
         self._entries.append(entry)
         dialog.finished.connect(
             lambda result, e=entry: self._dismiss(e, int(result))
         )
-        if len(self._entries) == 1:
+        self._card_stack.addWidget(dialog)
+        self._card_stack.setCurrentWidget(dialog)
+        if appearing:
             self._blocked.setEnabled(False)
             self._sync_geometry()
             self.show()
             self.raise_()
-        self._layout_entry(entry)
-        entry.card.show()
+            self._fade_dim_to(1.0)
+        target = self._card_rect_for(dialog)
+        if appearing or card_was_hidden:
+            # Первое появление: лёгкий «вырост» карточки из чуть меньшего
+            # прямоугольника вместо мгновенного появления.
+            start = QtCore.QRect(target)
+            shrink_w = max(1, int(target.width() * 0.04))
+            shrink_h = max(1, int(target.height() * 0.04))
+            start.adjust(shrink_w, shrink_h, -shrink_w, -shrink_h)
+            self._card.setGeometry(start)
+        self._card.show()
+        self._animate_card_to(target)
         dialog.show()
         self._focus_dialog(dialog)
 
     # -- сборка карточки ------------------------------------------------
 
-    def _build_card(self, dialog: QtWidgets.QDialog) -> QtWidgets.QFrame:
+    def _build_card(self) -> None:
         card = QtWidgets.QFrame(self)
         card.setObjectName("overlayCard")
         card.setStyleSheet(
@@ -113,21 +154,19 @@ class OverlayHost(QtWidgets.QWidget):
         layout.setContentsMargins(
             CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING
         )
-        # addWidget перевоспитывает диалог: оконные флаги сбрасываются,
-        # он становится обычным child-виджетом.
-        layout.addWidget(dialog)
-        return card
+        stack = QtWidgets.QStackedWidget()
+        layout.addWidget(stack)
+        self._card = card
+        self._card_stack = stack
 
-    def _layout_entry(self, entry: _OverlayEntry) -> None:
-        dialog = entry.dialog
+    def _card_rect_for(self, dialog: QtWidgets.QDialog) -> QtCore.QRect:
         if dialog.testAttribute(QtCore.Qt.WidgetAttribute.WA_Resized):
             wanted = dialog.size()
         else:
             wanted = dialog.sizeHint()
         minimum = dialog.minimumSizeHint().expandedTo(dialog.minimumSize())
         wanted = wanted.expandedTo(minimum)
-        padding = QtCore.QSize(2 * CARD_PADDING, 2 * CARD_PADDING)
-        wanted += padding
+        wanted += QtCore.QSize(2 * CARD_PADDING, 2 * CARD_PADDING)
         limit = QtCore.QSize(
             int(self.width() * CARD_MAX_FRACTION),
             int(self.height() * CARD_MAX_FRACTION),
@@ -135,7 +174,23 @@ class OverlayHost(QtWidgets.QWidget):
         size = wanted.boundedTo(limit)
         rect = QtCore.QRect(QtCore.QPoint(0, 0), size)
         rect.moveCenter(self.rect().center())
-        entry.card.setGeometry(rect)
+        return rect
+
+    def _animate_card_to(self, rect: QtCore.QRect) -> None:
+        if self._geometry_animation is not None:
+            self._geometry_animation.stop()
+            self._geometry_animation.deleteLater()
+            self._geometry_animation = None
+        if self._morph_ms <= 0 or not self.isVisible():
+            self._card.setGeometry(rect)
+            return
+        animation = QtCore.QPropertyAnimation(self._card, b"geometry", self)
+        animation.setDuration(self._morph_ms)
+        animation.setStartValue(self._card.geometry())
+        animation.setEndValue(rect)
+        animation.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        self._geometry_animation = animation
+        animation.start()
 
     def _focus_dialog(self, dialog: QtWidgets.QDialog) -> None:
         focus = dialog.focusWidget()
@@ -153,30 +208,109 @@ class OverlayHost(QtWidgets.QWidget):
         if entry not in self._entries:
             return
         self._entries.remove(entry)
-        entry.card.hide()
-        entry.card.setParent(None)
-        entry.card.deleteLater()  # вместе с встроенным диалогом
+        dialog = entry.dialog
+        if self._card_stack is not None:
+            self._card_stack.removeWidget(dialog)
+        dialog.hide()
+        dialog.setParent(None)
+        dialog.deleteLater()
         if self._entries:
             top = self._entries[-1]
-            top.card.setEnabled(True)
+            self._card_stack.setCurrentWidget(top.dialog)
+            self._animate_card_to(self._card_rect_for(top.dialog))
             self._focus_dialog(top.dialog)
         else:
-            self.hide()
-            self._blocked.setEnabled(True)
-            previous = entry.previous_focus
-            if previous is not None and previous.isVisible():
-                previous.setFocus(QtCore.Qt.FocusReason.ActiveWindowFocusReason)
+            self._begin_close(entry.previous_focus)
         if entry.callback is not None:
             entry.callback(result)
+
+    def _begin_close(self, focus_target: Optional[QtWidgets.QWidget]) -> None:
+        """Прячет карточку и, чуть подождав, гасит затемнение.
+
+        Пауза даёт следующему диалогу цепочки открыться без мигания
+        оверлея: present() внутри окна ожидания отменяет закрытие.
+        """
+        self._restore_focus_to = focus_target
+        if self._card is not None:
+            self._card.hide()
+        if self._close_timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._fade_out)
+            self._close_timer = timer
+        self._close_timer.start(self._linger_ms)
+
+    def _cancel_pending_close(self) -> None:
+        if self._close_timer is not None:
+            self._close_timer.stop()
+        if self.isVisible() and self._dim < 1.0:
+            # Отменённый фейд-аут: затемнение возвращается.
+            self._fade_dim_to(1.0)
+
+    def _fade_out(self) -> None:
+        if self._entries:
+            return
+        self._fade_dim_to(0.0, on_done=self._finish_close)
+
+    def _finish_close(self) -> None:
+        if self._entries:
+            return
+        self.hide()
+        self._blocked.setEnabled(True)
+        if self._card is not None:
+            self._card.deleteLater()
+            self._card = None
+            self._card_stack = None
+        target = self._restore_focus_to
+        self._restore_focus_to = None
+        if target is not None:
+            try:
+                if target.isVisible():
+                    target.setFocus(
+                        QtCore.Qt.FocusReason.ActiveWindowFocusReason
+                    )
+            except RuntimeError:
+                pass  # виджет уже уничтожен
+
+    # -- затемнение -----------------------------------------------------
+
+    def _fade_dim_to(
+        self, value: float, on_done: Optional[Callable[[], None]] = None
+    ) -> None:
+        if self._dim_animation is not None:
+            self._dim_animation.stop()
+            self._dim_animation.deleteLater()
+            self._dim_animation = None
+        if self._fade_ms <= 0 or not self.isVisible():
+            self._dim = value
+            self.update()
+            if on_done is not None:
+                on_done()
+            return
+        animation = QtCore.QVariantAnimation(self)
+        animation.setDuration(self._fade_ms)
+        animation.setStartValue(float(self._dim))
+        animation.setEndValue(float(value))
+        animation.valueChanged.connect(self._set_dim)
+        if on_done is not None:
+            animation.finished.connect(on_done)
+        self._dim_animation = animation
+        animation.start()
+
+    def _set_dim(self, value) -> None:
+        self._dim = float(value)
+        self.update()
 
     # -- геометрия и модальность ----------------------------------------
 
     def eventFilter(self, obj, event):
         if obj is self.parentWidget() and event.type() == QtCore.QEvent.Type.Resize:
-            if self._entries:
+            if self.isVisible():
                 self._sync_geometry()
-                for entry in self._entries:
-                    self._layout_entry(entry)
+                if self._entries and self._card is not None:
+                    self._card.setGeometry(
+                        self._card_rect_for(self._entries[-1].dialog)
+                    )
         return super().eventFilter(obj, event)
 
     def _sync_geometry(self) -> None:
@@ -185,10 +319,14 @@ class OverlayHost(QtWidgets.QWidget):
             self.setGeometry(parent.rect())
 
     def paintEvent(self, event) -> None:
+        if self._dim <= 0.0:
+            return
+        color = QtGui.QColor(DIM_COLOR)
+        color.setAlpha(int(DIM_COLOR.alpha() * self._dim))
         painter = QtGui.QPainter(self)
-        painter.fillRect(self.rect(), DIM_COLOR)
+        painter.fillRect(self.rect(), color)
 
-    # Хост «глотает» взаимодействие вне карточек.
+    # Хост «глотает» взаимодействие вне карточки.
     def mousePressEvent(self, event) -> None:
         event.accept()
 
@@ -243,6 +381,21 @@ def _usable_host(context: Optional[QtWidgets.QWidget]) -> Optional[OverlayHost]:
     return host
 
 
+def _message_box_host(
+    parent: Optional[QtWidgets.QWidget],
+) -> Optional[OverlayHost]:
+    """Хост для message box-ов: окно родителя, иначе активное окно.
+
+    Боксы нередко создаются виджетами, ещё не вставленными в шелл
+    (например, при конструировании страницы) — тогда родительская цепочка
+    не доходит до окна с хостом, хотя пользователь смотрит на шелл.
+    """
+    host = _usable_host(parent)
+    if host is not None:
+        return host
+    return _usable_host(QtWidgets.QApplication.activeWindow())
+
+
 def exec_dialog(
     context: Optional[QtWidgets.QWidget], dialog: QtWidgets.QDialog
 ) -> int:
@@ -278,7 +431,7 @@ def install_message_box_overlay() -> None:
     и storm-protected ``critical`` из os_patch, который строит бокс и
     зовёт ``exec``) и статики ``information``/``warning``/``question``.
     ``critical`` не трогаем — им владеет os_patch. Без хоста (нет шелла,
-    окно скрыто, parent=None) поведение остаётся нативным. Идемпотентно.
+    окно скрыто) поведение остаётся нативным. Идемпотентно.
     """
     global _message_boxes_patched
     if _message_boxes_patched:
@@ -289,7 +442,7 @@ def install_message_box_overlay() -> None:
     native_exec = QMessageBox.exec
 
     def overlay_exec(box: QMessageBox) -> int:
-        host = _usable_host(box.parentWidget())
+        host = _message_box_host(box.parentWidget())
         if host is None or box.isVisible():
             return native_exec(box)
         loop = QtCore.QEventLoop()
@@ -316,7 +469,7 @@ def install_message_box_overlay() -> None:
             buttons=default_buttons,
             defaultButton=QMessageBox.StandardButton.NoButton,
         ):
-            if _usable_host(parent) is None:
+            if _message_box_host(parent) is None:
                 return native(parent, title, text, buttons, defaultButton)
             box = QMessageBox(icon, title, text, buttons, parent)
             box.setDefaultButton(defaultButton)
