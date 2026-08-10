@@ -102,6 +102,83 @@ def test_read_archive_identity(tmp_path):
     assert u.read_archive_identity(tmp_path) is None
 
 
+# --- Манифест релиза и выбор ассета по каналу (Task 3) ---
+
+
+def _manifest_data(**over):
+    data = {"schema": 1, "version": "10.5.22", "tag": "v10.5.22", "commit": "c" * 40,
+            "assets": [
+                {"name": "GeminiTranslator-Setup.exe", "platform": "windows",
+                 "channel": "windows-installed", "size": 10, "sha256": "a" * 64},
+                {"name": "GeminiTranslator-Portable.exe", "platform": "windows",
+                 "channel": "windows-portable", "size": 20, "sha256": "b" * 64},
+                {"name": "GeminiTranslator-macOS.zip", "platform": "macos",
+                 "channel": "macos", "size": 30, "sha256": "c" * 64}]}
+    data.update(over)
+    return data
+
+
+def _gh_assets(names):
+    return [{"name": n, "browser_download_url": f"https://dl/{n}"} for n in names]
+
+
+_ALL = ["GeminiTranslator-Setup.exe", "GeminiTranslator-Portable.exe", "GeminiTranslator-macOS.zip"]
+
+
+def test_manifest_parses_and_selects():
+    from gemini_translator.utils import updater as u
+    m = u.parse_update_manifest(_manifest_data(), "v10.5.22", _gh_assets(_ALL))
+    a = u.select_release_asset(m, u.UpdateChannel.WINDOWS_INSTALLED)
+    assert a.name == "GeminiTranslator-Setup.exe" and a.url.endswith("Setup.exe")
+    assert u.select_release_asset(m, u.UpdateChannel.WINDOWS_PORTABLE).size == 20
+    assert u.select_release_asset(m, u.UpdateChannel.MACOS).name.endswith(".zip")
+
+
+def test_manifest_macos_prefers_dmg():
+    from gemini_translator.utils import updater as u
+    data = _manifest_data()
+    data["assets"].append({"name": "GeminiTranslator-macOS.dmg", "platform": "macos",
+                           "channel": "macos", "size": 40, "sha256": "d" * 64})
+    m = u.parse_update_manifest(data, "v10.5.22", _gh_assets(_ALL + ["GeminiTranslator-macOS.dmg"]))
+    assert u.select_release_asset(m, u.UpdateChannel.MACOS).name.endswith(".dmg")
+
+
+def test_manifest_missing_channel_is_manual_not_fallback():
+    from gemini_translator.utils import updater as u
+    data = _manifest_data()
+    data["assets"] = [data["assets"][0]]
+    m = u.parse_update_manifest(data, "v10.5.22", _gh_assets(_ALL))
+    assert u.select_release_asset(m, u.UpdateChannel.WINDOWS_PORTABLE) is None
+    assert u.select_release_asset(m, u.UpdateChannel.SOURCE_GIT) is None  # source не берёт бинарники
+    assert u.select_release_asset(m, u.UpdateChannel.DEVELOPMENT) is None
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda d: d.update(schema=2),
+    lambda d: d.update(tag="v9.9.9"),
+    lambda d: d.update(version="oops"),
+    lambda d: d.update(commit="zz"),
+    lambda d: d["assets"][0].update(sha256="short"),
+    lambda d: d["assets"][0].update(size=0),
+    lambda d: d["assets"][0].update(name="NotUploaded.exe"),
+])
+def test_manifest_rejects_invalid(mutate):
+    from gemini_translator.utils import updater as u
+    data = _manifest_data()
+    mutate(data)
+    with pytest.raises(u.UpdateError):
+        u.parse_update_manifest(data, "v10.5.22", _gh_assets(_ALL))
+
+
+def test_manifest_duplicate_channel_is_ambiguous_manual():
+    from gemini_translator.utils import updater as u
+    data = _manifest_data()
+    data["assets"].append(dict(data["assets"][0], name="GeminiTranslator-Setup2.exe"))
+    m = u.parse_update_manifest(data, "v10.5.22",
+                                _gh_assets(_ALL + ["GeminiTranslator-Setup2.exe"]))
+    assert u.select_release_asset(m, u.UpdateChannel.WINDOWS_INSTALLED) is None
+
+
 def test_update_checker_finds_update(qtbot):
     with patch('requests.get') as mock_get:
         mock_response = MagicMock()

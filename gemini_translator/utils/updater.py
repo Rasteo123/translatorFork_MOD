@@ -147,6 +147,104 @@ def read_archive_identity(root):
         return None
 
 
+# --- Манифест релиза ------------------------------------------------------
+
+UPDATE_MANIFEST_FILENAME = "update-manifest.json"
+
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class ReleaseAsset:
+    name: str
+    url: str
+    platform: str
+    channel: str
+    size: int
+    sha256: str  # None для архивов без опубликованного хеша
+
+
+@dataclass(frozen=True)
+class UpdateManifest:
+    version: ReleaseVersion
+    tag: str
+    commit: str
+    assets: tuple
+
+
+def parse_update_manifest(data, release_tag, gh_assets) -> UpdateManifest:
+    """Валидирует манифест и связывает его записи с ассетами GitHub-релиза.
+
+    Каждая запись манифеста обязана однозначно совпасть по имени с загруженным
+    ассетом релиза — иначе релиз битый и это ошибка, а не «нет обновлений».
+    """
+    if not isinstance(data, dict):
+        raise UpdateError("Манифест обновления повреждён (не объект)")
+    if data.get("schema") != 1:
+        raise UpdateError(f"Неизвестная схема манифеста: {data.get('schema')!r}")
+    tag = str(data.get("tag", ""))
+    if tag != release_tag:
+        raise UpdateError(f"Тег манифеста {tag!r} не совпадает с тегом релиза {release_tag!r}")
+    version = parse_version_tag(str(data.get("version", "")))
+    if tag != f"v{data.get('version')}":
+        raise UpdateError("Версия и тег в манифесте не согласованы")
+    commit = str(data.get("commit", ""))
+    if not _HEX40_RE.match(commit):
+        raise UpdateError("Некорректный commit в манифесте")
+    raw_assets = data.get("assets")
+    if not isinstance(raw_assets, list) or not raw_assets:
+        raise UpdateError("Манифест не содержит списка ассетов")
+    by_name = {}
+    for gh in gh_assets or []:
+        name = gh.get("name")
+        url = gh.get("browser_download_url")
+        if name and url:
+            by_name[name] = url
+    assets = []
+    for entry in raw_assets:
+        if not isinstance(entry, dict):
+            raise UpdateError("Запись ассета в манифесте повреждена")
+        name = str(entry.get("name", ""))
+        channel = str(entry.get("channel", ""))
+        platform = str(entry.get("platform", ""))
+        size = entry.get("size")
+        sha256 = str(entry.get("sha256", "")).lower()
+        if not name or not channel or not platform:
+            raise UpdateError(f"Неполная запись ассета: {name!r}")
+        if not isinstance(size, int) or size <= 0:
+            raise UpdateError(f"Некорректный размер ассета {name!r}")
+        if not _HEX64_RE.match(sha256):
+            raise UpdateError(f"Некорректный SHA-256 ассета {name!r}")
+        url = by_name.get(name)
+        if not url:
+            raise UpdateError(f"Ассет {name!r} из манифеста не загружен в релиз")
+        assets.append(ReleaseAsset(name, url, platform, channel, size, sha256))
+    return UpdateManifest(version, tag, commit, tuple(assets))
+
+
+def select_release_asset(manifest, channel):
+    """Выбирает ассет строго своего канала; нет или неоднозначно — None.
+
+    None означает «только ручная загрузка»: апдейтер никогда не берёт
+    первый попавшийся ассет и никогда не скармливает бинарник source-каналам.
+    """
+    if channel not in (UpdateChannel.WINDOWS_INSTALLED, UpdateChannel.WINDOWS_PORTABLE,
+                       UpdateChannel.MACOS):
+        return None
+    matching = [a for a in manifest.assets if a.channel == channel.value]
+    if channel is UpdateChannel.MACOS:
+        dmg = [a for a in matching if a.name.lower().endswith(".dmg")]
+        zips = [a for a in matching if a.name.lower().endswith(".zip")]
+        if len(dmg) == 1:
+            return dmg[0]
+        if not dmg and len(zips) == 1:
+            return zips[0]
+        return None
+    if len(matching) != 1:
+        return None
+    return matching[0]
+
+
 def detect_update_channel() -> UpdateChannel:
     """Определяет канал по идентичности исполняемого файла, не по CWD.
 
