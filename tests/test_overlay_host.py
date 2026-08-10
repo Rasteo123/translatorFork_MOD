@@ -145,6 +145,23 @@ class OverlayHostTests(unittest.TestCase):
         self.assertFalse(host.isVisible())
         self.assertTrue(shell.centralWidget().isEnabled())
 
+    def test_card_refits_to_dialog_that_sizes_itself_on_show(self):
+        # QMessageBox узнаёт финальный размер только в showEvent — карточка
+        # должна подгоняться после показа, а не резать кнопки.
+        shell = self._shell()
+
+        class LateSizedDialog(QDialog):
+            def showEvent(self, event):
+                super().showEvent(event)
+                self.setFixedSize(520, 340)
+
+        dialog = LateSizedDialog()
+        shell.overlay_host.present(dialog)
+        _drain(self.app)
+        card = shell.overlay_host._card
+        self.assertGreaterEqual(card.width(), 520)
+        self.assertGreaterEqual(card.height(), 340)
+
     def test_snapshot_fade_reveals_real_dialog(self):
         from PyQt6 import QtTest
 

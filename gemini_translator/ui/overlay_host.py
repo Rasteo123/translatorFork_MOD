@@ -210,6 +210,7 @@ class OverlayHost(QtWidgets.QWidget):
         if self._content_fade_ms <= 0 and self._morph_ms <= 0:
             dialog.show()
             self._focus_dialog(dialog)
+            self._refit_card(dialog)
             return
         dialog.hide()
 
@@ -221,6 +222,7 @@ class OverlayHost(QtWidgets.QWidget):
                     return
                 dialog.show()
                 self._focus_dialog(dialog)
+                self._refit_card(dialog)
             except RuntimeError:
                 pass  # диалог уже уничтожен
 
@@ -275,6 +277,19 @@ class OverlayHost(QtWidgets.QWidget):
             animation.start()
 
         QtCore.QTimer.singleShot(self._morph_ms, _reveal)
+
+    def _refit_card(self, dialog: QtWidgets.QDialog) -> None:
+        """Подгоняет карточку после показа диалога.
+
+        QMessageBox и подобные диалоги узнают финальный размер только в
+        showEvent — без повторной подгонки длинный текст и кнопки
+        обрезаются.
+        """
+        if self._card is None:
+            return
+        target = self._card_rect_for(dialog)
+        if target != self._card.geometry():
+            self._animate_card_to(target)
 
     def _focus_dialog(self, dialog: QtWidgets.QDialog) -> None:
         focus = dialog.focusWidget()

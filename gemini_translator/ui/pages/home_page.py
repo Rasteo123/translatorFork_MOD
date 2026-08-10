@@ -319,9 +319,11 @@ class HomePage(ShellPage):
         try:
             repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
             QtWidgets.QApplication.processEvents()
-            # Используем временные данные пользователя, чтобы git мог сделать авто-мердж (или stash/rebase) при наличии локальных изменений
+            # --autostash: локальные изменения (в т.ч. CRLF-шум на Windows)
+            # прячутся в stash на время merge и возвращаются после — иначе
+            # pull падает с «local changes would be overwritten by merge».
             result = subprocess.run(
-                ["git", "-c", "user.name=Updater", "-c", "user.email=updater@localhost", "pull", "--no-edit"], 
+                ["git", "-c", "user.name=Updater", "-c", "user.email=updater@localhost", "pull", "--no-edit", "--autostash"],
                 capture_output=True, text=True, cwd=repo_root
             )
             progress.close()
