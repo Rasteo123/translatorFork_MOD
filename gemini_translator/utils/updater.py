@@ -479,3 +479,125 @@ class UpdateChecker(QThread):
             kind="archive", suppress_id=sha, title_version=sha[:10],
             description=f"Найден новый коммит:\n{message}", commit=sha,
             zip_url=f"{_API_BASE}/zipball/{sha}"))
+
+
+# --- Загрузка с верификацией ----------------------------------------------
+
+class UpdateDownloader(QThread):
+    """Скачивает ассет во .part-файл и проверяет его до переименования.
+
+    Завершение скачивания — ещё не успех: файл считается пригодным только
+    после проверки размера, SHA-256 и формы (PE/ZIP). Любой сбой и отмена
+    удаляют .part; итоговое имя появляется только у проверенного файла.
+    """
+
+    progress = pyqtSignal(int, int)   # скачано, всего (0 — неизвестно)
+    verified = pyqtSignal(str)
+    failed = pyqtSignal(str)
+    cancelled = pyqtSignal()
+
+    _CHUNK = 64 * 1024
+
+    def __init__(self, url, staging_dir, *, expected_size=None, expected_sha256=None,
+                 shape=None, session_factory=build_updater_session, parent=None):
+        super().__init__(parent)
+        self._url = url
+        self._staging_dir = Path(staging_dir)
+        self._expected_size = expected_size
+        self._expected_sha256 = (expected_sha256 or "").lower() or None
+        self._shape = shape
+        self._session_factory = session_factory
+        self._cancel_requested = False
+        self._response = None
+
+    def cancel(self):
+        self._cancel_requested = True
+        response = self._response
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def run(self):
+        import hashlib
+
+        final_name = self._url.rstrip("/").rsplit("/", 1)[-1] or "update.bin"
+        self._staging_dir.mkdir(parents=True, exist_ok=True)
+        part_path = self._staging_dir / (final_name + ".part")
+        final_path = self._staging_dir / final_name
+        try:
+            session = self._session_factory()
+            response = session.get(self._url, timeout=DEFAULT_TIMEOUT, stream=True)
+            self._response = response
+            if response.status_code != 200:
+                raise UpdateError(f"HTTP {response.status_code} при скачивании обновления")
+            declared = self._expected_size
+            if declared is None:
+                try:
+                    declared = int(response.headers.get("content-length", 0)) or None
+                except (TypeError, ValueError):
+                    declared = None
+            digest = hashlib.sha256()
+            downloaded = 0
+            with open(part_path, "wb") as out:
+                for chunk in response.iter_content(chunk_size=self._CHUNK):
+                    if self._cancel_requested:
+                        raise _Cancelled()
+                    if not chunk:
+                        continue
+                    out.write(chunk)
+                    digest.update(chunk)
+                    downloaded += len(chunk)
+                    self.progress.emit(downloaded, declared or 0)
+            if self._cancel_requested:
+                raise _Cancelled()
+            if self._expected_size is not None and downloaded != self._expected_size:
+                raise UpdateError(
+                    f"Размер файла не совпал: получено {downloaded}, "
+                    f"ожидалось {self._expected_size}")
+            if self._expected_sha256 is not None and digest.hexdigest() != self._expected_sha256:
+                raise UpdateError("SHA-256 скачанного файла не совпал с манифестом")
+            self._verify_shape(part_path)
+            os.replace(part_path, final_path)
+            self.verified.emit(str(final_path))
+        except _Cancelled:
+            self._cleanup(part_path)
+            self.cancelled.emit()
+        except UpdateError as e:
+            self._cleanup(part_path)
+            self.failed.emit(e.user_message)
+        except Exception as e:  # noqa: BLE001
+            self._cleanup(part_path)
+            self.failed.emit(str(e))
+        finally:
+            self._response = None
+
+    def _verify_shape(self, path):
+        import zipfile
+
+        if self._shape == "pe":
+            with open(path, "rb") as f:
+                if f.read(2) != b"MZ":
+                    raise UpdateError("Скачанный файл не является исполняемым файлом Windows")
+        elif self._shape == "zip":
+            try:
+                with zipfile.ZipFile(path) as z:
+                    if not z.namelist():
+                        raise UpdateError("Скачанный архив пуст")
+                    bad = z.testzip()
+                    if bad is not None:
+                        raise UpdateError(f"Архив повреждён: {bad}")
+            except zipfile.BadZipFile as e:
+                raise UpdateError(f"Архив повреждён: {e}") from e
+
+    @staticmethod
+    def _cleanup(part_path):
+        try:
+            os.remove(part_path)
+        except OSError:
+            pass
+
+
+class _Cancelled(Exception):
+    pass

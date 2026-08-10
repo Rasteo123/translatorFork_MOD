@@ -439,6 +439,116 @@ def test_checker_archive_api_error(qtbot, monkeypatch):
         checker.run()
 
 
+# --- UpdateDownloader (Task 5) ---
+
+
+class FakeStreamResponse:
+    def __init__(self, chunks, status_code=200, content_length=None):
+        self.chunks = chunks
+        self.status_code = status_code
+        self.headers = {}
+        if content_length is not None:
+            self.headers["content-length"] = str(content_length)
+        self.closed = False
+
+    def iter_content(self, chunk_size=1):
+        for chunk in self.chunks:
+            yield chunk
+
+    def close(self):
+        self.closed = True
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+
+def _download(qtbot, tmp_path, response, *, expect, cancel_after=None, **kwargs):
+    from gemini_translator.utils import updater as u
+
+    class StreamSession:
+        def get(self, url, timeout=None, stream=False, **kw):
+            assert stream is True
+            return response
+
+    dl = u.UpdateDownloader("https://dl/x.bin", tmp_path,
+                            session_factory=lambda: StreamSession(), **kwargs)
+    if cancel_after is not None:
+        seen = []
+        orig_iter = response.iter_content
+
+        def counting_iter(chunk_size=1):
+            for chunk in orig_iter(chunk_size):
+                seen.append(chunk)
+                if len(seen) == cancel_after:
+                    dl.cancel()
+                yield chunk
+
+        response.iter_content = counting_iter
+    with qtbot.waitSignal(getattr(dl, expect), timeout=3000) as blocker:
+        dl.run()
+    return dl, blocker
+
+
+def test_downloader_verifies_exe(qtbot, tmp_path):
+    import hashlib
+    payload = b"MZ" + b"x" * 100
+    sha = hashlib.sha256(payload).hexdigest()
+    resp = FakeStreamResponse([payload[:50], payload[50:]], content_length=len(payload))
+    dl, blocker = _download(qtbot, tmp_path, resp, expect="verified",
+                            expected_size=len(payload), expected_sha256=sha, shape="pe")
+    final = blocker.args[0]
+    assert os.path.exists(final) and not final.endswith(".part")
+    assert open(final, "rb").read() == payload
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_downloader_verifies_zip(qtbot, tmp_path):
+    import hashlib
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("main.py", "print('hi')")
+    payload = buf.getvalue()
+    sha = hashlib.sha256(payload).hexdigest()
+    resp = FakeStreamResponse([payload], content_length=len(payload))
+    dl, blocker = _download(qtbot, tmp_path, resp, expect="verified",
+                            expected_size=len(payload), expected_sha256=sha, shape="zip")
+    assert os.path.exists(blocker.args[0])
+
+
+@pytest.mark.parametrize("kwargs,chunks,content_length", [
+    # неверный хеш
+    (dict(expected_sha256="0" * 64, shape="pe"), [b"MZ123"], 5),
+    # тело короче заявленного размера
+    (dict(expected_size=999, shape="pe"), [b"MZ123"], 999),
+    # не PE
+    (dict(shape="pe"), [b"PK123"], 5),
+    # битый zip
+    (dict(shape="zip"), [b"PK\x03\x04garbage"], 14),
+])
+def test_downloader_failures_leave_nothing(qtbot, tmp_path, kwargs, chunks, content_length):
+    resp = FakeStreamResponse(chunks, content_length=content_length)
+    dl, _ = _download(qtbot, tmp_path, resp, expect="failed", **kwargs)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_downloader_http_error(qtbot, tmp_path):
+    resp = FakeStreamResponse([], status_code=500)
+    _download(qtbot, tmp_path, resp, expect="failed")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_downloader_cancel_removes_part(qtbot, tmp_path):
+    resp = FakeStreamResponse([b"MZ", b"aa", b"bb", b"cc"], content_length=8)
+    dl, _ = _download(qtbot, tmp_path, resp, expect="cancelled", cancel_after=1,
+                      expected_size=8, shape="pe")
+    assert list(tmp_path.iterdir()) == []
+    assert resp.closed
+
+
 def test_build_updater_session_socks_credentials():
     from gemini_translator.utils import updater as u
 
