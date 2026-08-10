@@ -922,6 +922,8 @@ class EventBus(QtCore.QObject):
 
         callback(event)
 
+    STOP_EVENTS = frozenset({'manual_stop_requested', 'stop_session_requested'})
+
     def emit_event(self, event: dict):
         """Совместимый способ отправки: topics + старый event_posted сигнал."""
         if (
@@ -931,7 +933,23 @@ class EventBus(QtCore.QObject):
         ):
             self._queue_log_event(event)
             return
+        if isinstance(event, dict) and event.get('event') in self.STOP_EVENTS:
+            self._cancel_inflight_mcp_requests()
         self.event_posted.emit(event)
+
+    @staticmethod
+    def _cancel_inflight_mcp_requests():
+        """Снимает висящие MCP-запросы сразу, не дожидаясь движка.
+
+        Заявку, которую не забрал ни один AI-агент, движок отменить не успеет:
+        он сам может ждать её результата, и тогда «стоп» не будет обработан.
+        Отмена уходит в фоновый поток, поэтому событие не задерживается.
+        """
+        try:
+            from gemini_translator.mcp import inflight
+            inflight.cancel_all()
+        except Exception as exc:
+            print(f"[EventBus WARN] Не удалось снять висящие MCP-запросы: {exc}")
 
     def _queue_log_event(self, event: dict):
         """Queue a worker log without adding one Qt event per log line."""
