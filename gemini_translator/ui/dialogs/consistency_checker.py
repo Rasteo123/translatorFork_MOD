@@ -19,8 +19,8 @@ import json
 import shutil
 from pathlib import Path
 from datetime import datetime
-from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QEvent
-from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption
+from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QRectF, QEvent
+from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption, QPainter
 
 class CenteredCheckboxDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -35,10 +35,13 @@ class CenteredCheckboxDelegate(QStyledItemDelegate):
         bg_color = index.data(Qt.ItemDataRole.BackgroundRole)
         if bg_color:
             painter.save()
+            # Без сглаживания дуги подложек дают пиксельные «лесенки»
+            # на экранах с DPR=1 (Windows/Linux).
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(bg_color)
-            rect = option.rect.adjusted(4, 2, -4, -2)
-            painter.drawRoundedRect(rect, 6, 6)
+            rect = QRectF(option.rect).adjusted(4.0, 2.0, -4.0, -2.0)
+            painter.drawRoundedRect(rect, 6.0, 6.0)
             painter.restore()
 
         style = option.widget.style() if option.widget else QApplication.style()
@@ -78,10 +81,13 @@ class ThemedTableDelegate(QStyledItemDelegate):
         bg_color = index.data(Qt.ItemDataRole.BackgroundRole)
         if bg_color:
             painter.save()
+            # Без сглаживания дуги подложек дают пиксельные «лесенки»
+            # на экранах с DPR=1 (Windows/Linux).
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(bg_color)
-            rect = option.rect.adjusted(4, 2, -4, -2)
-            painter.drawRoundedRect(rect, 6, 6)
+            rect = QRectF(option.rect).adjusted(4.0, 2.0, -4.0, -2.0)
+            painter.drawRoundedRect(rect, 6.0, 6.0)
             painter.restore()
         super().paint(painter, option, index)
 
@@ -101,12 +107,14 @@ from ...api import config as api_config
 from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
 from ..shell import ShellPage
+from ..overlay_host import exec_dialog, present_dialog
 from .chapter_selection_dialog import ChapterSelectionDialog
 from gemini_translator.ui import theme_manager
 
 # Fuzzy matching: rapidfuzz через прослойку fuzzy_compat (fuzzywuzzy — фолбэк)
 from ...utils.fuzzy_compat import FUZZ_AVAILABLE as FUZZYWUZZY_AVAILABLE
 from ...utils import fuzzy_compat as fuzz
+from ..widgets.overlay_tab_widget import install_tab_fade
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +302,7 @@ class SingleFixWorker(QThread):
 
 class ConsistencyValidatorPage(ShellPage):
     page_title = "Проверка согласованности"
+    preferred_window_size = (1400, 950)
 
     """
     Диалог проверки согласованности перевода v2.
@@ -346,7 +355,6 @@ class ConsistencyValidatorPage(ShellPage):
         self.single_fix_trace_file = self.session_file.parent / "consistency_single_fix_trace.log"
 
         self.setWindowTitle("🔍 Проверка согласованности (Consistency Checker)")
-        self.resize(1400, 950)
 
         self._init_ui()
         self._set_selected_chapters(self._all_chapter_ids(), fallback_to_all=True)
@@ -362,6 +370,7 @@ class ConsistencyValidatorPage(ShellPage):
 
         # Основной контейнер с вкладками
         self.main_tabs = QTabWidget()
+        install_tab_fade(self.main_tabs)
         layout.addWidget(self.main_tabs)
 
         # === Вкладка 1: Анализ (Analysis Tab) ===
@@ -590,6 +599,7 @@ class ConsistencyValidatorPage(ShellPage):
         
         # Левая часть: Табы с настройками
         settings_left_tabs = QTabWidget()
+        install_tab_fade(settings_left_tabs)
         settings_left_tabs.setMinimumWidth(450)
         
         # 1. Ключи
@@ -1119,13 +1129,15 @@ class ConsistencyValidatorPage(ShellPage):
             previous_selection=list(self.selected_chapter_ids),
             parent=self,
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
 
-        selected_chapters = dialog.get_selected_chapters()
-        self._set_selected_chapters(
-            [self._chapter_id(chapter) for chapter in selected_chapters],
-        )
+        def _apply_selection(result: int) -> None:
+            if result != QDialog.DialogCode.Accepted:
+                return
+            self._set_selected_chapters(
+                [self._chapter_id(ch) for ch in dialog.get_selected_chapters()],
+            )
+
+        present_dialog(self, dialog, _apply_selection)
 
     def _update_analysis_scope_info(self):
         """Обновляет информацию о текущем наборе глав для анализа."""
@@ -2464,7 +2476,7 @@ class ConsistencyValidatorPage(ShellPage):
         close_btn.clicked.connect(dialog.close)
         layout.addWidget(close_btn)
         
-        dialog.exec()
+        exec_dialog(self, dialog)
 
     def save_all_fixes(self):
         """Сохраняет все накопленные исправления в файлы."""

@@ -211,10 +211,16 @@ set "SOURCE_ZIP=%RELEASE_DIR%\translatorFork_MOD-source-v%RELEASE_VERSION%.zip"
 echo [INFO] Creating translatorFork_MOD-source-v%RELEASE_VERSION%.zip...
 git archive --format=zip --output="%SOURCE_ZIP%" HEAD
 if %ERRORLEVEL% NEQ 0 exit /b 1
+echo [INFO] Injecting archive identity (.translator-update.json)...
+"%PYTHON_CMD%" tools\inject_archive_identity.py --zip "%SOURCE_ZIP%"
+if %ERRORLEVEL% NEQ 0 exit /b 1
 exit /b 0
 
 :write_sha256sums
 echo [INFO] Writing SHA256SUMS.txt...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $dir = Resolve-Path -LiteralPath '%RELEASE_DIR%'; Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name | ForEach-Object { '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name } | Set-Content -LiteralPath (Join-Path $dir 'SHA256SUMS.txt') -Encoding ASCII"
+if %ERRORLEVEL% NEQ 0 exit /b 1
+echo [INFO] Writing manual-artifacts.json (these ZIPs are never auto-update assets)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $dir = Resolve-Path -LiteralPath '%RELEASE_DIR%'; $zips = @(Get-ChildItem -LiteralPath $dir -File -Filter '*.zip' | Sort-Object Name | ForEach-Object Name); $payload = [ordered]@{ schema = 1; channel = 'manual'; note = 'Manual distribution ZIPs. The updater never selects these as executable updates.'; files = $zips }; $payload | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'manual-artifacts.json') -Encoding UTF8"
 if %ERRORLEVEL% NEQ 0 exit /b 1
 exit /b 0

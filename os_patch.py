@@ -817,7 +817,17 @@ def _patched_qmessagebox_critical(parent, title, text):
         parts = text.split('\n\n', 1)
         header = parts[0]
         details = text if len(parts) < 2 else text
-        
+
+        # Ошибки бывают на десятки/сотни строк: видимая часть окна
+        # ограничивается, полный текст остаётся в раскрывающейся
+        # прокручиваемой области «Show Details…» (и в «Скопировать ошибку»).
+        header_lines = header.splitlines()
+        if len(header_lines) > 8 or len(header) > 700:
+            header = "\n".join(header_lines[:8]).rstrip()
+            if len(header) > 700:
+                header = header[:700].rstrip()
+            header += "\n… (полный текст — в «Показать подробности» или по кнопке копирования)"
+
         main_text = (
             f"{header}\n\n"
             "Система обнаружила критическую ошибку.\n"

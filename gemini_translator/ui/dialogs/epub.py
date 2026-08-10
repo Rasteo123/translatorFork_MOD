@@ -76,6 +76,8 @@ from ...core.epub_deep_cleanup_helpers import (
     get_default_deep_cleanup_tag_rules,
     normalize_deep_cleanup_tag_rules,
 )
+from ..overlay_host import exec_dialog
+from ..widgets.overlay_tab_widget import install_tab_fade
 from ...core.epub_duplicate_helpers import (
     DUPLICATE_REVIEW_BLOCK_TAGS,
     analyze_duplicate_findings,
@@ -593,7 +595,7 @@ class EpubHtmlSelectorDialog(QDialog):
             project_manager=project_manager,
         )
         
-        result = dialog.exec()
+        result = exec_dialog(parent, dialog)
         
         if result == QDialog.DialogCode.Accepted:
             return True, dialog.get_selected_files()
@@ -1087,7 +1089,7 @@ class EpubHtmlSelectorDialog(QDialog):
 
         # Открываем диалог (теперь он покажет ручные опции даже без issues)
         dialog = EpubCleanupOptionsDialog(issues, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             fixes = dialog.get_fixes()
             if fixes:
                 self._run_surgical_cleanup(fixes)
@@ -1115,7 +1117,7 @@ class EpubHtmlSelectorDialog(QDialog):
             return
 
         dialog = EpubDeepCleanupOptionsDialog(self.deep_cleanup_settings, self.deep_cleanup_tag_rules, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             options = dialog.get_options()
             self.deep_cleanup_settings = dict(options)
             self.deep_cleanup_tag_rules = dict(options.get('tag_rules') or get_default_deep_cleanup_tag_rules())
@@ -1157,7 +1159,7 @@ class EpubHtmlSelectorDialog(QDialog):
             self.wait_dialog.accept()
 
         dialog = EpubDuplicateReviewDialog(analysis_data or {}, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             selected_findings = dialog.get_selected_findings()
             if selected_findings:
                 self._run_duplicate_cleanup(selected_findings)
@@ -1371,13 +1373,25 @@ class TranslatedChaptersManagerDialog(QDialog):
         self._checkbox_bulk_change = False
         self._last_checkbox_row = None
         self.setMinimumSize(800, 600)
+        self._fill_generation = 0
+        self._fill_in_progress = False
         self.init_ui()
         if self.original_epub_path:
             self.original_file_label.setText(os.path.basename(self.original_epub_path))
-        self.load_chapters()
+        # Загрузка глав отложена: карточка появляется мгновенно, таблица
+        # заполняется следом (чанками — см. _smart_update_table).
+        QtCore.QTimer.singleShot(0, self.load_chapters)
 
     def init_ui(self):
         self._structure_modified = False
+        # Иконки версий считаются один раз: standardIcon на каждую из 500+
+        # строк — это была половина времени построения таблицы.
+        self._version_file_icon = self.style().standardIcon(
+            QtWidgets.QStyle.StandardPixmap.SP_FileIcon
+        )
+        self._version_validated_icon = self.style().standardIcon(
+            QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton
+        )
         # --- Основной вертикальный лейаут ---
         main_layout = QVBoxLayout(self)
         
@@ -1560,11 +1574,16 @@ class TranslatedChaptersManagerDialog(QDialog):
         meta_main_layout.addLayout(cover_layout)
         main_layout.addWidget(self.metadata_group)
 
-        # Кнопка запуска
+        # Кнопки запуска и закрытия
         self.create_epub_btn = QPushButton("🚀 Собрать EPUB")
         self.create_epub_btn.setStyleSheet(f"background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 5px;")
         self.create_epub_btn.clicked.connect(self.create_epub)
-        main_layout.addWidget(self.create_epub_btn)
+        bottom_buttons = QHBoxLayout()
+        bottom_buttons.addWidget(self.create_epub_btn, 1)
+        self.close_btn = QPushButton("Закрыть")
+        self.close_btn.clicked.connect(self.reject)
+        bottom_buttons.addWidget(self.close_btn)
+        main_layout.addLayout(bottom_buttons)
 
         # --- Логика переключений режимов ---
         self.create_new_radio.toggled.connect(self._on_mode_toggled)
@@ -1785,18 +1804,40 @@ class TranslatedChaptersManagerDialog(QDialog):
         # Обновляем номера строк
         self._renumber_rows()
         
+    #: Порог, с которого первичное заполнение таблицы идёт чанками.
+    CHUNKED_FILL_THRESHOLD = 150
+    #: Строк на один чанк (один тик цикла событий). Комбобоксы с полишем
+    #: темы дороги: чанк подобран, чтобы тик укладывался в кадр анимации.
+    CHUNKED_FILL_BATCH = 40
+
     def _smart_update_table(self, target_paths):
         """
         Умная перерисовка с блокировкой сигналов и Diff-алгоритмом.
         """
+        # Перезапуск во время незавершённого чанкового заполнения:
+        # сбрасываем таблицу и начинаем с чистого листа.
+        if self._fill_in_progress:
+            self._fill_generation += 1
+            self._fill_in_progress = False
+            self.table.setRowCount(0)
+
+        # Большое первичное заполнение — чанками, чтобы карточка появлялась
+        # мгновенно и анимация не рвалась на 500+ комбобоксах.
+        if (
+            self.table.rowCount() == 0
+            and len(target_paths) > self.CHUNKED_FILL_THRESHOLD
+        ):
+            self._chunked_fill(list(target_paths))
+            return
+
         # 1. Блокировка всего
         self.table.blockSignals(True)
         self.table.setUpdatesEnabled(False) # Важно для скорости Qt
         original_selection_mode = self.table.selectionMode()
-        
+
         try:
             self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-            
+
             # 2. Собираем текущие ID (пути) из таблицы
             current_paths = []
             for row in range(self.table.rowCount()):
@@ -1829,6 +1870,48 @@ class TranslatedChaptersManagerDialog(QDialog):
             self.table.setSelectionMode(original_selection_mode)
             self.table.blockSignals(False)
             self.table.setUpdatesEnabled(True)
+
+    def _chunked_fill(self, target_paths):
+        """Первичное заполнение большой таблицы порциями по тикам цикла.
+
+        Кнопка сборки выключена до завершения: собирать EPUB по
+        полузаполненной таблице нельзя.
+        """
+        self._fill_generation += 1
+        generation = self._fill_generation
+        self._fill_in_progress = True
+        self.create_epub_btn.setEnabled(False)
+        self.table.setRowCount(len(target_paths))
+
+        def _fill_from(start: int) -> None:
+            if generation != self._fill_generation:
+                return  # заполнение перезапущено
+            try:
+                total = self.table.rowCount()
+            except RuntimeError:
+                return  # диалог уже уничтожен
+            end = min(start + self.CHUNKED_FILL_BATCH, len(target_paths))
+            self.table.blockSignals(True)
+            self.table.setUpdatesEnabled(False)
+            try:
+                for row in range(start, min(end, total)):
+                    self._populate_row(row, target_paths[row])
+            finally:
+                self.table.blockSignals(False)
+                self.table.setUpdatesEnabled(True)
+            if end < len(target_paths):
+                QtCore.QTimer.singleShot(0, lambda: _fill_from(end))
+                return
+            self._fill_in_progress = False
+            self.table.blockSignals(True)
+            try:
+                self._renumber_rows()
+            finally:
+                self.table.blockSignals(False)
+            self.create_epub_btn.setEnabled(True)
+            self._update_preview_button_state()
+
+        _fill_from(0)
 
     def _surgical_update(self, old_ids, new_ids):
         """
@@ -1918,8 +2001,8 @@ class TranslatedChaptersManagerDialog(QDialog):
         combo = NoScrollComboBox()
         combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         combo.setMinimumContentsLength(24)
-        file_icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
-        validated_icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton)
+        file_icon = self._version_file_icon
+        validated_icon = self._version_validated_icon
 
         versions = self.project_manager.get_versions_for_original(internal_path)
         sorted_versions = sort_translation_versions_for_epub_build(versions, self.translated_folder)
@@ -2242,7 +2325,7 @@ class TranslatedChaptersManagerDialog(QDialog):
             self.wait_dialog.accept()
 
         dialog = EpubDuplicateReviewDialog(analysis_data or {}, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             selected_findings = dialog.get_selected_findings()
             if selected_findings:
                 self._run_duplicate_cleanup_for_translated_files(selected_findings)
@@ -2295,7 +2378,7 @@ class TranslatedChaptersManagerDialog(QDialog):
 
             if msg_box.clickedButton() == yes_button:
                 dialog = EpubDuplicateReviewDialog(remaining, self)
-                if dialog.exec() == QDialog.DialogCode.Accepted:
+                if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
                     selected_findings = dialog.get_selected_findings()
                     if selected_findings:
                         self._run_duplicate_cleanup_for_translated_files(selected_findings)
@@ -2340,7 +2423,7 @@ class TranslatedChaptersManagerDialog(QDialog):
             original_internal_path=self._get_selected_original_internal_path(),
             project_manager=self.project_manager,
         )
-        dialog.exec()
+        exec_dialog(self, dialog)
 
         self.load_chapters()
         self._select_chapter_by_filepath(filepath)
@@ -2874,6 +2957,7 @@ class EpubDuplicateReviewDialog(QDialog):
         layout.addWidget(intro)
 
         self.tabs = QTabWidget()
+        install_tab_fade(self.tabs)
         self._build_results_tab(
             tab_key='start',
             tab_title="Начало главы",
@@ -3475,7 +3559,7 @@ class EpubDeepCleanupOptionsDialog(QDialog):
 
     def _edit_tag_rules(self):
         dialog = EpubDeepCleanupTagRulesDialog(self._tag_rules, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             self._tag_rules = dict(normalize_deep_cleanup_tag_rules(dialog.get_rules()))
             self._refresh_rules_summary()
             self._persist_current_state()

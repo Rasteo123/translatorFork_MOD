@@ -37,6 +37,7 @@ from pathlib import Path
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.dialogs.rulate_export import EPUBConverterThread, SimpleEpubReader
 from gemini_translator.ui import theme_manager
+from ..widgets.overlay_tab_widget import install_tab_fade
 
 
 class RulateExportPage(ShellPage):
@@ -110,6 +111,7 @@ class RulateExportPage(ShellPage):
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         tabs = QTabWidget()
+        install_tab_fade(tabs)
 
         rename_tab = QWidget()
         rename_layout = QVBoxLayout(rename_tab)

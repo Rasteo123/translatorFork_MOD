@@ -25,6 +25,7 @@ from ...utils.epub_tools import TASK_SIZE_UNIT_CHARS, TASK_SIZE_UNIT_TOKENS, nor
 from ...utils.settings import SettingsManager
 from .common_widgets import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from gemini_translator.ui import theme_manager
+from ..overlay_host import exec_dialog
 
 
 AUTO_TRANSLATION_DEFAULTS = {
@@ -1149,7 +1150,7 @@ class AutoTranslateWidget(QWidget):
         dialog.setLabelText("Имя для нового пресета:")
         dialog.setOkButtonText("Сохранить")
         dialog.setCancelButtonText("Отмена")
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) != QtWidgets.QDialog.DialogCode.Accepted:
             return
 
         name = dialog.textValue().strip()

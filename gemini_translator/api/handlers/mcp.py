@@ -7,6 +7,7 @@ import uuid
 
 from ..base import BaseApiHandler, _current_debug_trace
 from ..errors import NetworkError, RateLimitExceededError, TemporaryRateLimitError, ValidationFailedError
+from ...mcp import inflight
 from ...mcp.client import DaemonClientError, load_client
 from ...utils.async_helpers import run_sync
 
@@ -39,6 +40,9 @@ class McpApiHandler(BaseApiHandler):
         payload = self._build_completion_payload(prompt, log_prefix, max_output_tokens=max_output_tokens)
         self._debug_record_request({"mode": "mcp", **payload})
 
+        # Пока запрос висит, его id должен быть виден снаружи: кнопка «стоп»
+        # снимает такие запросы напрямую, не дожидаясь движка (см. mcp.inflight).
+        inflight.register(payload.get("request_id"))
         try:
             timeout_sec = payload["timeout_sec"]
             response = await run_sync(
@@ -72,6 +76,7 @@ class McpApiHandler(BaseApiHandler):
             )
             raise
         finally:
+            inflight.unregister(payload.get("request_id"))
             _current_debug_trace.reset(trace_token)
 
     def _build_completion_payload(self, prompt, log_prefix, *, max_output_tokens=None):

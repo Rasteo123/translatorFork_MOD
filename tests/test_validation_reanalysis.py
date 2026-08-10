@@ -134,6 +134,9 @@ class _ProgressDialogStub:
     def show(self):
         return None
 
+    def close(self):
+        return None
+
     def wasCanceled(self):
         return False
 

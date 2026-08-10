@@ -922,6 +922,8 @@ class EventBus(QtCore.QObject):
 
         callback(event)
 
+    STOP_EVENTS = frozenset({'manual_stop_requested', 'stop_session_requested'})
+
     def emit_event(self, event: dict):
         """Совместимый способ отправки: topics + старый event_posted сигнал."""
         if (
@@ -931,7 +933,23 @@ class EventBus(QtCore.QObject):
         ):
             self._queue_log_event(event)
             return
+        if isinstance(event, dict) and event.get('event') in self.STOP_EVENTS:
+            self._cancel_inflight_mcp_requests()
         self.event_posted.emit(event)
+
+    @staticmethod
+    def _cancel_inflight_mcp_requests():
+        """Снимает висящие MCP-запросы сразу, не дожидаясь движка.
+
+        Заявку, которую не забрал ни один AI-агент, движок отменить не успеет:
+        он сам может ждать её результата, и тогда «стоп» не будет обработан.
+        Отмена уходит в фоновый поток, поэтому событие не задерживается.
+        """
+        try:
+            from gemini_translator.mcp import inflight
+            inflight.cancel_all()
+        except Exception as exc:
+            print(f"[EventBus WARN] Не удалось снять висящие MCP-запросы: {exc}")
 
     def _queue_log_event(self, event: dict):
         """Queue a worker log without adding one Qt event per log line."""
@@ -1100,7 +1118,13 @@ if __name__ == "__main__":
     os_patch.PatientLock.register_vip_thread(main_id)
 
     app = ApplicationWithContext(sys.argv)
-    
+
+    # Health-подтверждение апдейтера: если процесс запущен хелпером
+    # обновления, пишем ack-файл — иначе хелпер откатит установку.
+    from gemini_translator.utils import update_installer as _upd_install
+    _upd_install.write_startup_acknowledgement()
+    _upd_install.cleanup_stale_staging()
+
     # --- ЛОКАЛИЗАЦИЯ СТАНДАРТНЫХ ЭЛЕМЕНТОВ QT ---
     # Загружаем русскую локализацию для контекстных меню (ПКМ) и диалогов Qt (QMessageBox, QInputDialog и т.д.)
     from PyQt6.QtCore import QTranslator, QLibraryInfo
@@ -1119,7 +1143,14 @@ if __name__ == "__main__":
     # Фикс дублирования иконки в Dock на macOS
     if sys.platform == "darwin":
         app.setDesktopFileName("com.siberianteam.translatorfork")
-        
+
+    # На Windows базовый стиль (windowsvista/windows11) рисует часть
+    # элементов нативно, мимо QSS-движка — скругления темы получают
+    # пиксельные «лесенки» и артефакты. Fusion рендерит всё растровым
+    # QSS-путём со сглаживанием, как на macOS.
+    if sys.platform == "win32":
+        app.setStyle("Fusion")
+
     install_window_title_branding(app)
     # Тема (светлая/тёмная/авто) применяется в apply_saved_app_theme ниже,
     # как только доступен settings_manager — без раннего тёмного дефолта,

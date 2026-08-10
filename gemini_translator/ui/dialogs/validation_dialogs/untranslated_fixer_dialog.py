@@ -24,6 +24,7 @@ from ...widgets import (
 from ...widgets.common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
 from ...shell import ShellPage
 from gemini_translator.ui import theme_manager
+from ...overlay_host import exec_dialog
 
 # Алиасы для удобства
 QSpinBox = NoScrollSpinBox
@@ -935,7 +936,7 @@ class UntranslatedFixerPage(ShellPage):
             replace_in_occurrences_default=replace_in_occurrences_default,
             parent=self,
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) != QDialog.DialogCode.Accepted:
             return
 
         result = dialog.get_result()
@@ -1212,7 +1213,7 @@ class UntranslatedFixerPage(ShellPage):
     
     def _open_tag_manager(self):
         dlg = AdvancedTagFilterDialog(self.whitelist_set, self.blacklist_set, self)
-        if dlg.exec():
+        if exec_dialog(self, dlg):
             self.whitelist_set, self.blacklist_set = dlg.get_lists()
             self._update_tags_info_label()
             self.apply_filters()
@@ -1788,7 +1789,7 @@ class UntranslatedFixerPage(ShellPage):
         button_box.accepted.connect(dialog.accept)
         layout.addWidget(button_box)
 
-        dialog.exec()
+        exec_dialog(self, dialog)
 
     def _get_project_manager(self):
         checked = set()

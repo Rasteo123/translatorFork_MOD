@@ -3,7 +3,7 @@ from gemini_translator.api import config as api_config
 import zipfile
 from collections import Counter
 from gemini_translator.utils.epub_tools import normalize_epub_chapter_heading_to_h1
-from gemini_translator.utils.text import brute_force_split
+from gemini_translator.utils.text import brute_force_split, sanitize_partial_translation
 
 class EmergencyTask:
     
@@ -37,6 +37,33 @@ class EmergencyTask:
         partial_text = untrimmed_partial_text[:best_split_pos].rstrip() if best_split_pos != -1 else untrimmed_partial_text
         if partial_text != untrimmed_partial_text and list(task_payload)[0] == 'epub':
             self.worker._post_event('log_message', {'message': "[INFO] Ответ AI оборван. 'Хвост' обрезан до последнего разделителя для чистого доперевода."})
+
+        # --- ЗАЩИТА ОТ ВЫРОЖДЕННОГО ХВОСТА ---
+        # Если модель зациклилась и выдала тысячи копий одного абзаца, такой хвост
+        # нельзя класть в payload: промпт до-генерации вернёт его модели, та продолжит
+        # ту же петлю, и все оставшиеся попытки сгорят на валидации гарантированно.
+        sanitized_partial = sanitize_partial_translation(partial_text)
+        if not sanitized_partial:
+            self.worker._post_event('log_message', {
+                'message': (
+                    "[WARN] Частичный ответ вырожден (модель зациклилась на повторах) — "
+                    "хвост отброшен, задача будет переведена заново."
+                )
+            })
+            payload_list = list(task_payload)
+            if payload_list[0] == 'epub_chunk' and len(payload_list) > 8:
+                return (task_id, tuple(payload_list[:-1]))
+            return task_info
+
+        if sanitized_partial != partial_text:
+            removed = len(partial_text) - len(sanitized_partial)
+            self.worker._post_event('log_message', {
+                'message': (
+                    f"[INFO] Из частичного ответа вырезан зациклившийся хвост ({removed} симв.) "
+                    "перед до-генерацией."
+                )
+            })
+        partial_text = sanitized_partial
 
         # --- МУТАЦИЯ PAYLOAD ---
         base_payload_list = list(task_payload)

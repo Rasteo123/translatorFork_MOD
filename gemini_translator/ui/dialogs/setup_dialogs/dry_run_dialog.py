@@ -4,6 +4,7 @@
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtCore import QObject, pyqtSlot, QThread
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout
+from ...overlay_host import exec_dialog
 
 
 class _DialogRunner(QObject):
@@ -21,7 +22,7 @@ class _DialogRunner(QObject):
     def run(self):
         """Этот слот выполняется в главном потоке."""
         dialog = DryRunPromptDialog(self.parent, self.prompt_text)
-        if dialog.exec():
+        if exec_dialog(self.parent, dialog):
             self.result = dialog.get_result()
         else:
             self.result = None
@@ -138,7 +139,7 @@ class DryRunPromptDialog(QDialog):
         if QThread.currentThread() == app.thread():
             # Мы уже в главном потоке, вызываем напрямую
             dialog = DryRunPromptDialog(parent, prompt_text)
-            if dialog.exec():
+            if exec_dialog(parent, dialog):
                 return dialog.get_result()
             return None
         else:
