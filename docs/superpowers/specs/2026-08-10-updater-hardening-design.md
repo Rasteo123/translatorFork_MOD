@@ -192,3 +192,16 @@ Platform replacement tests operate only in isolated temporary directories. They 
 ## Rollout note
 
 The existing published `v10.5.21-hotfix24` binaries contain the old updater and cannot be retroactively changed. The hardened code becomes effective when a future, intentionally versioned release is published. This task prepares and gates that future release without changing the current product version.
+
+## Amendments (2026-08-10 review)
+
+The pre-implementation review confirmed all root causes against the code and bound the following decisions:
+
+1. **PID wait, not sleeps.** Every detached helper waits for the launching process id to exit, bounded at 120 seconds. If the application is still alive at the deadline the helper aborts having changed nothing. The Setup invocation drops `/FORCECLOSEAPPLICATIONS` and adds `/NORESTART`; killing the primary instance is never the shutdown mechanism.
+2. **Health-window semantics.** Rollback happens only when the new process has exited without writing the acknowledgement. A process still alive at the deadline is left running: backups and staged files are kept, a `HEALTH-TIMEOUT` line is logged, and the target version is not acknowledged. Rationale: a live Windows process locks its own executable (restore would fail), and a slow first launch (antivirus scanning a fresh binary) may still become healthy.
+3. **Windows Installed rollback is file-level.** The transaction snapshot restores application files only; Inno registry and uninstaller entries may keep referencing the newer version after a rollback — a documented limitation. A free-disk-space check (at least the current application directory size) runs before the snapshot, and a failed snapshot aborts the update before Setup runs.
+4. **macOS asset rule.** The release manifest requires the Setup executable, the Portable executable, and at least one macOS asset — DMG preferred, ZIP acceptable — matching the existing DMG flakiness in CI.
+5. **Migration also removes `updater/installed_commit`**, not just `updater/installed_version`. No code path writes either key again.
+6. **Existing source-ZIP installations become manual-only.** Archives downloaded before this change contain no `.translator-update.json` and are reported as unknown. `build_release_dual.bat` injects the identity file into future source ZIPs as a post-`git archive` step.
+7. **Channel detection keys off the packaged executable identity.** A renamed executable degrades to `DEVELOPMENT` and manual-only updates by design (fail-closed).
+8. **Windows helpers are PowerShell**, launched as `powershell -NoProfile -ExecutionPolicy Bypass -File …`, not batch: PID waiting, `-PassThru` process handles, and guarded rollback branches need real control flow.
