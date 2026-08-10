@@ -150,6 +150,23 @@ def test_generate_manifest_rejects_bad_asset_sets(tmp_path, version_file, names,
     assert not (tmp_path / "m.json").exists()
 
 
+def test_inject_archive_identity(tmp_path):
+    import zipfile
+    import inject_archive_identity
+    zpath = tmp_path / "source.zip"
+    with zipfile.ZipFile(zpath, "w") as z:
+        z.writestr("main.py", "print('x')")
+        z.writestr("gemini_translator/version.py", "__version__ = '10.5.22'")
+    rc = inject_archive_identity.main(["--zip", str(zpath), "--commit", "d" * 40])
+    assert rc == 0
+    with zipfile.ZipFile(zpath) as z:
+        data = json.loads(z.read(".translator-update.json"))
+    assert data["commit"] == "d" * 40
+    assert data["files"] == ["gemini_translator/version.py", "main.py"]
+    # повторная инъекция — отказ, а не дубль записи
+    assert inject_archive_identity.main(["--zip", str(zpath), "--commit", "d" * 40]) == 1
+
+
 def test_generate_manifest_rejects_tag_version_mismatch(tmp_path, version_file):
     assets_dir = _make_assets(tmp_path, _FULL_SET)
     rc = generate_update_manifest.main([

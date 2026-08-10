@@ -2,11 +2,17 @@
 #define AppBuildName "translatorFork_MOD"
 #endif
 
+; Версия приходит из CI: iscc /DMyAppVersion=<версия из version.py>.
+; Локальная сборка без define получает текущую версию по умолчанию.
+#ifndef MyAppVersion
+#define MyAppVersion "10.5.21"
+#endif
+
 [Setup]
 ; Уникальный идентификатор приложения
 AppId={{5E1C3C0B-8D52-4C67-B9B2-3A6D3A0A7A1B}
 AppName=Gemini Translator
-AppVersion=10.5.21
+AppVersion={#MyAppVersion}
 AppPublisher=SiberianTeam
 AppPublisherURL=https://github.com/Rasteo123/translatorFork_MOD
 AppSupportURL=https://github.com/Rasteo123/translatorFork_MOD/issues
