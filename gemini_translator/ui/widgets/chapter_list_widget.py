@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 import uuid # Добавляем импорт
+from ..overlay_host import exec_dialog
 
 try:
     import Levenshtein
@@ -692,7 +693,7 @@ class ChapterListWidget(QWidget):
             preview_callback=lambda chapter_path, epub_path=batch_task['task_payload'][1]: self.chapter_preview_requested.emit(str(epub_path), str(chapter_path)),
             parent=self
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) != QDialog.DialogCode.Accepted:
             return
 
         new_order = dialog.get_chapters()

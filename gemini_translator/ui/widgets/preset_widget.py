@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from ...api import config as api_config
 from ...utils.settings import SettingsManager
 from .common_widgets import NoScrollComboBox
+from ..overlay_host import exec_dialog
 
 class PresetWidget(QWidget):
     """
@@ -188,7 +189,7 @@ class PresetWidget(QWidget):
     
         # 3. Запускаем диалог и проверяем результат
         # Метод exec() возвращает True, если нажата "Сохранить", и False, если "Отмена"
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             name = dialog.textValue()
             # Дополнительная проверка, что имя не пустое
             if not name:

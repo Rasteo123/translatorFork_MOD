@@ -10,6 +10,7 @@ from PyQt6.QtCore import pyqtSlot
 from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QTextBrowser, QTextEdit, QVBoxLayout, QWidget
 
 from gemini_translator.ui import theme_manager
+from ..overlay_host import exec_dialog
 
 
 LOG_STYLES = [
@@ -218,7 +219,7 @@ class LogWidget(QWidget):
         buttons.addWidget(close_button)
         layout.addLayout(buttons)
 
-        dialog.exec()
+        exec_dialog(self, dialog)
 
     def _on_anchor_clicked(self, url: QtCore.QUrl):
         scheme = url.scheme()

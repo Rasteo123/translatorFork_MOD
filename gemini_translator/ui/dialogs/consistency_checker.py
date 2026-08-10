@@ -101,7 +101,7 @@ from ...api import config as api_config
 from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
 from ..shell import ShellPage
-from ..overlay_host import present_dialog
+from ..overlay_host import exec_dialog, present_dialog
 from .chapter_selection_dialog import ChapterSelectionDialog
 from gemini_translator.ui import theme_manager
 
@@ -2467,7 +2467,7 @@ class ConsistencyValidatorPage(ShellPage):
         close_btn.clicked.connect(dialog.close)
         layout.addWidget(close_btn)
         
-        dialog.exec()
+        exec_dialog(self, dialog)
 
     def save_all_fixes(self):
         """Сохраняет все накопленные исправления в файлы."""
