@@ -1,11 +1,60 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+import re
+import enum
 import subprocess
+from dataclasses import dataclass
+
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 from gemini_translator.api.config import GITHUB_REPO
 from gemini_translator.version import APP_VERSION
+
+
+# --- Версии релизов -------------------------------------------------------
+
+class UpdateError(Exception):
+    """Ошибка апдейтера, пригодная для показа пользователю."""
+
+    @property
+    def user_message(self) -> str:
+        return str(self)
+
+
+_VERSION_RE = re.compile(
+    r"^[vV]?\s*(\d+)\.(\d+)\.(\d+)"
+    r"(?:-(?P<kind>hotfix|rc|beta|alpha)\.?(?P<num>\d+))?$"
+)
+
+
+@dataclass(frozen=True, order=True)
+class ReleaseVersion:
+    """Версия релиза с корректным порядком: prerelease < final < hotfix."""
+
+    release: tuple
+    phase: int  # 0 = prerelease, 1 = final, 2 = post (легаси-hotfix)
+    phase_num: int
+
+    @property
+    def is_final(self) -> bool:
+        return self.phase == 1
+
+
+def parse_version_tag(text) -> ReleaseVersion:
+    """Разбирает тег/версию; непонятный формат — ошибка, а не «нет обновлений»."""
+    if not isinstance(text, str):
+        raise UpdateError(f"Некорректная версия: {text!r}")
+    m = _VERSION_RE.match(text.strip())
+    if m is None:
+        raise UpdateError(f"Некорректная версия: {text!r}")
+    release = tuple(int(g) for g in m.group(1, 2, 3))
+    kind, num = m.group("kind"), m.group("num")
+    if kind is None:
+        return ReleaseVersion(release, 1, 0)
+    if kind == "hotfix":
+        return ReleaseVersion(release, 2, int(num))
+    return ReleaseVersion(release, 0, int(num))
 
 
 def _pick_platform_asset(assets, platform) -> str:

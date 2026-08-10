@@ -6,6 +6,43 @@ from PyQt6 import QtWidgets, QtCore
 from gemini_translator.utils.updater import UpdateChecker
 from gemini_translator.ui.pages.home_page import HomePage
 
+
+# --- Version parsing and ordering (Task 1) ---
+
+from gemini_translator.utils.updater import UpdateError, parse_version_tag
+
+
+@pytest.mark.parametrize("tag,expected", [
+    ("v10.5.21", ((10, 5, 21), 1, 0)),
+    ("10.5.21", ((10, 5, 21), 1, 0)),
+    ("V 10.5.21", ((10, 5, 21), 1, 0)),
+    ("v10.5.21-hotfix24", ((10, 5, 21), 2, 24)),
+    ("v10.6.0-rc1", ((10, 6, 0), 0, 1)),
+    ("v10.6.0-beta.2", ((10, 6, 0), 0, 2)),
+    ("v10.6.0-alpha3", ((10, 6, 0), 0, 3)),
+])
+def test_parse_version_tag(tag, expected):
+    v = parse_version_tag(tag)
+    assert (v.release, v.phase, v.phase_num) == expected
+
+
+@pytest.mark.parametrize("bad", ["", "v", "10.5", "10.5.21.7", "abc", "v10.5.x",
+                                 "10.5.21-hotfix", "10.5.21-omega1", None])
+def test_parse_version_tag_rejects_malformed(bad):
+    with pytest.raises(UpdateError):
+        parse_version_tag(bad)
+
+
+def test_version_ordering():
+    final = parse_version_tag("v10.5.21")
+    assert parse_version_tag("v10.5.21-rc1") < final
+    assert final < parse_version_tag("v10.5.21-hotfix1")
+    assert parse_version_tag("v10.5.21-hotfix1") < parse_version_tag("v10.5.21-hotfix2")
+    assert parse_version_tag("v10.5.21-hotfix24") < parse_version_tag("v10.5.22")
+    assert final == parse_version_tag("10.5.21")
+    assert final.is_final and not parse_version_tag("v10.6.0-rc1").is_final
+
+
 def test_update_checker_finds_update(qtbot):
     with patch('requests.get') as mock_get:
         mock_response = MagicMock()
