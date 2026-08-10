@@ -2,12 +2,15 @@
 import sys
 import os
 import re
+import json
 import enum
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
+from gemini_translator.api import config as api_config
 from gemini_translator.api.config import GITHUB_REPO
 from gemini_translator.version import APP_VERSION
 
@@ -55,6 +58,115 @@ def parse_version_tag(text) -> ReleaseVersion:
     if kind == "hotfix":
         return ReleaseVersion(release, 2, int(num))
     return ReleaseVersion(release, 0, int(num))
+
+
+# --- Идентичность сборки и канал обновления -------------------------------
+
+BUILD_IDENTITY_FILENAME = "update-build.json"
+ARCHIVE_IDENTITY_FILENAME = ".translator-update.json"
+
+_HEX40_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+class UpdateChannel(enum.Enum):
+    WINDOWS_INSTALLED = "windows-installed"
+    WINDOWS_PORTABLE = "windows-portable"
+    MACOS = "macos"
+    SOURCE_GIT = "source-git"
+    SOURCE_ARCHIVE = "source-archive"
+    DEVELOPMENT = "development"
+
+
+class UpdateState(enum.Enum):
+    IDLE = "idle"
+    CHECKING = "checking"
+    DOWNLOADING = "downloading"
+    VERIFYING = "verifying"
+    PREPARING = "preparing"
+    EXITING = "exiting"
+
+
+@dataclass(frozen=True)
+class BuildIdentity:
+    version: ReleaseVersion
+    tag: str
+    commit: str
+
+
+def project_root() -> Path:
+    """Корень проекта, вычисленный от этого файла — не от текущего каталога."""
+    return Path(__file__).resolve().parents[2]
+
+
+def read_build_identity():
+    """Читает встроенный update-build.json; любая невалидность — None.
+
+    Замороженная сборка без валидной идентичности — DEVELOPMENT: она никогда
+    не обновляет себя автоматически.
+    """
+    try:
+        path = Path(api_config.get_resource_path(BUILD_IDENTITY_FILENAME))
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or data.get("schema") != 1:
+            return None
+        version = parse_version_tag(str(data["version"]))
+        tag = str(data["tag"])
+        commit = str(data["commit"])
+        if not version.is_final:
+            return None
+        if tag != f"v{data['version']}":
+            return None
+        if not _HEX40_RE.match(commit):
+            return None
+        return BuildIdentity(version, tag, commit)
+    except Exception:
+        return None
+
+
+def read_archive_identity(root):
+    """Читает локальный .translator-update.json архивной установки.
+
+    Возвращает dict {"schema":1,"commit":<40hex>,"files":[...]} или None,
+    если идентичности нет или ей нельзя доверять.
+    """
+    try:
+        with open(Path(root) / ARCHIVE_IDENTITY_FILENAME, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or data.get("schema") != 1:
+            return None
+        if not _HEX40_RE.match(str(data.get("commit", ""))):
+            return None
+        files = data.get("files")
+        if files is not None and not (
+            isinstance(files, list) and all(isinstance(x, str) for x in files)
+        ):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def detect_update_channel() -> UpdateChannel:
+    """Определяет канал по идентичности исполняемого файла, не по CWD.
+
+    Переименованный exe осознанно деградирует до DEVELOPMENT (fail-closed).
+    """
+    if getattr(sys, "frozen", False):
+        if read_build_identity() is None:
+            return UpdateChannel.DEVELOPMENT
+        norm_path = sys.executable.replace("\\", "/")
+        exe = norm_path.rsplit("/", 1)[-1].lower()
+        if exe == "geminitranslator-portable.exe":
+            return UpdateChannel.WINDOWS_PORTABLE
+        if exe == "translatorfork_mod.exe":
+            return UpdateChannel.WINDOWS_INSTALLED
+        if "GeminiTranslator.app/Contents/MacOS" in norm_path:
+            return UpdateChannel.MACOS
+        return UpdateChannel.DEVELOPMENT
+    if (project_root() / ".git").exists():
+        return UpdateChannel.SOURCE_GIT
+    return UpdateChannel.SOURCE_ARCHIVE
 
 
 def _pick_platform_asset(assets, platform) -> str:

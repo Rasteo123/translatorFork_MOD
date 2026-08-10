@@ -43,6 +43,65 @@ def test_version_ordering():
     assert final.is_final and not parse_version_tag("v10.6.0-rc1").is_final
 
 
+# --- Build identity + channel detection (Task 2) ---
+
+
+def _identity():
+    from gemini_translator.utils import updater as u
+    return u.BuildIdentity(u.parse_version_tag("v10.5.21"), "v10.5.21", "a" * 40)
+
+
+@pytest.mark.parametrize("exe,identity,expected", [
+    (r"C:\Apps\GT\translatorFork_MOD.exe", True, "WINDOWS_INSTALLED"),
+    (r"C:\Users\u\Downloads\GeminiTranslator-Portable.exe", True, "WINDOWS_PORTABLE"),
+    ("/Applications/GeminiTranslator.app/Contents/MacOS/GeminiTranslator", True, "MACOS"),
+    (r"C:\Apps\GT\renamed.exe", True, "DEVELOPMENT"),
+    (r"C:\Apps\GT\translatorFork_MOD.exe", False, "DEVELOPMENT"),
+])
+def test_detect_channel_frozen(monkeypatch, exe, identity, expected):
+    from gemini_translator.utils import updater as u
+    monkeypatch.setattr(u.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(u.sys, "executable", exe)
+    monkeypatch.setattr(u, "read_build_identity", lambda: _identity() if identity else None)
+    assert u.detect_update_channel() is u.UpdateChannel[expected]
+
+
+def test_detect_channel_source(monkeypatch, tmp_path):
+    from gemini_translator.utils import updater as u
+    monkeypatch.delattr(u.sys, "frozen", raising=False)
+    monkeypatch.setattr(u, "project_root", lambda: tmp_path)
+    assert u.detect_update_channel() is u.UpdateChannel.SOURCE_ARCHIVE
+    (tmp_path / ".git").mkdir()
+    assert u.detect_update_channel() is u.UpdateChannel.SOURCE_GIT
+
+
+def test_read_build_identity_validates(monkeypatch, tmp_path):
+    from gemini_translator.utils import updater as u
+    p = tmp_path / u.BUILD_IDENTITY_FILENAME
+    monkeypatch.setattr(u.api_config, "get_resource_path", lambda name: p)
+    assert u.read_build_identity() is None  # файла нет
+    p.write_text('{"schema":1,"version":"10.5.21","tag":"v10.5.21","commit":"%s"}' % ("a" * 40))
+    ident = u.read_build_identity()
+    assert ident.tag == "v10.5.21" and ident.version.is_final
+    p.write_text('{"schema":1,"version":"10.5.21","tag":"v10.9.9","commit":"%s"}' % ("a" * 40))
+    assert u.read_build_identity() is None  # тег и версия расходятся
+    p.write_text('{"schema":1,"version":"10.6.0-rc1","tag":"v10.6.0-rc1","commit":"%s"}' % ("a" * 40))
+    assert u.read_build_identity() is None  # не финальная версия
+    p.write_text("not json")
+    assert u.read_build_identity() is None
+
+
+def test_read_archive_identity(tmp_path):
+    from gemini_translator.utils import updater as u
+    assert u.read_archive_identity(tmp_path) is None
+    (tmp_path / u.ARCHIVE_IDENTITY_FILENAME).write_text(
+        '{"schema":1,"commit":"%s","files":["main.py"]}' % ("b" * 40))
+    ident = u.read_archive_identity(tmp_path)
+    assert ident["commit"] == "b" * 40
+    (tmp_path / u.ARCHIVE_IDENTITY_FILENAME).write_text('{"schema":1,"commit":"short"}')
+    assert u.read_archive_identity(tmp_path) is None
+
+
 def test_update_checker_finds_update(qtbot):
     with patch('requests.get') as mock_get:
         mock_response = MagicMock()
