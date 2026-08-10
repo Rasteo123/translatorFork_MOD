@@ -263,6 +263,156 @@ def test_prepare_windows_portable_launches_powershell(tmp_path, monkeypatch):
     assert ".bak" in script.read_text(encoding="utf-8")
 
 
+# --- macOS-хелпер (Task 8) ------------------------------------------------
+
+def _macos_script(bundle="/Apps/x y/GeminiTranslator.app", is_dmg=False):
+    return inst.render_macos_script(
+        app_pid=4242,
+        staged="/stage/GeminiTranslator-macOS.zip",
+        bundle=bundle,
+        binary_name="GeminiTranslator",
+        ack="/stage/ack.json",
+        log="/stage/updater.log",
+        is_dmg=is_dmg,
+    )
+
+
+def test_macos_script_verifies_before_swap():
+    content = _macos_script()
+    # codesign проверяет staged-копию строго до первого mv живого бандла
+    assert content.index("codesign --verify --deep --strict") < content.index('mv "$LIVE"')
+    assert "Contents/MacOS" in content  # проверка структуры бандла
+    assert "'/Apps/x y/GeminiTranslator.app'" in content  # sh_quote
+    assert "HEALTH-TIMEOUT" in content
+    assert content.rstrip().endswith("exit 2")
+    # откат при сбое снятия карантина: непроверенный запуск запрещён
+    xattr_branch = content[content.index("xattr -cr"):]
+    assert "rollback" in xattr_branch[:200]
+
+
+def test_macos_script_dmg_and_zip_variants():
+    dmg = _macos_script(is_dmg=True)
+    assert "hdiutil attach -nobrowse -readonly" in dmg
+    assert "unzip" in _macos_script(is_dmg=False)
+
+
+@pytest.fixture
+def macos_fixture(tmp_path):
+    """Живой Old.app + staged-zip с New.app + шимы codesign/xattr/hdiutil."""
+    if sys.platform != "darwin":
+        pytest.skip("исполняемый тест только на macOS")
+    result = tmp_path / "result.txt"
+    live = tmp_path / "GeminiTranslator.app"
+    macos_dir = live / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True)
+    old_bin = macos_dir / "GeminiTranslator"
+    old_bin.write_text(f'#!/bin/bash\necho old >> "{result}"\n')
+    old_bin.chmod(0o755)
+
+    build = tmp_path / "build"
+    new_macos = build / "New.app" / "Contents" / "MacOS"
+    new_macos.mkdir(parents=True)
+    shim_log = tmp_path / "shims.log"
+
+    def make_new_binary(script_body):
+        new_bin = new_macos / "GeminiTranslator"
+        new_bin.write_text(script_body)
+        new_bin.chmod(0o755)
+        staged = tmp_path / "staged.zip"
+        if staged.exists():
+            staged.unlink()
+        subprocess.run(["zip", "-qr", str(staged), "New.app"], cwd=build, check=True)
+        return staged
+
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    for tool in ("codesign", "xattr", "hdiutil"):
+        shim = shims / tool
+        shim.write_text(f'#!/bin/bash\necho "{tool} $@" >> "{shim_log}"\nexit 0\n')
+        shim.chmod(0o755)
+
+    def run_helper(staged):
+        ack = tmp_path / "ack.json"
+        log = tmp_path / "updater.log"
+        # «старое приложение» — реальный процесс; дожидаемся его выхода до
+        # запуска хелпера: незажатый (reaped) PID сразу отпускает kill -0,
+        # а зомби держал бы цикл ожидания все 120 секунд.
+        app_proc = subprocess.Popen(["sleep", "0.2"])
+        pid = app_proc.pid
+        app_proc.wait()
+        script = inst.render_macos_script(
+            app_pid=pid, staged=str(staged), bundle=str(live),
+            binary_name="GeminiTranslator", ack=str(ack), log=str(log),
+            is_dmg=False)
+        script_path = tmp_path / "helper.sh"
+        script_path.write_text(script)
+        env = dict(os.environ)
+        env["PATH"] = f"{shims}:{env['PATH']}"
+        proc = subprocess.run(["bash", str(script_path)], env=env, timeout=60)
+        return proc, ack, log
+
+    return {
+        "live": live, "result": result, "shim_log": shim_log,
+        "make_new_binary": make_new_binary, "run_helper": run_helper,
+        "tmp": tmp_path,
+    }
+
+
+def test_macos_helper_happy_path_swaps_and_cleans(macos_fixture):
+    f = macos_fixture
+    staged = f["make_new_binary"](
+        '#!/bin/bash\necho new >> "%s"\necho ok > "$GT_UPDATE_ACK_FILE"\nsleep 1\n'
+        % f["result"])
+    proc, ack, log = f["run_helper"](staged)
+    assert proc.returncode == 0, log.read_text() if log.exists() else "no log"
+    live_bin = f["live"] / "Contents" / "MacOS" / "GeminiTranslator"
+    assert "new" in live_bin.read_text()  # живой бандл заменён
+    assert not (f["tmp"] / "GeminiTranslator.app.old").exists()  # бэкап удалён
+    assert not staged.exists()  # staged-архив удалён после подтверждения
+    assert ack.exists()
+    shim_lines = f["shim_log"].read_text().splitlines()
+    codesign_lines = [l for l in shim_lines if l.startswith("codesign")]
+    xattr_lines = [l for l in shim_lines if l.startswith("xattr")]
+    # верификация шла по staged-копии, карантин снимался с живого бандла
+    assert codesign_lines and str(f["live"]) not in codesign_lines[0]
+    assert xattr_lines and str(f["live"]) in xattr_lines[0]
+
+
+def test_macos_helper_rolls_back_without_ack(macos_fixture):
+    f = macos_fixture
+    staged = f["make_new_binary"]('#!/bin/bash\nexit 1\n')
+    proc, ack, log = f["run_helper"](staged)
+    assert proc.returncode == 1
+    live_bin = f["live"] / "Contents" / "MacOS" / "GeminiTranslator"
+    assert "old" in live_bin.read_text()  # живой бандл вернулся к старому
+    assert (f["tmp"] / "GeminiTranslator.app.rejected").exists()
+    assert staged.exists()  # staged сохранён для ручного разбора
+    assert not ack.exists()
+
+
+def test_prepare_macos_requires_bundle(tmp_path, monkeypatch):
+    ctx = inst.InstallContext(app_pid=1, real_executable="/usr/local/bin/tool",
+                              version_label="v10.5.22")
+    with pytest.raises(inst.UpdateInstallError):
+        inst.prepare_macos(tmp_path / "x.dmg", ctx)
+
+
+def test_prepare_macos_launches_bash(tmp_path, monkeypatch):
+    exe = tmp_path / "GeminiTranslator.app" / "Contents" / "MacOS" / "GeminiTranslator"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("bin")
+    ctx = inst.InstallContext(app_pid=1, real_executable=str(exe),
+                              version_label="v10.5.22")
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path / "staging")
+    captured = {}
+    monkeypatch.setattr(inst, "launch_detached_helper",
+                        lambda argv, *, cwd: captured.update(argv=argv) or object())
+    inst.prepare_macos(tmp_path / "u.dmg", ctx)
+    assert captured["argv"][0] == "/bin/bash"
+    content = Path(captured["argv"][1]).read_text()
+    assert "hdiutil attach" in content  # .dmg → dmg-ветка
+
+
 # --- лог ------------------------------------------------------------------
 
 def test_log_update_event_appends(tmp_path, monkeypatch):

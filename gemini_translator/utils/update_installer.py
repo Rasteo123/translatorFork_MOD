@@ -361,6 +361,128 @@ def prepare_windows_installed(staged_setup, ctx: InstallContext) -> subprocess.P
     return launch_detached_helper(_powershell_argv(script_path), cwd=root)
 
 
+# --- macOS ----------------------------------------------------------------
+
+_MACOS_TEMPLATE = r"""#!/bin/bash
+exec >> @@LOG@@ 2>&1
+log() { echo "[$(date -u +%FT%TZ)] [UPD] $1"; }
+LIVE=@@BUNDLE@@
+STAGED=@@STAGED@@
+ACK=@@ACK@@
+BIN=@@BIN@@
+log "waiting for app pid @@PID@@"
+for i in $(seq 1 @@WAIT_ITER@@); do kill -0 @@PID@@ 2>/dev/null || break; sleep 0.5; done
+if kill -0 @@PID@@ 2>/dev/null; then log "app still running; aborting untouched"; exit 1; fi
+MNT=""
+EXTRACT=""
+cleanup_source() {
+  [ -n "$MNT" ] && hdiutil detach "$MNT" -force >/dev/null 2>&1
+  [ -n "$EXTRACT" ] && rm -rf "$EXTRACT"
+}
+if @@IS_DMG@@; then
+  MNT=$(hdiutil attach -nobrowse -readonly "$STAGED" | awk -F$'\t' '/\/Volumes\//{print $NF}' | tail -1)
+  [ -d "$MNT" ] || { log "mount failed"; exit 1; }
+  NEW_APP=$(find "$MNT" -maxdepth 1 -name '*.app' | head -1)
+else
+  EXTRACT=$(mktemp -d)
+  unzip -q "$STAGED" -d "$EXTRACT" || { log "unzip failed"; cleanup_source; exit 1; }
+  NEW_APP=$(find "$EXTRACT" -maxdepth 2 -name '*.app' | head -1)
+fi
+[ -d "$NEW_APP/Contents/MacOS" ] || { log "no valid .app in staged update"; cleanup_source; exit 1; }
+codesign --verify --deep --strict "$NEW_APP" || { log "codesign verify failed"; cleanup_source; exit 1; }
+rm -rf "$LIVE.new" "$LIVE.old"
+ditto "$NEW_APP" "$LIVE.new" || { log "ditto failed"; cleanup_source; exit 1; }
+cleanup_source
+mv "$LIVE" "$LIVE.old" || { log "swap-out failed"; exit 1; }
+if ! mv "$LIVE.new" "$LIVE"; then
+  log "swap-in failed"
+  mv "$LIVE.old" "$LIVE"
+  exit 1
+fi
+rollback() {
+  log "rolling back to previous bundle"
+  rm -rf "$LIVE.rejected"
+  mv "$LIVE" "$LIVE.rejected"
+  mv "$LIVE.old" "$LIVE"
+}
+if ! xattr -cr "$LIVE"; then
+  rollback
+  "$LIVE/Contents/MacOS/$BIN" >/dev/null 2>&1 &
+  exit 1
+fi
+rm -f "$ACK"
+GT_UPDATE_ACK_FILE="$ACK" "$LIVE/Contents/MacOS/$BIN" >/dev/null 2>&1 &
+NEWPID=$!
+for i in $(seq 1 @@HEALTH_ITER@@); do
+  if [ -f "$ACK" ]; then
+    log "health ack received; cleaning up"
+    rm -rf "$LIVE.old"
+    rm -f "$STAGED"
+    exit 0
+  fi
+  if ! kill -0 "$NEWPID" 2>/dev/null; then
+    log "new process exited without ack; rolling back"
+    rollback
+    "$LIVE/Contents/MacOS/$BIN" >/dev/null 2>&1 &
+    exit 1
+  fi
+  sleep 0.5
+done
+log "HEALTH-TIMEOUT: process alive without ack; keeping $LIVE.old and staged file"
+exit 2"""
+
+
+def render_macos_script(*, app_pid, staged, bundle, binary_name, ack, log, is_dmg) -> str:
+    return _render(_MACOS_TEMPLATE, {
+        "PID": int(app_pid),
+        "WAIT_ITER": APP_EXIT_WAIT_S * 2,      # шаг 0.5 с
+        "HEALTH_ITER": HEALTH_WINDOW_S * 2,
+        "LOG": sh_quote(log),
+        "BUNDLE": sh_quote(bundle),
+        "STAGED": sh_quote(staged),
+        "ACK": sh_quote(ack),
+        "BIN": sh_quote(binary_name),
+        "IS_DMG": "true" if is_dmg else "false",
+    })
+
+
+def find_app_bundle(executable: str):
+    """Путь к .app-бандлу, содержащему executable, либо None."""
+    path = os.path.abspath(executable)
+    while path not in ("/", ""):
+        if path.endswith(".app"):
+            return path
+        path = os.path.dirname(path)
+    return None
+
+
+def prepare_macos(staged_path, ctx: InstallContext) -> subprocess.Popen:
+    """Готовит и запускает bash-хелпер замены .app c проверкой подписи."""
+    bundle = find_app_bundle(ctx.real_executable)
+    if bundle is None:
+        raise UpdateInstallError(
+            "Не удалось определить .app-бандл текущего приложения — "
+            "обновление возможно только вручную")
+    root = staging_root()
+    root.mkdir(parents=True, exist_ok=True)
+    ack_path = root / f"ack-{ctx.version_label}.json"
+    try:
+        ack_path.unlink()
+    except OSError:
+        pass
+    script = render_macos_script(
+        app_pid=ctx.app_pid, staged=str(staged_path), bundle=bundle,
+        binary_name=os.path.basename(ctx.real_executable),
+        ack=str(ack_path), log=str(update_log_path()),
+        is_dmg=str(staged_path).lower().endswith(".dmg"))
+    script_path = root / f"helper-macos-{ctx.version_label}.sh"
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(script)
+    os.chmod(script_path, 0o700)
+    log_update_event(f"launching macOS-update helper for {ctx.version_label}")
+    return launch_detached_helper(["/bin/bash", str(script_path)], cwd=root)
+
+
 def prepare_windows_portable(staged_exe, ctx: InstallContext) -> subprocess.Popen:
     """Готовит и запускает хелпер замены портативного exe через .bak."""
     root = staging_root()
