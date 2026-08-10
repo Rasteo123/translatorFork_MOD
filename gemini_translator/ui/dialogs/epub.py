@@ -1372,13 +1372,25 @@ class TranslatedChaptersManagerDialog(QDialog):
         self._checkbox_bulk_change = False
         self._last_checkbox_row = None
         self.setMinimumSize(800, 600)
+        self._fill_generation = 0
+        self._fill_in_progress = False
         self.init_ui()
         if self.original_epub_path:
             self.original_file_label.setText(os.path.basename(self.original_epub_path))
-        self.load_chapters()
+        # Загрузка глав отложена: карточка появляется мгновенно, таблица
+        # заполняется следом (чанками — см. _smart_update_table).
+        QtCore.QTimer.singleShot(0, self.load_chapters)
 
     def init_ui(self):
         self._structure_modified = False
+        # Иконки версий считаются один раз: standardIcon на каждую из 500+
+        # строк — это была половина времени построения таблицы.
+        self._version_file_icon = self.style().standardIcon(
+            QtWidgets.QStyle.StandardPixmap.SP_FileIcon
+        )
+        self._version_validated_icon = self.style().standardIcon(
+            QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton
+        )
         # --- Основной вертикальный лейаут ---
         main_layout = QVBoxLayout(self)
         
@@ -1791,18 +1803,40 @@ class TranslatedChaptersManagerDialog(QDialog):
         # Обновляем номера строк
         self._renumber_rows()
         
+    #: Порог, с которого первичное заполнение таблицы идёт чанками.
+    CHUNKED_FILL_THRESHOLD = 150
+    #: Строк на один чанк (один тик цикла событий). Комбобоксы с полишем
+    #: темы дороги: чанк подобран, чтобы тик укладывался в кадр анимации.
+    CHUNKED_FILL_BATCH = 40
+
     def _smart_update_table(self, target_paths):
         """
         Умная перерисовка с блокировкой сигналов и Diff-алгоритмом.
         """
+        # Перезапуск во время незавершённого чанкового заполнения:
+        # сбрасываем таблицу и начинаем с чистого листа.
+        if self._fill_in_progress:
+            self._fill_generation += 1
+            self._fill_in_progress = False
+            self.table.setRowCount(0)
+
+        # Большое первичное заполнение — чанками, чтобы карточка появлялась
+        # мгновенно и анимация не рвалась на 500+ комбобоксах.
+        if (
+            self.table.rowCount() == 0
+            and len(target_paths) > self.CHUNKED_FILL_THRESHOLD
+        ):
+            self._chunked_fill(list(target_paths))
+            return
+
         # 1. Блокировка всего
         self.table.blockSignals(True)
         self.table.setUpdatesEnabled(False) # Важно для скорости Qt
         original_selection_mode = self.table.selectionMode()
-        
+
         try:
             self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-            
+
             # 2. Собираем текущие ID (пути) из таблицы
             current_paths = []
             for row in range(self.table.rowCount()):
@@ -1835,6 +1869,48 @@ class TranslatedChaptersManagerDialog(QDialog):
             self.table.setSelectionMode(original_selection_mode)
             self.table.blockSignals(False)
             self.table.setUpdatesEnabled(True)
+
+    def _chunked_fill(self, target_paths):
+        """Первичное заполнение большой таблицы порциями по тикам цикла.
+
+        Кнопка сборки выключена до завершения: собирать EPUB по
+        полузаполненной таблице нельзя.
+        """
+        self._fill_generation += 1
+        generation = self._fill_generation
+        self._fill_in_progress = True
+        self.create_epub_btn.setEnabled(False)
+        self.table.setRowCount(len(target_paths))
+
+        def _fill_from(start: int) -> None:
+            if generation != self._fill_generation:
+                return  # заполнение перезапущено
+            try:
+                total = self.table.rowCount()
+            except RuntimeError:
+                return  # диалог уже уничтожен
+            end = min(start + self.CHUNKED_FILL_BATCH, len(target_paths))
+            self.table.blockSignals(True)
+            self.table.setUpdatesEnabled(False)
+            try:
+                for row in range(start, min(end, total)):
+                    self._populate_row(row, target_paths[row])
+            finally:
+                self.table.blockSignals(False)
+                self.table.setUpdatesEnabled(True)
+            if end < len(target_paths):
+                QtCore.QTimer.singleShot(0, lambda: _fill_from(end))
+                return
+            self._fill_in_progress = False
+            self.table.blockSignals(True)
+            try:
+                self._renumber_rows()
+            finally:
+                self.table.blockSignals(False)
+            self.create_epub_btn.setEnabled(True)
+            self._update_preview_button_state()
+
+        _fill_from(0)
 
     def _surgical_update(self, old_ids, new_ids):
         """
@@ -1924,8 +2000,8 @@ class TranslatedChaptersManagerDialog(QDialog):
         combo = NoScrollComboBox()
         combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         combo.setMinimumContentsLength(24)
-        file_icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
-        validated_icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton)
+        file_icon = self._version_file_icon
+        validated_icon = self._version_validated_icon
 
         versions = self.project_manager.get_versions_for_original(internal_path)
         sorted_versions = sort_translation_versions_for_epub_build(versions, self.translated_folder)
