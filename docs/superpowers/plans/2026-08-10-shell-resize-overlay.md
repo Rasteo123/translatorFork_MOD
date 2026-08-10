@@ -1,6 +1,6 @@
 # Animated Window Sizing + In-Window Modal Overlays — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** MainShell плавно анимирует размер окна под требования текущего экрана (macOS-подобно, кроссплатформенно), а мелкие диалоги показываются как встроенные карточки поверх затемнённого интерфейса (как в App Store / Claude Desktop) вместо отдельных окон.
 
@@ -29,9 +29,9 @@
 **Interfaces:**
 - Produces: `CurrentSizeStack(QStackedWidget)` с методом `set_size_hint_override(QSize | None)`; `sizeHint()`/`minimumSizeHint()` считаются только по `currentWidget()`.
 
-- [ ] Step 1: тест (минимум следует за текущей страницей; override замораживает).
-- [ ] Step 2: реализация в shell.py; `MainShell` создаёт `CurrentSizeStack` вместо `QStackedWidget`.
-- [ ] Step 3: pytest tests/test_current_size_stack.py + существующие shell-тесты. Commit.
+- [x] Step 1: тест (минимум следует за текущей страницей; override замораживает).
+- [x] Step 2: реализация в shell.py; `MainShell` создаёт `CurrentSizeStack` вместо `QStackedWidget`.
+- [x] Step 3: pytest tests/test_current_size_stack.py + существующие shell-тесты. Commit.
 
 ### Task 2: WindowResizeController + preferred_window_size
 
@@ -51,9 +51,9 @@
 
 Логика цели: remembered[str(class)] → preferred → None (если текущий размер уже покрывает минимум — не трогаем); `expandedTo(минимум окна)`, `boundedTo(availableGeometry)`. На время анимации стек замораживается `QSize(0,0)`, по завершении освобождается. Ручные resize запоминаются в eventFilter (когда нет анимации и окно в нормальном состоянии).
 
-- [ ] Step 1: тесты (grow к preferred при push; shrink при pop; clamp по экрану; remembered приоритетнее preferred; retarget при быстрых переходах). duration=0 в тестах.
-- [ ] Step 2: реализация + wiring + конверсия страниц.
-- [ ] Step 3: pytest новые + shell-тесты. Commit.
+- [x] Step 1: тесты (grow к preferred при push; shrink при pop; clamp по экрану; remembered приоритетнее preferred; retarget при быстрых переходах). duration=0 в тестах.
+- [x] Step 2: реализация + wiring + конверсия страниц.
+- [x] Step 3: pytest новые + shell-тесты. Commit.
 
 ### Task 3: OverlayHost + present_dialog
 
@@ -70,9 +70,9 @@
 
 Карточка: QFrame#overlayCard, стиль `palette(window)` + радиус 12 + рамка + QGraphicsDropShadowEffect; внутренние отступы 12px; размер = `dialog.size()` если WA_Resized, иначе `sizeHint()`, clamp: min (minimumSize/minimumSizeHint) … 90% хоста; по центру. Вложенные present — стеком, нижняя карточка `setEnabled(False)`. Dismiss: карточка удаляется (`deleteLater`, диалог умирает вместе с ней — callback вызывается синхронно до этого), фон включается при пустом стеке, фокус восстанавливается. Esc работает штатно (QDialog.keyPressEvent), фокус заводится внутрь диалога при показе.
 
-- [ ] Step 1: тесты (показ: хост видим, фон disabled; accept → callback(Accepted), фон enabled, хост скрыт; Esc → Rejected; вложенность; fallback без шелла; восстановление фокуса).
-- [ ] Step 2: реализация + wiring.
-- [ ] Step 3: pytest. Commit.
+- [x] Step 1: тесты (показ: хост видим, фон disabled; accept → callback(Accepted), фон enabled, хост скрыт; Esc → Rejected; вложенность; fallback без шелла; восстановление фокуса).
+- [x] Step 2: реализация + wiring.
+- [x] Step 3: pytest. Commit.
 
 ### Task 4: Первая волна миграции точек вызова
 
@@ -81,10 +81,10 @@
 - Modify: `pages/home_page.py` `_open_proxy_settings`, `dialogs/misc.py:265`, `dialogs/setup.py:1830` (ProxySettingsDialog exec → present_dialog)
 - Test: обновить `tests/test_home_page.py` при необходимости; `tests/test_proxy_dialog_ssh_mode.py` не трогаем (прямое инстанцирование).
 
-- [ ] Step 1: переписать точки вызова на callback-и (`QDialog.DialogCode.Accepted` проверяется в callback).
-- [ ] Step 2: pytest затронутые тесты; полный прогон. Commit.
+- [x] Step 1: переписать точки вызова на callback-и (`QDialog.DialogCode.Accepted` проверяется в callback).
+- [x] Step 2: pytest затронутые тесты; полный прогон. Commit.
 
 ### Task 5: Полная верификация
 
-- [ ] Полный pytest.
-- [ ] Ручной smoke в GUI отложен: окружение headless, попросить пользователя проверить визуально.
+- [x] Полный pytest.
+- [x] Ручной smoke в GUI отложен: окружение headless, попросить пользователя проверить визуально.
