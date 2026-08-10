@@ -8,7 +8,9 @@ from PyQt6.QtWidgets import QDialog
 
 from gemini_translator.ui.overlay_host import (
     OverlayHost,
+    exec_dialog,
     find_overlay_host,
+    install_message_box_overlay,
     present_dialog,
 )
 from gemini_translator.ui.shell import MainShell, ShellPage
@@ -150,6 +152,132 @@ class OverlayHostTests(unittest.TestCase):
         _drain(self.app)
         self.assertTrue(shell.overlay_host.isVisible())
         self.assertFalse(dialog.isWindow())
+
+
+class ExecDialogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def _shell(self):
+        shell = MainShell()
+        shell.resize_controller.set_duration(0)
+        self.addCleanup(shell.close)
+        self.addCleanup(shell.hide)
+        shell.set_home(ShellPage())
+        shell.show()
+        for _ in range(5):
+            self.app.processEvents()
+        return shell
+
+    def test_exec_dialog_blocks_until_accept_and_returns_result(self):
+        shell = self._shell()
+        page = shell.navigation.current_page()
+        dialog = SimpleDialog(page)
+        # Принимаем диалог из отложенного таймера, пока exec_dialog крутит
+        # вложенный цикл.
+        QtCore.QTimer.singleShot(0, dialog.accept)
+        result = exec_dialog(page, dialog)
+        self.assertEqual(result, int(QDialog.DialogCode.Accepted))
+        self.assertFalse(shell.overlay_host.isVisible())
+        # Виджеты диалога ещё живы сразу после возврата (deleteLater
+        # обрабатывается позже) — вызывающий код может читать значения.
+        self.assertEqual(dialog.edit.text(), "")
+
+    def test_exec_dialog_falls_back_to_native_exec_without_host(self):
+        parent = QtWidgets.QWidget()
+        self.addCleanup(parent.close)
+        dialog = SimpleDialog(parent)
+        called = []
+        dialog.exec = lambda: called.append(True) or int(QDialog.DialogCode.Rejected)
+        result = exec_dialog(parent, dialog)
+        self.assertEqual(result, int(QDialog.DialogCode.Rejected))
+        self.assertEqual(called, [True])
+
+
+class MessageBoxOverlayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        install_message_box_overlay()
+
+    def _shell(self):
+        shell = MainShell()
+        shell.resize_controller.set_duration(0)
+        self.addCleanup(shell.close)
+        self.addCleanup(shell.hide)
+        shell.set_home(ShellPage())
+        shell.show()
+        for _ in range(5):
+            self.app.processEvents()
+        return shell
+
+    def test_information_shows_as_overlay_card(self):
+        shell = self._shell()
+        page = shell.navigation.current_page()
+        seen = {}
+
+        def _capture():
+            boxes = [
+                w
+                for w in QtWidgets.QApplication.allWidgets()
+                if isinstance(w, QtWidgets.QMessageBox) and w.isVisible()
+            ]
+            seen["boxes"] = boxes
+            seen["overlay_visible"] = shell.overlay_host.isVisible()
+            for box in boxes:
+                seen["is_window"] = box.isWindow()
+                box.button(QtWidgets.QMessageBox.StandardButton.Ok).click()
+
+        QtCore.QTimer.singleShot(0, _capture)
+        result = QtWidgets.QMessageBox.information(page, "Заголовок", "Текст")
+        self.assertTrue(seen["overlay_visible"])
+        self.assertFalse(seen["is_window"])
+        self.assertEqual(result, QtWidgets.QMessageBox.StandardButton.Ok)
+        self.assertFalse(shell.overlay_host.isVisible())
+
+    def test_question_returns_chosen_button(self):
+        shell = self._shell()
+        page = shell.navigation.current_page()
+
+        def _click_no():
+            for w in QtWidgets.QApplication.allWidgets():
+                if isinstance(w, QtWidgets.QMessageBox) and w.isVisible():
+                    no_btn = w.button(QtWidgets.QMessageBox.StandardButton.No)
+                    no_btn.click()
+
+        QtCore.QTimer.singleShot(0, _click_no)
+        result = QtWidgets.QMessageBox.question(page, "Вопрос", "Да или нет?")
+        self.assertEqual(result, QtWidgets.QMessageBox.StandardButton.No)
+
+    def test_instance_exec_goes_through_overlay(self):
+        shell = self._shell()
+        page = shell.navigation.current_page()
+        box = QtWidgets.QMessageBox(page)
+        box.setText("Сообщение")
+        box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+        seen = {}
+
+        def _capture():
+            seen["overlay_visible"] = shell.overlay_host.isVisible()
+            seen["is_window"] = box.isWindow()
+            box.accept()
+
+        QtCore.QTimer.singleShot(0, _capture)
+        box.exec()
+        self.assertTrue(seen["overlay_visible"])
+        self.assertFalse(seen["is_window"])
+
+    def test_static_without_parent_uses_native_path(self):
+        # Без родителя в шелле нет хоста — должен работать нативный путь.
+        def _close_any():
+            for w in QtWidgets.QApplication.allWidgets():
+                if isinstance(w, QtWidgets.QMessageBox) and w.isVisible():
+                    w.button(QtWidgets.QMessageBox.StandardButton.Ok).click()
+
+        QtCore.QTimer.singleShot(0, _close_any)
+        result = QtWidgets.QMessageBox.information(None, "Т", "Т")
+        self.assertEqual(result, QtWidgets.QMessageBox.StandardButton.Ok)
 
 
 if __name__ == "__main__":

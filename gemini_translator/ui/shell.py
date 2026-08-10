@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
-from .overlay_host import OverlayHost
+from .overlay_host import OverlayHost, install_message_box_overlay
 from .window_resize import WindowResizeController
 
 
@@ -221,6 +221,9 @@ class MainShell(QtWidgets.QMainWindow):
             self, self.navigation, self._stack
         )
         self.overlay_host = OverlayHost(self, blocked=central)
+        # Все QMessageBox приложения (statics и msg_box.exec()) с этого
+        # момента показываются overlay-карточками, когда есть видимый хост.
+        install_message_box_overlay()
         self.navigation.stack_changed.connect(self._sync_nav_bar)
         self._sync_nav_bar()
 

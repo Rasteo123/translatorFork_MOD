@@ -220,7 +220,7 @@ def present_dialog(
     обычным window-modal диалогом. Никогда не блокирует: результат
     (``QDialog.DialogCode``) приходит в ``on_finished``.
     """
-    host = find_overlay_host(context)
+    host = _usable_host(context)
     if host is not None:
         host.present(dialog, on_finished)
         return
@@ -228,3 +228,112 @@ def present_dialog(
         dialog.finished.connect(lambda result: on_finished(int(result)))
     dialog.finished.connect(dialog.deleteLater)
     dialog.open()
+
+
+def _usable_host(context: Optional[QtWidgets.QWidget]) -> Optional[OverlayHost]:
+    """Хост, в котором карточку реально видно (окно показано на экране)."""
+    host = find_overlay_host(context)
+    if host is None:
+        return None
+    window = host.parentWidget()
+    if window is None or not window.isVisible():
+        return None
+    return host
+
+
+def exec_dialog(
+    context: Optional[QtWidgets.QWidget], dialog: QtWidgets.QDialog
+) -> int:
+    """Синхронная drop-in замена ``dialog.exec()`` с показом в overlay.
+
+    Возвращает тот же код результата, что и ``exec()``; без хоста падает
+    обратно на нативный ``dialog.exec()``. Крутит вложенный QEventLoop —
+    семантика блокировки та же, что у нативного ``exec()``, поэтому
+    существующий последовательный код точек вызова не меняется.
+    """
+    host = _usable_host(context)
+    if host is None:
+        return dialog.exec()
+    loop = QtCore.QEventLoop()
+    codes: list[int] = []
+
+    def _done(code: int) -> None:
+        codes.append(code)
+        loop.quit()
+
+    host.present(dialog, _done)
+    loop.exec()
+    return codes[0] if codes else int(QtWidgets.QDialog.DialogCode.Rejected)
+
+
+_message_boxes_patched = False
+
+
+def install_message_box_overlay() -> None:
+    """Глобально направляет QMessageBox в overlay-карточки.
+
+    Патчит ``QMessageBox.exec`` (ловит и все ``msg_box.exec()`` по месту,
+    и storm-protected ``critical`` из os_patch, который строит бокс и
+    зовёт ``exec``) и статики ``information``/``warning``/``question``.
+    ``critical`` не трогаем — им владеет os_patch. Без хоста (нет шелла,
+    окно скрыто, parent=None) поведение остаётся нативным. Идемпотентно.
+    """
+    global _message_boxes_patched
+    if _message_boxes_patched:
+        return
+    _message_boxes_patched = True
+
+    QMessageBox = QtWidgets.QMessageBox
+    native_exec = QMessageBox.exec
+
+    def overlay_exec(box: QMessageBox) -> int:
+        host = _usable_host(box.parentWidget())
+        if host is None or box.isVisible():
+            return native_exec(box)
+        loop = QtCore.QEventLoop()
+        codes: list[int] = []
+
+        def _done(code: int) -> None:
+            codes.append(code)
+            loop.quit()
+
+        host.present(box, _done)
+        loop.exec()
+        # finished(int) несёт тот же код, что вернул бы нативный exec():
+        # QMessageBox зовёт done(execReturnCode(кнопка)) и для стандартных,
+        # и для кастомных кнопок.
+        return codes[0] if codes else int(QMessageBox.StandardButton.NoButton)
+
+    QMessageBox.exec = overlay_exec
+
+    def _make_static(icon, native, default_buttons):
+        def runner(
+            parent,
+            title,
+            text,
+            buttons=default_buttons,
+            defaultButton=QMessageBox.StandardButton.NoButton,
+        ):
+            if _usable_host(parent) is None:
+                return native(parent, title, text, buttons, defaultButton)
+            box = QMessageBox(icon, title, text, buttons, parent)
+            box.setDefaultButton(defaultButton)
+            return QMessageBox.StandardButton(box.exec())
+
+        return runner
+
+    QMessageBox.information = _make_static(
+        QMessageBox.Icon.Information,
+        QMessageBox.information,
+        QMessageBox.StandardButton.Ok,
+    )
+    QMessageBox.warning = _make_static(
+        QMessageBox.Icon.Warning,
+        QMessageBox.warning,
+        QMessageBox.StandardButton.Ok,
+    )
+    QMessageBox.question = _make_static(
+        QMessageBox.Icon.Question,
+        QMessageBox.question,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+    )
