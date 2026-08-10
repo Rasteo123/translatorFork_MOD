@@ -44,6 +44,10 @@ class WindowResizeController(QtCore.QObject):
     # -- снимок размера уходящей страницы ------------------------------
 
     def _snapshot_current_page_size(self) -> None:
+        # Заморозить минимум до смены страницы: иначе Qt синхронно
+        # распахнёт окно под минимум новой страницы ещё внутри push(),
+        # и анимировать будет уже нечего.
+        self._stack.set_size_hint_override(QtCore.QSize(0, 0))
         page = self._navigation.current_page()
         if page is None or not self._window.isVisible() or not self._window_is_normal():
             return
@@ -59,15 +63,15 @@ class WindowResizeController(QtCore.QObject):
 
     def _on_stack_changed(self) -> None:
         self._stop_animation()
-        # Снять возможную заморозку: минимум окна должен отражать новую
-        # страницу и когда анимация не запустится (окно скрыто/развёрнуто).
-        self._stack.set_size_hint_override(None)
         page = self._navigation.current_page()
         if page is None or not self._window.isVisible() or not self._window_is_normal():
+            self._stack.set_size_hint_override(None)
             return
         target = self._target_size(page)
-        if target is not None:
-            self._animate_to(target)
+        if target is None:
+            self._stack.set_size_hint_override(None)
+            return
+        self._animate_to(target)
 
     def _window_is_normal(self) -> bool:
         w = self._window
@@ -77,13 +81,25 @@ class WindowResizeController(QtCore.QObject):
     def _page_key(page) -> str:
         return type(page).__qualname__
 
+    def _window_minimum(self) -> QtCore.QSize:
+        """Минимум окна для текущей страницы, не полагаясь на кэш Qt.
+
+        ``window.minimumSizeHint()`` в момент ``stack_changed`` ещё отдаёт
+        значение до перехода, поэтому минимум собирается вручную: реальный
+        хинт стека плюс текущая дельта на хром окна (nav bar, поля).
+        """
+        stack_min = self._stack.real_minimum_size_hint()
+        delta_w = max(0, self._window.width() - self._stack.width())
+        delta_h = max(0, self._window.height() - self._stack.height())
+        return QtCore.QSize(stack_min.width() + delta_w, stack_min.height() + delta_h)
+
     def _target_size(self, page) -> QtCore.QSize | None:
         target = self._remembered.get(self._page_key(page))
         if target is None:
             preferred = getattr(page, "preferred_window_size", None)
             if preferred:
                 target = QtCore.QSize(*preferred)
-        minimum = self._window.minimumSizeHint()
+        minimum = self._window_minimum()
         if target is None:
             current = self._window.size()
             if (
@@ -105,9 +121,11 @@ class WindowResizeController(QtCore.QObject):
     def _animate_to(self, target: QtCore.QSize) -> None:
         if self._duration <= 0:
             self._window.resize(target)
+            self._stack.set_size_hint_override(None)
             return
-        # Заморозить минимум стека, иначе Qt мгновенно распахнёт окно до
-        # минимума новой страницы вместо плавного роста.
+        # Минимум стека заморожен с stack_about_to_change, иначе Qt мгновенно
+        # распахнёт окно до минимума новой страницы вместо плавного роста;
+        # заморозка снимается по завершении анимации.
         self._stack.set_size_hint_override(QtCore.QSize(0, 0))
         animation = QtCore.QPropertyAnimation(self._window, b"size", self)
         animation.setDuration(self._duration)

@@ -78,15 +78,21 @@ class CurrentSizeStack(QtWidgets.QStackedWidget):
     def minimumSizeHint(self) -> QtCore.QSize:
         if self._size_hint_override is not None:
             return QtCore.QSize(self._size_hint_override)
+        return self.real_minimum_size_hint()
+
+    def real_minimum_size_hint(self) -> QtCore.QSize:
+        """Минимум текущей страницы, игнорируя временную заморозку."""
         current = self.currentWidget()
         if current is None:
             return super().minimumSizeHint()
-        # Явный setMinimumSize страницы приоритетнее её вычисленного хинта.
+        # Берём максимум из явного setMinimumSize и потребностей layout-а:
+        # окно должно дорастать до полного содержимого страницы, даже если
+        # автор занизил явный минимум.
         explicit = current.minimumSize()
         hint = current.minimumSizeHint()
         return QtCore.QSize(
-            explicit.width() or hint.width(),
-            explicit.height() or hint.height(),
+            max(explicit.width(), hint.width()),
+            max(explicit.height(), hint.height()),
         )
 
 

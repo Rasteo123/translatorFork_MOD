@@ -50,6 +50,24 @@ class CurrentSizeStackTests(unittest.TestCase):
         stack.set_size_hint_override(None)
         self.assertEqual(stack.minimumSizeHint(), QtCore.QSize(900, 700))
 
+    def test_layout_hint_wins_over_smaller_explicit_minimum(self):
+        # Страница с setMinimumSize меньше реальных потребностей layout-а:
+        # окно должно уметь дорасти до полного содержимого.
+        stack = CurrentSizeStack()
+        self.addCleanup(stack.deleteLater)
+        page = QtWidgets.QWidget()
+        page.setMinimumSize(100, 80)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        content = QtWidgets.QWidget()
+        content.setFixedSize(400, 300)
+        layout.addWidget(content)
+        stack.addWidget(page)
+        stack.setCurrentIndex(0)
+        hint = stack.minimumSizeHint()
+        self.assertGreaterEqual(hint.width(), 400)
+        self.assertGreaterEqual(hint.height(), 300)
+
     def test_window_can_shrink_after_leaving_big_page(self):
         window = QtWidgets.QMainWindow()
         self.addCleanup(window.close)

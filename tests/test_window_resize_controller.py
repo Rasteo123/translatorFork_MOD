@@ -138,6 +138,31 @@ class WindowResizeControllerTests(unittest.TestCase):
         self.assertGreaterEqual(shell.width(), 600)
         self.assertGreaterEqual(shell.height(), 500)
 
+    def test_growth_to_minimum_is_animated_not_instant(self):
+        from PyQt6 import QtTest
+
+        shell = self._shell()
+        shell.resize_controller.set_duration(100)
+        shell.set_home(SmallPage())
+        _drain(self.app)
+        start_width = shell.width()
+
+        class BigMinPage(ShellPage):
+            page_title = "bigmin-anim"
+
+            def __init__(self):
+                super().__init__()
+                self.setMinimumSize(700, 500)
+
+        shell.navigation.push(BigMinPage())
+        # Сразу после push окно ещё не должно прыгнуть к минимуму —
+        # рост происходит анимацией, а не мгновенным снапом Qt.
+        self.assertLess(shell.width(), 700)
+        self.assertGreaterEqual(shell.width(), start_width)
+        QtTest.QTest.qWait(500)
+        self.assertGreaterEqual(shell.width(), 700)
+        self.assertGreaterEqual(shell.height(), 500)
+
 
 if __name__ == "__main__":
     unittest.main()

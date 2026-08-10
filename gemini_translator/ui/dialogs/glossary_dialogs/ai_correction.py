@@ -1527,9 +1527,15 @@ class CorrectionSessionPage(ShellPage):
             app = QtWidgets.QApplication.instance()
             if app and hasattr(app, 'event_bus'):
                 session_id = self.engine.session_id if self.engine and self.engine.session_id else None
-                app.event_bus.event_posted.emit({
+                stop_event = {
                     'event': 'manual_stop_requested', 'source': 'CorrectionDialog', 'session_id': session_id
-                })
+                }
+                # Через emit_event, а не напрямую в сигнал: там висит снятие
+                # незабранных MCP-заявок, иначе «стоп» ждёт зависший запрос.
+                if hasattr(app.event_bus, 'emit_event'):
+                    app.event_bus.emit_event(stop_event)
+                else:
+                    app.event_bus.event_posted.emit(stop_event)
                 self.start_stop_btn.setText("Остановка…")
                 self.start_stop_btn.setEnabled(False)
         else:
