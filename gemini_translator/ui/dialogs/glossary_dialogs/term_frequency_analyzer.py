@@ -21,9 +21,11 @@ from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.widgets.common_widgets import NoScrollSpinBox
 from .custom_widgets import ExpandingTextEditDelegate
 from gemini_translator.ui import theme_manager
+from ...widgets.overlay_tab_widget import install_tab_fade
 
 class TermFrequencyAnalyzerPage(ShellPage):
     page_title = "Частотный анализ"
+    preferred_window_size = (1200, 800)
     result_ready = QtCore.pyqtSignal(bool)
 
     def __init__(self, glossary_data, epub_path=None, parent=None):
@@ -60,7 +62,6 @@ class TermFrequencyAnalyzerPage(ShellPage):
         self.pending_updates = {} # {original: {'rus': ..., 'note': ...}}
         
         self.setWindowTitle("Глобальный частотный анализ")
-        self.resize(1200, 800)
         
         self._init_ui()
         QtCore.QTimer.singleShot(100, self._start_analysis_flow)
@@ -84,6 +85,7 @@ class TermFrequencyAnalyzerPage(ShellPage):
         content_layout.setContentsMargins(0, 0, 0, 0)
         
         self.tabs = QTabWidget()
+        install_tab_fade(self.tabs)
         
         # --- Вкладка 1: Редкие (Кандидаты на удаление) ---
         self.rare_tab = QWidget(); rare_layout = QVBoxLayout(self.rare_tab)

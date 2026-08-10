@@ -78,4 +78,5 @@ class HomePageTests(unittest.TestCase):
             home.proxy_button.click()
 
         dialog_class.assert_called_once_with(home, settings_manager)
-        dialog_class.return_value.exec.assert_called_once_with()
+        # Вне шелла present_dialog показывает обычный window-modal open().
+        dialog_class.return_value.open.assert_called_once_with()

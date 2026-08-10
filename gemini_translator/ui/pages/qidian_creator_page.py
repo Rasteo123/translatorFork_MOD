@@ -51,6 +51,7 @@ from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.dialogs.qidian_rulate_creator import _split_csv
+from ..widgets.overlay_tab_widget import install_tab_fade
 
 
 QIDIAN_CREATOR_UI_STATE_KEY = "qidian_creator_ui"
@@ -148,6 +149,7 @@ class QidianCreatorPage(ShellPage):
         root = QVBoxLayout(self)
 
         self.main_tabs = QTabWidget()
+        install_tab_fade(self.main_tabs)
         self.main_tabs.setDocumentMode(False)
         root.addWidget(self.main_tabs, 1)
 

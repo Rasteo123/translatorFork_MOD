@@ -10,6 +10,12 @@ datas += collect_data_files('jieba')
 datas += collect_data_files('lxml')
 datas += collect_data_files('werkzeug')
 
+# Идентичность релизной сборки: CI генерирует файл до PyInstaller.
+# Локальная сборка без него — DEVELOPMENT-канал, автообновление выключено.
+import os
+if os.path.exists('update-build.json'):
+    datas += [('update-build.json', '.')]
+
 
 a = Analysis(
     ['main.py'],

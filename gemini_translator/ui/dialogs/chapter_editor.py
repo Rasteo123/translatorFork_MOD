@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from gemini_translator.ui import theme_manager
+from ..widgets.overlay_tab_widget import install_tab_fade
 
 
 BLOCK_RE = re.compile(
@@ -726,6 +727,7 @@ class ChapterEditorDialog(QDialog):
         layout.addWidget(splitter, 1)
 
         self.mode_tabs = QTabWidget()
+        install_tab_fade(self.mode_tabs)
         splitter.addWidget(self.mode_tabs)
 
         self.translated_editor = self._create_editor(read_only=False)
@@ -784,6 +786,7 @@ class ChapterEditorDialog(QDialog):
         sidebar_layout.addWidget(summary_group)
 
         self.sidebar_tabs = QTabWidget()
+        install_tab_fade(self.sidebar_tabs)
         self.issues_list = QListWidget()
         self.issues_list.setAlternatingRowColors(True)
         self.search_results_list = QListWidget()

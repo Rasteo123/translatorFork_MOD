@@ -21,6 +21,7 @@ from ..widgets.preset_widget import PresetWidget
 from ...api import config as api_config
 from ...utils import markdown_viewer
 from gemini_translator.ui import theme_manager
+from ..overlay_host import exec_dialog
 
 CHATGPT_LOGIN_URL = "https://chatgpt.com/auth/login"
 CHATGPT_SIGNUP_URL = "https://chatgpt.com/auth/login?mode=signup"
@@ -996,7 +997,7 @@ class ModelSettingsWidget(QGroupBox):
 
     def _open_free_deepseek_dialog(self):
         dialog = FreeDeepseekApiDialog(self.settings_manager, self)
-        dialog.exec()
+        exec_dialog(self, dialog)
 
     def _launch_chatgpt_profile_browser(self, start_url: str, action_label: str):
         runtime_root = api_config.default_workascii_runtime_root()
@@ -1483,7 +1484,7 @@ class ModelSettingsWidget(QGroupBox):
             parent=self,
         )
 
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) != QDialog.DialogCode.Accepted:
             return
 
         display_name, model_config = dialog.get_model_entry()

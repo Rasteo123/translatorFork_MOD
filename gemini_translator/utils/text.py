@@ -3201,7 +3201,95 @@ def optimize_headings(html_content: str) -> str:
     )
     
     return content
-    
+
+
+# Порог zlib-энтропии, за которым ответ считается вырожденным (зациклившимся).
+DEGENERATE_COMPRESSION_THRESHOLD = 0.90
+_DEGENERACY_MIN_BYTES = 500
+# Хвост режем, только если повтор действительно массовый: иначе легко
+# покалечить нормальный текст с парой одинаковых реплик подряд.
+_TAIL_MIN_REPEATS = 4
+_TAIL_MAX_PERIOD = 2000
+_TAIL_MIN_REMOVED_CHARS = 200
+# Ниже этого объёма «частичный перевод» не стоит промпта до-генерации.
+_MIN_USEFUL_PARTIAL_CHARS = 200
+
+
+def degenerate_repetition_ratio(text):
+    """
+    Доля, на которую zlib сжимает текст. Возвращает None, если текст слишком
+    короткий, чтобы судить о вырожденности.
+    """
+    if not text:
+        return None
+    data = text.encode('utf-8')
+    if len(data) <= _DEGENERACY_MIN_BYTES:
+        return None
+    compressed_size = len(zlib.compress(data))
+    return (len(data) - compressed_size) / len(data)
+
+
+def is_degenerate_repetition(text, threshold=DEGENERATE_COMPRESSION_THRESHOLD):
+    """Ответ состоит в основном из повторов одного и того же блока."""
+    ratio = degenerate_repetition_ratio(text)
+    return ratio is not None and ratio > threshold
+
+
+def strip_degenerate_repeated_tail(text):
+    """
+    Отрезает хвост из многократно повторённого блока, оставляя один экземпляр.
+    Возвращает (текст, сколько символов удалено).
+    """
+    if not text:
+        return text, 0
+
+    length = len(text)
+    max_period = min(_TAIL_MAX_PERIOD, length // _TAIL_MIN_REPEATS)
+    for period in range(1, max_period + 1):
+        unit = text[length - period:]
+        if not unit.strip():
+            continue
+
+        repeats = 1
+        while (
+            length - (repeats + 1) * period >= 0
+            and text[length - (repeats + 1) * period:length - repeats * period] == unit
+        ):
+            repeats += 1
+
+        if repeats < _TAIL_MIN_REPEATS:
+            continue
+
+        removed = (repeats - 1) * period
+        if removed < _TAIL_MIN_REMOVED_CHARS:
+            continue
+        return text[:length - removed], removed
+
+    return text, 0
+
+
+def sanitize_partial_translation(partial_text):
+    """
+    Готовит «частичный перевод» к повторной отправке в промпт до-генерации.
+
+    Вырожденный хвост отравляет все следующие попытки: модель видит в контексте
+    тысячи копий одного абзаца и продолжает ту же петлю, а результат каждый раз
+    режется валидатором. Поэтому повтор отрезаем, а если после обрезки текст всё
+    ещё вырожденный — выбрасываем хвост целиком и переводим чанк заново.
+    """
+    if not partial_text or not partial_text.strip():
+        return ""
+
+    cleaned, removed = strip_degenerate_repeated_tail(partial_text)
+    if is_degenerate_repetition(cleaned):
+        return ""
+    # После обрезки не осталось ничего осмысленного — значит, зациклился весь
+    # ответ, а не только хвост. Продолжать нечего, нужен чистый перевод заново.
+    if removed and len(cleaned.strip()) < _MIN_USEFUL_PARTIAL_CHARS:
+        return ""
+    return cleaned
+
+
 def validate_html_structure(original_html, translated_html):
     """
     Умная валидация ответа с глубокой проверкой структуры.
@@ -3360,12 +3448,9 @@ def validate_html_structure(original_html, translated_html):
             ), final_translated_html
 
     try:
-        compressed_size = len(zlib.compress(final_translated_html.encode('utf-8')))
-        original_size = len(final_translated_html.encode('utf-8'))
-        if original_size > 500:
-            compression_ratio = (original_size - compressed_size) / original_size
-            if compression_ratio > 0.90:
-                return False, f"Аномально высокая степень сжатия ({compression_ratio:.1%}).", final_translated_html
+        compression_ratio = degenerate_repetition_ratio(final_translated_html)
+        if compression_ratio is not None and compression_ratio > DEGENERATE_COMPRESSION_THRESHOLD:
+            return False, f"Аномально высокая степень сжатия ({compression_ratio:.1%}).", final_translated_html
     except Exception as e:
         print(f"[WARN] Ошибка при проверке сжатия: {e}")
     

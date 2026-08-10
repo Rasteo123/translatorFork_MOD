@@ -262,8 +262,10 @@ class StartupToolDialog(QDialog):
     def open_proxy_settings(self):
 
         from gemini_translator.ui.dialogs.proxy import ProxySettingsDialog
+        from gemini_translator.ui.overlay_host import present_dialog
+
         dialog = ProxySettingsDialog(self, self.settings_manager)
-        dialog.exec()
+        present_dialog(self, dialog)
 
 
     def _on_show(self, event):
@@ -531,7 +533,12 @@ class EnhancedProjectHistoryDialog(QDialog):
                 if depth >= self.PROJECT_SCAN_MAX_DEPTH:
                     dirs[:] = []
 
-                if "translation_map.json" not in files:
+                # Проект — это и папка с одним лишь глоссарием: перевод мог
+                # ещё не начинаться, но проект уже существует.
+                if (
+                    "translation_map.json" not in files
+                    and "project_glossary.json" not in files
+                ):
                     continue
 
                 project_folders.append(os.path.normpath(current_root))
