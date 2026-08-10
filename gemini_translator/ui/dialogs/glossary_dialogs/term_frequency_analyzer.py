@@ -24,6 +24,7 @@ from gemini_translator.ui import theme_manager
 
 class TermFrequencyAnalyzerPage(ShellPage):
     page_title = "Частотный анализ"
+    preferred_window_size = (1200, 800)
     result_ready = QtCore.pyqtSignal(bool)
 
     def __init__(self, glossary_data, epub_path=None, parent=None):
@@ -60,7 +61,6 @@ class TermFrequencyAnalyzerPage(ShellPage):
         self.pending_updates = {} # {original: {'rus': ..., 'note': ...}}
         
         self.setWindowTitle("Глобальный частотный анализ")
-        self.resize(1200, 800)
         
         self._init_ui()
         QtCore.QTimer.singleShot(100, self._start_analysis_flow)

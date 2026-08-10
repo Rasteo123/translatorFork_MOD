@@ -26,6 +26,7 @@ from .ancestor_utils import find_ancestor_by_class_name
 from ...utils.settings import SettingsManager
 from ...api import config as api_config
 from collections import defaultdict
+from ..overlay_host import exec_dialog
 
 
 PROJECT_GLOSSARY_FILENAME = "project_glossary.json"
@@ -824,7 +825,7 @@ class GlossaryWidget(QWidget):
             parent=self
         )
         
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             new_data, count = dialog.process_data()
             if count > 0:
                 self.set_glossary(new_data)
@@ -924,7 +925,7 @@ class GlossaryWidget(QWidget):
             return [], 1
 
         wizard = ImporterWizardDialog(initial_data=content, parent=self)
-        if wizard.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, wizard) == QDialog.DialogCode.Accepted:
             return wizard.get_glossary(), 1
         return [], 0
 
@@ -954,7 +955,7 @@ class GlossaryWidget(QWidget):
 
                 if to_configure:
                     manager = MultiImportManagerDialog(to_configure, pre_processed, self)
-                    if manager.exec() != QDialog.DialogCode.Accepted:
+                    if exec_dialog(self, manager) != QDialog.DialogCode.Accepted:
                         return
                     imported_entries, files_processed_count = manager.get_all_imported_entries()
                 else:
@@ -1103,7 +1104,7 @@ class GlossaryWidget(QWidget):
         try:
             parent_dialog.setEnabled(False)
             parent_dialog.is_blocked_by_child_dialog = True
-            dialog.exec()
+            exec_dialog(self, dialog)
         finally:
             parent_dialog.setEnabled(True)
             parent_dialog.is_blocked_by_child_dialog = False
@@ -1159,7 +1160,7 @@ class GlossaryWidget(QWidget):
                 if glossary_entry_key(term) in new_keys
             ]
             review_dialog = GeneratedTermsReviewDialog(new_entries, self)
-            if review_dialog.exec() != QDialog.DialogCode.Accepted:
+            if exec_dialog(self, review_dialog) != QDialog.DialogCode.Accepted:
                 return
             final_glossary_to_apply = self._merge_reviewed_new_entries(
                 final_glossary_from_ai,

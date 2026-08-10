@@ -52,6 +52,7 @@ from ...api import config as api_config
 from gemini_translator.ui import theme_manager
 from .validation_dialogs import UntranslatedWordDetector
 from .validation_dialogs.content_lru import ContentLru
+from ..overlay_host import exec_dialog
 from .validation_dialogs.untranslated_fixer_dialog import (
     AITranslationDialog,
     UntranslatedFixerDialog,
@@ -781,6 +782,7 @@ def _replace_all_literal_in_plain_text_edit(editor, needle, replacement, match_c
 
 class AIRepairReviewPage(ShellPage):
     page_title = "Построчная проверка автоправки"
+    preferred_window_size = (1480, 840)
     result_ready = pyqtSignal(bool)
 
     def __init__(self, candidates, parent=None):
@@ -791,7 +793,6 @@ class AIRepairReviewPage(ShellPage):
         self._change_lookup = {}
         self.setWindowTitle("Построчная проверка автоправки")
         self.setMinimumSize(1280, 760)
-        self.resize(1480, 840)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -2023,6 +2024,7 @@ class ValidationThread(QThread):
 class TranslationValidatorPage(ShellPage):
 
     page_title = "Валидация перевода"
+    preferred_window_size = (1180, 760)
 
     ANALYSIS_MODES = (
         ("all", "Все главы"),
@@ -2106,7 +2108,6 @@ class TranslationValidatorPage(ShellPage):
         """Главный метод-оркестратор, собирающий UI из частей."""
         
         self.setWindowTitle(f'Инструмент проверки переводов {self.version}')
-        self.resize(1180, 760)
         self.setMinimumSize(900, 620)
         
         main_layout = QVBoxLayout(self)
@@ -3190,7 +3191,7 @@ class TranslationValidatorPage(ShellPage):
             parent=self,
             title="Редактор поискового запроса"
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             self.regex_edit.setText(dialog.get_text())
 
     def _get_ai_repair_target_rows(self):
@@ -3608,7 +3609,7 @@ class TranslationValidatorPage(ShellPage):
         )
         if hasattr(dialog, '_update_chunk_stats'):
             dialog._update_chunk_stats()
-        return dialog.exec()
+        return exec_dialog(parent, dialog)
 
 
     def _on_header_clicked(self, logical_index):
@@ -3914,7 +3915,7 @@ class TranslationValidatorPage(ShellPage):
         button_box.rejected.connect(dialog.reject)
         layout.addWidget(button_box)
 
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             # --- Сохраняем и имя пресета, и текст ---
             exceptions_widget.save_last_session_state()
             self.settings_manager.save_last_word_exceptions_text(exceptions_widget.get_prompt())
@@ -4533,7 +4534,7 @@ class TranslationValidatorPage(ShellPage):
         dialog = StructureErrorsDialog(errors_dict, self)
         # Подключаем сигнал из дочернего окна к слоту в этом (родительском) окне
         dialog.find_tag_in_code_requested.connect(self._jump_to_tag_in_code)
-        dialog.exec()
+        exec_dialog(self, dialog)
     
 # --- ВСТАВЬТЕ ЭТИ ДВА МЕТОДА В КЛАСС TranslationValidatorDialog ---
     def _go_to_previous_item(self):

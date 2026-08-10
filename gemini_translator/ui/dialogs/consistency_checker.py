@@ -101,6 +101,7 @@ from ...api import config as api_config
 from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
 from ..shell import ShellPage
+from ..overlay_host import exec_dialog, present_dialog
 from .chapter_selection_dialog import ChapterSelectionDialog
 from gemini_translator.ui import theme_manager
 
@@ -294,6 +295,7 @@ class SingleFixWorker(QThread):
 
 class ConsistencyValidatorPage(ShellPage):
     page_title = "Проверка согласованности"
+    preferred_window_size = (1400, 950)
 
     """
     Диалог проверки согласованности перевода v2.
@@ -346,7 +348,6 @@ class ConsistencyValidatorPage(ShellPage):
         self.single_fix_trace_file = self.session_file.parent / "consistency_single_fix_trace.log"
 
         self.setWindowTitle("🔍 Проверка согласованности (Consistency Checker)")
-        self.resize(1400, 950)
 
         self._init_ui()
         self._set_selected_chapters(self._all_chapter_ids(), fallback_to_all=True)
@@ -1119,13 +1120,15 @@ class ConsistencyValidatorPage(ShellPage):
             previous_selection=list(self.selected_chapter_ids),
             parent=self,
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
 
-        selected_chapters = dialog.get_selected_chapters()
-        self._set_selected_chapters(
-            [self._chapter_id(chapter) for chapter in selected_chapters],
-        )
+        def _apply_selection(result: int) -> None:
+            if result != QDialog.DialogCode.Accepted:
+                return
+            self._set_selected_chapters(
+                [self._chapter_id(ch) for ch in dialog.get_selected_chapters()],
+            )
+
+        present_dialog(self, dialog, _apply_selection)
 
     def _update_analysis_scope_info(self):
         """Обновляет информацию о текущем наборе глав для анализа."""
@@ -2464,7 +2467,7 @@ class ConsistencyValidatorPage(ShellPage):
         close_btn.clicked.connect(dialog.close)
         layout.addWidget(close_btn)
         
-        dialog.exec()
+        exec_dialog(self, dialog)
 
     def save_all_fixes(self):
         """Сохраняет все накопленные исправления в файлы."""

@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
+from .overlay_host import OverlayHost, install_message_box_overlay
+from .window_resize import WindowResizeController
+
 
 class ShellPage(QtWidgets.QWidget):
     """Base class for any full-window page hosted by :class:`MainShell`.
@@ -26,6 +29,11 @@ class ShellPage(QtWidgets.QWidget):
     #: Title shown in the shell nav bar while this page is current.
     page_title: str = ""
 
+    #: Optional ``(width, height)`` the shell window should smoothly resize
+    #: to when this page becomes current. ``None`` keeps the current size
+    #: (the window still grows to satisfy the page minimum).
+    preferred_window_size: tuple[int, int] | None = None
+
     def get_page_title(self) -> str:
         return self.page_title
 
@@ -40,6 +48,77 @@ class ShellPage(QtWidgets.QWidget):
         return True
 
 
+class CurrentSizeStack(QtWidgets.QStackedWidget):
+    """Stacked widget whose size hints follow only the *current* page.
+
+    ``QStackedLayout`` reports the maximum over all pages, so a large hidden
+    page would keep the shell window from shrinking. Hints can also be frozen
+    via :meth:`set_size_hint_override` while the shell animates the window
+    size, so Qt does not snap the window to the new minimum mid-animation.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._size_hint_override: QtCore.QSize | None = None
+        self.currentChanged.connect(self._invalidate_geometry)
+
+    def set_size_hint_override(self, size: QtCore.QSize | None) -> None:
+        self._size_hint_override = size
+        self._invalidate_geometry()
+
+    def _invalidate_geometry(self, _index: int | None = None) -> None:
+        self.updateGeometry()
+
+    def sizeHint(self) -> QtCore.QSize:
+        current = self.currentWidget()
+        if current is None:
+            return super().sizeHint()
+        return current.sizeHint()
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        if self._size_hint_override is not None:
+            return QtCore.QSize(self._size_hint_override)
+        current = self.currentWidget()
+        if current is None:
+            return super().minimumSizeHint()
+        # Жёсткий минимум — только явный setMinimumSize страницы. Живой
+        # layout-хинт в роли минимума дёргает окно при подгрузке контента
+        # и запрещает пользователю сжимать окно обратно.
+        return QtCore.QSize(current.minimumSize())
+
+    def real_minimum_size_hint(self) -> QtCore.QSize:
+        """Полный минимум содержимого страницы — цель для анимации размера.
+
+        Максимум из явного setMinimumSize и потребностей layout-а: при
+        переходе окно дорастает до полного содержимого, даже если автор
+        занизил явный минимум. В отличие от :meth:`minimumSizeHint`, Qt
+        этим значением ничего не форсирует.
+        """
+        current = self.currentWidget()
+        if current is None:
+            return super().minimumSizeHint()
+        explicit = current.minimumSize()
+        hint = current.minimumSizeHint()
+        width = max(explicit.width(), hint.width())
+        height = max(explicit.height(), hint.height())
+        # QScrollArea прячет реальную ширину содержимого (сама она почти
+        # не имеет минимума) — без этого окно «не дорастает» и контент
+        # обрезается. Высоту не трогаем: вертикальная прокрутка легитимна.
+        for area in current.findChildren(QtWidgets.QScrollArea):
+            inner = area.widget()
+            if inner is None or not area.isVisibleTo(current):
+                continue
+            need = max(inner.minimumSizeHint().width(), inner.sizeHint().width())
+            if need <= 0:
+                continue
+            extra = 2 * area.frameWidth()
+            bar = area.verticalScrollBar()
+            if bar is not None:
+                extra += bar.sizeHint().width()
+            width = max(width, need + extra)
+        return QtCore.QSize(width, height)
+
+
 class NavigationController(QtCore.QObject):
     """Owns the page stack and drives a ``QStackedWidget``.
 
@@ -47,6 +126,9 @@ class NavigationController(QtCore.QObject):
     ``request_back``/``request_push`` signals to this controller.
     """
 
+    #: Emitted right before the current page changes, while the old page is
+    #: still current (lets listeners snapshot per-page state, e.g. window size).
+    stack_about_to_change = QtCore.pyqtSignal()
     stack_changed = QtCore.pyqtSignal()
 
     def __init__(self, stack: QtWidgets.QStackedWidget, parent=None):
@@ -64,6 +146,7 @@ class NavigationController(QtCore.QObject):
     def set_home(self, page: ShellPage) -> None:
         if self._pages:
             raise RuntimeError("Home page already set")
+        self.stack_about_to_change.emit()
         # Home has no back navigation; request_back is intentionally not wired.
         page.request_push.connect(self.push)
         self._pages.append(page)
@@ -75,6 +158,7 @@ class NavigationController(QtCore.QObject):
     def push(self, page: ShellPage) -> None:
         if not self._pages:
             raise RuntimeError("set_home must be called before push")
+        self.stack_about_to_change.emit()
         page.request_back.connect(self.pop)
         page.request_push.connect(self.push)
         # on_leave fires only in pop() — i.e. when a page is actually removed.
@@ -91,6 +175,7 @@ class NavigationController(QtCore.QObject):
         page = self._pages[-1]
         if not page.can_leave():
             return False
+        self.stack_about_to_change.emit()
         page.on_leave()
         self._pages.pop()
         self._stack.removeWidget(page)
@@ -148,13 +233,20 @@ class MainShell(QtWidgets.QMainWindow):
         nav_layout.addWidget(self._title_label)
         nav_layout.addStretch(1)
 
-        self._stack = QtWidgets.QStackedWidget()
+        self._stack = CurrentSizeStack()
 
         root.addWidget(self._nav_bar)
         root.addWidget(self._stack, 1)
         self.setCentralWidget(central)
 
         self.navigation = NavigationController(self._stack, self)
+        self.resize_controller = WindowResizeController(
+            self, self.navigation, self._stack
+        )
+        self.overlay_host = OverlayHost(self, blocked=central)
+        # Все QMessageBox приложения (statics и msg_box.exec()) с этого
+        # момента показываются overlay-карточками, когда есть видимый хост.
+        install_message_box_overlay()
         self.navigation.stack_changed.connect(self._sync_nav_bar)
         self._sync_nav_bar()
 
