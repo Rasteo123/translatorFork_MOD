@@ -1118,7 +1118,13 @@ if __name__ == "__main__":
     os_patch.PatientLock.register_vip_thread(main_id)
 
     app = ApplicationWithContext(sys.argv)
-    
+
+    # Health-подтверждение апдейтера: если процесс запущен хелпером
+    # обновления, пишем ack-файл — иначе хелпер откатит установку.
+    from gemini_translator.utils import update_installer as _upd_install
+    _upd_install.write_startup_acknowledgement()
+    _upd_install.cleanup_stale_staging()
+
     # --- ЛОКАЛИЗАЦИЯ СТАНДАРТНЫХ ЭЛЕМЕНТОВ QT ---
     # Загружаем русскую локализацию для контекстных меню (ПКМ) и диалогов Qt (QMessageBox, QInputDialog и т.д.)
     from PyQt6.QtCore import QTranslator, QLibraryInfo
