@@ -40,6 +40,48 @@ class ShellPage(QtWidgets.QWidget):
         return True
 
 
+class CurrentSizeStack(QtWidgets.QStackedWidget):
+    """Stacked widget whose size hints follow only the *current* page.
+
+    ``QStackedLayout`` reports the maximum over all pages, so a large hidden
+    page would keep the shell window from shrinking. Hints can also be frozen
+    via :meth:`set_size_hint_override` while the shell animates the window
+    size, so Qt does not snap the window to the new minimum mid-animation.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._size_hint_override: QtCore.QSize | None = None
+        self.currentChanged.connect(self._invalidate_geometry)
+
+    def set_size_hint_override(self, size: QtCore.QSize | None) -> None:
+        self._size_hint_override = size
+        self._invalidate_geometry()
+
+    def _invalidate_geometry(self, _index: int | None = None) -> None:
+        self.updateGeometry()
+
+    def sizeHint(self) -> QtCore.QSize:
+        current = self.currentWidget()
+        if current is None:
+            return super().sizeHint()
+        return current.sizeHint()
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        if self._size_hint_override is not None:
+            return QtCore.QSize(self._size_hint_override)
+        current = self.currentWidget()
+        if current is None:
+            return super().minimumSizeHint()
+        # Явный setMinimumSize страницы приоритетнее её вычисленного хинта.
+        explicit = current.minimumSize()
+        hint = current.minimumSizeHint()
+        return QtCore.QSize(
+            explicit.width() or hint.width(),
+            explicit.height() or hint.height(),
+        )
+
+
 class NavigationController(QtCore.QObject):
     """Owns the page stack and drives a ``QStackedWidget``.
 
@@ -148,7 +190,7 @@ class MainShell(QtWidgets.QMainWindow):
         nav_layout.addWidget(self._title_label)
         nav_layout.addStretch(1)
 
-        self._stack = QtWidgets.QStackedWidget()
+        self._stack = CurrentSizeStack()
 
         root.addWidget(self._nav_bar)
         root.addWidget(self._stack, 1)
