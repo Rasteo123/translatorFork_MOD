@@ -294,6 +294,7 @@ class SingleFixWorker(QThread):
 
 class ConsistencyValidatorPage(ShellPage):
     page_title = "Проверка согласованности"
+    preferred_window_size = (1400, 950)
 
     """
     Диалог проверки согласованности перевода v2.
@@ -346,7 +347,6 @@ class ConsistencyValidatorPage(ShellPage):
         self.single_fix_trace_file = self.session_file.parent / "consistency_single_fix_trace.log"
 
         self.setWindowTitle("🔍 Проверка согласованности (Consistency Checker)")
-        self.resize(1400, 950)
 
         self._init_ui()
         self._set_selected_chapters(self._all_chapter_ids(), fallback_to_all=True)

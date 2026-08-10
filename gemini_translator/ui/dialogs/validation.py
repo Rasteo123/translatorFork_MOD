@@ -781,6 +781,7 @@ def _replace_all_literal_in_plain_text_edit(editor, needle, replacement, match_c
 
 class AIRepairReviewPage(ShellPage):
     page_title = "Построчная проверка автоправки"
+    preferred_window_size = (1480, 840)
     result_ready = pyqtSignal(bool)
 
     def __init__(self, candidates, parent=None):
@@ -791,7 +792,6 @@ class AIRepairReviewPage(ShellPage):
         self._change_lookup = {}
         self.setWindowTitle("Построчная проверка автоправки")
         self.setMinimumSize(1280, 760)
-        self.resize(1480, 840)
 
         layout = QVBoxLayout(self)
         intro = QLabel(
@@ -2023,6 +2023,7 @@ class ValidationThread(QThread):
 class TranslationValidatorPage(ShellPage):
 
     page_title = "Валидация перевода"
+    preferred_window_size = (1180, 760)
 
     ANALYSIS_MODES = (
         ("all", "Все главы"),
@@ -2106,7 +2107,6 @@ class TranslationValidatorPage(ShellPage):
         """Главный метод-оркестратор, собирающий UI из частей."""
         
         self.setWindowTitle(f'Инструмент проверки переводов {self.version}')
-        self.resize(1180, 760)
         self.setMinimumSize(900, 620)
         
         main_layout = QVBoxLayout(self)

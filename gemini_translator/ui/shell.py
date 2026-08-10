@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
+from .window_resize import WindowResizeController
+
 
 class ShellPage(QtWidgets.QWidget):
     """Base class for any full-window page hosted by :class:`MainShell`.
@@ -25,6 +27,11 @@ class ShellPage(QtWidgets.QWidget):
 
     #: Title shown in the shell nav bar while this page is current.
     page_title: str = ""
+
+    #: Optional ``(width, height)`` the shell window should smoothly resize
+    #: to when this page becomes current. ``None`` keeps the current size
+    #: (the window still grows to satisfy the page minimum).
+    preferred_window_size: tuple[int, int] | None = None
 
     def get_page_title(self) -> str:
         return self.page_title
@@ -89,6 +96,9 @@ class NavigationController(QtCore.QObject):
     ``request_back``/``request_push`` signals to this controller.
     """
 
+    #: Emitted right before the current page changes, while the old page is
+    #: still current (lets listeners snapshot per-page state, e.g. window size).
+    stack_about_to_change = QtCore.pyqtSignal()
     stack_changed = QtCore.pyqtSignal()
 
     def __init__(self, stack: QtWidgets.QStackedWidget, parent=None):
@@ -106,6 +116,7 @@ class NavigationController(QtCore.QObject):
     def set_home(self, page: ShellPage) -> None:
         if self._pages:
             raise RuntimeError("Home page already set")
+        self.stack_about_to_change.emit()
         # Home has no back navigation; request_back is intentionally not wired.
         page.request_push.connect(self.push)
         self._pages.append(page)
@@ -117,6 +128,7 @@ class NavigationController(QtCore.QObject):
     def push(self, page: ShellPage) -> None:
         if not self._pages:
             raise RuntimeError("set_home must be called before push")
+        self.stack_about_to_change.emit()
         page.request_back.connect(self.pop)
         page.request_push.connect(self.push)
         # on_leave fires only in pop() — i.e. when a page is actually removed.
@@ -133,6 +145,7 @@ class NavigationController(QtCore.QObject):
         page = self._pages[-1]
         if not page.can_leave():
             return False
+        self.stack_about_to_change.emit()
         page.on_leave()
         self._pages.pop()
         self._stack.removeWidget(page)
@@ -197,6 +210,9 @@ class MainShell(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
 
         self.navigation = NavigationController(self._stack, self)
+        self.resize_controller = WindowResizeController(
+            self, self.navigation, self._stack
+        )
         self.navigation.stack_changed.connect(self._sync_nav_bar)
         self._sync_nav_bar()
 

@@ -209,11 +209,7 @@ class CorrectionSessionPage(ShellPage):
         height = max(int(available_geometry.height() * 0.75), 650)
         width = max(int(available_geometry.width() * 0.65), 1000)
 
-        self.resize(width, height)
-        self.move(
-            available_geometry.center().x() - self.width() // 2,
-            available_geometry.center().y() - self.height() // 2
-        )
+        self.preferred_window_size = (width, height)
 
         self.setWindowFlags(
             self.windowFlags() |
