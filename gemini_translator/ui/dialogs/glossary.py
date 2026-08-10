@@ -64,6 +64,7 @@ from gemini_translator.ui import theme_manager
 # Словари (~35МБ, ~секунда) больше не строятся при импорте модуля (то есть
 # при старте GUI): PYMORPHY_AVAILABLE — только проверка importability,
 # анализатор строится фоновым прогревом при открытии окна глоссария.
+from ..overlay_host import exec_dialog
 from ...utils.morphology import (
     PYMORPHY_AVAILABLE,
     get_morph_analyzer,
@@ -125,7 +126,7 @@ class GlossaryStartupDialog(QDialog):
         from gemini_translator.ui.dialogs.misc import ProjectHistoryDialog
         dialog = ProjectHistoryDialog(history, self.settings_manager, self)
         
-        if dialog.exec():
+        if exec_dialog(self, dialog):
             project = dialog.get_selected_project()
             if project:
                 path = project.get("output_folder")
@@ -1219,7 +1220,7 @@ class GlossaryManagerPage(ShellPage):
             parent=self
         )
         
-        if dialog.exec():
+        if exec_dialog(self, dialog):
             self.filter_state = dialog.get_filter_state()
             
             # Меняем стиль кнопки
@@ -1342,7 +1343,7 @@ class GlossaryManagerPage(ShellPage):
         # Передаем данные. set_glossary создаст новые ID в изолированной базе ребенка
         child_manager.set_glossary(filtered_entries, run_analysis=True)
         
-        result = child_manager.exec()
+        result = exec_dialog(self, child_manager)
         
         # 3. Если пользователь сохранил изменения (нажал 'Применить')
         if result == QDialog.DialogCode.Accepted:
@@ -1609,7 +1610,7 @@ class GlossaryManagerPage(ShellPage):
         # --- КОНЕЦ ИЗМЕНЕНИЙ ---
         
         layout.addWidget(btn_all); layout.addWidget(btn_empty); layout.addWidget(button_box)
-        dialog.exec()
+        exec_dialog(self, dialog)
         return self.choice
     
     
@@ -2489,7 +2490,7 @@ class GlossaryManagerPage(ShellPage):
         # Добавляем опцию в комбобокс диалога на лету, если его класс позволяет, 
         # но проще обновить сам класс GlossarySortDialog ниже.
         
-        if dialog.exec():
+        if exec_dialog(self, dialog):
             col_idx, order, criterion = dialog.get_state()
             self.sort_column_index = col_idx
             self.sort_order = order
@@ -2753,7 +2754,7 @@ class GlossaryManagerPage(ShellPage):
         actions = {"Проектный файл JSON (все данные, […] )": "full_json_project", "Словарь JSON (для перевода, {…} )": "full_json_dictionary", "Простой JSON (Оригинал -> Перевод)": "simple_json", "Контекст TXT (Перевод - Примечание)": "context_txt", "Простой TXT (Оригинал = Перевод)": "simple_txt"}
         for text, fmt in actions.items():
             btn = QPushButton(text); btn.clicked.connect(lambda ch, f=fmt: set_fmt(f)); layout.addWidget(btn)
-        if not dialog.exec(): return
+        if not exec_dialog(self, dialog): return
         
         filters = {"full_json_project": "JSON Project File (*.json)", "full_json_dictionary": "JSON Dictionary (*.json)", "simple_json": "Simple JSON Glossary (*.json)", "context_txt": "Text File (*.txt)", "simple_txt": "Text File (*.txt)"}
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить глоссарий", f"glossary.{'txt' if 'txt' in self.save_format_choice else 'json'}", filters[self.save_format_choice])
@@ -2786,7 +2787,7 @@ class GlossaryManagerPage(ShellPage):
             
         wizard = ImporterWizardDialog(initial_data=table_data, is_from_table=True, parent=self)
         
-        if wizard.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, wizard) == QDialog.DialogCode.Accepted:
             new_glossary = wizard.get_glossary()
             if new_glossary:
                 self.add_history('wholesale', {'action_name': "Мастер импорта", 'description': f"Данные пересобраны ({len(new_glossary)} записей).", 'old_state': current_glossary})
@@ -3184,7 +3185,7 @@ class GlossaryManagerPage(ShellPage):
             parent=self
         )
         
-        dlg.exec()
+        exec_dialog(self, dlg)
         
         # После закрытия диалога нужно обновить кнопку (вдруг версии появились/исчезли)
         # Для простоты можно перезагрузить текущую страницу таблицы
@@ -3270,7 +3271,7 @@ class GlossaryManagerPage(ShellPage):
                 with open(paths[0], 'r', encoding='utf-8') as f: content = f.read()
                 if content.strip():
                     wizard = ImporterWizardDialog(initial_data=content, parent=self)
-                    if wizard.exec() == QDialog.DialogCode.Accepted and (newly_imported := wizard.get_glossary()):
+                    if exec_dialog(self, wizard) == QDialog.DialogCode.Accepted and (newly_imported := wizard.get_glossary()):
                         imported_entries.extend(newly_imported); files_processed_count = 1
                 else: files_processed_count = 1; QMessageBox.information(self, "Файл пуст", f"Выбранный файл пуст:\n{paths[0]}")
             except Exception as e: QMessageBox.critical(self, "Ошибка чтения файла", f"Не удалось прочитать или обработать файл:\n{paths[0]}\n\nОшибка: {e}")
@@ -3285,7 +3286,7 @@ class GlossaryManagerPage(ShellPage):
                 QMessageBox.information(self, "Автоматический импорт", f"Все {files_processed_count} файлов были в стандартном формате.")
             else:
                 manager = MultiImportManagerDialog(to_configure, pre_processed, self)
-                if manager.exec() == QDialog.DialogCode.Accepted:
+                if exec_dialog(self, manager) == QDialog.DialogCode.Accepted:
                     imported_entries, files_processed_count = manager.get_all_imported_entries()
         # ----------------------------------------------------------------------------------
         
@@ -3333,7 +3334,7 @@ class GlossaryManagerPage(ShellPage):
                 cancel_btn.clicked.connect(dialog.reject)
                 layout.addWidget(cancel_btn)
                 
-                result_code = dialog.exec()
+                result_code = exec_dialog(self, dialog)
                 
                 # Коды возврата: 100=merge, 101=supplement, 102=accumulate, 103=replace
                 if result_code >= 100:
@@ -3361,7 +3362,7 @@ class GlossaryManagerPage(ShellPage):
         if not self.direct_conflicts: return
         current_glossary = self.get_glossary()
         dlg = DirectConflictResolverDialog(self.direct_conflicts, self, morph=get_morph_analyzer())
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dlg) == QDialog.DialogCode.Accepted:
             resolved = dlg.resolved_glossary
             if not resolved: return
             

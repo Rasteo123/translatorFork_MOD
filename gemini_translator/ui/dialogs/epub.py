@@ -76,6 +76,7 @@ from ...core.epub_deep_cleanup_helpers import (
     get_default_deep_cleanup_tag_rules,
     normalize_deep_cleanup_tag_rules,
 )
+from ..overlay_host import exec_dialog
 from ...core.epub_duplicate_helpers import (
     DUPLICATE_REVIEW_BLOCK_TAGS,
     analyze_duplicate_findings,
@@ -593,7 +594,7 @@ class EpubHtmlSelectorDialog(QDialog):
             project_manager=project_manager,
         )
         
-        result = dialog.exec()
+        result = exec_dialog(parent, dialog)
         
         if result == QDialog.DialogCode.Accepted:
             return True, dialog.get_selected_files()
@@ -1087,7 +1088,7 @@ class EpubHtmlSelectorDialog(QDialog):
 
         # Открываем диалог (теперь он покажет ручные опции даже без issues)
         dialog = EpubCleanupOptionsDialog(issues, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             fixes = dialog.get_fixes()
             if fixes:
                 self._run_surgical_cleanup(fixes)
@@ -1115,7 +1116,7 @@ class EpubHtmlSelectorDialog(QDialog):
             return
 
         dialog = EpubDeepCleanupOptionsDialog(self.deep_cleanup_settings, self.deep_cleanup_tag_rules, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             options = dialog.get_options()
             self.deep_cleanup_settings = dict(options)
             self.deep_cleanup_tag_rules = dict(options.get('tag_rules') or get_default_deep_cleanup_tag_rules())
@@ -1157,7 +1158,7 @@ class EpubHtmlSelectorDialog(QDialog):
             self.wait_dialog.accept()
 
         dialog = EpubDuplicateReviewDialog(analysis_data or {}, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             selected_findings = dialog.get_selected_findings()
             if selected_findings:
                 self._run_duplicate_cleanup(selected_findings)
@@ -2242,7 +2243,7 @@ class TranslatedChaptersManagerDialog(QDialog):
             self.wait_dialog.accept()
 
         dialog = EpubDuplicateReviewDialog(analysis_data or {}, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             selected_findings = dialog.get_selected_findings()
             if selected_findings:
                 self._run_duplicate_cleanup_for_translated_files(selected_findings)
@@ -2295,7 +2296,7 @@ class TranslatedChaptersManagerDialog(QDialog):
 
             if msg_box.clickedButton() == yes_button:
                 dialog = EpubDuplicateReviewDialog(remaining, self)
-                if dialog.exec() == QDialog.DialogCode.Accepted:
+                if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
                     selected_findings = dialog.get_selected_findings()
                     if selected_findings:
                         self._run_duplicate_cleanup_for_translated_files(selected_findings)
@@ -2340,7 +2341,7 @@ class TranslatedChaptersManagerDialog(QDialog):
             original_internal_path=self._get_selected_original_internal_path(),
             project_manager=self.project_manager,
         )
-        dialog.exec()
+        exec_dialog(self, dialog)
 
         self.load_chapters()
         self._select_chapter_by_filepath(filepath)
@@ -3475,7 +3476,7 @@ class EpubDeepCleanupOptionsDialog(QDialog):
 
     def _edit_tag_rules(self):
         dialog = EpubDeepCleanupTagRulesDialog(self._tag_rules, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
             self._tag_rules = dict(normalize_deep_cleanup_tag_rules(dialog.get_rules()))
             self._refresh_rules_summary()
             self._persist_current_state()

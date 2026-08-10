@@ -204,7 +204,9 @@ class OverlayHost(QtWidgets.QWidget):
 
 def find_overlay_host(widget: Optional[QtWidgets.QWidget]) -> Optional[OverlayHost]:
     """Возвращает overlay-хост окна, в котором лежит ``widget`` (или None)."""
-    if widget is None:
+    # Контекст бывает и не-виджетом (тестовые harness-объекты, None) —
+    # тогда хоста нет и работает нативный fallback.
+    if not isinstance(widget, QtWidgets.QWidget):
         return None
     window = widget.window()
     host = getattr(window, "overlay_host", None)
