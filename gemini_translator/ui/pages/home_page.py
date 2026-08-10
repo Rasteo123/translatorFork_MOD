@@ -199,10 +199,10 @@ class HomePage(ShellPage):
             return
 
         from gemini_translator.ui.dialogs.proxy import ProxySettingsDialog
+        from gemini_translator.ui.overlay_host import present_dialog
 
         dialog = ProxySettingsDialog(self, settings_manager)
-        dialog.exec()
-        self._refresh_proxy_status()
+        present_dialog(self, dialog, lambda _result: self._refresh_proxy_status())
 
     def _refresh_proxy_status(self) -> None:
         settings_manager = self._settings_manager()

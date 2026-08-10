@@ -1826,9 +1826,10 @@ class InitialSetupPage(ShellPage):
 
     def _open_proxy_settings(self):
         from .proxy import ProxySettingsDialog
+        from ..overlay_host import present_dialog
 
         dialog = ProxySettingsDialog(self, self.settings_manager)
-        dialog.exec()
+        present_dialog(self, dialog)
 
     def _update_proxy_display(self, settings):
         label = getattr(self, 'proxy_status_label', None)

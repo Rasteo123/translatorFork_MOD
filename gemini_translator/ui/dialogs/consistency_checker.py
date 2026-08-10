@@ -101,6 +101,7 @@ from ...api import config as api_config
 from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
 from ..shell import ShellPage
+from ..overlay_host import present_dialog
 from .chapter_selection_dialog import ChapterSelectionDialog
 from gemini_translator.ui import theme_manager
 
@@ -1119,13 +1120,15 @@ class ConsistencyValidatorPage(ShellPage):
             previous_selection=list(self.selected_chapter_ids),
             parent=self,
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
 
-        selected_chapters = dialog.get_selected_chapters()
-        self._set_selected_chapters(
-            [self._chapter_id(chapter) for chapter in selected_chapters],
-        )
+        def _apply_selection(result: int) -> None:
+            if result != QDialog.DialogCode.Accepted:
+                return
+            self._set_selected_chapters(
+                [self._chapter_id(ch) for ch in dialog.get_selected_chapters()],
+            )
+
+        present_dialog(self, dialog, _apply_selection)
 
     def _update_analysis_scope_info(self):
         """Обновляет информацию о текущем наборе глав для анализа."""
