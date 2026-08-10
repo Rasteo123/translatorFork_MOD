@@ -1137,7 +1137,14 @@ if __name__ == "__main__":
     # Фикс дублирования иконки в Dock на macOS
     if sys.platform == "darwin":
         app.setDesktopFileName("com.siberianteam.translatorfork")
-        
+
+    # На Windows базовый стиль (windowsvista/windows11) рисует часть
+    # элементов нативно, мимо QSS-движка — скругления темы получают
+    # пиксельные «лесенки» и артефакты. Fusion рендерит всё растровым
+    # QSS-путём со сглаживанием, как на macOS.
+    if sys.platform == "win32":
+        app.setStyle("Fusion")
+
     install_window_title_branding(app)
     # Тема (светлая/тёмная/авто) применяется в apply_saved_app_theme ниже,
     # как только доступен settings_manager — без раннего тёмного дефолта,

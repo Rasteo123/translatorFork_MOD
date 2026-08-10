@@ -19,8 +19,8 @@ import json
 import shutil
 from pathlib import Path
 from datetime import datetime
-from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QEvent
-from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption
+from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QRectF, QEvent
+from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption, QPainter
 
 class CenteredCheckboxDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -35,10 +35,13 @@ class CenteredCheckboxDelegate(QStyledItemDelegate):
         bg_color = index.data(Qt.ItemDataRole.BackgroundRole)
         if bg_color:
             painter.save()
+            # Без сглаживания дуги подложек дают пиксельные «лесенки»
+            # на экранах с DPR=1 (Windows/Linux).
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(bg_color)
-            rect = option.rect.adjusted(4, 2, -4, -2)
-            painter.drawRoundedRect(rect, 6, 6)
+            rect = QRectF(option.rect).adjusted(4.0, 2.0, -4.0, -2.0)
+            painter.drawRoundedRect(rect, 6.0, 6.0)
             painter.restore()
 
         style = option.widget.style() if option.widget else QApplication.style()
@@ -78,10 +81,13 @@ class ThemedTableDelegate(QStyledItemDelegate):
         bg_color = index.data(Qt.ItemDataRole.BackgroundRole)
         if bg_color:
             painter.save()
+            # Без сглаживания дуги подложек дают пиксельные «лесенки»
+            # на экранах с DPR=1 (Windows/Linux).
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(bg_color)
-            rect = option.rect.adjusted(4, 2, -4, -2)
-            painter.drawRoundedRect(rect, 6, 6)
+            rect = QRectF(option.rect).adjusted(4.0, 2.0, -4.0, -2.0)
+            painter.drawRoundedRect(rect, 6.0, 6.0)
             painter.restore()
         super().paint(painter, option, index)
 
