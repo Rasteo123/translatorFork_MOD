@@ -161,10 +161,19 @@ class OverlayHost(QtWidgets.QWidget):
     def _build_card(self) -> None:
         card = QtWidgets.QFrame(self)
         card.setObjectName("overlayCard")
+        # Фон карточки — тем же токеном темы, что и QDialog: иначе фон
+        # встроенного диалога выделяется прямоугольником другого оттенка.
+        try:
+            from gemini_translator.ui import theme_manager
+            background = theme_manager.color("window_bg")
+            border = theme_manager.color("border")
+        except Exception:
+            background = "palette(window)"
+            border = "palette(mid)"
         card.setStyleSheet(
             "#overlayCard {"
-            " background-color: palette(window);"
-            " border: 1px solid palette(mid);"
+            f" background-color: {background};"
+            f" border: 1px solid {border};"
             " border-radius: 12px;"
             "}"
         )
