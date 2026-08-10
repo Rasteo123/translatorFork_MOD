@@ -201,15 +201,28 @@ class OverlayHost(QtWidgets.QWidget):
         """Показывает содержимое после того, как карточка приняла размер.
 
         Пока карточка морфится, диалог скрыт — тяжёлая первая отрисовка
-        (списки глав и т.п.) не дёргает анимацию. Затем диалог показывается
-        с коротким фейдом. Очистка эффекта безусловная: даже если анимация
-        сорвётся, контент не останется прозрачным.
+        (списки глав и т.п.) не дёргает анимацию. Затем фейдом проявляется
+        СНИМОК диалога (дёшево на каждом кадре, в отличие от
+        QGraphicsOpacityEffect на живом виджете), и только по завершении
+        показывается сам диалог — его showEvent-цепочки загрузки стартуют,
+        когда никакие анимации уже не идут.
         """
         if self._content_fade_ms <= 0 and self._morph_ms <= 0:
             dialog.show()
             self._focus_dialog(dialog)
             return
         dialog.hide()
+
+        def _show_dialog() -> None:
+            try:
+                if self._card_stack is None or (
+                    self._card_stack.currentWidget() is not dialog
+                ):
+                    return
+                dialog.show()
+                self._focus_dialog(dialog)
+            except RuntimeError:
+                pass  # диалог уже уничтожен
 
         def _reveal() -> None:
             try:
@@ -221,30 +234,45 @@ class OverlayHost(QtWidgets.QWidget):
             except RuntimeError:
                 return  # диалог уже уничтожен
             fade_ms = self._content_fade_ms
-            if fade_ms > 0:
-                effect = QtWidgets.QGraphicsOpacityEffect(dialog)
-                effect.setOpacity(0.0)
-                dialog.setGraphicsEffect(effect)
-                dialog._overlay_fade_effect = effect
+            if fade_ms <= 0:
+                _show_dialog()
+                return
+            # Скрытые виджеты не размещаются layout-ом — размер задаём сами.
+            area = self._card_stack.contentsRect().size()
+            if area.isValid() and not area.isEmpty():
+                dialog.resize(area)
+            try:
+                pixmap = dialog.grab()
+            except RuntimeError:
+                return
+            snapshot = QtWidgets.QLabel(self._card)
+            snapshot.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+            )
+            snapshot.setPixmap(pixmap)
+            snapshot.setGeometry(self._card_stack.geometry())
+            effect = QtWidgets.QGraphicsOpacityEffect(snapshot)
+            effect.setOpacity(0.0)
+            snapshot.setGraphicsEffect(effect)
+            finished = {"done": False}
 
-                def _cleanup() -> None:
-                    try:
-                        if getattr(dialog, "_overlay_fade_effect", None) is effect:
-                            dialog._overlay_fade_effect = None
-                            dialog.setGraphicsEffect(None)
-                    except RuntimeError:
-                        pass
+            def _finish() -> None:
+                if finished["done"]:
+                    return
+                finished["done"] = True
+                _show_dialog()
+                snapshot.deleteLater()
 
-                animation = QtCore.QPropertyAnimation(effect, b"opacity", dialog)
-                animation.setDuration(fade_ms)
-                animation.setStartValue(0.0)
-                animation.setEndValue(1.0)
-                animation.finished.connect(_cleanup)
-                # Страховка: эффект снимается даже если finished не придёт.
-                QtCore.QTimer.singleShot(fade_ms + 250, _cleanup)
-                animation.start()
-            dialog.show()
-            self._focus_dialog(dialog)
+            animation = QtCore.QPropertyAnimation(effect, b"opacity", snapshot)
+            animation.setDuration(fade_ms)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
+            animation.finished.connect(_finish)
+            # Страховка: диалог показывается, даже если finished не придёт.
+            QtCore.QTimer.singleShot(fade_ms + 250, _finish)
+            snapshot.show()
+            snapshot.raise_()
+            animation.start()
 
         QtCore.QTimer.singleShot(self._morph_ms, _reveal)
 

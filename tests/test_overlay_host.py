@@ -145,6 +145,30 @@ class OverlayHostTests(unittest.TestCase):
         self.assertFalse(host.isVisible())
         self.assertTrue(shell.centralWidget().isEnabled())
 
+    def test_snapshot_fade_reveals_real_dialog(self):
+        from PyQt6 import QtTest
+
+        shell = self._shell()
+        host = shell.overlay_host
+        host.set_animation_durations(30, 0, 0, 30)
+        dialog = SimpleDialog()
+        results = []
+        host.present(dialog, results.append)
+        # Во время морфинга диалог скрыт.
+        self.assertFalse(dialog.isVisible())
+        QtTest.QTest.qWait(500)
+        # После анимаций живой диалог показан, снимок убран.
+        self.assertTrue(dialog.isVisible())
+        snapshots = [
+            w
+            for w in host._card.findChildren(QtWidgets.QLabel)
+            if w.pixmap() is not None and not w.pixmap().isNull()
+        ]
+        self.assertEqual(snapshots, [])
+        dialog.accept()
+        QtTest.QTest.qWait(200)
+        self.assertEqual(results, [QDialog.DialogCode.Accepted])
+
     def test_card_clamped_to_host_size(self):
         shell = self._shell()
         dialog = SimpleDialog()
