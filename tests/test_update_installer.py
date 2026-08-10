@@ -413,6 +413,254 @@ def test_prepare_macos_launches_bash(tmp_path, monkeypatch):
     assert "hdiutil attach" in content  # .dmg → dmg-ветка
 
 
+# --- Git-установка (Task 9) -----------------------------------------------
+
+def _git_run(responses):
+    """Скриптованный subprocess.run: [(подстрока, (rc, out, err))], первый матч."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((list(cmd), kw))
+        joined = " ".join(str(c) for c in cmd)
+        for substr, (rc, out, err) in responses:
+            if substr in joined:
+                return subprocess.CompletedProcess(cmd, rc, out, err)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    return fake_run, calls
+
+
+_OLD = "1" * 40
+_NEW = "2" * 40
+
+
+def _happy_git_responses(req_changed=False, pip_rc=0):
+    first = {"used": False}
+
+    def head_response(_first=first):
+        # первый rev-parse HEAD — старый, после pull — новый
+        if not _first["used"]:
+            _first["used"] = True
+            return (0, _OLD + "\n", "")
+        return (0, _NEW + "\n", "")
+
+    return [
+        ("--abbrev-ref", (0, "origin/main\n", "")),
+        ("--left-right", (0, "0\t5\n", "")),
+        ("fetch", (0, "", "")),
+        ("pull", (0, "", "")),
+        ("diff", (0, "requirements.txt\n" if req_changed else "", "")),
+        ("pip", (pip_rc, "", "pip boom" if pip_rc else "")),
+        ("rev-parse", head_response),
+    ]
+
+
+def _run_with_dynamic(responses):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((list(cmd), kw))
+        joined = " ".join(str(c) for c in cmd)
+        for substr, resp in responses:
+            if substr in joined:
+                rc, out, err = resp() if callable(resp) else resp
+                return subprocess.CompletedProcess(cmd, rc, out, err)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    return fake_run, calls
+
+
+def test_install_git_update_happy_path(tmp_path):
+    run, calls = _run_with_dynamic(_happy_git_responses())
+    result = inst.install_git_update(tmp_path, run=run)
+    assert result.old_head == _OLD and result.new_head == _NEW
+    assert result.requirements_changed is False
+    assert _OLD[:12] in result.recovery_hint
+    joined_all = [" ".join(c) for c, _ in calls]
+    assert any("--ff-only" in j and "--autostash" in j for j in joined_all)
+    for cmd, kw in calls:
+        if cmd[0] == "git":
+            assert kw.get("env", {}).get("GIT_TERMINAL_PROMPT") == "0"
+            assert kw.get("timeout")
+
+
+def test_install_git_update_requirements_change_runs_pip(tmp_path):
+    run, calls = _run_with_dynamic(_happy_git_responses(req_changed=True))
+    result = inst.install_git_update(tmp_path, run=run,
+                                     pip_argv=["pip", "install", "-r", "requirements.txt"])
+    assert result.requirements_changed is True
+    assert any(c[0] == "pip" for c, _ in calls)
+
+
+def test_install_git_update_pip_failure_keeps_recovery_info(tmp_path):
+    run, _ = _run_with_dynamic(_happy_git_responses(req_changed=True, pip_rc=1))
+    with pytest.raises(inst.UpdateInstallError) as e:
+        inst.install_git_update(tmp_path, run=run,
+                                pip_argv=["pip", "install", "-r", "requirements.txt"])
+    assert _OLD[:12] in str(e.value)
+
+
+def test_install_git_update_missing_upstream(tmp_path):
+    run, _ = _git_run([("rev-parse HEAD", (0, _OLD + "\n", "")),
+                       ("--abbrev-ref", (1, "", "no upstream"))])
+    with pytest.raises(inst.UpdateInstallError) as e:
+        inst.install_git_update(tmp_path, run=run)
+    assert "upstream" in str(e.value)
+
+
+def test_install_git_update_divergence_never_resets(tmp_path):
+    run, calls = _git_run([
+        ("--abbrev-ref", (0, "origin/main\n", "")),
+        ("--left-right", (0, "2\t5\n", "")),
+        ("rev-parse", (0, _OLD + "\n", "")),
+    ])
+    with pytest.raises(inst.UpdateInstallError) as e:
+        inst.install_git_update(tmp_path, run=run)
+    assert "разошлась" in str(e.value) and _OLD[:12] in str(e.value)
+    assert not any("reset" in " ".join(c) for c, _ in calls)
+    assert not any("pull" in " ".join(c) for c, _ in calls)
+
+
+def test_install_git_update_pull_failure_has_old_head(tmp_path):
+    run, _ = _run_with_dynamic([
+        ("--abbrev-ref", (0, "origin/main\n", "")),
+        ("--left-right", (0, "0\t5\n", "")),
+        ("fetch", (0, "", "")),
+        ("pull", (1, "", "error: autostash conflict")),
+        ("rev-parse", (0, _OLD + "\n", "")),
+    ])
+    with pytest.raises(inst.UpdateInstallError) as e:
+        inst.install_git_update(tmp_path, run=run)
+    assert "autostash conflict" in str(e.value) and _OLD[:12] in str(e.value)
+
+
+# --- Source-архив: хелпер с журналом (Task 9) -----------------------------
+
+def _archive_env(tmp_path, app_script, zip_extra=None, old_identity=None):
+    """Собирает фейковый source-корень + staged-zip + рендерит хелпер."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "keep_me.txt").write_text("user file")
+    (root / "obsolete.txt").write_text("old managed")
+    (root / "changed.py").write_text("old code")
+    identity = old_identity if old_identity is not None else {
+        "schema": 1, "commit": _OLD,
+        "files": ["obsolete.txt", "changed.py", "fake_app.py"]}
+    (root / ".translator-update.json").write_text(json.dumps(identity))
+    (root / "fake_app.py").write_text("print('old app')")
+
+    build = tmp_path / "zip-build" / f"repo-{_NEW[:7]}"
+    build.mkdir(parents=True)
+    (build / "changed.py").write_text("new code")
+    (build / "added.py").write_text("brand new")
+    (build / "fake_app.py").write_text(app_script)
+    for rel, content in (zip_extra or {}).items():
+        p = build / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    staged = tmp_path / "staged.zip"
+    subprocess.run(["zip", "-qr", str(staged), build.name],
+                   cwd=build.parent, check=True)
+
+    reaped = subprocess.Popen(["sleep", "0.1"])
+    pid = reaped.pid
+    reaped.wait()
+
+    journal = tmp_path / "journal"
+    ack = tmp_path / "ack.json"
+    log = tmp_path / "updater.log"
+    script = inst.render_archive_helper(
+        app_pid=pid, zip_path=str(staged), root=str(root),
+        journal_dir=str(journal), ack_path=str(ack), log_path=str(log),
+        commit_sha=_NEW,
+        python_argv=[sys.executable, str(root / "fake_app.py")],
+        pip_argv=[sys.executable, "-c", "import sys; sys.exit(0)"])
+    helper = tmp_path / "helper.py"
+    helper.write_text(script, encoding="utf-8")
+    return root, staged, helper, ack, journal
+
+
+def test_archive_helper_script_content():
+    script = inst.render_archive_helper(
+        app_pid=1, zip_path="/z.zip", root="/root", journal_dir="/j",
+        ack_path="/ack", log_path="/log", commit_sha=_NEW,
+        python_argv=["python", "main.py"], pip_argv=["pip", "install"])
+    assert "HEALTH-TIMEOUT" in script
+    assert ".." in script and "restore" in script.lower()
+    assert "GT_UPDATE_ACK_FILE" in script
+
+
+def test_archive_helper_applies_and_writes_identity(tmp_path):
+    ack_writer = ("import json, os\n"
+                  "open(os.environ['GT_UPDATE_ACK_FILE'], 'w').write('{}')\n"
+                  "print('new app')\n")
+    root, staged, helper, ack, journal = _archive_env(tmp_path, ack_writer)
+    proc = subprocess.run([sys.executable, str(helper)], timeout=60,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert (root / "changed.py").read_text() == "new code"
+    assert (root / "added.py").exists()
+    assert not (root / "obsolete.txt").exists()      # управляемый файл ушёл
+    assert (root / "keep_me.txt").exists()           # пользовательский файл не тронут
+    identity = json.loads((root / ".translator-update.json").read_text())
+    assert identity["commit"] == _NEW
+    assert "added.py" in identity["files"] and "obsolete.txt" not in identity["files"]
+    assert not journal.exists()                      # журнал убран после подтверждения
+    assert not staged.exists()
+
+
+def test_archive_helper_rolls_back_without_ack(tmp_path):
+    root, staged, helper, ack, journal = _archive_env(tmp_path, "raise SystemExit(1)\n")
+    proc = subprocess.run([sys.executable, str(helper)], timeout=60,
+                          capture_output=True, text=True)
+    assert proc.returncode == 1
+    assert (root / "changed.py").read_text() == "old code"   # восстановлено
+    assert not (root / "added.py").exists()                  # новые файлы убраны
+    assert (root / "obsolete.txt").read_text() == "old managed"
+    identity = json.loads((root / ".translator-update.json").read_text())
+    assert identity["commit"] == _OLD                        # прежняя идентичность
+    assert staged.exists()
+
+
+def test_archive_helper_refuses_traversal(tmp_path):
+    import zipfile as zf
+    root = tmp_path / "root"
+    root.mkdir()
+    staged = tmp_path / "evil.zip"
+    with zf.ZipFile(staged, "w") as z:
+        z.writestr("top/../../evil.txt", "boom")
+    reaped = subprocess.Popen(["sleep", "0.1"])
+    pid = reaped.pid
+    reaped.wait()
+    script = inst.render_archive_helper(
+        app_pid=pid, zip_path=str(staged), root=str(root),
+        journal_dir=str(tmp_path / "j"), ack_path=str(tmp_path / "a"),
+        log_path=str(tmp_path / "l"), commit_sha=_NEW,
+        python_argv=[sys.executable, "-c", "pass"],
+        pip_argv=[sys.executable, "-c", "pass"])
+    helper = tmp_path / "helper.py"
+    helper.write_text(script, encoding="utf-8")
+    proc = subprocess.run([sys.executable, str(helper)], timeout=60,
+                          capture_output=True, text=True)
+    assert proc.returncode == 1
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_prepare_source_archive_launches_helper(tmp_path, monkeypatch):
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path / "staging")
+    captured = {}
+    monkeypatch.setattr(inst, "launch_detached_helper",
+                        lambda argv, *, cwd: captured.update(argv=argv) or object())
+    root = tmp_path / "src"
+    root.mkdir()
+    ctx = inst.InstallContext(app_pid=1, real_executable=sys.executable,
+                              version_label=_NEW[:12])
+    inst.prepare_source_archive(tmp_path / "u.zip", root, ctx, commit_sha=_NEW)
+    assert captured["argv"][0] == sys.executable
+    content = Path(captured["argv"][1]).read_text(encoding="utf-8")
+    assert "HEALTH-TIMEOUT" in content
+
+
 # --- лог ------------------------------------------------------------------
 
 def test_log_update_event_appends(tmp_path, monkeypatch):

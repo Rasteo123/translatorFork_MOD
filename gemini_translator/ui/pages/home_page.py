@@ -13,11 +13,8 @@ from __future__ import annotations
 from PyQt6 import QtCore, QtWidgets
 import os
 import sys
-import subprocess
-import requests
-import tempfile
 from gemini_translator.ui.shell import ShellPage
-from gemini_translator.utils.updater import UpdateChecker
+from gemini_translator.utils import updater as upd
 
 # (icon, title, description, tool_id, is_large)
 _TOOLS = [
@@ -123,6 +120,14 @@ class HomePage(ShellPage):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.tool_buttons: dict[str, QtWidgets.QPushButton] = {}
+        self._update_state = upd.UpdateState.IDLE
+        self._update_silent = False
+        self._last_silent_error = None
+        self._silent_retry_scheduled = False
+        self._update_checker = None
+        self._update_worker = None
+        self._downloader = None
+        self._download_progress = None
         self.proxy_status_label = QtWidgets.QLabel("Прокси: выключен")
         self.proxy_status_label.setObjectName("helperLabel")
         self.proxy_status_label.setToolTip("Сетевые запросы идут без прокси.")
@@ -227,454 +232,316 @@ class HomePage(ShellPage):
             self.proxy_status_label.setText("Прокси: выключен")
             self.proxy_status_label.setToolTip("Сетевые запросы идут без прокси.")
 
-    def check_for_updates(self, silent=False):
-        self.btn_check_update.setEnabled(False)
-        self.btn_check_update.setText("Проверка...")
-        self._update_silent = silent
-        
-        self.updater_thread = UpdateChecker(self)
-        self.updater_thread.update_available.connect(self.on_update_available)
-        self.updater_thread.no_update.connect(self.on_no_update)
-        self.updater_thread.error_occurred.connect(self.on_update_error)
-        self.updater_thread.start()
-        
-    def on_no_update(self):
-        self.btn_check_update.setEnabled(True)
-        self.btn_check_update.setText("Проверить обновления")
-        if getattr(self, '_update_silent', False): return
-        QtWidgets.QMessageBox.information(self, "Обновление", "У вас установлена последняя версия программы.")
-        
-    def on_update_error(self, err):
-        self.btn_check_update.setEnabled(True)
-        self.btn_check_update.setText("Проверить обновления")
-        if getattr(self, '_update_silent', False): return
-        QtWidgets.QMessageBox.warning(self, "Ошибка", f"Не удалось проверить обновления: {err}")
-        
-    def on_update_available(self, version, description, download_url):
-        settings = QtCore.QSettings("SiberianTeam", "TranslatorFork")
-        ignored = settings.value("updater/ignored_version", "")
-        installed = settings.value("updater/installed_version", "")
-        
-        if getattr(self, '_update_silent', False):
-            if version == ignored or version == installed:
-                self.btn_check_update.setEnabled(True)
-                self.btn_check_update.setText("Проверить обновления")
-                return
+    # --- Обновления --------------------------------------------------------
+    #
+    # HomePage — только координатор: диалоги, прогресс, отмена, состояние.
+    # Сеть и git — в updater.py (рабочие потоки), установка — в
+    # update_installer.py (отсоединённые хелперы с журналом и health-токеном).
 
-        self.btn_check_update.setEnabled(True)
-        self.btn_check_update.setText("Проверить обновления")
-        
+    @staticmethod
+    def _updater_settings():
+        return QtCore.QSettings("SiberianTeam", "TranslatorFork")
+
+    def _set_update_state(self, state):
+        self._update_state = state
+        idle = state is upd.UpdateState.IDLE
+        self.btn_check_update.setEnabled(idle)
+        if idle:
+            self.btn_check_update.setText("Проверить обновления")
+
+    def check_for_updates(self, silent=False):
+        if self._update_state is not upd.UpdateState.IDLE:
+            return
+        settings = self._updater_settings()
+        # Миграция: единственная истина о бинарной установке — встроенная
+        # идентичность сборки, легаси-ключи больше не читаются и не пишутся.
+        settings.remove("updater/installed_version")
+        settings.remove("updater/installed_commit")
+        self._update_silent = silent
+        if silent and upd.detect_update_channel() is upd.UpdateChannel.DEVELOPMENT:
+            return
+        self._set_update_state(upd.UpdateState.CHECKING)
+        self.btn_check_update.setText("Проверка...")
+        settings_manager = self._settings_manager()
+        self._update_checker = upd.UpdateChecker(
+            self, manual=not silent,
+            session_factory=lambda: upd.build_updater_session(settings_manager))
+        self._update_checker.update_available.connect(self._on_update_info)
+        self._update_checker.no_update.connect(self._on_no_update)
+        self._update_checker.error_occurred.connect(self._on_update_error)
+        self._update_checker.start()
+
+    def _on_no_update(self):
+        self._set_update_state(upd.UpdateState.IDLE)
+        if self._update_silent:
+            return
+        QtWidgets.QMessageBox.information(
+            self, "Обновление", "У вас установлена последняя версия программы.")
+
+    def _on_update_error(self, err):
+        self._set_update_state(upd.UpdateState.IDLE)
+        if self._update_silent:
+            self._last_silent_error = err
+            from gemini_translator.utils.update_installer import log_update_event
+            log_update_event(f"silent check failed: {err}")
+            if not self._silent_retry_scheduled:
+                self._silent_retry_scheduled = True
+                QtCore.QTimer.singleShot(
+                    30 * 60 * 1000, lambda: self.check_for_updates(silent=True))
+            return
+        extra = ""
+        if self._last_silent_error and self._last_silent_error != err:
+            extra = f"\n\nПоследняя фоновая ошибка: {self._last_silent_error}"
+        QtWidgets.QMessageBox.warning(
+            self, "Ошибка", f"Не удалось проверить обновления: {err}{extra}")
+
+    def _on_update_info(self, info):
+        self._set_update_state(upd.UpdateState.IDLE)
+        settings = self._updater_settings()
+        if self._update_silent:
+            if info.suppress_id == settings.value("updater/ignored_version", ""):
+                return
+            if info.manual and info.kind == "archive":
+                # Неизвестная идентичность архива: не нагнетаем при каждом
+                # запуске, ручная проверка покажет полное объяснение.
+                return
+        action = self._present_update_dialog(info)
+        if action == "ignore":
+            settings.setValue("updater/ignored_version", info.suppress_id)
+            return
+        if action != "install":
+            return
+        if info.manual:
+            import webbrowser
+            webbrowser.open(info.manual_url or upd.RELEASES_PAGE)
+            return
+        if info.kind == "release":
+            self._start_release_download(info)
+        elif info.kind == "git":
+            self._start_git_update(info)
+        elif info.kind == "archive":
+            self._start_archive_download(info)
+
+    def _present_update_dialog(self, info) -> str:
+        """Показывает диалог обновления; возвращает install/later/ignore."""
+        import re
         msg = QtWidgets.QMessageBox(self)
         msg.setWindowTitle("Доступно обновление")
         msg.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.LinksAccessibleByMouse)
-        
-        import re
-        html_desc = description.replace('\n', '<br>')
-        html_desc = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', html_desc)
-        html_desc = re.sub(r'(https?://[^\s<]+)', r'<a href="\1">\1</a>', html_desc)
-        
+        html_desc = info.description.replace("\n", "<br>")
+        html_desc = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", html_desc)
+        html_desc = re.sub(r"(https?://[^\s<]+)", r'<a href="\1">\1</a>', html_desc)
         msg.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        msg.setText(f"Доступна новая версия: <b>{version}</b><br><br>{html_desc}")
-        
-        if download_url == "manual":
-            btn_install_now = msg.addButton("Скачать вручную", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        else:
-            btn_install_now = msg.addButton("Скачать и установить", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-
-        btn_remind_later = msg.addButton("Напомнить позже", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        msg.setText(f"Доступна новая версия: <b>{info.title_version}</b><br><br>{html_desc}")
+        install_label = "Открыть страницу загрузки" if info.manual else "Скачать и установить"
+        btn_install = msg.addButton(install_label, QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("Напомнить позже", QtWidgets.QMessageBox.ButtonRole.RejectRole)
         btn_ignore = msg.addButton("Игнорировать", QtWidgets.QMessageBox.ButtonRole.ActionRole)
-        
         msg.exec()
-        
+        if msg.clickedButton() == btn_install:
+            return "install"
         if msg.clickedButton() == btn_ignore:
-            settings.setValue("updater/ignored_version", version)
-            return
-            
-        if msg.clickedButton() == btn_remind_later:
-            return
-        
-        install_now = (msg.clickedButton() == btn_install_now)
-        
-        # Запускаем загрузку
-        if version == "source":
-            self.download_source_update(install_now)
-        elif download_url.startswith("source_zip:"):
-            real_url = download_url.split(":", 1)[1]
-            self.download_source_zip_update(real_url, install_now, version)
-        else:
-            self.download_update(download_url, install_now, version)
+            return "ignore"
+        return "later"
 
-    def download_source_update(self, install_now):
-        if not install_now:
-            QtWidgets.QMessageBox.information(self, "Обновление", "Обновление будет установлено вручную (командой git pull).")
-            return
-            
-        progress = QtWidgets.QProgressDialog("Получение обновлений (git pull)...", "Отмена", 0, 100, self)
+    # -- загрузка релизного ассета --
+
+    def _make_download_progress(self, text):
+        progress = QtWidgets.QProgressDialog(text, "Отмена", 0, 100, self)
         progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        progress.setRange(0, 0) # Indeterminate progress
-        progress.show()
-        
-        import subprocess
-        import os
-        try:
-            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-            QtWidgets.QApplication.processEvents()
-            # --autostash: локальные изменения (в т.ч. CRLF-шум на Windows)
-            # прячутся в stash на время merge и возвращаются после — иначе
-            # pull падает с «local changes would be overwritten by merge».
-            result = subprocess.run(
-                ["git", "-c", "user.name=Updater", "-c", "user.email=updater@localhost", "pull", "--no-edit", "--autostash"],
-                capture_output=True, text=True, cwd=repo_root
-            )
-            progress.close()
-            
-            if result.returncode == 0:
-                self.launch_source_updater()
+        progress.setMinimumDuration(400)
+        return progress
+
+    def _start_release_download(self, info):
+        from gemini_translator.utils import update_installer as inst
+        self._set_update_state(upd.UpdateState.DOWNLOADING)
+        self.btn_check_update.setText("Загрузка...")
+        shape = None
+        name = info.asset.name.lower()
+        if name.endswith(".exe"):
+            shape = "pe"
+        elif name.endswith(".zip"):
+            shape = "zip"
+        settings_manager = self._settings_manager()
+        self._downloader = upd.UpdateDownloader(
+            info.asset.url, inst.staging_root(),
+            expected_size=info.asset.size, expected_sha256=info.asset.sha256,
+            shape=shape,
+            session_factory=lambda: upd.build_updater_session(settings_manager),
+            parent=self)
+        self._wire_downloader(info, self._downloader,
+                              on_verified=self._prepare_release_install)
+        self._downloader.start()
+
+    def _start_archive_download(self, info):
+        from gemini_translator.utils import update_installer as inst
+        self._set_update_state(upd.UpdateState.DOWNLOADING)
+        self.btn_check_update.setText("Загрузка...")
+        settings_manager = self._settings_manager()
+        self._downloader = upd.UpdateDownloader(
+            info.zip_url, inst.staging_root(), shape="zip",
+            session_factory=lambda: upd.build_updater_session(settings_manager),
+            parent=self)
+        self._wire_downloader(info, self._downloader,
+                              on_verified=self._prepare_archive_install)
+        self._downloader.start()
+
+    def _wire_downloader(self, info, downloader, on_verified):
+        progress = self._make_download_progress("Загрузка обновления...")
+        self._download_progress = progress
+
+        def on_progress(done, total):
+            if total:
+                progress.setMaximum(100)
+                progress.setValue(min(99, int(100 * done / total)))
             else:
-                QtWidgets.QMessageBox.critical(self, "Ошибка обновления", f"Не удалось обновить исходный код. Возможно, есть локальные изменения или конфликты (блокировки):\n{result.stderr}")
-        except Exception as e:
+                progress.setRange(0, 0)
+
+        downloader.progress.connect(on_progress)
+        progress.canceled.connect(downloader.cancel)
+        downloader.verified.connect(lambda path: (progress.close(),
+                                                  on_verified(info, path)))
+        downloader.cancelled.connect(lambda: (progress.close(),
+                                              self._set_update_state(upd.UpdateState.IDLE)))
+
+        def on_failed(err):
             progress.close()
-            QtWidgets.QMessageBox.critical(self, "Ошибка обновления", f"Ошибка: {e}")
-            
-    def launch_source_updater(self):
-        import sys
-        from PyQt6.QtCore import QProcess
-        from PyQt6.QtWidgets import QApplication
-        try:
-            self.window().setProperty("is_updating", True)
-            QProcess.startDetached(sys.executable, sys.argv)
-            QApplication.quit()
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Ошибка перезапуска", f"Не удалось перезапустить программу: {e}")
-            
-    def download_source_zip_update(self, url, install_now, version):
-        if not install_now:
-            QtWidgets.QMessageBox.information(self, "Обновление", "Обновление будет установлено вручную.")
-            return
+            self._set_update_state(upd.UpdateState.IDLE)
+            QtWidgets.QMessageBox.critical(
+                self, "Ошибка загрузки", f"Не удалось скачать обновление: {err}")
 
-        import requests
-        import uuid
-        import os
-        import tempfile
-
-        progress = QtWidgets.QProgressDialog("Загрузка исходного кода...", "Отмена", 0, 100, self)
-        progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        downloader.failed.connect(on_failed)
         progress.show()
 
-        try:
-            # GitHub zipballs might redirect, requests handles it
-            r = requests.get(url, stream=True, timeout=15)
-            # content-length may not be present for GitHub generated zip archives
-            total_size = int(r.headers.get('content-length', 0))
+    # -- подготовка установки --
 
-            unique_id = uuid.uuid4().hex[:8]
-            filename = f"source_update_{unique_id}.zip"
-            filepath = os.path.join(tempfile.gettempdir(), filename)
+    def _install_context(self, version_label):
+        from gemini_translator.utils import update_installer as inst
+        return inst.InstallContext(
+            app_pid=os.getpid(),
+            real_executable=inst.get_real_executable(),
+            version_label=version_label)
 
-            with open(filepath, 'wb') as f:
-                downloaded = 0
-                for data in r.iter_content(chunk_size=4096):
-                    if progress.wasCanceled():
-                        return
-                    downloaded += len(data)
-                    f.write(data)
-                    if total_size:
-                        progress.setValue(int(100 * downloaded / total_size))
+    def _prepare_release_install(self, info, staged_path):
+        from gemini_translator.utils import update_installer as inst
+        self._set_update_state(upd.UpdateState.PREPARING)
+        channel = upd.detect_update_channel()
+        ctx = self._install_context(f"v{info.title_version}")
 
-            # We'll save the version/commit inside the script AFTER successful extraction
-            self.launch_source_zip_updater(filepath, version)
-
-        except Exception as e:
-            progress.close()
-            QtWidgets.QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось скачать обновление: {e}")
-
-    def launch_source_zip_updater(self, filepath, version):
-        import subprocess
-        import tempfile
-        import os
-        import sys
-        from PyQt6.QtWidgets import QApplication
-        
-        script_path = os.path.join(tempfile.gettempdir(), "translator_source_updater.py")
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        
-        script_content = f'''import sys
-import time
-import zipfile
-import os
-import shutil
-import subprocess
-
-time.sleep(3) # Wait for the app to close
-zip_path = {repr(filepath)}
-repo_root = {repr(repo_root)}
-main_script = "main.py"
-version = {repr(version)}
-
-try:
-    with zipfile.ZipFile(zip_path, 'r') as z:
-        for member in z.namelist():
-            parts = member.split('/', 1)
-            if len(parts) > 1 and parts[1]:
-                target_path = os.path.join(repo_root, parts[1])
-                if member.endswith('/'):
-                    os.makedirs(target_path, exist_ok=True)
-                else:
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                    with z.open(member) as source, open(target_path, 'wb') as target:
-                        shutil.copyfileobj(source, target)
-    
-    # Save the installed version/commit on success
-    try:
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("SiberianTeam", "TranslatorFork")
-        if len(version) == 40 and all(c in "0123456789abcdefABCDEF" for c in version):
-            settings.setValue("updater/installed_commit", version)
-        else:
-            settings.setValue("updater/installed_version", version)
-        settings.sync()
-    except ImportError:
-        pass
-        
-except Exception as e:
-    with open(os.path.join(repo_root, "updater_error.log"), "w") as err_log:
-        err_log.write("Extraction failed: " + str(e))
-
-kwargs = {{}}
-if sys.platform == "win32":
-    kwargs["creationflags"] = 0x08000000 # subprocess.CREATE_NO_WINDOW
-
-req_path = os.path.join(repo_root, "requirements.txt")
-if os.path.exists(req_path):
-    subprocess.call([sys.executable, "-m", "pip", "install", "-r", req_path], **kwargs)
-
-subprocess.Popen([sys.executable, main_script], cwd=repo_root, **kwargs)
-'''
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(script_content)
-
-        self.window().setProperty("is_updating", True)
-        
-        env = dict(os.environ)
-        for k in list(env.keys()):
-            if k.startswith('_PYI_'):
-                del env[k]
-
-        kwargs = {}
-        if sys.platform == "win32":
-            kwargs["creationflags"] = 0x08000000 # subprocess.CREATE_NO_WINDOW
-
-        subprocess.Popen([sys.executable, script_path], cwd=tempfile.gettempdir(), env=env, **kwargs)
-        QApplication.quit()
-
-    def download_update(self, url, install_now, version):
-        if url == "manual":
-            if install_now:
-                import webbrowser
-                from gemini_translator.api.config import GITHUB_REPO
-                webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
+        def job():
+            if channel is upd.UpdateChannel.WINDOWS_INSTALLED:
+                inst.prepare_windows_installed(staged_path, ctx)
+            elif channel is upd.UpdateChannel.WINDOWS_PORTABLE:
+                inst.prepare_windows_portable(staged_path, ctx)
+            elif channel is upd.UpdateChannel.MACOS:
+                inst.prepare_macos(staged_path, ctx)
             else:
-                QtWidgets.QMessageBox.information(self, "Обновление", "Пожалуйста, скачайте новую версию исходного кода вручную с GitHub.")
-            return
+                raise inst.UpdateInstallError(
+                    "Этот тип установки не поддерживает автообновление")
+            return None
 
-        import requests
-        import uuid
-        import os
-        import tempfile
-        
-        if not url:
-            QtWidgets.QMessageBox.warning(self, "Ошибка", "Ссылка на скачивание не найдена.")
-            return
-            
-        progress = QtWidgets.QProgressDialog("Загрузка обновления...", "Отмена", 0, 100, self)
+        self._run_prepare_worker(job)
+
+    def _prepare_archive_install(self, info, staged_path):
+        from gemini_translator.utils import update_installer as inst
+        self._set_update_state(upd.UpdateState.PREPARING)
+        ctx = self._install_context(info.commit[:12])
+
+        def job():
+            inst.prepare_source_archive(staged_path, upd.project_root(), ctx,
+                                        commit_sha=info.commit)
+            return None
+
+        self._run_prepare_worker(job)
+
+    def _run_prepare_worker(self, job):
+        self._update_worker = upd.FunctionWorker(job, self)
+        self._update_worker.done.connect(lambda _result: self._begin_exit())
+        self._update_worker.failed.connect(self._on_prepare_failed)
+        self._update_worker.start()
+
+    def _on_prepare_failed(self, err):
+        self._set_update_state(upd.UpdateState.IDLE)
+        QtWidgets.QMessageBox.critical(
+            self, "Ошибка обновления",
+            f"Не удалось подготовить установку обновления:\n{err}\n\n"
+            "Установка не начиналась, текущая версия не изменена — "
+            "можно повторить попытку.")
+
+    # -- git-обновление --
+
+    def _start_git_update(self, info):
+        self._set_update_state(upd.UpdateState.PREPARING)
+        progress = QtWidgets.QProgressDialog(
+            "Получение обновлений (git pull --ff-only --autostash)...",
+            None, 0, 0, self)
         progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(400)
+        progress.setCancelButton(None)
         progress.show()
-        
-        try:
-            r = requests.get(url, stream=True, timeout=10)
-            total_size = int(r.headers.get('content-length', 0))
-            
-            unique_id = uuid.uuid4().hex[:8]
-            filename = f"{unique_id}_{url.split('/')[-1]}"
-            filepath = os.path.join(tempfile.gettempdir(), filename)
-            
-            with open(filepath, 'wb') as f:
-                downloaded = 0
-                for data in r.iter_content(chunk_size=4096):
-                    if progress.wasCanceled():
-                        return
-                    downloaded += len(data)
-                    f.write(data)
-                    if total_size:
-                        progress.setValue(int(100 * downloaded / total_size))
-                        
-            progress.setValue(100)
-            
-            settings = QtCore.QSettings("SiberianTeam", "TranslatorFork")
-            settings.setValue("updater/installed_version", version)
-            settings.sync()
-            
-            if install_now:
-                self.launch_updater(filepath)
-            else:
-                QtWidgets.QMessageBox.information(self, "Успех", "Обновление скачано и будет установлено при следующем запуске (или вручную).")
-                
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось скачать обновление: {e}")
 
-    @staticmethod
-    def _get_real_executable():
-        """Get the real on-disk path to the application executable.
+        def job():
+            from gemini_translator.utils import update_installer as inst
+            return inst.install_git_update(upd.project_root())
 
-        In PyInstaller ``--onefile`` builds ``sys.executable`` points to the
-        bootstrap binary inside a temporary ``_MEI*`` directory.  That folder
-        is removed when the process exits, so using it for a *restart* command
-        causes "Failed to load Python DLL" on Windows.
+        self._update_worker = upd.FunctionWorker(job, self)
 
-        This helper resolves the original launch path instead.
+        def on_done(_result):
+            progress.close()
+            from PyQt6.QtCore import QProcess
+            if not QProcess.startDetached(sys.executable, sys.argv):
+                self._set_update_state(upd.UpdateState.IDLE)
+                QtWidgets.QMessageBox.critical(
+                    self, "Ошибка перезапуска",
+                    "Код обновлён, но перезапустить программу не удалось. "
+                    "Закройте и откройте её вручную.")
+                return
+            self._begin_exit()
+
+        def on_failed(err):
+            progress.close()
+            self._set_update_state(upd.UpdateState.IDLE)
+            QtWidgets.QMessageBox.critical(self, "Ошибка обновления", err)
+
+        self._update_worker.done.connect(on_done)
+        self._update_worker.failed.connect(on_failed)
+        self._update_worker.start()
+
+    # -- штатное завершение --
+
+    def _begin_exit(self):
+        """Штатный выход: настройки, воркеры и туннели успевают завершиться.
+
+        Хелпер ждёт завершения нашего PID; если пользователь отменил закрытие
+        (ловушка closeEvent), хелпер увидит живой процесс и откажется от
+        установки, ничего не тронув.
         """
-        import re
-        if getattr(sys, 'frozen', False):
-            exe = os.path.abspath(sys.executable)
-            # On Windows onefile builds sys.executable may resolve inside
-            # the _MEI* temp dir.  Fall back to sys.argv[0] which always
-            # holds the real exe the user double-clicked.
-            if sys.platform == 'win32' and re.search(r'_MEI\d+', exe):
-                exe = os.path.abspath(sys.argv[0])
-            return exe
-        return os.path.abspath(sys.executable)
+        from gemini_translator.utils.update_installer import log_update_event
+        self._set_update_state(upd.UpdateState.EXITING)
+        self.btn_check_update.setEnabled(False)
+        window = self.window()
+        if window is not None:
+            window.setProperty("is_updating", True)
 
-    def launch_updater(self, filepath):
-        import subprocess
-        import tempfile
-        import os
-        import sys
-        import copy
-        
-        # Prepare a clean environment for PyInstaller restart
-        env = copy.deepcopy(os.environ)
-        env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
-        for k in list(env.keys()):
-            if k.startswith('_PYI_'):
-                del env[k]
+        emergency = QtCore.QTimer(self)
+        emergency.setSingleShot(True)
 
-        if sys.platform == "win32":
-            log_path = os.path.join(tempfile.gettempdir(), "translator_updater.log")
-            real_exe = self._get_real_executable()
-            if "setup" in filepath.lower() or "install" in filepath.lower():
-                # Inno Setup with skipifsilent flag does not restart the app
-                # automatically, so we must start it explicitly here.
-                bat_content = f"""@echo off
-chcp 65001 >nul
-set PYINSTALLER_RESET_ENVIRONMENT=1
-echo [%date% %time%] Waiting for application to close... >> "{log_path}"
-timeout /t 3 /nobreak >nul
-echo [%date% %time%] Running installer... >> "{log_path}"
-start /wait "" "{filepath}" /VERYSILENT /SUPPRESSMSGBOXES /FORCECLOSEAPPLICATIONS >> "{log_path}" 2>&1
-echo [%date% %time%] Restarting application... >> "{log_path}"
-start "" "{real_exe}"
-echo [%date% %time%] Installer finished. >> "{log_path}"
-del "%~f0"
-"""
-            else:
-                bat_content = f"""@echo off
-chcp 65001 >nul
-set PYINSTALLER_RESET_ENVIRONMENT=1
-echo [%date% %time%] Waiting for application to close... >> "{log_path}"
-timeout /t 3 /nobreak >nul
-echo [%date% %time%] Replacing portable executable... >> "{log_path}"
-copy /Y "{filepath}" "{real_exe}" >> "{log_path}" 2>&1
-if errorlevel 1 (
-    echo [%date% %time%] Retry copy... >> "{log_path}"
-    timeout /t 2 /nobreak >nul
-    copy /Y "{filepath}" "{real_exe}" >> "{log_path}" 2>&1
-)
-echo [%date% %time%] Restarting application... >> "{log_path}"
-start "" "{real_exe}"
-del "%~f0"
-"""
-            bat_path = os.path.join(tempfile.gettempdir(), "translator_updater.bat")
-            with open(bat_path, "w", encoding="utf-8") as f:
-                f.write(bat_content)
-                
-            try:
-                subprocess.call(['powershell', '-Command', f"Unblock-File -LiteralPath '{filepath}'"])
-            except Exception:
-                pass
-            subprocess.Popen(["cmd.exe", "/c", bat_path], creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0, env=env)
-            
-        elif sys.platform == "darwin" and (filepath.endswith('.dmg') or filepath.endswith('.zip')):
-            app_bundle_path = sys.executable
-            while app_bundle_path != '/' and not app_bundle_path.endswith('.app'):
-                app_bundle_path = os.path.dirname(app_bundle_path)
-                
-            if app_bundle_path.endswith('.app'):
-                sh_content = f"""#!/bin/bash
-# Clear PyInstaller environment variables to prevent crashes in the new app
-unset DYLD_LIBRARY_PATH
-unset LD_LIBRARY_PATH
-export PYINSTALLER_RESET_ENVIRONMENT=1
+        def _emergency_exit():
+            log_update_event("emergency exit after shutdown timeout")
+            os._exit(0)
 
-# Relaxed error handling — individual commands may return non-zero
-# legitimately (e.g. hdiutil, xattr).
-exec >> /tmp/updater.log 2>&1
-echo "[$(date)] Starting update..."
-sleep 5
+        emergency.timeout.connect(_emergency_exit)
+        emergency.start(15000)
 
-if [[ "{filepath}" == *.dmg ]]; then
-    MNT_OUTPUT=$(hdiutil attach -nobrowse "{filepath}" 2>&1 | grep '/Volumes/' || true)
-    MNT=$(echo "$MNT_OUTPUT" | awk -F '/Volumes/' '{{print "/Volumes/"$2}}' | xargs)
-    if [ -n "$MNT" ]; then
-        NEW_APP=$(find "$MNT" -name "*.app" -maxdepth 1 | head -n 1)
-        if [ -n "$NEW_APP" ]; then
-            echo "[$(date)] Found new app in DMG: $NEW_APP"
-            if [ -d "{app_bundle_path}.old" ]; then
-                rm -rf "{app_bundle_path}.old"
-            fi
-            mv "{app_bundle_path}" "{app_bundle_path}.old"
-            ditto "$NEW_APP" "{app_bundle_path}"
-            xattr -cr "{app_bundle_path}" || true
-            echo "[$(date)] Update successful"
-        fi
-        hdiutil detach "$MNT" -force || true
-    fi
-elif [[ "{filepath}" == *.zip ]]; then
-    EXTRACT_DIR=$(mktemp -d)
-    unzip -q -o "{filepath}" -d "$EXTRACT_DIR"
-    NEW_APP=$(find "$EXTRACT_DIR" -name "*.app" -maxdepth 2 | head -n 1)
-    if [ -n "$NEW_APP" ]; then
-        echo "[$(date)] Found new app in ZIP: $NEW_APP"
-        if [ -d "{app_bundle_path}.old" ]; then
-            rm -rf "{app_bundle_path}.old"
-        fi
-        mv "{app_bundle_path}" "{app_bundle_path}.old"
-        ditto "$NEW_APP" "{app_bundle_path}"
-        xattr -cr "{app_bundle_path}" || true
-        echo "[$(date)] Update successful"
-    fi
-    rm -rf "$EXTRACT_DIR"
-fi
-
-sleep 1
-open "{app_bundle_path}"
-rm -f "$0"
-"""
-                sh_path = os.path.join(tempfile.gettempdir(), "translator_updater.sh")
-                with open(sh_path, "w", encoding="utf-8") as f:
-                    f.write(sh_content)
-                os.chmod(sh_path, 0o700)
-                subprocess.Popen(
-                    ["/bin/bash", sh_path],
-                    start_new_session=True,
-                    env=env
-                )
-            else:
-                subprocess.Popen(['open', filepath], env=env)
-        else:
-            if sys.platform == "darwin":
-                subprocess.Popen(['open', filepath], env=env)
-            else:
-                subprocess.Popen([filepath], env=env)
-                
-        # Force quit to avoid "Are you sure you want to quit?" dialogs
-        os._exit(0)
+        log_update_event("orderly shutdown requested for update")
+        if window is not None:
+            window.close()
+            if window.isVisible():
+                # Пользователь отменил закрытие — обновление отменяется.
+                emergency.stop()
+                log_update_event("shutdown cancelled by user; update aborted")
+                self._set_update_state(upd.UpdateState.IDLE)
+                return
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            QtCore.QTimer.singleShot(0, app.quit)

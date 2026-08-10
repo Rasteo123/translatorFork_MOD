@@ -601,3 +601,20 @@ class UpdateDownloader(QThread):
 
 class _Cancelled(Exception):
     pass
+
+
+class FunctionWorker(QThread):
+    """Выполняет callable в рабочем потоке: done(result) либо failed(msg)."""
+
+    done = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self):
+        try:
+            self.done.emit(self._fn())
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(getattr(e, "user_message", None) or str(e))
