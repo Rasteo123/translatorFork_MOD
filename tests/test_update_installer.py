@@ -134,6 +134,7 @@ def test_launch_detached_helper_starts_process(tmp_path):
         assert popen.poll() is None
     finally:
         popen.kill()
+        popen.wait()
 
 
 def test_launch_detached_helper_failure_raises(tmp_path):

@@ -361,6 +361,311 @@ def prepare_windows_installed(staged_setup, ctx: InstallContext) -> subprocess.P
     return launch_detached_helper(_powershell_argv(script_path), cwd=root)
 
 
+# --- Git-источники --------------------------------------------------------
+
+@dataclass(frozen=True)
+class GitUpdateResult:
+    old_head: str
+    new_head: str
+    requirements_changed: bool
+    recovery_hint: str
+
+
+def install_git_update(root, run=subprocess.run, pip_argv=None) -> GitUpdateResult:
+    """Fast-forward-only pull с autostash и проверяемыми зависимостями.
+
+    Никогда не делает reset: расхождение с upstream — ошибка с инструкцией.
+    Каждая ошибка содержит старый HEAD и путь восстановления.
+    """
+    def git(args, timeout=60):
+        return run(["git", *args], cwd=str(root), capture_output=True, text=True,
+                   timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+    def fail(message, res=None):
+        detail = ""
+        if res is not None:
+            detail = f": {(res.stderr or res.stdout or '').strip()[:400]}"
+        raise UpdateInstallError(f"{message}{detail}\n{hint}")
+
+    head = git(["rev-parse", "HEAD"])
+    if head.returncode != 0:
+        raise UpdateInstallError(
+            f"Не удалось определить текущий коммит: {(head.stderr or '').strip()[:400]}")
+    old_head = head.stdout.strip()
+    hint = (f"Прежнее состояние: git reset --hard {old_head[:12]} "
+            "(см. также git reflog и git stash list).")
+
+    upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if upstream.returncode != 0:
+        raise UpdateInstallError(
+            "Для этой копии не настроена upstream-ветка — автообновление "
+            "невозможно (git branch --set-upstream-to=origin/<ветка>).")
+
+    fetch = git(["fetch"])
+    if fetch.returncode != 0:
+        fail("git fetch завершился с ошибкой", fetch)
+
+    counts = git(["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+    if counts.returncode != 0:
+        fail("Не удалось сравнить локальную ветку с upstream", counts)
+    try:
+        ahead, _behind = (int(x) for x in counts.stdout.split())
+    except ValueError:
+        fail("Не удалось сравнить локальную ветку с upstream", counts)
+    if ahead > 0:
+        raise UpdateInstallError(
+            f"Локальная ветка разошлась с upstream ({ahead} локальных коммитов). "
+            f"Автообновление не выполняет reset — слейте изменения вручную.\n{hint}")
+
+    pull = git(["pull", "--ff-only", "--autostash", "--no-edit"], timeout=300)
+    if pull.returncode != 0:
+        fail("git pull завершился с ошибкой", pull)
+
+    new_head_res = git(["rev-parse", "HEAD"])
+    new_head = new_head_res.stdout.strip() if new_head_res.returncode == 0 else ""
+
+    req_diff = git(["diff", "--name-only", f"{old_head}..HEAD", "--", "requirements.txt"])
+    requirements_changed = bool(req_diff.stdout.strip())
+    if requirements_changed:
+        argv = pip_argv or [sys.executable, "-m", "pip", "install", "-r",
+                            str(Path(root) / "requirements.txt")]
+        pip = run(argv, capture_output=True, text=True, timeout=600)
+        if pip.returncode != 0:
+            fail("Код обновлён, но установка зависимостей не удалась", pip)
+    log_update_event(f"git update {old_head[:12]} -> {new_head[:12]}")
+    return GitUpdateResult(old_head, new_head, requirements_changed, hint)
+
+
+# --- Source-архив: python-хелпер с журналом -------------------------------
+
+_ARCHIVE_HELPER_TEMPLATE = r'''# -*- coding: utf-8 -*-
+"""Отсоединённый хелпер обновления source-архива (сгенерирован апдейтером)."""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import zipfile
+
+PID = @@PID@@
+ZIP_PATH = @@ZIP@@
+ROOT = @@ROOT@@
+JOURNAL = @@JOURNAL@@
+ACK = @@ACK@@
+LOG = @@LOG@@
+COMMIT = @@COMMIT@@
+PYTHON_ARGV = @@PYTHON_ARGV@@
+PIP_ARGV = @@PIP_ARGV@@
+IDENTITY_NAME = ".translator-update.json"
+WAIT_ITER = @@WAIT_ITER@@
+HEALTH_ITER = @@HEALTH_ITER@@
+
+
+def log(message):
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write("[%s] [UPD] %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), message))
+    except OSError:
+        pass
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def clean_env():
+    env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI_")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
+def main():
+    for _ in range(WAIT_ITER):
+        if not pid_alive(PID):
+            break
+        time.sleep(0.5)
+    if pid_alive(PID):
+        log("app still running; aborting untouched")
+        return 1
+
+    identity_path = os.path.join(ROOT, IDENTITY_NAME)
+    old_identity = None
+    try:
+        with open(identity_path, "r", encoding="utf-8") as f:
+            old_identity = json.load(f)
+    except (OSError, ValueError):
+        old_identity = None
+    old_files = set((old_identity or {}).get("files") or [])
+
+    # Разбор архива: срез верхнего каталога, отказ от абсолютных путей и ..
+    entries = []
+    new_files = []
+    with zipfile.ZipFile(ZIP_PATH) as z:
+        names = z.namelist()
+        tops = set(n.split("/", 1)[0] for n in names if n.strip("/"))
+        prefix = (tops.pop() + "/") if len(tops) == 1 else ""
+        for member in names:
+            rel = member[len(prefix):] if member.startswith(prefix) else member
+            if not rel or rel.endswith("/"):
+                continue
+            norm = os.path.normpath(rel)
+            if os.path.isabs(norm) or norm.startswith("..") or norm.startswith(os.sep):
+                log("refusing unsafe archive member: %r" % member)
+                return 1
+            entries.append((norm, member))
+            new_files.append(norm.replace(os.sep, "/"))
+
+    to_remove = sorted(old_files - set(new_files))
+    files_dir = os.path.join(JOURNAL, "files")
+    os.makedirs(files_dir, exist_ok=True)
+    added = []
+
+    def backup(rel):
+        src = os.path.join(ROOT, rel)
+        if os.path.isfile(src):
+            dst = os.path.join(files_dir, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+
+    def restore():
+        for rel in added:
+            try:
+                os.remove(os.path.join(ROOT, rel))
+            except OSError:
+                pass
+        for base, _dirs, files in os.walk(files_dir):
+            for name in files:
+                src = os.path.join(base, name)
+                rel = os.path.relpath(src, files_dir)
+                dst = os.path.join(ROOT, rel)
+                try:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                except OSError:
+                    log("restore failed for %s" % rel)
+        old_id = os.path.join(JOURNAL, "identity.json")
+        try:
+            if os.path.isfile(old_id):
+                shutil.copy2(old_id, identity_path)
+            elif os.path.isfile(identity_path):
+                os.remove(identity_path)
+        except OSError:
+            pass
+
+    try:
+        for rel, _member in entries:
+            backup(rel)
+        for rel in to_remove:
+            backup(rel)
+        if os.path.isfile(identity_path):
+            shutil.copy2(identity_path, os.path.join(JOURNAL, "identity.json"))
+
+        with zipfile.ZipFile(ZIP_PATH) as z:
+            for rel, member in entries:
+                target = os.path.join(ROOT, rel)
+                os.makedirs(os.path.dirname(target) or ROOT, exist_ok=True)
+                existed = os.path.exists(target)
+                with z.open(member) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                if not existed:
+                    added.append(rel)
+        for rel in to_remove:
+            try:
+                os.remove(os.path.join(ROOT, rel))
+            except OSError:
+                pass
+        with open(identity_path, "w", encoding="utf-8") as f:
+            json.dump({"schema": 1, "commit": COMMIT, "files": sorted(new_files)}, f,
+                      ensure_ascii=False, indent=2)
+        if os.path.isfile(os.path.join(ROOT, "requirements.txt")):
+            pip = subprocess.run(PIP_ARGV, cwd=ROOT)
+            if pip.returncode != 0:
+                raise RuntimeError("pip install failed with code %s" % pip.returncode)
+    except Exception as e:  # noqa: BLE001
+        log("apply failed: %s; restoring journal" % e)
+        restore()
+        return 1
+
+    try:
+        os.remove(ACK)
+    except OSError:
+        pass
+    env = clean_env()
+    env["GT_UPDATE_ACK_FILE"] = ACK
+    proc = subprocess.Popen(PYTHON_ARGV, cwd=ROOT, env=env)
+    for _ in range(HEALTH_ITER):
+        if os.path.isfile(ACK):
+            log("health ack received; cleaning up")
+            shutil.rmtree(JOURNAL, ignore_errors=True)
+            try:
+                os.remove(ZIP_PATH)
+            except OSError:
+                pass
+            return 0
+        if proc.poll() is not None:
+            log("new process exited without ack; restoring journal")
+            restore()
+            subprocess.Popen(PYTHON_ARGV, cwd=ROOT, env=clean_env())
+            return 1
+        time.sleep(0.5)
+    log("HEALTH-TIMEOUT: process alive without ack; keeping journal")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def render_archive_helper(*, app_pid, zip_path, root, journal_dir, ack_path,
+                          log_path, commit_sha, python_argv, pip_argv) -> str:
+    return _render(_ARCHIVE_HELPER_TEMPLATE, {
+        "PID": int(app_pid),
+        "WAIT_ITER": APP_EXIT_WAIT_S * 2,
+        "HEALTH_ITER": HEALTH_WINDOW_S * 2,
+        "ZIP": repr(str(zip_path)),
+        "ROOT": repr(str(root)),
+        "JOURNAL": repr(str(journal_dir)),
+        "ACK": repr(str(ack_path)),
+        "LOG": repr(str(log_path)),
+        "COMMIT": repr(str(commit_sha)),
+        "PYTHON_ARGV": repr([str(a) for a in python_argv]),
+        "PIP_ARGV": repr([str(a) for a in pip_argv]),
+    })
+
+
+def prepare_source_archive(staged_zip, root, ctx: InstallContext,
+                           commit_sha: str) -> subprocess.Popen:
+    """Готовит и запускает python-хелпер замены source-архива."""
+    staging = staging_root()
+    staging.mkdir(parents=True, exist_ok=True)
+    label = ctx.version_label
+    ack_path = staging / f"ack-{label}.json"
+    try:
+        ack_path.unlink()
+    except OSError:
+        pass
+    script = render_archive_helper(
+        app_pid=ctx.app_pid, zip_path=str(staged_zip), root=str(root),
+        journal_dir=str(staging / f"journal-{label}"), ack_path=str(ack_path),
+        log_path=str(update_log_path()), commit_sha=commit_sha,
+        python_argv=[sys.executable, str(Path(root) / "main.py")],
+        pip_argv=[sys.executable, "-m", "pip", "install", "-r",
+                  str(Path(root) / "requirements.txt")])
+    script_path = staging / f"helper-archive-{label}.py"
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(script)
+    log_update_event(f"launching source-archive helper for {label}")
+    return launch_detached_helper([sys.executable, str(script_path)], cwd=staging)
+
+
 # --- macOS ----------------------------------------------------------------
 
 _MACOS_TEMPLATE = r"""#!/bin/bash

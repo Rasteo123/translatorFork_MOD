@@ -495,7 +495,8 @@ def test_downloader_verifies_exe(qtbot, tmp_path):
                             expected_size=len(payload), expected_sha256=sha, shape="pe")
     final = blocker.args[0]
     assert os.path.exists(final) and not final.endswith(".part")
-    assert open(final, "rb").read() == payload
+    with open(final, "rb") as f:
+        assert f.read() == payload
     assert not list(tmp_path.glob("*.part"))
 
 
