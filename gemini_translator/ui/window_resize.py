@@ -198,18 +198,31 @@ class WindowResizeController(QtCore.QObject):
     # -- проявление содержимого страницы --------------------------------
 
     def _fade_in_page(self, page) -> None:
-        """Интерфейс страницы проявляется, когда окно приняло размер."""
+        """Интерфейс страницы проявляется, когда окно приняло размер.
+
+        Очистка эффекта безусловная (страховочный таймер): страница ни при
+        каких сбоях не должна остаться прозрачной.
+        """
         if self._content_fade_ms <= 0:
             return
         effect = QtWidgets.QGraphicsOpacityEffect(page)
         effect.setOpacity(0.0)
         page.setGraphicsEffect(effect)
+        page._shell_fade_effect = effect
         self._fading_page = page
         delay = self._duration if self._animation is not None else 0
 
+        def _cleanup() -> None:
+            try:
+                if getattr(page, "_shell_fade_effect", None) is effect:
+                    page._shell_fade_effect = None
+                    page.setGraphicsEffect(None)
+            except RuntimeError:
+                pass
+
         def _start() -> None:
             try:
-                if page.graphicsEffect() is not effect:
+                if getattr(page, "_shell_fade_effect", None) is not effect:
                     return
             except RuntimeError:
                 return  # страница уже уничтожена
@@ -217,18 +230,13 @@ class WindowResizeController(QtCore.QObject):
             animation.setDuration(self._content_fade_ms)
             animation.setStartValue(0.0)
             animation.setEndValue(1.0)
-
-            def _cleanup() -> None:
-                try:
-                    if page.graphicsEffect() is effect:
-                        page.setGraphicsEffect(None)
-                except RuntimeError:
-                    pass
-
             animation.finished.connect(_cleanup)
             animation.start()
 
         QtCore.QTimer.singleShot(delay, _start)
+        QtCore.QTimer.singleShot(
+            delay + self._content_fade_ms + 250, _cleanup
+        )
 
     def _clear_page_fade(self) -> None:
         page = self._fading_page
@@ -236,6 +244,7 @@ class WindowResizeController(QtCore.QObject):
         if page is None:
             return
         try:
+            page._shell_fade_effect = None
             if page.graphicsEffect() is not None:
                 page.setGraphicsEffect(None)
         except RuntimeError:

@@ -42,28 +42,6 @@ CLOSE_LINGER_MS = 120
 #: Проявление содержимого карточки после того, как она приняла размер.
 CONTENT_FADE_MS = 120
 
-#: Надписи кнопок, означающие «этим диалог можно закрыть»: таким карточкам
-#: не нужен собственный крестик.
-_CLOSE_BUTTON_WORDS = {
-    "закрыть", "отмена", "отменить", "выход", "готово", "принять",
-    "пропустить", "ok", "оk", "cancel", "close", "done", "apply",
-}
-
-
-def _dialog_offers_close(dialog: QtWidgets.QDialog) -> bool:
-    """Есть ли у диалога собственный способ закрыться (кнопки)."""
-    if dialog.findChild(QtWidgets.QDialogButtonBox) is not None:
-        return True
-    for button in dialog.findChildren(QtWidgets.QAbstractButton):
-        text = button.text().replace("&", "").strip().strip("…. ").lower()
-        if not text:
-            continue
-        # Отсекаем эмодзи-префиксы вида «🚀 Собрать EPUB».
-        words = {w for w in text.split() if w.isalpha()}
-        if words & _CLOSE_BUTTON_WORDS or text in _CLOSE_BUTTON_WORDS:
-            return True
-    return False
-
 
 @dataclass
 class _OverlayEntry:
@@ -92,7 +70,6 @@ class OverlayHost(QtWidgets.QWidget):
         self._fade_ms = FADE_MS
         self._linger_ms = CLOSE_LINGER_MS
         self._content_fade_ms = CONTENT_FADE_MS
-        self._card_header: Optional[QtWidgets.QWidget] = None
         window.installEventFilter(self)
         self.hide()
 
@@ -148,7 +125,6 @@ class OverlayHost(QtWidgets.QWidget):
             self.show()
             self.raise_()
             self._fade_dim_to(1.0)
-        self._sync_card_header(dialog)
         target = self._card_rect_for(dialog)
         if appearing or card_was_hidden:
             # Первое появление: лёгкий «вырост» карточки из чуть меньшего
@@ -160,9 +136,7 @@ class OverlayHost(QtWidgets.QWidget):
             self._card.setGeometry(start)
         self._card.show()
         self._animate_card_to(target)
-        dialog.show()
-        self._prepare_content_fade(dialog)
-        self._focus_dialog(dialog)
+        self._reveal_after_morph(dialog)
 
     # -- сборка карточки ------------------------------------------------
 
@@ -185,35 +159,10 @@ class OverlayHost(QtWidgets.QWidget):
         layout.setContentsMargins(
             CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING
         )
-        layout.setSpacing(6)
-        # Крестик для диалогов без собственных кнопок закрытия — иначе
-        # карточку без рамки было бы нечем закрыть (кроме Esc).
-        header = QtWidgets.QWidget()
-        header_layout = QtWidgets.QHBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.addStretch(1)
-        close_button = QtWidgets.QToolButton(header)
-        close_button.setObjectName("overlayCardClose")
-        close_button.setText("✕")
-        close_button.setAutoRaise(True)
-        close_button.setToolTip("Закрыть (Esc)")
-        close_button.clicked.connect(self._reject_top_dialog)
-        header_layout.addWidget(close_button)
-        layout.addWidget(header)
-        header.hide()
         stack = QtWidgets.QStackedWidget()
         layout.addWidget(stack)
         self._card = card
         self._card_stack = stack
-        self._card_header = header
-
-    def _reject_top_dialog(self) -> None:
-        if self._entries:
-            self._entries[-1].dialog.reject()
-
-    def _sync_card_header(self, dialog: QtWidgets.QDialog) -> None:
-        if self._card_header is not None:
-            self._card_header.setVisible(not _dialog_offers_close(dialog))
 
     def _card_rect_for(self, dialog: QtWidgets.QDialog) -> QtCore.QRect:
         if dialog.testAttribute(QtCore.Qt.WidgetAttribute.WA_Resized):
@@ -223,11 +172,6 @@ class OverlayHost(QtWidgets.QWidget):
         minimum = dialog.minimumSizeHint().expandedTo(dialog.minimumSize())
         wanted = wanted.expandedTo(minimum)
         wanted += QtCore.QSize(2 * CARD_PADDING, 2 * CARD_PADDING)
-        if not _dialog_offers_close(dialog) and self._card_header is not None:
-            spacing = self._card.layout().spacing() if self._card else 6
-            wanted.setHeight(
-                wanted.height() + self._card_header.sizeHint().height() + spacing
-            )
         limit = QtCore.QSize(
             int(self.width() * CARD_MAX_FRACTION),
             int(self.height() * CARD_MAX_FRACTION),
@@ -253,35 +197,56 @@ class OverlayHost(QtWidgets.QWidget):
         self._geometry_animation = animation
         animation.start()
 
-    def _prepare_content_fade(self, dialog: QtWidgets.QDialog) -> None:
-        """Содержимое проявляется после того, как карточка приняла размер."""
-        if self._content_fade_ms <= 0:
-            return
-        effect = QtWidgets.QGraphicsOpacityEffect(dialog)
-        effect.setOpacity(0.0)
-        dialog.setGraphicsEffect(effect)
+    def _reveal_after_morph(self, dialog: QtWidgets.QDialog) -> None:
+        """Показывает содержимое после того, как карточка приняла размер.
 
-        def _start() -> None:
+        Пока карточка морфится, диалог скрыт — тяжёлая первая отрисовка
+        (списки глав и т.п.) не дёргает анимацию. Затем диалог показывается
+        с коротким фейдом. Очистка эффекта безусловная: даже если анимация
+        сорвётся, контент не останется прозрачным.
+        """
+        if self._content_fade_ms <= 0 and self._morph_ms <= 0:
+            dialog.show()
+            self._focus_dialog(dialog)
+            return
+        dialog.hide()
+
+        def _reveal() -> None:
             try:
-                if not dialog.isVisible() or dialog.graphicsEffect() is not effect:
+                # Диалог мог закрыться или быть перекрыт следующим.
+                if self._card_stack is None or (
+                    self._card_stack.currentWidget() is not dialog
+                ):
                     return
             except RuntimeError:
                 return  # диалог уже уничтожен
-            animation = QtCore.QPropertyAnimation(effect, b"opacity", dialog)
-            animation.setDuration(self._content_fade_ms)
-            animation.setStartValue(0.0)
-            animation.setEndValue(1.0)
+            fade_ms = self._content_fade_ms
+            if fade_ms > 0:
+                effect = QtWidgets.QGraphicsOpacityEffect(dialog)
+                effect.setOpacity(0.0)
+                dialog.setGraphicsEffect(effect)
+                dialog._overlay_fade_effect = effect
 
-            def _cleanup() -> None:
-                try:
-                    if dialog.graphicsEffect() is effect:
-                        dialog.setGraphicsEffect(None)
-                except RuntimeError:
-                    pass
-            animation.finished.connect(_cleanup)
-            animation.start()
+                def _cleanup() -> None:
+                    try:
+                        if getattr(dialog, "_overlay_fade_effect", None) is effect:
+                            dialog._overlay_fade_effect = None
+                            dialog.setGraphicsEffect(None)
+                    except RuntimeError:
+                        pass
 
-        QtCore.QTimer.singleShot(self._morph_ms, _start)
+                animation = QtCore.QPropertyAnimation(effect, b"opacity", dialog)
+                animation.setDuration(fade_ms)
+                animation.setStartValue(0.0)
+                animation.setEndValue(1.0)
+                animation.finished.connect(_cleanup)
+                # Страховка: эффект снимается даже если finished не придёт.
+                QtCore.QTimer.singleShot(fade_ms + 250, _cleanup)
+                animation.start()
+            dialog.show()
+            self._focus_dialog(dialog)
+
+        QtCore.QTimer.singleShot(self._morph_ms, _reveal)
 
     def _focus_dialog(self, dialog: QtWidgets.QDialog) -> None:
         focus = dialog.focusWidget()
@@ -308,10 +273,8 @@ class OverlayHost(QtWidgets.QWidget):
         if self._entries:
             top = self._entries[-1]
             self._card_stack.setCurrentWidget(top.dialog)
-            self._sync_card_header(top.dialog)
             self._animate_card_to(self._card_rect_for(top.dialog))
-            self._prepare_content_fade(top.dialog)
-            self._focus_dialog(top.dialog)
+            self._reveal_after_morph(top.dialog)
         else:
             self._begin_close(entry.previous_focus)
         if entry.callback is not None:

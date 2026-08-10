@@ -1561,11 +1561,16 @@ class TranslatedChaptersManagerDialog(QDialog):
         meta_main_layout.addLayout(cover_layout)
         main_layout.addWidget(self.metadata_group)
 
-        # Кнопка запуска
+        # Кнопки запуска и закрытия
         self.create_epub_btn = QPushButton("🚀 Собрать EPUB")
         self.create_epub_btn.setStyleSheet(f"background-color: {theme_manager.color('success')}; color: {theme_manager.color('accent_text')}; font-weight: bold; padding: 5px;")
         self.create_epub_btn.clicked.connect(self.create_epub)
-        main_layout.addWidget(self.create_epub_btn)
+        bottom_buttons = QHBoxLayout()
+        bottom_buttons.addWidget(self.create_epub_btn, 1)
+        self.close_btn = QPushButton("Закрыть")
+        self.close_btn.clicked.connect(self.reject)
+        bottom_buttons.addWidget(self.close_btn)
+        main_layout.addLayout(bottom_buttons)
 
         # --- Логика переключений режимов ---
         self.create_new_radio.toggled.connect(self._on_mode_toggled)

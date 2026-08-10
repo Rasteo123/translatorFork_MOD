@@ -145,32 +145,6 @@ class OverlayHostTests(unittest.TestCase):
         self.assertFalse(host.isVisible())
         self.assertTrue(shell.centralWidget().isEnabled())
 
-    def test_close_button_only_for_dialogs_without_own_close(self):
-        shell = self._shell()
-        host = shell.overlay_host
-
-        # У SimpleDialog есть QDialogButtonBox — крестик не нужен.
-        with_buttons = SimpleDialog()
-        host.present(with_buttons)
-        _drain(self.app)
-        self.assertFalse(host._card_header.isVisible())
-        with_buttons.reject()
-        _drain(self.app)
-
-        # Диалог без кнопок закрытия (как «Управление структурой книги»)
-        # получает крестик — иначе софтлок.
-        bare = QDialog()
-        lay = QtWidgets.QVBoxLayout(bare)
-        lay.addWidget(QtWidgets.QPushButton("🚀 Собрать EPUB"))
-        results = []
-        host.present(bare, results.append)
-        _drain(self.app)
-        self.assertTrue(host._card_header.isVisible())
-        close = host._card.findChild(QtWidgets.QToolButton, "overlayCardClose")
-        close.click()
-        _drain(self.app)
-        self.assertEqual(results, [QDialog.DialogCode.Rejected])
-
     def test_card_clamped_to_host_size(self):
         shell = self._shell()
         dialog = SimpleDialog()
