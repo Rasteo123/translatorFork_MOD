@@ -7,6 +7,7 @@ import enum
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -267,142 +268,214 @@ def detect_update_channel() -> UpdateChannel:
     return UpdateChannel.SOURCE_ARCHIVE
 
 
-def _pick_platform_asset(assets, platform) -> str:
-    """Выбирает ссылку на подходящий ассет релиза для платформы.
+# --- Результат обнаружения обновления -------------------------------------
 
-    В релизе лежат и инсталлер (Setup.exe), и портативный exe: для
-    автообновления на Windows предпочитаем инсталлер. На macOS — dmg,
-    затем zip. Если ничего не подошло — первый ассет.
+@dataclass(frozen=True)
+class UpdateInfo:
+    """Что нашёл UpdateChecker: полный факт вместо трёх строк."""
+
+    kind: str                 # "release" | "git" | "archive"
+    suppress_id: str          # тег релиза либо SHA коммита — ключ «Игнорировать»
+    title_version: str        # человекочитаемая версия для диалога
+    description: str
+    manual: bool = False      # только ручная загрузка (нет пригодного ассета)
+    manual_url: str = ""
+    asset: ReleaseAsset = None
+    commit: str = ""
+    zip_url: str = ""         # SHA-pinned zipball для kind == "archive"
+
+
+# --- Сетевая сессия апдейтера ---------------------------------------------
+
+DEFAULT_TIMEOUT = (10, 30)
+RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+_API_BASE = f"https://api.github.com/repos/{GITHUB_REPO}"
+
+
+def build_updater_session(settings_manager=None):
+    """requests.Session с прокси из настроек приложения.
+
+    trust_env=False: системный прокси не должен молча перехватывать трафик
+    апдейтера. Пароль в логи не попадает — URL прокси нигде не логируется.
     """
-    def _url(asset):
-        return asset["browser_download_url"]
+    session = requests.Session()
+    session.trust_env = False
+    session.max_redirects = 5
+    try:
+        proxy = settings_manager.load_proxy_settings() if settings_manager else {}
+    except Exception:
+        proxy = {}
+    if proxy.get("enabled") and proxy.get("host") and proxy.get("port"):
+        scheme = {"SOCKS5": "socks5h", "SOCKS4": "socks4"}.get(
+            str(proxy.get("type") or "").upper(), "http")
+        auth = ""
+        user = str(proxy.get("user") or "")
+        password = str(proxy.get("password") or "")
+        if user:
+            auth = quote(user, safe="")
+            if password:
+                auth += ":" + quote(password, safe="")
+            auth += "@"
+        url = f"{scheme}://{auth}{proxy['host']}:{proxy['port']}"
+        session.proxies = {"http": url, "https": url}
+    return session
 
-    if platform == "win32":
-        exe_assets = [a for a in assets if a["name"].lower().endswith(".exe")]
-        setup_assets = [a for a in exe_assets if "setup" in a["name"].lower()]
-        if setup_assets:
-            return _url(setup_assets[0])
-        if exe_assets:
-            return _url(exe_assets[0])
-    elif platform == "darwin":
-        dmg_url = None
-        zip_url = None
-        for asset in assets:
-            name = asset["name"].lower()
-            if name.endswith(".dmg") and dmg_url is None:
-                dmg_url = _url(asset)
-            elif name.endswith(".zip") and zip_url is None:
-                zip_url = _url(asset)
-        if dmg_url or zip_url:
-            return dmg_url or zip_url
 
-    return _url(assets[0]) if assets else ""
-
+# --- Проверка обновлений ---------------------------------------------------
 
 class UpdateChecker(QThread):
-    update_available = pyqtSignal(str, str, str) # version, description, download_url
-    error_occurred = pyqtSignal(str)
-    no_update = pyqtSignal()
+    """Обнаруживает обновление своего канала в рабочем потоке.
 
-    def is_source_mode(self):
-        import sys, os
-        is_frozen = getattr(sys, 'frozen', False)
-        # Check if we are running in a git repo
-        git_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "..", ".git")
-        return not is_frozen and (os.path.exists('.git') or os.path.exists(git_dir))
+    Любой сбой — error_occurred; no_update означает ровно «вы на актуальной
+    версии», никогда не «что-то пошло не так».
+    """
+
+    update_available = pyqtSignal(object)  # UpdateInfo
+    no_update = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, parent=None, *, manual=False, session_factory=build_updater_session):
+        super().__init__(parent)
+        self._manual = manual
+        self._session_factory = session_factory
 
     def run(self):
-        import sys
-        if getattr(sys, 'frozen', False):
-            self._check_release_update()
-        elif self.is_source_mode():
-            self._check_source_update()
-        else:
-            # Source mode but without git (e.g. downloaded zip)
-            self._check_commit_update()
-
-    def _check_source_update(self):
         try:
-            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-            fetch_res = subprocess.run(["git", "fetch"], capture_output=True, text=True, cwd=repo_root)
-            if fetch_res.returncode != 0:
-                self.error_occurred.emit("Ошибка при выполнении git fetch")
-                return
-                
-            rev_res = subprocess.run(["git", "rev-list", "--count", "HEAD..@{u}"], capture_output=True, text=True, cwd=repo_root)
-            if rev_res.returncode == 0:
-                count = int(rev_res.stdout.strip() or "0")
-                if count > 0:
-                    self.update_available.emit("source", f"Доступны обновления на GitHub ({count} новых коммитов).", "")
-                else:
-                    self.no_update.emit()
+            channel = detect_update_channel()
+            if channel in (UpdateChannel.WINDOWS_INSTALLED,
+                           UpdateChannel.WINDOWS_PORTABLE,
+                           UpdateChannel.MACOS):
+                self._check_release(channel, read_build_identity())
+            elif channel is UpdateChannel.SOURCE_GIT:
+                self._check_git()
+            elif channel is UpdateChannel.SOURCE_ARCHIVE:
+                self._check_archive()
+            else:
+                self._check_development()
+        except UpdateError as e:
+            self.error_occurred.emit(e.user_message)
+        except Exception as e:  # noqa: BLE001 — поток не должен умирать молча
+            self.error_occurred.emit(str(e))
+
+    # -- release-каналы (Windows/macOS) --
+
+    def _fetch_latest_release(self, session):
+        response = session.get(f"{_API_BASE}/releases/latest", timeout=DEFAULT_TIMEOUT)
+        if response.status_code != 200:
+            raise UpdateError(f"HTTP {response.status_code} при запросе релиза")
+        return response.json()
+
+    def _check_release(self, channel, identity):
+        session = self._session_factory()
+        data = self._fetch_latest_release(session)
+        tag = str(data.get("tag_name", ""))
+        remote_version = parse_version_tag(tag)
+        gh_assets = data.get("assets") or []
+        html_url = str(data.get("html_url") or RELEASES_PAGE)
+        body = str(data.get("body") or "Доступно новое обновление.")
+        manifest_url = next(
+            (a.get("browser_download_url") for a in gh_assets
+             if a.get("name") == UPDATE_MANIFEST_FILENAME), None)
+
+        if manifest_url is None:
+            # Легаси-релиз без манифеста: объявить можно, исполнять нельзя.
+            if identity is None or remote_version > identity.version:
+                self.update_available.emit(UpdateInfo(
+                    kind="release", suppress_id=tag, title_version=tag.lstrip("vV"),
+                    description=body, manual=True, manual_url=html_url))
             else:
                 self.no_update.emit()
-        except Exception as e:
-            self.error_occurred.emit(str(e))
-            
-    def _check_commit_update(self):
-        try:
-            from PyQt6.QtCore import QSettings
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                latest_sha = data.get("sha")
-                if not latest_sha:
-                    self.no_update.emit()
-                    return
-                
-                settings = QSettings("SiberianTeam", "TranslatorFork")
-                installed_commit = settings.value("updater/installed_commit", "")
-                
-                if not installed_commit:
-                    # First run from source ZIP, silently save the commit to track future updates
-                    settings.setValue("updater/installed_commit", latest_sha)
-                    settings.sync()
-                    self.no_update.emit()
-                    return
-                
-                if installed_commit != latest_sha:
-                    commit_msg = data.get("commit", {}).get("message", "Доступно обновление исходного кода.")
-                    body = f"Найден новый коммит:\n{commit_msg}"
-                    zip_url = f"https://api.github.com/repos/{GITHUB_REPO}/zipball/main"
-                    self.update_available.emit(latest_sha, body, f"source_zip:{zip_url}")
-                else:
-                    self.no_update.emit()
-            else:
-                self.error_occurred.emit(f"Ошибка API GitHub: {response.status_code}")
-        except Exception as e:
-            self.error_occurred.emit(str(e))
+            return
 
-    def _check_release_update(self):
-        try:
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-            # Disable verify=False if possible, but keep simple timeout
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                latest_version = data.get("tag_name", "").lstrip("v")
-                current_version = APP_VERSION.lstrip("v")
-                
-                # Basic version comparison
-                import re
-                def parse_version(v):
-                    return [int(x) for x in re.findall(r'\d+', v)]
-                
-                latest_parsed = parse_version(latest_version)
-                current_parsed = parse_version(current_version)
-                
-                if latest_parsed > current_parsed:
-                    body = data.get("body", "Доступно новое обновление.")
+        response = session.get(manifest_url, timeout=DEFAULT_TIMEOUT)
+        if response.status_code != 200:
+            raise UpdateError(f"HTTP {response.status_code} при загрузке манифеста")
+        manifest = parse_update_manifest(response.json(), tag, gh_assets)
+        if identity is not None and not manifest.version > identity.version:
+            self.no_update.emit()
+            return
+        asset = select_release_asset(manifest, channel)
+        if asset is None:
+            self.update_available.emit(UpdateInfo(
+                kind="release", suppress_id=tag, title_version=tag.lstrip("vV"),
+                description=body, manual=True, manual_url=html_url))
+        else:
+            self.update_available.emit(UpdateInfo(
+                kind="release", suppress_id=tag, title_version=tag.lstrip("vV"),
+                description=body, asset=asset, commit=manifest.commit))
 
-                    download_url = _pick_platform_asset(
-                        data.get("assets", []), sys.platform)
+    def _check_development(self):
+        """DEVELOPMENT: только ручное объявление, никакой автоустановки."""
+        from gemini_translator.version import __version__
+        session = self._session_factory()
+        data = self._fetch_latest_release(session)
+        tag = str(data.get("tag_name", ""))
+        if parse_version_tag(tag) > parse_version_tag(__version__):
+            self.update_available.emit(UpdateInfo(
+                kind="release", suppress_id=tag, title_version=tag.lstrip("vV"),
+                description=str(data.get("body") or "Доступно новое обновление."),
+                manual=True, manual_url=str(data.get("html_url") or RELEASES_PAGE)))
+        else:
+            self.no_update.emit()
 
-                    self.update_available.emit(latest_version, body, download_url)
-                else:
-                    self.no_update.emit()
-            else:
-                self.error_occurred.emit(f"HTTP {response.status_code}")
-        except Exception as e:
-            self.error_occurred.emit(str(e))
+    # -- git-источники --
+
+    @staticmethod
+    def _git(args, timeout=60):
+        return subprocess.run(
+            ["git", *args], cwd=str(project_root()), capture_output=True,
+            text=True, timeout=timeout,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+    def _check_git(self):
+        upstream = self._git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        if upstream.returncode != 0:
+            raise UpdateError(
+                "Для этой копии не настроена upstream-ветка — автообновление "
+                "невозможно (git branch --set-upstream-to=origin/<ветка>).")
+        fetch = self._git(["fetch"])
+        if fetch.returncode != 0:
+            raise UpdateError(f"git fetch завершился с ошибкой: {fetch.stderr.strip()[:400]}")
+        sha_res = self._git(["rev-parse", "@{u}"])
+        if sha_res.returncode != 0:
+            raise UpdateError(f"Не удалось определить upstream-коммит: {sha_res.stderr.strip()[:400]}")
+        sha = sha_res.stdout.strip()
+        count_res = self._git(["rev-list", "--count", "HEAD..@{u}"])
+        if count_res.returncode != 0:
+            raise UpdateError(f"git rev-list завершился с ошибкой: {count_res.stderr.strip()[:400]}")
+        count = int(count_res.stdout.strip() or "0")
+        if count > 0:
+            self.update_available.emit(UpdateInfo(
+                kind="git", suppress_id=sha, title_version=sha[:10],
+                description=f"Доступны обновления на GitHub ({count} новых коммитов).",
+                commit=sha))
+        else:
+            self.no_update.emit()
+
+    # -- source-архивы --
+
+    def _check_archive(self):
+        identity = read_archive_identity(project_root())
+        if identity is None:
+            self.update_available.emit(UpdateInfo(
+                kind="archive", suppress_id="unknown-archive", title_version="?",
+                description=("Не удалось определить установленную ревизию исходников. "
+                             "Скачайте свежий архив вручную."),
+                manual=True, manual_url=RELEASES_PAGE))
+            return
+        session = self._session_factory()
+        response = session.get(f"{_API_BASE}/commits/main", timeout=DEFAULT_TIMEOUT)
+        if response.status_code != 200:
+            raise UpdateError(f"HTTP {response.status_code} при запросе коммитов")
+        data = response.json()
+        sha = str(data.get("sha") or "")
+        if not _HEX40_RE.match(sha):
+            raise UpdateError("GitHub вернул некорректный ответ о последнем коммите")
+        if sha == identity["commit"]:
+            self.no_update.emit()
+            return
+        message = (data.get("commit") or {}).get("message") or "Доступно обновление исходного кода."
+        self.update_available.emit(UpdateInfo(
+            kind="archive", suppress_id=sha, title_version=sha[:10],
+            description=f"Найден новый коммит:\n{message}", commit=sha,
+            zip_url=f"{_API_BASE}/zipball/{sha}"))

@@ -179,73 +179,290 @@ def test_manifest_duplicate_channel_is_ambiguous_manual():
     assert u.select_release_asset(m, u.UpdateChannel.WINDOWS_INSTALLED) is None
 
 
-def test_update_checker_finds_update(qtbot):
-    with patch('requests.get') as mock_get:
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "tag_name": "v99.99.99",
-            "body": "New release!",
-            "assets": [
-                {"name": "GeminiTranslator-Setup.exe", "browser_download_url": "http://example.com/setup.exe"},
-                {"name": "GeminiTranslator.dmg", "browser_download_url": "http://example.com/mac.dmg"}
-            ]
-        }
-        mock_get.return_value = mock_response
-        
-        with patch('gemini_translator.utils.updater.APP_VERSION', '1.0.0'):
-            with patch.object(UpdateChecker, 'is_source_mode', return_value=False):
-                with patch('sys.frozen', True, create=True):
-                    checker = UpdateChecker()
-                    with qtbot.waitSignal(checker.update_available, timeout=1000) as blocker:
-                        checker.run()
-                
-            assert blocker.args[0] == "99.99.99"
-            assert blocker.args[1] == "New release!"
-            if sys.platform == "win32":
-                assert blocker.args[2] == "http://example.com/setup.exe"
-            elif sys.platform == "darwin":
-                assert blocker.args[2] == "http://example.com/mac.dmg"
+# --- UpdateChecker (Task 4) ---
 
-def test_update_checker_source_no_git_finds_zip(qtbot):
-    with patch('requests.get') as mock_get:
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "sha": "1234567890abcdef1234567890abcdef12345678",
-            "commit": {
-                "message": "Update something"
-            }
-        }
-        mock_get.return_value = mock_response
-        
-        with patch('PyQt6.QtCore.QSettings.value', return_value="old_sha"):
-            with patch('gemini_translator.utils.updater.UpdateChecker.is_source_mode', return_value=False):
-                with patch('sys.frozen', False, create=True):
-                    checker = UpdateChecker()
-                    with qtbot.waitSignal(checker.update_available, timeout=1000) as blocker:
-                        checker.run()
-                
-            assert blocker.args[0] == "1234567890abcdef1234567890abcdef12345678"
-            assert "Update something" in blocker.args[1]
-            assert "source_zip:" in blocker.args[2]
 
-def test_update_checker_no_update(qtbot):
-    with patch('requests.get') as mock_get:
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "tag_name": "v1.0.0",
-            "body": "Old release!",
-            "assets": []
-        }
-        mock_get.return_value = mock_response
-        
-        with patch('gemini_translator.utils.updater.APP_VERSION', '2.0.0'):
-            with patch.object(UpdateChecker, 'is_source_mode', return_value=False):
-                checker = UpdateChecker()
-                with qtbot.waitSignal(checker.no_update, timeout=1000):
-                    checker.run()
+class FakeResponse:
+    def __init__(self, status_code=200, json_data=None, content=b""):
+        self.status_code = status_code
+        self._json = json_data
+        self.content = content
+
+    def json(self):
+        if self._json is None:
+            raise ValueError("no json")
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+
+class FakeSession:
+    def __init__(self, routes):
+        self.routes = routes  # list[(url_substr, FakeResponse | Exception)]
+        self.calls = []
+
+    def get(self, url, timeout=None, stream=False, **kw):
+        self.calls.append(url)
+        for substr, resp in self.routes:
+            if substr in url:
+                if isinstance(resp, Exception):
+                    raise resp
+                return resp
+        raise AssertionError(f"unexpected URL {url}")
+
+
+def _release_payload(tag="v10.5.22", with_manifest=True, assets_names=None):
+    names = list(_ALL) if assets_names is None else list(assets_names)
+    if with_manifest:
+        names = names + ["update-manifest.json"]
+    return {
+        "tag_name": tag,
+        "html_url": f"https://github.com/x/releases/tag/{tag}",
+        "body": "Notes",
+        "assets": [{"name": n, "browser_download_url": f"https://dl/{n}"} for n in names],
+    }
+
+
+def _make_release_checker(monkeypatch, routes, channel="WINDOWS_INSTALLED", identity=True):
+    from gemini_translator.utils import updater as u
+    monkeypatch.setattr(u, "detect_update_channel", lambda: u.UpdateChannel[channel])
+    monkeypatch.setattr(u, "read_build_identity", lambda: _identity() if identity else None)
+    session = FakeSession(routes)
+    checker = u.UpdateChecker(manual=True, session_factory=lambda: session)
+    return u, checker
+
+
+def test_checker_release_update_available(qtbot, monkeypatch):
+    u, checker = _make_release_checker(monkeypatch, [
+        ("releases/latest", FakeResponse(json_data=_release_payload())),
+        ("update-manifest.json", FakeResponse(json_data=_manifest_data())),
+    ])
+    with qtbot.waitSignal(checker.update_available, timeout=2000) as blocker:
+        checker.run()
+    info = blocker.args[0]
+    assert isinstance(info, u.UpdateInfo)
+    assert info.kind == "release" and not info.manual
+    assert info.asset.name == "GeminiTranslator-Setup.exe"
+    assert info.asset.sha256 == "a" * 64
+    assert info.suppress_id == "v10.5.22"
+
+
+def test_checker_release_no_update_on_equal(qtbot, monkeypatch):
+    manifest = _manifest_data(version="10.5.21", tag="v10.5.21")
+    u, checker = _make_release_checker(monkeypatch, [
+        ("releases/latest", FakeResponse(json_data=_release_payload(tag="v10.5.21"))),
+        ("update-manifest.json", FakeResponse(json_data=manifest)),
+    ])
+    with qtbot.waitSignal(checker.no_update, timeout=2000):
+        checker.run()
+
+
+def test_checker_release_missing_channel_is_manual(qtbot, monkeypatch):
+    data = _manifest_data()
+    data["assets"] = [a for a in data["assets"] if a["channel"] != "windows-installed"]
+    u, checker = _make_release_checker(monkeypatch, [
+        ("releases/latest", FakeResponse(json_data=_release_payload())),
+        ("update-manifest.json", FakeResponse(json_data=data)),
+    ])
+    with qtbot.waitSignal(checker.update_available, timeout=2000) as blocker:
+        checker.run()
+    info = blocker.args[0]
+    assert info.manual and info.manual_url.startswith("https://github.com/")
+    assert info.asset is None
+
+
+def test_checker_release_invalid_manifest_errors(qtbot, monkeypatch):
+    data = _manifest_data()
+    data["assets"][0]["name"] = "NotUploaded.exe"
+    u, checker = _make_release_checker(monkeypatch, [
+        ("releases/latest", FakeResponse(json_data=_release_payload())),
+        ("update-manifest.json", FakeResponse(json_data=data)),
+    ])
+    with qtbot.waitSignal(checker.error_occurred, timeout=2000):
+        checker.run()
+
+
+def test_checker_release_legacy_without_manifest(qtbot, monkeypatch):
+    u, checker = _make_release_checker(monkeypatch, [
+        ("releases/latest", FakeResponse(json_data=_release_payload(with_manifest=False))),
+    ])
+    with qtbot.waitSignal(checker.update_available, timeout=2000) as blocker:
+        checker.run()
+    info = blocker.args[0]
+    assert info.manual and info.asset is None
+
+    u2, checker2 = _make_release_checker(monkeypatch, [
+        ("releases/latest",
+         FakeResponse(json_data=_release_payload(tag="v10.5.21", with_manifest=False))),
+    ])
+    with qtbot.waitSignal(checker2.no_update, timeout=2000):
+        checker2.run()
+
+
+@pytest.mark.parametrize("routes", [
+    [("releases/latest", FakeResponse(status_code=500))],
+    [("releases/latest", FakeResponse(json_data=_release_payload(tag="vNext")))],
+])
+def test_checker_release_failures_are_errors(qtbot, monkeypatch, routes):
+    u, checker = _make_release_checker(monkeypatch, routes)
+    with qtbot.waitSignal(checker.error_occurred, timeout=2000):
+        checker.run()
+
+
+def test_checker_release_network_exception_is_error(qtbot, monkeypatch):
+    import requests as _requests
+    u, checker = _make_release_checker(
+        monkeypatch, [("releases/latest", _requests.ConnectionError("boom"))])
+    with qtbot.waitSignal(checker.error_occurred, timeout=2000):
+        checker.run()
+
+
+def test_checker_development_manual_announce(qtbot, monkeypatch):
+    u, checker = _make_release_checker(
+        monkeypatch,
+        [("releases/latest", FakeResponse(json_data=_release_payload(tag="v99.0.0",
+                                                                     with_manifest=False)))],
+        channel="DEVELOPMENT", identity=False)
+    with qtbot.waitSignal(checker.update_available, timeout=2000) as blocker:
+        checker.run()
+    assert blocker.args[0].manual
+
+
+def _git_checker(monkeypatch, responses):
+    """responses: list[(substr_of_cmd, (rc, stdout, stderr))], первый матч."""
+    import subprocess as sp
+    from gemini_translator.utils import updater as u
+    monkeypatch.setattr(u, "detect_update_channel", lambda: u.UpdateChannel.SOURCE_GIT)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((list(cmd), kw))
+        joined = " ".join(cmd)
+        for substr, (rc, out, err) in responses:
+            if substr in joined:
+                return sp.CompletedProcess(cmd, rc, out, err)
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(u.subprocess, "run", fake_run)
+    return u, u.UpdateChecker(manual=True, session_factory=lambda: FakeSession([])), calls
+
+
+def test_checker_git_missing_upstream_is_error(qtbot, monkeypatch):
+    u, checker, _ = _git_checker(monkeypatch, [("--abbrev-ref", (1, "", "no upstream"))])
+    with qtbot.waitSignal(checker.error_occurred, timeout=2000) as blocker:
+        checker.run()
+    assert "upstream" in blocker.args[0]
+
+
+def test_checker_git_fetch_failure_is_error(qtbot, monkeypatch):
+    u, checker, _ = _git_checker(monkeypatch, [
+        ("--abbrev-ref", (0, "origin/main\n", "")),
+        ("fetch", (1, "", "fatal: could not read")),
+    ])
+    with qtbot.waitSignal(checker.error_occurred, timeout=2000):
+        checker.run()
+
+
+def test_checker_git_update_available(qtbot, monkeypatch):
+    sha = "f" * 40
+    u, checker, calls = _git_checker(monkeypatch, [
+        ("--abbrev-ref", (0, "origin/main\n", "")),
+        ("fetch", (0, "", "")),
+        ("rev-list", (0, "3\n", "")),
+        ("rev-parse", (0, sha + "\n", "")),
+    ])
+    with qtbot.waitSignal(checker.update_available, timeout=2000) as blocker:
+        checker.run()
+    info = blocker.args[0]
+    assert info.kind == "git" and info.suppress_id == sha and info.commit == sha
+    for cmd, kw in calls:
+        assert kw.get("env", {}).get("GIT_TERMINAL_PROMPT") == "0"
+        assert kw.get("timeout")
+
+
+def test_checker_git_no_update(qtbot, monkeypatch):
+    u, checker, _ = _git_checker(monkeypatch, [
+        ("--abbrev-ref", (0, "origin/main\n", "")),
+        ("fetch", (0, "", "")),
+        ("rev-list", (0, "0\n", "")),
+        ("rev-parse", (0, "f" * 40 + "\n", "")),
+    ])
+    with qtbot.waitSignal(checker.no_update, timeout=2000):
+        checker.run()
+
+
+def _archive_checker(monkeypatch, identity, routes):
+    from gemini_translator.utils import updater as u
+    monkeypatch.setattr(u, "detect_update_channel", lambda: u.UpdateChannel.SOURCE_ARCHIVE)
+    monkeypatch.setattr(u, "read_archive_identity", lambda root: identity)
+    session = FakeSession(routes)
+    return u, u.UpdateChecker(manual=True, session_factory=lambda: session)
+
+
+def test_checker_archive_unknown_identity_is_manual(qtbot, monkeypatch):
+    u, checker = _archive_checker(monkeypatch, None, [])
+    with qtbot.waitSignal(checker.update_available, timeout=2000) as blocker:
+        checker.run()
+    info = blocker.args[0]
+    assert info.kind == "archive" and info.manual
+
+
+def test_checker_archive_update_available_pins_sha(qtbot, monkeypatch):
+    sha = "e" * 40
+    u, checker = _archive_checker(
+        monkeypatch, {"schema": 1, "commit": "d" * 40},
+        [("commits/main", FakeResponse(json_data={"sha": sha, "commit": {"message": "msg"}}))])
+    with qtbot.waitSignal(checker.update_available, timeout=2000) as blocker:
+        checker.run()
+    info = blocker.args[0]
+    assert info.kind == "archive" and not info.manual
+    assert info.suppress_id == sha and info.zip_url.endswith(f"/zipball/{sha}")
+
+
+def test_checker_archive_no_update(qtbot, monkeypatch):
+    sha = "e" * 40
+    u, checker = _archive_checker(
+        monkeypatch, {"schema": 1, "commit": sha},
+        [("commits/main", FakeResponse(json_data={"sha": sha}))])
+    with qtbot.waitSignal(checker.no_update, timeout=2000):
+        checker.run()
+
+
+def test_checker_archive_api_error(qtbot, monkeypatch):
+    u, checker = _archive_checker(
+        monkeypatch, {"schema": 1, "commit": "d" * 40},
+        [("commits/main", FakeResponse(status_code=500))])
+    with qtbot.waitSignal(checker.error_occurred, timeout=2000):
+        checker.run()
+
+
+def test_build_updater_session_socks_credentials():
+    from gemini_translator.utils import updater as u
+
+    class SM:
+        def load_proxy_settings(self):
+            return {"enabled": True, "type": "SOCKS5", "host": "h", "port": 1080,
+                    "user": "u@x", "password": "p:w"}
+
+    s = u.build_updater_session(SM())
+    assert s.proxies["https"] == "socks5h://u%40x:p%3Aw@h:1080"
+    assert s.proxies["http"] == s.proxies["https"]
+    assert s.trust_env is False
+
+
+def test_build_updater_session_disabled_or_none():
+    from gemini_translator.utils import updater as u
+    assert u.build_updater_session(None).proxies == {}
+
+    class SM:
+        def load_proxy_settings(self):
+            return {"enabled": False, "type": "SOCKS5", "host": "h", "port": 1}
+
+    assert u.build_updater_session(SM()).proxies == {}
+
 
 def test_show_update_dialog_buttons(qtbot, qapp):
     home_page = HomePage()
@@ -476,88 +693,3 @@ def test_get_real_executable_frozen_darwin():
                 result = HomePage._get_real_executable()
                 assert result == os.path.abspath(mac_exe)
 
-def test_update_checker_source_mode(monkeypatch, qtbot):
-    from gemini_translator.utils.updater import UpdateChecker
-    import subprocess
-    import os
-    
-    # Mock sys.frozen = False
-    import sys
-    monkeypatch.setattr(sys, 'frozen', False, raising=False)
-    
-    # Mock os.path.exists to simulate .git dir
-    orig_exists = os.path.exists
-    def mock_exists(path):
-        if path.endswith('.git'): return True
-        return orig_exists(path)
-    monkeypatch.setattr(os.path, 'exists', mock_exists)
-    
-    # Mock subprocess.run for git fetch and rev-list
-    class MockResult:
-        def __init__(self, stdout, returncode=0):
-            self.stdout = stdout
-            self.returncode = returncode
-            
-    def mock_run(cmd, *args, **kwargs):
-        if 'fetch' in cmd:
-            return MockResult(b"")
-        if 'rev-list' in cmd:
-            return MockResult(b"1\n") # 1 new commit
-        return MockResult(b"")
-        
-    monkeypatch.setattr(subprocess, 'run', mock_run)
-    
-    checker = UpdateChecker()
-    with qtbot.waitSignal(checker.update_available, timeout=1000) as blocker:
-        checker.run()
-        
-    assert blocker.args[0] == "source"
-    assert "доступны обновления" in blocker.args[1].lower()
-    assert blocker.args[2] == ""
-
-
-def test_pick_platform_asset_prefers_setup_exe_over_portable():
-    """В релизе теперь два .exe: Setup и Portable. Автообновление должно
-    ставить инсталлер, а не скачивать портативный exe."""
-    from gemini_translator.utils.updater import _pick_platform_asset
-
-    assets = [
-        {"name": "GeminiTranslator-Portable.exe", "browser_download_url": "http://example.com/portable.exe"},
-        {"name": "GeminiTranslator-Setup.exe", "browser_download_url": "http://example.com/setup.exe"},
-        {"name": "GeminiTranslator-macOS.dmg", "browser_download_url": "http://example.com/mac.dmg"},
-    ]
-
-    assert _pick_platform_asset(assets, "win32") == "http://example.com/setup.exe"
-
-
-def test_pick_platform_asset_falls_back_to_any_exe():
-    from gemini_translator.utils.updater import _pick_platform_asset
-
-    assets = [
-        {"name": "GeminiTranslator-Portable.exe", "browser_download_url": "http://example.com/portable.exe"},
-    ]
-
-    assert _pick_platform_asset(assets, "win32") == "http://example.com/portable.exe"
-
-
-def test_pick_platform_asset_darwin_prefers_dmg_then_zip():
-    from gemini_translator.utils.updater import _pick_platform_asset
-
-    assets = [
-        {"name": "GeminiTranslator-macOS.zip", "browser_download_url": "http://example.com/mac.zip"},
-        {"name": "GeminiTranslator-macOS.dmg", "browser_download_url": "http://example.com/mac.dmg"},
-    ]
-
-    assert _pick_platform_asset(assets, "darwin") == "http://example.com/mac.dmg"
-    assert _pick_platform_asset(assets[:1], "darwin") == "http://example.com/mac.zip"
-
-
-def test_pick_platform_asset_unknown_platform_takes_first():
-    from gemini_translator.utils.updater import _pick_platform_asset
-
-    assets = [
-        {"name": "whatever.bin", "browser_download_url": "http://example.com/x.bin"},
-    ]
-
-    assert _pick_platform_asset(assets, "linux") == "http://example.com/x.bin"
-    assert _pick_platform_asset([], "win32") == ""
