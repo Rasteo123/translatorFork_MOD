@@ -54,8 +54,8 @@ Verification command used throughout: `python -m pytest tests/<file> -x -q` from
 **Files:**
 - Modify: `docs/superpowers/specs/2026-08-10-updater-hardening-design.md`
 
-- [ ] **Step 0.1:** `git checkout -b feature/updater-hardening`
-- [ ] **Step 0.2:** Append an `## Amendments (2026-08-10 review)` section to the spec recording the decisions that bind this plan:
+- [x] **Step 0.1:** `git checkout -b feature/updater-hardening`
+- [x] **Step 0.2:** Append an `## Amendments (2026-08-10 review)` section to the spec recording the decisions that bind this plan:
   1. Helpers wait on the launching PID (bounded 120 s) instead of fixed sleeps; still-running app at deadline ⇒ abort with no changes. `/FORCECLOSEAPPLICATIONS` is dropped from the Setup invocation; `/NORESTART` added.
   2. Health-window semantics: rollback only on "new process exited without ack"; alive-at-deadline ⇒ keep backups, log `HEALTH-TIMEOUT`, exit without restore (a live Windows process locks its own exe; a live process may still become healthy).
   3. Windows Installed rollback restores the file snapshot only; Inno registry/uninstall entries are a documented limitation. Free-space check precedes the snapshot; snapshot failure aborts before Setup runs.
@@ -64,7 +64,7 @@ Verification command used throughout: `python -m pytest tests/<file> -x -q` from
   6. Existing source-ZIP installations (no `.translator-update.json`) become manual-only; `build_release_dual.bat` injects the identity file into future source ZIPs (post-`git archive` step).
   7. Channel detection keys off the packaged executable identity; a renamed executable degrades to `DEVELOPMENT` (manual-only) by design.
   8. Windows helpers are PowerShell (`-NoProfile -ExecutionPolicy Bypass -File`), not batch: PID waits, `-PassThru` PIDs and guarded rollback need real control flow.
-- [ ] **Step 0.3:** Commit: `git commit -m "docs: amend updater hardening spec with review decisions"`
+- [x] **Step 0.3:** Commit: `git commit -m "docs: amend updater hardening spec with review decisions"`
 
 ---
 
@@ -87,7 +87,7 @@ class ReleaseVersion:
 def parse_version_tag(text: str) -> ReleaseVersion   # raises UpdateError
 ```
 
-- [ ] **Step 1.1: Failing tests** — add to `tests/test_updater.py`:
+- [x] **Step 1.1: Failing tests** — add to `tests/test_updater.py`:
 
 ```python
 import pytest
@@ -122,8 +122,8 @@ def test_version_ordering():
     assert final.is_final and not parse_version_tag("v10.6.0-rc1").is_final
 ```
 
-- [ ] **Step 1.2:** Run `python -m pytest tests/test_updater.py -q -k version` — expect ImportError/FAIL.
-- [ ] **Step 1.3: Implementation** in `updater.py`:
+- [x] **Step 1.2:** Run `python -m pytest tests/test_updater.py -q -k version` — expect ImportError/FAIL.
+- [x] **Step 1.3: Implementation** in `updater.py`:
 
 ```python
 _VERSION_RE = re.compile(
@@ -157,8 +157,8 @@ def parse_version_tag(text) -> ReleaseVersion:
     return ReleaseVersion(release, 0, int(num))
 ```
 
-- [ ] **Step 1.4:** Run same command — expect PASS.
-- [ ] **Step 1.5:** Commit `feat(updater): standards-aware version parsing and ordering`.
+- [x] **Step 1.4:** Run same command — expect PASS.
+- [x] **Step 1.5:** Commit `feat(updater): standards-aware version parsing and ordering`.
 
 ---
 
@@ -187,7 +187,7 @@ def read_archive_identity(root: Path) -> dict | None        # {"schema":1,"commi
 
 Detection rules (frozen): identity `None` ⇒ `DEVELOPMENT`; else executable basename `geminitranslator-portable.exe` ⇒ `WINDOWS_PORTABLE`; `translatorfork_mod.exe` ⇒ `WINDOWS_INSTALLED`; `sys.executable` containing `GeminiTranslator.app/Contents/MacOS` ⇒ `MACOS`; anything else ⇒ `DEVELOPMENT`. Non-frozen: `.git` dir at `project_root()` ⇒ `SOURCE_GIT`; else ⇒ `SOURCE_ARCHIVE` (identity validity handled by the checker). CWD must never be consulted.
 
-- [ ] **Step 2.1: Failing tests** (monkeypatch `sys.frozen`, `sys.executable`, `read_build_identity`, and `project_root` — never the real FS):
+- [x] **Step 2.1: Failing tests** (monkeypatch `sys.frozen`, `sys.executable`, `read_build_identity`, and `project_root` — never the real FS):
 
 ```python
 def _identity():
@@ -240,8 +240,8 @@ def test_read_archive_identity(tmp_path):
     assert u.read_archive_identity(tmp_path) is None
 ```
 
-- [ ] **Step 2.2:** Run, expect FAIL.
-- [ ] **Step 2.3: Implement** exactly the rules above. `read_build_identity`: `json.load`, require `schema == 1`, `commit` 40-hex, `parse_version_tag(version).is_final`, `tag == f"v{version}"`; any violation ⇒ `None` (never raises). `read_archive_identity`: same guard style, `files` optional list of str. In `translatorFork_MOD.spec` after the `datas` block add:
+- [x] **Step 2.2:** Run, expect FAIL.
+- [x] **Step 2.3: Implement** exactly the rules above. `read_build_identity`: `json.load`, require `schema == 1`, `commit` 40-hex, `parse_version_tag(version).is_final`, `tag == f"v{version}"`; any violation ⇒ `None` (never raises). `read_archive_identity`: same guard style, `files` optional list of str. In `translatorFork_MOD.spec` after the `datas` block add:
 
 ```python
 import os
@@ -249,8 +249,8 @@ if os.path.exists('update-build.json'):
     datas += [('update-build.json', '.')]
 ```
 
-- [ ] **Step 2.4:** Run, expect PASS. Also `python -c "import PyInstaller"` is NOT required — validate the spec edit with `python -c "compile(open('translatorFork_MOD.spec').read(), 'x', 'exec')"`.
-- [ ] **Step 2.5:** Commit `feat(updater): build identity file and executable-identity channel detection`.
+- [x] **Step 2.4:** Run, expect PASS. Also `python -c "import PyInstaller"` is NOT required — validate the spec edit with `python -c "compile(open('translatorFork_MOD.spec').read(), 'x', 'exec')"`.
+- [x] **Step 2.5:** Commit `feat(updater): build identity file and executable-identity channel detection`.
 
 ---
 
@@ -282,7 +282,7 @@ Manifest schema (also produced by Task 10's generator — keep in sync):
              "channel": "windows-installed", "size": 12345, "sha256": "<64hex>"}]}
 ```
 
-- [ ] **Step 3.1: Failing tests:**
+- [x] **Step 3.1: Failing tests:**
 
 ```python
 def _manifest_data(**over):
@@ -347,7 +347,7 @@ def test_manifest_duplicate_channel_is_ambiguous_manual():
     assert u.select_release_asset(m, u.UpdateChannel.WINDOWS_INSTALLED) is None
 ```
 
-- [ ] **Step 3.2:** Run, FAIL. **Step 3.3:** Implement (validation raises `UpdateError` with a specific message per field; selection returns `None` for missing/ambiguous/source/development channels). **Step 3.4:** Run, PASS. **Step 3.5:** Commit `feat(updater): update manifest parsing and strict channel asset selection`.
+- [x] **Step 3.2:** Run, FAIL. **Step 3.3:** Implement (validation raises `UpdateError` with a specific message per field; selection returns `None` for missing/ambiguous/source/development channels). **Step 3.4:** Run, PASS. **Step 3.5:** Commit `feat(updater): update manifest parsing and strict channel asset selection`.
 
 ---
 
@@ -393,7 +393,7 @@ Behavior matrix (each row is a test):
 - git: no upstream ⇒ `error_occurred` containing "upstream"; fetch timeout/nonzero ⇒ `error_occurred`; ahead ⇒ `UpdateInfo(kind="git", suppress_id=<upstream sha>, commit=<sha>)`; equal ⇒ `no_update`. All git commands: `subprocess.run(..., cwd=project_root(), timeout=60, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, capture_output=True, text=True)`.
 - archive: no/invalid local identity ⇒ `UpdateInfo(kind="archive", manual=True, description mentioning неизвестное состояние)`; identity present: GET `commits/main`, sha == local ⇒ `no_update`; different ⇒ `UpdateInfo(kind="archive", commit=sha, suppress_id=sha, zip_url=f"https://api.github.com/repos/{GITHUB_REPO}/zipball/{sha}")`; API error ⇒ `error_occurred`. **The checker never writes QSettings.**
 
-- [ ] **Step 4.1:** Write the failing tests. HTTP is faked by injecting `session_factory=lambda: FakeSession(...)`; `FakeSession.get(url, timeout=..., stream=False)` returns queued `FakeResponse(status_code, json_data, content=b"...")` per URL-substring. Git is faked with `monkeypatch.setattr(u.subprocess, "run", fake_run)` recording commands. Channel is forced via `monkeypatch.setattr(u, "detect_update_channel", ...)` and identity via `read_build_identity`/`read_archive_identity`. Use `qtbot.waitSignal` exactly like the existing tests in this file do. One test per matrix row above, plus:
+- [x] **Step 4.1:** Write the failing tests. HTTP is faked by injecting `session_factory=lambda: FakeSession(...)`; `FakeSession.get(url, timeout=..., stream=False)` returns queued `FakeResponse(status_code, json_data, content=b"...")` per URL-substring. Git is faked with `monkeypatch.setattr(u.subprocess, "run", fake_run)` recording commands. Channel is forced via `monkeypatch.setattr(u, "detect_update_channel", ...)` and identity via `read_build_identity`/`read_archive_identity`. Use `qtbot.waitSignal` exactly like the existing tests in this file do. One test per matrix row above, plus:
 
 ```python
 def test_checker_emits_updateinfo_object(qtbot, monkeypatch):
@@ -412,7 +412,7 @@ def test_build_updater_session_disabled_or_none():
     assert u.build_updater_session(None).proxies == {}
 ```
 
-- [ ] **Step 4.2:** Run, FAIL. **Step 4.3:** Implement checker (`run()` dispatches on channel; every `except Exception as e` ends in `error_occurred.emit(...)`; no bare `no_update` on errors anywhere). Delete `_pick_platform_asset` and the old signal signature; delete obsolete tests listed above in the same commit. **Step 4.4:** Full file run: `python -m pytest tests/test_updater.py -q` PASS. **Step 4.5:** Commit `feat(updater): manifest-driven UpdateChecker with per-channel discovery`.
+- [x] **Step 4.2:** Run, FAIL. **Step 4.3:** Implement checker (`run()` dispatches on channel; every `except Exception as e` ends in `error_occurred.emit(...)`; no bare `no_update` on errors anywhere). Delete `_pick_platform_asset` and the old signal signature; delete obsolete tests listed above in the same commit. **Step 4.4:** Full file run: `python -m pytest tests/test_updater.py -q` PASS. **Step 4.5:** Commit `feat(updater): manifest-driven UpdateChecker with per-channel discovery`.
 
 ---
 
@@ -437,8 +437,8 @@ class UpdateDownloader(QThread):
 
 Rules: download to `<staging>/<final-name>.part` (staging dir created `exist_ok`), stream 64 KiB chunks, `raise_for_status()` first, hash while writing; on completion verify size (exact when declared), sha256 (when declared), shape; then `os.replace(part, final)` and emit `verified`. Any failure/cancel deletes `.part` and never leaves a final-named file. Cancel closes the response and emits only `cancelled`.
 
-- [ ] **Step 5.1:** Failing tests: success-exe (MZ bytes, hash computed with `hashlib` in the test), success-zip (build a real zip in `tmp_path`), wrong-hash ⇒ `failed` + no files left, short-body vs declared size ⇒ `failed`, non-MZ with `shape="pe"` ⇒ `failed`, corrupt zip ⇒ `failed`, HTTP 500 ⇒ `failed`, cancel mid-stream ⇒ `cancelled` + `.part` removed. FakeSession returns a `FakeResponse` with `iter_content(chunk_size)` yielding queued chunks and honouring a `close()` flag the cancel test asserts.
-- [ ] **Step 5.2:** FAIL. **Step 5.3:** Implement. **Step 5.4:** PASS. **Step 5.5:** Commit `feat(updater): verifying cancellable UpdateDownloader`.
+- [x] **Step 5.1:** Failing tests: success-exe (MZ bytes, hash computed with `hashlib` in the test), success-zip (build a real zip in `tmp_path`), wrong-hash ⇒ `failed` + no files left, short-body vs declared size ⇒ `failed`, non-MZ with `shape="pe"` ⇒ `failed`, corrupt zip ⇒ `failed`, HTTP 500 ⇒ `failed`, cancel mid-stream ⇒ `cancelled` + `.part` removed. FakeSession returns a `FakeResponse` with `iter_content(chunk_size)` yielding queued chunks and honouring a `close()` flag the cancel test asserts.
+- [x] **Step 5.2:** FAIL. **Step 5.3:** Implement. **Step 5.4:** PASS. **Step 5.5:** Commit `feat(updater): verifying cancellable UpdateDownloader`.
 
 ---
 
@@ -469,8 +469,8 @@ def ps_quote(s: str) -> str                  # single-quote PowerShell literal, 
 def sh_quote(s: str) -> str                  # shlex.quote
 ```
 
-- [ ] **Step 6.1:** Failing tests: `staging_root` honours monkeypatched env per-OS branch (test all three branches by patching `sys.platform` via `monkeypatch.setattr(ui, "sys", types.SimpleNamespace(...))`-free approach — implement `staging_root(platform=sys.platform, env=os.environ)` with injectable args instead, and test those args directly); ack write happy path + env cleared + no-crash when dir missing/env absent; `cleanup_stale_staging` removes an old file, keeps a fresh one and `updater.log`; `ps_quote("it's")=="'it''s'"`; `get_real_executable` tests moved over from `tests/test_updater.py` (same four cases, imports updated); `launch_detached_helper` with `[sys.executable, "-c", "import time; time.sleep(2)"]` returns a live `Popen`.
-- [ ] **Step 6.2:** FAIL. **Step 6.3:** Implement; delete `HomePage._get_real_executable` **usages will move in Task 9** (leave HomePage untouched for now; the old copy stays until then — duplicate temporarily, note in commit). **Step 6.4:** In `main.py`, immediately after the `QApplication` instance is created (find the single `QApplication(` construction in `main()`), insert:
+- [x] **Step 6.1:** Failing tests: `staging_root` honours monkeypatched env per-OS branch (test all three branches by patching `sys.platform` via `monkeypatch.setattr(ui, "sys", types.SimpleNamespace(...))`-free approach — implement `staging_root(platform=sys.platform, env=os.environ)` with injectable args instead, and test those args directly); ack write happy path + env cleared + no-crash when dir missing/env absent; `cleanup_stale_staging` removes an old file, keeps a fresh one and `updater.log`; `ps_quote("it's")=="'it''s'"`; `get_real_executable` tests moved over from `tests/test_updater.py` (same four cases, imports updated); `launch_detached_helper` with `[sys.executable, "-c", "import time; time.sleep(2)"]` returns a live `Popen`.
+- [x] **Step 6.2:** FAIL. **Step 6.3:** Implement; delete `HomePage._get_real_executable` **usages will move in Task 9** (leave HomePage untouched for now; the old copy stays until then — duplicate temporarily, note in commit). **Step 6.4:** In `main.py`, immediately after the `QApplication` instance is created (find the single `QApplication(` construction in `main()`), insert:
 
 ```python
 from gemini_translator.utils import update_installer as _upd_install
@@ -555,8 +555,8 @@ catch { Log 'staged move failed'; Move-Item -LiteralPath $bak -Destination {exe}
 ```
 …with rollback branch `Move-Item $bak → {exe}` + relaunch, and success branch removing `$bak`.
 
-- [ ] **Step 7.1:** Failing tests over the **rendered text** (no PowerShell execution): parametrized over both renderers assert — contains `Wait-Process -Id`, contains `-Timeout 120`, contains `HEALTH-TIMEOUT`, `exit 2` only in the alive-at-deadline branch, no `FORCECLOSEAPPLICATIONS` anywhere, `'/NORESTART'` present (installed only), rollback (`Restore` / `$bak`) referenced in both exited-without-ack and setup-failure branches, every embedded path routed through `ps_quote` (test with a path containing `'` and space and assert the doubled-quote form appears), ack pre-delete precedes `$env:GT_UPDATE_ACK_FILE`. `prepare_windows_installed` tests: free-space guard raises `UpdateInstallError` when `directory_size` (monkeypatched) exceeds patched `shutil.disk_usage(...).free`; happy path (monkeypatch `launch_detached_helper` to capture argv) launches `powershell -NoProfile -ExecutionPolicy Bypass -File <script in staging>` and the script file exists with the rendered content.
-- [ ] **Step 7.2:** FAIL. **Step 7.3:** Implement. **Step 7.4:** PASS. **Step 7.5:** Commit `feat(updater): transactional Windows installed/portable helpers with health protocol`.
+- [x] **Step 7.1:** Failing tests over the **rendered text** (no PowerShell execution): parametrized over both renderers assert — contains `Wait-Process -Id`, contains `-Timeout 120`, contains `HEALTH-TIMEOUT`, `exit 2` only in the alive-at-deadline branch, no `FORCECLOSEAPPLICATIONS` anywhere, `'/NORESTART'` present (installed only), rollback (`Restore` / `$bak`) referenced in both exited-without-ack and setup-failure branches, every embedded path routed through `ps_quote` (test with a path containing `'` and space and assert the doubled-quote form appears), ack pre-delete precedes `$env:GT_UPDATE_ACK_FILE`. `prepare_windows_installed` tests: free-space guard raises `UpdateInstallError` when `directory_size` (monkeypatched) exceeds patched `shutil.disk_usage(...).free`; happy path (monkeypatch `launch_detached_helper` to capture argv) launches `powershell -NoProfile -ExecutionPolicy Bypass -File <script in staging>` and the script file exists with the rendered content.
+- [x] **Step 7.2:** FAIL. **Step 7.3:** Implement. **Step 7.4:** PASS. **Step 7.5:** Commit `feat(updater): transactional Windows installed/portable helpers with health protocol`.
 
 ---
 
@@ -616,8 +616,8 @@ log "HEALTH-TIMEOUT: process alive without ack; keeping $LIVE.old and staged fil
 exit 2
 ```
 
-- [ ] **Step 8.1:** Failing tests, two groups. (a) Rendered-text assertions mirroring Task 7 (codesign **before** any `mv` of `$LIVE`; `xattr -cr` failure path calls `rollback`; `sh_quote` applied — path with space/quote). (b) **Executed** end-to-end on the dev Mac (`@pytest.mark.skipif(sys.platform != "darwin", ...)`): build a fake `Old.app/Contents/MacOS/GT` (shell script writing "old" to a result file) in `tmp_path`, a staged zip containing `New.app` whose binary writes `"new"` **and creates the `$GT_UPDATE_ACK_FILE`**; put fake `codesign`/`xattr`/`hdiutil` shims (exit 0, recording invocation order to a log) at the front of `PATH`; run the rendered script with `bash` for pid `1`-already-dead… use a real short-lived `sleep` process as the old pid. Assert: shim log shows codesign ran before the first swap `mv`; live bundle binary now prints "new"; `.old` removed; ack consumed. Second executed test: staged binary exits 1 without ack ⇒ live bundle back to old, `<bundle>.rejected` exists, staged zip kept.
-- [ ] **Step 8.2:** FAIL. **Step 8.3:** Implement. **Step 8.4:** PASS. **Step 8.5:** Commit `feat(updater): verified transactional macOS helper preserving Gatekeeper flow`.
+- [x] **Step 8.1:** Failing tests, two groups. (a) Rendered-text assertions mirroring Task 7 (codesign **before** any `mv` of `$LIVE`; `xattr -cr` failure path calls `rollback`; `sh_quote` applied — path with space/quote). (b) **Executed** end-to-end on the dev Mac (`@pytest.mark.skipif(sys.platform != "darwin", ...)`): build a fake `Old.app/Contents/MacOS/GT` (shell script writing "old" to a result file) in `tmp_path`, a staged zip containing `New.app` whose binary writes `"new"` **and creates the `$GT_UPDATE_ACK_FILE`**; put fake `codesign`/`xattr`/`hdiutil` shims (exit 0, recording invocation order to a log) at the front of `PATH`; run the rendered script with `bash` for pid `1`-already-dead… use a real short-lived `sleep` process as the old pid. Assert: shim log shows codesign ran before the first swap `mv`; live bundle binary now prints "new"; `.old` removed; ack consumed. Second executed test: staged binary exits 1 without ack ⇒ live bundle back to old, `<bundle>.rejected` exists, staged zip kept.
+- [x] **Step 8.2:** FAIL. **Step 8.3:** Implement. **Step 8.4:** PASS. **Step 8.5:** Commit `feat(updater): verified transactional macOS helper preserving Gatekeeper flow`.
 
 ---
 
@@ -650,8 +650,8 @@ HomePage rewrite (update section only):
 - `_begin_exit()`: state `EXITING`; `self.window().setProperty("is_updating", True)`; `QtCore.QTimer.singleShot(15000, lambda: (log_update_event("emergency exit after shutdown timeout"), os._exit(0)))`; `self.window().close()`; if `QtWidgets.QApplication.instance()` still has visible windows after close returns, call `QtWidgets.QApplication.quit()`.
 - Every failure handler: state `IDLE`, button restored, silent ⇒ `self._last_silent_error = msg` + `log_update_event`, manual ⇒ warning dialog including `self._last_silent_error` when present. Silent startup failure schedules **one** retry via `QTimer.singleShot(30 * 60 * 1000, ...)`.
 
-- [ ] **Step 9.1:** Failing tests. Git: fake `run` returning scripted results per command prefix — happy path (result fields), missing upstream, fetch nonzero, divergence, pull failure includes `old_head` and hint, requirements-changed triggers checked pip call, pip failure raises with hint. Archive helper: rendered-text checks (journal restore branch, `..`-member refusal, `HEALTH-TIMEOUT` string) **plus** an executed test (any OS — it's python3): fake root with `main.py` printing and ack-writing vs failing, old `.translator-update.json` listing a file the new zip drops ⇒ file removed and restored on rollback; monkeypatched `pip` via a `sitecustomize`-free trick: helper takes `pip_argv` baked in — bake `[sys.executable, "-c", "import sys; sys.exit(0)"]` in tests. HomePage (`tests/test_updater_home_page.py`, offscreen like existing UI tests): state guard blocks a second `check_for_updates`; silent suppression honours `suppress_id`; ignore button writes `ignored_version`; migration removes both legacy keys; error handler restores button text; `no_update` silent shows no dialog (assert no new modal via `QApplication.activeModalWidget()`).
-- [ ] **Step 9.2:** FAIL. **Step 9.3:** Implement; delete the now-duplicated `_get_real_executable` from HomePage (import from `update_installer`), drop `tests/test_updater.py::test_get_real_executable_*` originals moved in Task 6, delete obsolete HomePage download/launch tests (`test_show_update_dialog_buttons`, `test_launch_updater_*`) replaced by the new file. **Step 9.4:** `python -m pytest tests/test_update_installer.py tests/test_updater_home_page.py tests/test_updater.py -q` PASS. **Step 9.5:** Commit `feat(updater): git/source-archive installers and HomePage coordinator rewrite`.
+- [x] **Step 9.1:** Failing tests. Git: fake `run` returning scripted results per command prefix — happy path (result fields), missing upstream, fetch nonzero, divergence, pull failure includes `old_head` and hint, requirements-changed triggers checked pip call, pip failure raises with hint. Archive helper: rendered-text checks (journal restore branch, `..`-member refusal, `HEALTH-TIMEOUT` string) **plus** an executed test (any OS — it's python3): fake root with `main.py` printing and ack-writing vs failing, old `.translator-update.json` listing a file the new zip drops ⇒ file removed and restored on rollback; monkeypatched `pip` via a `sitecustomize`-free trick: helper takes `pip_argv` baked in — bake `[sys.executable, "-c", "import sys; sys.exit(0)"]` in tests. HomePage (`tests/test_updater_home_page.py`, offscreen like existing UI tests): state guard blocks a second `check_for_updates`; silent suppression honours `suppress_id`; ignore button writes `ignored_version`; migration removes both legacy keys; error handler restores button text; `no_update` silent shows no dialog (assert no new modal via `QApplication.activeModalWidget()`).
+- [x] **Step 9.2:** FAIL. **Step 9.3:** Implement; delete the now-duplicated `_get_real_executable` from HomePage (import from `update_installer`), drop `tests/test_updater.py::test_get_real_executable_*` originals moved in Task 6, delete obsolete HomePage download/launch tests (`test_show_update_dialog_buttons`, `test_launch_updater_*`) replaced by the new file. **Step 9.4:** `python -m pytest tests/test_update_installer.py tests/test_updater_home_page.py tests/test_updater.py -q` PASS. **Step 9.5:** Commit `feat(updater): git/source-archive installers and HomePage coordinator rewrite`.
 
 ---
 
@@ -667,8 +667,8 @@ All three: stdlib-only, `main(argv) -> int` + `if __name__ == "__main__": sys.ex
 - `verify_release_tag.py --tag TAG [--notes-dir docs/release_notes] [--version-file …]`: same tag/version checks + `docs/release_notes/{TAG}.md` exists and is non-empty (whitespace-only ⇒ fail).
 - `generate_update_manifest.py --tag TAG --commit SHA --assets-dir DIR --output PATH [--version-file …]`: classify **exact** names `GeminiTranslator-Setup.exe`→windows-installed, `GeminiTranslator-Portable.exe`→windows-portable, `GeminiTranslator-macOS.dmg`/`GeminiTranslator-macOS.zip`→macos; unknown filename ⇒ fail; duplicates impossible-by-name but a missing Setup, missing Portable, or zero macOS assets ⇒ fail; sha256/size computed from the real files; writes Task 3 schema; also enforces tag/version agreement.
 
-- [ ] **Step 10.1:** Failing tests: happy path per tool against `tmp_path` fixtures (tiny fake artifacts, fake version file), tag/version mismatch, prerelease version rejected, missing notes, unknown asset, missing portable, missing macOS, ZIP-only macOS accepted, manifest round-trips through `parse_update_manifest` (with synthesized gh_assets) and `select_release_asset` picks each channel.
-- [ ] **Step 10.2:** FAIL. **Step 10.3:** Implement. **Step 10.4:** PASS. **Step 10.5:** Commit `feat(release): build identity, tag gate and update manifest tools`.
+- [x] **Step 10.1:** Failing tests: happy path per tool against `tmp_path` fixtures (tiny fake artifacts, fake version file), tag/version mismatch, prerelease version rejected, missing notes, unknown asset, missing portable, missing macOS, ZIP-only macOS accepted, manifest round-trips through `parse_update_manifest` (with synthesized gh_assets) and `select_release_asset` picks each channel.
+- [x] **Step 10.2:** FAIL. **Step 10.3:** Implement. **Step 10.4:** PASS. **Step 10.5:** Commit `feat(release): build identity, tag gate and update manifest tools`.
 
 ---
 
@@ -678,7 +678,7 @@ All three: stdlib-only, `main(argv) -> int` + `if __name__ == "__main__": sys.ex
 - Modify: `.github/workflows/release.yml`, `windows_installer.iss`, `build_release_dual.bat`
 - Modify: `docs/superpowers/specs/2026-08-10-updater-hardening-design.md` (rollout note already covers this; no change unless drift found)
 
-- [ ] **Step 11.1:** `windows_installer.iss`: replace the hard-coded line `AppVersion=10.5.21` with
+- [x] **Step 11.1:** `windows_installer.iss`: replace the hard-coded line `AppVersion=10.5.21` with
 
 ```
 #ifndef MyAppVersion
@@ -688,23 +688,23 @@ All three: stdlib-only, `main(argv) -> int` + `if __name__ == "__main__": sys.ex
 AppVersion={#MyAppVersion}
 ```
 
-- [ ] **Step 11.2:** Rewrite `release.yml`:
+- [x] **Step 11.2:** Rewrite `release.yml`:
   - `verify` job (ubuntu): checkout; setup Python 3.10 (pip cache); `pip install -r requirements.txt`; `python tools/verify_release_tag.py --tag "${GITHUB_REF_NAME}"` (guarded: only for `refs/tags/*`; `workflow_dispatch` runs fail the gate with a clear message — publication requires a tag); `python tools/run_checks.py --release`.
   - `build` matrix job: `needs: verify`; before `pyinstaller`, run `python tools/generate_build_identity.py --tag "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --output update-build.json`; Windows packaging becomes `iscc /DMyAppVersion="${GITHUB_REF_NAME#v}" windows_installer.iss` (bash shell step for the substitution) — keep artifact uploads as-is.
   - `release` job: `needs: build`; download artifacts; flatten as today; `python tools/generate_update_manifest.py --tag "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --assets-dir release_assets --output release_assets/update-manifest.json`; `softprops/action-gh-release@v2` with `files: release_assets/*`, `body_path: docs/release_notes/${{ github.ref_name }}.md`, `draft: false`, `prerelease: false` (drop `generate_release_notes`).
-- [ ] **Step 11.3:** `build_release_dual.bat`: after the `git archive` line, append a PowerShell step that (1) writes `.translator-update.json` (`schema:1`, `commit` = `git rev-parse HEAD`, `files` = zip entry list) and injects it into the source ZIP via `System.IO.Compression`; (2) writes `<name>.sha256` sidecars for every produced ZIP; (3) writes `manual-artifacts.json` next to them marking `channel: "manual"` — names that `generate_update_manifest.py` would reject, so they can never be published as executable updates.
-- [ ] **Step 11.4:** Validate: `python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml'))"`; `tests/test_release_build_script.py` still green (`python -m pytest tests/test_release_build_script.py tests/test_release_metadata_check.py -q`); grep the workflow for `verify_release_tag|generate_build_identity|generate_update_manifest|body_path` — all present.
-- [ ] **Step 11.5:** Commit `feat(release): gated release pipeline with manifest and versioned installer`.
+- [x] **Step 11.3:** `build_release_dual.bat`: after the `git archive` line, append a PowerShell step that (1) writes `.translator-update.json` (`schema:1`, `commit` = `git rev-parse HEAD`, `files` = zip entry list) and injects it into the source ZIP via `System.IO.Compression`; (2) writes `<name>.sha256` sidecars for every produced ZIP; (3) writes `manual-artifacts.json` next to them marking `channel: "manual"` — names that `generate_update_manifest.py` would reject, so they can never be published as executable updates.
+- [x] **Step 11.4:** Validate: `python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml'))"`; `tests/test_release_build_script.py` still green (`python -m pytest tests/test_release_build_script.py tests/test_release_metadata_check.py -q`); grep the workflow for `verify_release_tag|generate_build_identity|generate_update_manifest|body_path` — all present.
+- [x] **Step 11.5:** Commit `feat(release): gated release pipeline with manifest and versioned installer`.
 
 ---
 
 ### Task 12: Cleanup, dead code, full verification
 
-- [ ] **Step 12.1:** `git rm gemini_translator/scripts/updater_script.py` (Task-1 review confirmed zero references incl. tests; re-grep to be safe).
-- [ ] **Step 12.2:** Repo-wide greps (must return nothing outside docs/spec history): `installed_version`, `installed_commit` writers; `_pick_platform_asset`; `FORCECLOSEAPPLICATIONS`; `os._exit(0)` in `home_page.py` outside the emergency timer.
-- [ ] **Step 12.3:** Full gates: `python -m pytest tests/ -q` and `python tools/run_checks.py`. Fix regressions until green.
-- [ ] **Step 12.4:** Update memory notes if behavior contradicts saved memories (updater autostash note stays true; add none unless surprising).
-- [ ] **Step 12.5:** Commit `chore(updater): remove dead updater script and finish hardening cleanup`. Do **not** merge to `main`; leave the branch for the user.
+- [x] **Step 12.1:** `git rm gemini_translator/scripts/updater_script.py` (Task-1 review confirmed zero references incl. tests; re-grep to be safe).
+- [x] **Step 12.2:** Repo-wide greps (must return nothing outside docs/spec history): `installed_version`, `installed_commit` writers; `_pick_platform_asset`; `FORCECLOSEAPPLICATIONS`; `os._exit(0)` in `home_page.py` outside the emergency timer.
+- [x] **Step 12.3:** Full gates: `python -m pytest tests/ -q` and `python tools/run_checks.py`. Fix regressions until green.
+- [x] **Step 12.4:** Update memory notes if behavior contradicts saved memories (updater autostash note stays true; add none unless surprising).
+- [x] **Step 12.5:** Commit `chore(updater): remove dead updater script and finish hardening cleanup`. Do **not** merge to `main`; leave the branch for the user.
 
 ---
 
