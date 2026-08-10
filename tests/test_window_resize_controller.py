@@ -43,6 +43,7 @@ class WindowResizeControllerTests(unittest.TestCase):
     def _shell(self):
         shell = MainShell()
         shell.resize_controller.set_duration(0)
+        shell.resize_controller.set_content_fade_duration(0)
         # closeEvent видимого окна показывает модальный вопрос «Выйти?» —
         # прячем окно до close, чтобы не заблокировать offscreen-прогон.
         self.addCleanup(shell.close)

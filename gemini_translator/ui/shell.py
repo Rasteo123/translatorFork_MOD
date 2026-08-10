@@ -99,10 +99,24 @@ class CurrentSizeStack(QtWidgets.QStackedWidget):
             return super().minimumSizeHint()
         explicit = current.minimumSize()
         hint = current.minimumSizeHint()
-        return QtCore.QSize(
-            max(explicit.width(), hint.width()),
-            max(explicit.height(), hint.height()),
-        )
+        width = max(explicit.width(), hint.width())
+        height = max(explicit.height(), hint.height())
+        # QScrollArea прячет реальную ширину содержимого (сама она почти
+        # не имеет минимума) — без этого окно «не дорастает» и контент
+        # обрезается. Высоту не трогаем: вертикальная прокрутка легитимна.
+        for area in current.findChildren(QtWidgets.QScrollArea):
+            inner = area.widget()
+            if inner is None or not area.isVisibleTo(current):
+                continue
+            need = max(inner.minimumSizeHint().width(), inner.sizeHint().width())
+            if need <= 0:
+                continue
+            extra = 2 * area.frameWidth()
+            bar = area.verticalScrollBar()
+            if bar is not None:
+                extra += bar.sizeHint().width()
+            width = max(width, need + extra)
+        return QtCore.QSize(width, height)
 
 
 class NavigationController(QtCore.QObject):

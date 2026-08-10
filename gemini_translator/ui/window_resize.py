@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from PyQt6 import QtCore, QtGui
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 
 class WindowResizeController(QtCore.QObject):
@@ -26,6 +26,7 @@ class WindowResizeController(QtCore.QObject):
     """
 
     ANIMATION_MS = 200
+    CONTENT_FADE_MS = 150
 
     def __init__(self, window, navigation, stack, duration_ms: int | None = None):
         super().__init__(window)
@@ -40,11 +41,16 @@ class WindowResizeController(QtCore.QObject):
         # платформах окно растёт из своего центра.
         platform = QtGui.QGuiApplication.platformName().lower()
         self._can_move = "wayland" not in platform
+        self._content_fade_ms = self.CONTENT_FADE_MS
+        self._fading_page = None
         navigation.stack_about_to_change.connect(self._snapshot_current_page_size)
         navigation.stack_changed.connect(self._on_stack_changed)
 
     def set_duration(self, duration_ms: int) -> None:
         self._duration = max(0, int(duration_ms))
+
+    def set_content_fade_duration(self, duration_ms: int) -> None:
+        self._content_fade_ms = max(0, int(duration_ms))
 
     # -- снимок размера уходящей страницы ------------------------------
 
@@ -69,6 +75,7 @@ class WindowResizeController(QtCore.QObject):
 
     def _on_stack_changed(self) -> None:
         self._stop_animation()
+        self._clear_page_fade()
         page = self._navigation.current_page()
         if page is None or not self._window.isVisible() or not self._window_is_normal():
             self._stack.set_size_hint_override(None)
@@ -76,8 +83,9 @@ class WindowResizeController(QtCore.QObject):
         target = self._target_size(page)
         if target is None:
             self._stack.set_size_hint_override(None)
-            return
-        self._animate_to(target)
+        else:
+            self._animate_to(target)
+        self._fade_in_page(page)
 
     def _window_is_normal(self) -> bool:
         w = self._window
@@ -186,6 +194,52 @@ class WindowResizeController(QtCore.QObject):
     def _on_animation_finished(self) -> None:
         self._animation = None
         self._stack.set_size_hint_override(None)
+
+    # -- проявление содержимого страницы --------------------------------
+
+    def _fade_in_page(self, page) -> None:
+        """Интерфейс страницы проявляется, когда окно приняло размер."""
+        if self._content_fade_ms <= 0:
+            return
+        effect = QtWidgets.QGraphicsOpacityEffect(page)
+        effect.setOpacity(0.0)
+        page.setGraphicsEffect(effect)
+        self._fading_page = page
+        delay = self._duration if self._animation is not None else 0
+
+        def _start() -> None:
+            try:
+                if page.graphicsEffect() is not effect:
+                    return
+            except RuntimeError:
+                return  # страница уже уничтожена
+            animation = QtCore.QPropertyAnimation(effect, b"opacity", page)
+            animation.setDuration(self._content_fade_ms)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
+
+            def _cleanup() -> None:
+                try:
+                    if page.graphicsEffect() is effect:
+                        page.setGraphicsEffect(None)
+                except RuntimeError:
+                    pass
+
+            animation.finished.connect(_cleanup)
+            animation.start()
+
+        QtCore.QTimer.singleShot(delay, _start)
+
+    def _clear_page_fade(self) -> None:
+        page = self._fading_page
+        self._fading_page = None
+        if page is None:
+            return
+        try:
+            if page.graphicsEffect() is not None:
+                page.setGraphicsEffect(None)
+        except RuntimeError:
+            pass
 
     def _stop_animation(self) -> None:
         animation = self._animation

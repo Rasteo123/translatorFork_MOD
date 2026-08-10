@@ -71,6 +71,29 @@ class CurrentSizeStackTests(unittest.TestCase):
         self.assertGreaterEqual(real.height(), 300)
         self.assertEqual(stack.minimumSizeHint(), QtCore.QSize(100, 80))
 
+    def test_real_min_hint_accounts_for_scroll_area_content_width(self):
+        # Контент в QScrollArea почти не даёт минимума наружу, но окно
+        # должно дорастать до его ширины (высота — на прокрутке).
+        stack = CurrentSizeStack()
+        self.addCleanup(stack.deleteLater)
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        inner = QtWidgets.QWidget()
+        inner_layout = QtWidgets.QVBoxLayout(inner)
+        wide = QtWidgets.QWidget()
+        wide.setFixedSize(1300, 200)
+        inner_layout.addWidget(wide)
+        area.setWidget(inner)
+        layout.addWidget(area)
+        stack.addWidget(page)
+        stack.setCurrentIndex(0)
+        real = stack.real_minimum_size_hint()
+        self.assertGreaterEqual(real.width(), 1300)
+        # Жёсткий минимум по-прежнему не форсируется содержимым.
+        self.assertLess(stack.minimumSizeHint().width(), 1300)
+
     def test_window_can_shrink_after_leaving_big_page(self):
         window = QtWidgets.QMainWindow()
         self.addCleanup(window.close)
