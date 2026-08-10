@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QDialog
 
 from gemini_translator.ui.overlay_host import (
     OverlayHost,
+    _MessageBoxPanel,
     exec_dialog,
     find_overlay_host,
     install_message_box_overlay,
@@ -144,6 +145,63 @@ class OverlayHostTests(unittest.TestCase):
         _drain(self.app)
         self.assertFalse(host.isVisible())
         self.assertTrue(shell.centralWidget().isEnabled())
+
+    def test_wanted_size_survives_present_over_live_card(self):
+        # Layout стека затирает size() диалога при вставке: карточка
+        # цепочки не должна ужимать диалог с честным resize(820, 520).
+        shell = self._shell()
+        host = shell.overlay_host
+        small = SimpleDialog()
+        host.present(small)
+        _drain(self.app)
+        big = QDialog()
+        QtWidgets.QVBoxLayout(big).addWidget(QtWidgets.QTableWidget(0, 4))
+        big.resize(820, 520)
+        host.present(big)
+        _drain(self.app)
+        self.assertGreaterEqual(host._card.width(), 820)
+        self.assertGreaterEqual(host._card.height(), 520)
+
+    def test_message_box_panel_bounded_and_iconless(self):
+        from gemini_translator.ui.overlay_host import (
+            _MessageBoxPanel,
+            install_message_box_overlay,
+        )
+
+        install_message_box_overlay()
+        shell = self._shell()
+        page = shell.navigation.current_page()
+        host = shell.overlay_host
+        box = QtWidgets.QMessageBox(page)
+        box.setText(
+            "Обнаружены изменения в глоссарии: добавлено очень много новых "
+            "терминов, и этот текст должен переноситься, а не растягивать "
+            "карточку в безразмерную полосу или обрезаться по краям."
+        )
+        box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+        )
+        seen = {}
+
+        def _capture():
+            seen["card_width"] = host._card.width()
+            panels = [
+                w
+                for w in QtWidgets.QApplication.allWidgets()
+                if isinstance(w, _MessageBoxPanel) and w.isVisible()
+            ]
+            seen["panel_shown"] = len(panels) == 1
+            box.button(QtWidgets.QMessageBox.StandardButton.Yes).click()
+
+        QtCore.QTimer.singleShot(0, _capture)
+        result = box.exec()
+        # Ширина в разумных пределах (420..640 + отступы карточки).
+        self.assertGreaterEqual(seen["card_width"], 420)
+        self.assertLessEqual(seen["card_width"], 640 + 3 * 12)
+        self.assertTrue(seen["panel_shown"])
+        self.assertEqual(result, int(QtWidgets.QMessageBox.StandardButton.Yes))
 
     def test_card_refits_to_dialog_that_sizes_itself_on_show(self):
         # QMessageBox узнаёт финальный размер только в showEvent — карточка
@@ -305,13 +363,14 @@ class MessageBoxOverlayTests(unittest.TestCase):
 
         def _capture():
             seen["overlay_visible"] = shell.overlay_host.isVisible()
-            seen["is_window"] = box.isWindow()
+            seen["box_hidden"] = not box.isVisible()
             yes.click()
 
         QtCore.QTimer.singleShot(0, _capture)
         box.exec()
         self.assertTrue(seen["overlay_visible"])
-        self.assertFalse(seen["is_window"])
+        # Сам бокс не показывается: в карточке — панель-зеркало.
+        self.assertTrue(seen["box_hidden"])
         self.assertIs(box.clickedButton(), yes)
 
     def test_information_shows_as_overlay_card(self):
@@ -320,20 +379,23 @@ class MessageBoxOverlayTests(unittest.TestCase):
         seen = {}
 
         def _capture():
-            boxes = [
+            panels = [
                 w
                 for w in QtWidgets.QApplication.allWidgets()
-                if isinstance(w, QtWidgets.QMessageBox) and w.isVisible()
+                if isinstance(w, _MessageBoxPanel) and w.isVisible()
             ]
-            seen["boxes"] = boxes
+            seen["panels"] = len(panels)
             seen["overlay_visible"] = shell.overlay_host.isVisible()
-            for box in boxes:
-                seen["is_window"] = box.isWindow()
-                box.button(QtWidgets.QMessageBox.StandardButton.Ok).click()
+            for panel in panels:
+                seen["is_window"] = panel.isWindow()
+                panel._box.button(
+                    QtWidgets.QMessageBox.StandardButton.Ok
+                ).click()
 
         QtCore.QTimer.singleShot(0, _capture)
         result = QtWidgets.QMessageBox.information(page, "Заголовок", "Текст")
         self.assertTrue(seen["overlay_visible"])
+        self.assertEqual(seen["panels"], 1)
         self.assertFalse(seen["is_window"])
         self.assertEqual(result, QtWidgets.QMessageBox.StandardButton.Ok)
         # Закрытие оверлея отложено на тик (анти-мерцание для цепочек).
@@ -347,8 +409,8 @@ class MessageBoxOverlayTests(unittest.TestCase):
 
         def _click_no():
             for w in QtWidgets.QApplication.allWidgets():
-                if isinstance(w, QtWidgets.QMessageBox) and w.isVisible():
-                    no_btn = w.button(QtWidgets.QMessageBox.StandardButton.No)
+                if isinstance(w, _MessageBoxPanel) and w.isVisible():
+                    no_btn = w._box.button(QtWidgets.QMessageBox.StandardButton.No)
                     no_btn.click()
 
         QtCore.QTimer.singleShot(0, _click_no)
@@ -365,13 +427,13 @@ class MessageBoxOverlayTests(unittest.TestCase):
 
         def _capture():
             seen["overlay_visible"] = shell.overlay_host.isVisible()
-            seen["is_window"] = box.isWindow()
+            seen["box_hidden"] = not box.isVisible()
             box.accept()
 
         QtCore.QTimer.singleShot(0, _capture)
         box.exec()
         self.assertTrue(seen["overlay_visible"])
-        self.assertFalse(seen["is_window"])
+        self.assertTrue(seen["box_hidden"])
 
     def test_static_without_parent_uses_native_path(self):
         # Без родителя в шелле нет хоста — должен работать нативный путь.

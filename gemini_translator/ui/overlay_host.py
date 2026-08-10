@@ -48,6 +48,9 @@ class _OverlayEntry:
     dialog: QtWidgets.QDialog
     previous_focus: Optional[QtWidgets.QWidget]
     callback: Optional[Callable[[int], None]]
+    #: Размер, который диалог хотел до вставки в карточку: layout стека
+    #: перезаписывает size(), поэтому его нужно снять заранее.
+    wanted_size: QtCore.QSize = None
 
 
 class OverlayHost(QtWidgets.QWidget):
@@ -104,10 +107,25 @@ class OverlayHost(QtWidgets.QWidget):
         закрытия; ``finished(int)`` доставляет результат в ``on_finished``.
         """
         self._cancel_pending_close()
+        # Желаемый размер снимается ДО вставки в стек карточки: layout
+        # немедленно перезапишет size() текущим размером карточки.
+        if isinstance(dialog, QtWidgets.QMessageBox):
+            # Крупные системные иконки (?, !) в карточках выглядят
+            # чужеродно — убираем; нативные диалоги их сохраняют.
+            dialog.setIcon(QtWidgets.QMessageBox.Icon.NoIcon)
+            # sizeHint у QMessageBox ненадёжен: перенос строк занижает
+            # ширину (обрезка), а его showEvent-эвристики раздувают окно
+            # пустотой. Считаем размер сами.
+            wanted_size = self._message_box_size(dialog)
+        elif dialog.testAttribute(QtCore.Qt.WidgetAttribute.WA_Resized):
+            wanted_size = QtCore.QSize(dialog.size())
+        else:
+            wanted_size = QtCore.QSize(dialog.sizeHint())
         entry = _OverlayEntry(
             dialog=dialog,
             previous_focus=QtWidgets.QApplication.focusWidget(),
             callback=on_finished,
+            wanted_size=wanted_size,
         )
         appearing = not self.isVisible()
         if self._card is None:
@@ -165,10 +183,23 @@ class OverlayHost(QtWidgets.QWidget):
         self._card_stack = stack
 
     def _card_rect_for(self, dialog: QtWidgets.QDialog) -> QtCore.QRect:
-        if dialog.testAttribute(QtCore.Qt.WidgetAttribute.WA_Resized):
-            wanted = dialog.size()
-        else:
-            wanted = dialog.sizeHint()
+        wanted = None
+        for entry in self._entries:
+            if entry.dialog is dialog:
+                wanted = entry.wanted_size
+                break
+        if wanted is None:
+            if isinstance(dialog, QtWidgets.QMessageBox):
+                wanted = self._message_box_size(dialog)
+            elif dialog.testAttribute(QtCore.Qt.WidgetAttribute.WA_Resized):
+                wanted = dialog.size()
+            else:
+                wanted = dialog.sizeHint()
+        return self._card_rect_from(dialog, QtCore.QSize(wanted))
+
+    def _card_rect_from(
+        self, dialog: QtWidgets.QDialog, wanted: QtCore.QSize
+    ) -> QtCore.QRect:
         minimum = dialog.minimumSizeHint().expandedTo(dialog.minimumSize())
         wanted = wanted.expandedTo(minimum)
         wanted += QtCore.QSize(2 * CARD_PADDING, 2 * CARD_PADDING)
@@ -278,16 +309,66 @@ class OverlayHost(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(self._morph_ms, _reveal)
 
-    def _refit_card(self, dialog: QtWidgets.QDialog) -> None:
-        """Подгоняет карточку после показа диалога.
+    @staticmethod
+    def _message_box_size(box: QtWidgets.QMessageBox) -> QtCore.QSize:
+        """Детерминированный размер message box-а: 420-640 по ширине,
+        высота — через heightForWidth (учитывает перенос строк)."""
+        box.ensurePolished()
+        layout = box.layout()
+        if layout is None:
+            return QtCore.QSize(box.sizeHint())
+        natural = layout.totalSizeHint()
+        width = min(max(natural.width(), 420), 640)
+        height = layout.totalHeightForWidth(width)
+        if height <= 0:
+            height = natural.height()
+        return QtCore.QSize(width, height)
 
-        QMessageBox и подобные диалоги узнают финальный размер только в
-        showEvent — без повторной подгонки длинный текст и кнопки
-        обрезаются.
+    def refit_to(self, dialog: QtWidgets.QDialog, size: QtCore.QSize) -> None:
+        """Перецеливает карточку под новый желаемый размер диалога."""
+        for entry in self._entries:
+            if entry.dialog is dialog:
+                entry.wanted_size = QtCore.QSize(size)
+                if (
+                    self._card is not None
+                    and self._card_stack is not None
+                    and self._card_stack.currentWidget() is dialog
+                ):
+                    self._animate_card_to(
+                        self._card_rect_from(dialog, entry.wanted_size)
+                    )
+                break
+
+    def _refit_card(self, dialog: QtWidgets.QDialog) -> None:
+        """Подгоняет карточку и диалог друг к другу после показа.
+
+        Обычные «ленивые» диалоги (узнают размер в showEvent) требуют
+        повторной подгонки карточки. QMessageBox наоборот: его showEvent
+        назначает себе фиксированный размер по своим эвристикам — снимаем
+        ограничения, чтобы бокс заполнял карточку ровно, без пустот
+        и обрезок.
         """
         if self._card is None:
             return
-        target = self._card_rect_for(dialog)
+        if isinstance(dialog, QtWidgets.QMessageBox):
+            dialog.setMinimumSize(0, 0)
+            dialog.setMaximumSize(16777215, 16777215)
+            dialog.updateGeometry()
+            return
+        desired = getattr(dialog, "desired_size", None)
+        if desired is not None:
+            # Диалог сам знает свой правильный размер (панель сообщений) —
+            # live-замер тут вернул бы layout-присвоенный размер карточки.
+            live = QtCore.QSize(desired)
+        elif dialog.testAttribute(QtCore.Qt.WidgetAttribute.WA_Resized):
+            live = QtCore.QSize(dialog.size())
+        else:
+            live = QtCore.QSize(dialog.sizeHint())
+        for entry in self._entries:
+            if entry.dialog is dialog:
+                entry.wanted_size = QtCore.QSize(live)
+                break
+        target = self._card_rect_from(dialog, live)
         if target != self._card.geometry():
             self._animate_card_to(target)
 
@@ -520,6 +601,122 @@ def exec_dialog(
     return codes[0] if codes else int(QtWidgets.QDialog.DialogCode.Rejected)
 
 
+class _MessageBoxPanel(QtWidgets.QDialog):
+    """Лёгкое зеркало QMessageBox для показа в карточке.
+
+    Сырой QMessageBox в карточке неуправляем: он перефиксирует свой размер
+    на каждом LayoutRequest по экранным эвристикам (то обрезка, то пустоты),
+    а его системные иконки выглядят чужеродно. Панель рисует текст и кнопки
+    сама; клики уходят в НАСТОЯЩИЕ кнопки бокса, так что результат exec и
+    ``clickedButton()`` у вызывающего кода полностью сохраняются.
+    """
+
+    MIN_WIDTH = 420
+    MAX_WIDTH = 640
+    DETAILS_HEIGHT = 220
+
+    def __init__(self, box: QtWidgets.QMessageBox):
+        super().__init__()
+        self._box = box
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
+
+        text_label = QtWidgets.QLabel(box.text())
+        text_label.setWordWrap(True)
+        text_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        text_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(text_label)
+
+        informative = box.informativeText()
+        if informative:
+            info_label = QtWidgets.QLabel(informative)
+            info_label.setWordWrap(True)
+            info_label.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            layout.addWidget(info_label)
+
+        details = box.detailedText()
+        if details:
+            # Панель показывает подробности сама; очистка detailedText
+            # заставляет QMessageBox убрать СВОЮ кнопку «Show Details…»
+            # (иначе она задваивалась бы в ряду зеркальных кнопок).
+            box.setDetailedText("")
+            self._details_view = QtWidgets.QPlainTextEdit(details)
+            self._details_view.setReadOnly(True)
+            self._details_view.setFixedHeight(self.DETAILS_HEIGHT)
+            self._details_view.hide()
+            toggle = QtWidgets.QPushButton("Показать подробности…")
+            toggle.setCheckable(True)
+
+            def _toggle(checked: bool) -> None:
+                self._details_view.setVisible(checked)
+                toggle.setText(
+                    "Скрыть подробности" if checked else "Показать подробности…"
+                )
+                self._resize_to_content()
+                host = find_overlay_host(self)
+                if host is not None:
+                    host.refit_to(self, self.desired_size)
+
+            toggle.toggled.connect(_toggle)
+            details_row = QtWidgets.QHBoxLayout()
+            details_row.addWidget(toggle)
+            details_row.addStretch(1)
+            layout.addLayout(details_row)
+            layout.addWidget(self._details_view)
+        else:
+            self._details_view = None
+
+        buttons_row = QtWidgets.QHBoxLayout()
+        buttons_row.addStretch(1)
+        default = box.defaultButton()
+        for real_button in box.buttons():
+            mirror = QtWidgets.QPushButton(real_button.text())
+            mirror.clicked.connect(
+                lambda _=False, b=real_button: b.click()
+            )
+            if default is not None and real_button is default:
+                mirror.setDefault(True)
+            buttons_row.addWidget(mirror)
+        layout.addLayout(buttons_row)
+
+        # Результат настоящего бокса — это и результат панели.
+        box.finished.connect(self.done)
+        self._resize_to_content()
+
+    def _resize_to_content(self) -> None:
+        self.ensurePolished()
+        layout = self.layout()
+        natural = layout.totalSizeHint()
+        width = min(max(natural.width(), self.MIN_WIDTH), self.MAX_WIDTH)
+        height = layout.totalHeightForWidth(width)
+        if height <= 0:
+            height = natural.height()
+        self.desired_size = QtCore.QSize(width, height)
+        self.resize(width, height)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Финальные шрифты темы применяются при полише на показе —
+        # пересчитываем высоту, иначе текст подрезается снизу.
+        self._resize_to_content()
+        host = find_overlay_host(self)
+        if host is not None:
+            host.refit_to(self, self.desired_size)
+
+    def reject(self) -> None:
+        # Esc уходит в escape-кнопку бокса — тот же путь, что у нативного.
+        escape = self._box.escapeButton()
+        if escape is not None:
+            escape.click()
+        else:
+            self._box.reject()
+
+
 _message_boxes_patched = False
 
 
@@ -551,7 +748,13 @@ def install_message_box_overlay() -> None:
             codes.append(code)
             loop.quit()
 
-        host.present(box, _done)
+        # Бокс отцепляется от родителя: фон на время карточки отключён
+        # (setEnabled(False)), и унаследованный disabled делал бы кнопки
+        # бокса некликабельными — click() из панели молча игнорировался бы.
+        box.setParent(None)
+        # Показываем зеркальную панель; сам бокс остаётся скрытым носителем
+        # кнопок и результата (clickedButton() у вызывающего кода работает).
+        host.present(_MessageBoxPanel(box), _done)
         loop.exec()
         # finished(int) несёт тот же код, что вернул бы нативный exec():
         # QMessageBox зовёт done(execReturnCode(кнопка)) и для стандартных,
