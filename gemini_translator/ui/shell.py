@@ -115,6 +115,17 @@ class CurrentSizeStack(QtWidgets.QStackedWidget):
             bar = area.verticalScrollBar()
             if bar is not None:
                 extra += bar.sizeHint().width()
+            # Поля layout-ов на пути от скролл-области до края страницы:
+            # без них окно выходит на 20-50px уже контента и правый край
+            # обрезается.
+            widget: QtWidgets.QWidget | None = area
+            while widget is not None and widget is not current:
+                parent = widget.parentWidget()
+                layout = parent.layout() if parent is not None else None
+                if layout is not None:
+                    margins = layout.contentsMargins()
+                    extra += margins.left() + margins.right()
+                widget = parent
             width = max(width, need + extra)
         return QtCore.QSize(width, height)
 
