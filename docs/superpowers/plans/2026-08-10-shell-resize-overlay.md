@@ -49,7 +49,7 @@
 - Consumes: `NavigationController.stack_changed`, `CurrentSizeStack.set_size_hint_override`.
 - Produces: `WindowResizeController(window, navigation, stack, duration_ms=None)`, `set_duration(ms)`; `ShellPage.preferred_window_size: tuple[int, int] | None = None`; у MainShell — `self.resize_controller`.
 
-Логика цели: remembered[str(class)] → preferred → None (если текущий размер уже покрывает минимум — не трогаем); `expandedTo(минимум окна)`, `boundedTo(availableGeometry)`. На время анимации стек замораживается `QSize(0,0)`, по завершении освобождается. Ручные resize запоминаются в eventFilter (когда нет анимации и окно в нормальном состоянии).
+Логика цели: remembered[str(class)] → preferred → None (если текущий размер уже покрывает минимум — не трогаем); `expandedTo(минимум окна)`, `boundedTo(availableGeometry)`. На время анимации стек замораживается `QSize(0,0)`, по завершении освобождается. Запоминание размера — снимком в момент ухода со страницы (сигнал `stack_about_to_change`), а не eventFilter: Qt синхронно доращивает окно под минимум новой страницы ещё до `stack_changed`, и фильтр записывал этот механический resize как «пользовательский».
 
 - [x] Step 1: тесты (grow к preferred при push; shrink при pop; clamp по экрану; remembered приоритетнее preferred; retarget при быстрых переходах). duration=0 в тестах.
 - [x] Step 2: реализация + wiring + конверсия страниц.
