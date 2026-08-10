@@ -533,7 +533,12 @@ class EnhancedProjectHistoryDialog(QDialog):
                 if depth >= self.PROJECT_SCAN_MAX_DEPTH:
                     dirs[:] = []
 
-                if "translation_map.json" not in files:
+                # Проект — это и папка с одним лишь глоссарием: перевод мог
+                # ещё не начинаться, но проект уже существует.
+                if (
+                    "translation_map.json" not in files
+                    and "project_glossary.json" not in files
+                ):
                     continue
 
                 project_folders.append(os.path.normpath(current_root))

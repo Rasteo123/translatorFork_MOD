@@ -60,6 +60,7 @@ from gemini_translator.core.worker_helpers.rpm_limiter import RPMLimiter
 from gemini_translator.utils.text import prettify_html_for_ai
 from ..menu_utils import post_session_separator
 from .numbers_master import NumeralsExtractionWorker
+from ...widgets.overlay_tab_widget import install_tab_fade
 
 
 DEFAULT_NEW_TERMS_LIMIT = 100
@@ -539,6 +540,7 @@ class GenerationSessionPage(ShellPage):
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
+        install_tab_fade(self.tabs)
 
         settings_tab = self._create_settings_tab()
         tasks_tab = self._create_tasks_tab()

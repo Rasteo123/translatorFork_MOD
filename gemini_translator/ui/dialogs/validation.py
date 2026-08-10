@@ -3508,6 +3508,7 @@ class TranslationValidatorPage(ShellPage):
         
         for i, internal_path in enumerate(all_originals):
             if progress.wasCanceled():
+                progress.close()
                 return
             progress.setValue(i)
             
@@ -3561,6 +3562,9 @@ class TranslationValidatorPage(ShellPage):
                 print(f"Error reading {full_path}: {e}")
 
         progress.setValue(len(all_originals))
+        # Обязательно закрыть до любых сообщений: модальный прогресс поверх
+        # оверлейной карточки с «Нет переведенных глав» давал софтлок.
+        progress.close()
 
         if failed_chapters:
             preview_lines = [

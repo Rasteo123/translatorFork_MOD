@@ -12,6 +12,7 @@ from ...api import config as api_config
 from ...utils.document_importer import DOCUMENT_INPUT_FILTER, extract_document_chapters
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.dialogs.benchmark import BenchmarkRunWorker
+from ..widgets.overlay_tab_widget import install_tab_fade
 from gemini_translator.ui.widgets.dynamic_models_refresher import (
     DynamicModelsRefresher,
 )
@@ -96,6 +97,7 @@ class PromptBenchmarkPage(ShellPage):
         root.addWidget(config_group)
 
         self.tabs = QtWidgets.QTabWidget()
+        install_tab_fade(self.tabs)
         self.tabs.addTab(self._build_run_tab(), "Запуск")
         self.tabs.addTab(self._build_cases_tab(), "Фрагменты")
         self.tabs.addTab(self._build_prompts_tab(), "Промпты")

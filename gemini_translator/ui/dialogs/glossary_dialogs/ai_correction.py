@@ -50,6 +50,7 @@ from gemini_translator.utils.term_frequency_tools import (
 
 # --- Аннотация типа для избежания циклического импорта ---
 from typing import TYPE_CHECKING
+from ...widgets.overlay_tab_widget import install_tab_fade
 if TYPE_CHECKING:
     from ..glossary import MainWindow
 
@@ -357,6 +358,7 @@ class CorrectionSessionPage(ShellPage):
 
         # --- ТРИ ВКЛАДКИ ---
         opt_tabs = QtWidgets.QTabWidget()
+        install_tab_fade(opt_tabs)
         opt_tabs.setObjectName("correctionOptTabs")
 
         # === ВКЛАДКА 1: ДАННЫЕ (Адаптивная) ===

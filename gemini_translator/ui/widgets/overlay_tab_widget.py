@@ -29,6 +29,22 @@ def _fade_in_tab(widget: QWidget, duration_ms: int) -> None:
     animation.start()
 
 
+def install_tab_fade(tabs) -> None:
+    """Плавное появление содержимого вкладок для QTabWidget-подобного виджета.
+
+    Подходит и для QTabWidget, и для OverlayTabWidget (у обоих есть
+    ``widget(index)`` и сигнал ``currentChanged``).
+    """
+
+    def _on_changed(index: int) -> None:
+        widget = tabs.widget(index)
+        if widget is None or not tabs.isVisible():
+            return
+        _fade_in_tab(widget, TAB_FADE_MS)
+
+    tabs.currentChanged.connect(_on_changed)
+
+
 class OverlayTabWidget(QWidget):
     """
     Кастомный виджет вкладок, где панель вкладок (QTabBar) "парит" над контентом,

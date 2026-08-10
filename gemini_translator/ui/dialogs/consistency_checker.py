@@ -114,6 +114,7 @@ from gemini_translator.ui import theme_manager
 # Fuzzy matching: rapidfuzz через прослойку fuzzy_compat (fuzzywuzzy — фолбэк)
 from ...utils.fuzzy_compat import FUZZ_AVAILABLE as FUZZYWUZZY_AVAILABLE
 from ...utils import fuzzy_compat as fuzz
+from ..widgets.overlay_tab_widget import install_tab_fade
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +370,7 @@ class ConsistencyValidatorPage(ShellPage):
 
         # Основной контейнер с вкладками
         self.main_tabs = QTabWidget()
+        install_tab_fade(self.main_tabs)
         layout.addWidget(self.main_tabs)
 
         # === Вкладка 1: Анализ (Analysis Tab) ===
@@ -597,6 +599,7 @@ class ConsistencyValidatorPage(ShellPage):
         
         # Левая часть: Табы с настройками
         settings_left_tabs = QTabWidget()
+        install_tab_fade(settings_left_tabs)
         settings_left_tabs.setMinimumWidth(450)
         
         # 1. Ключи

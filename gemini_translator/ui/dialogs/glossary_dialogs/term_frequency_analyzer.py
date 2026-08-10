@@ -21,6 +21,7 @@ from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.widgets.common_widgets import NoScrollSpinBox
 from .custom_widgets import ExpandingTextEditDelegate
 from gemini_translator.ui import theme_manager
+from ...widgets.overlay_tab_widget import install_tab_fade
 
 class TermFrequencyAnalyzerPage(ShellPage):
     page_title = "Частотный анализ"
@@ -84,6 +85,7 @@ class TermFrequencyAnalyzerPage(ShellPage):
         content_layout.setContentsMargins(0, 0, 0, 0)
         
         self.tabs = QTabWidget()
+        install_tab_fade(self.tabs)
         
         # --- Вкладка 1: Редкие (Кандидаты на удаление) ---
         self.rare_tab = QWidget(); rare_layout = QVBoxLayout(self.rare_tab)

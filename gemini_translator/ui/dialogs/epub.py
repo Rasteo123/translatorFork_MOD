@@ -77,6 +77,7 @@ from ...core.epub_deep_cleanup_helpers import (
     normalize_deep_cleanup_tag_rules,
 )
 from ..overlay_host import exec_dialog
+from ..widgets.overlay_tab_widget import install_tab_fade
 from ...core.epub_duplicate_helpers import (
     DUPLICATE_REVIEW_BLOCK_TAGS,
     analyze_duplicate_findings,
@@ -2956,6 +2957,7 @@ class EpubDuplicateReviewDialog(QDialog):
         layout.addWidget(intro)
 
         self.tabs = QTabWidget()
+        install_tab_fade(self.tabs)
         self._build_results_tab(
             tab_key='start',
             tab_title="Начало главы",
