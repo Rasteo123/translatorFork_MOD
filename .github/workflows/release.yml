@@ -89,9 +89,11 @@ jobs:
 
       - name: Package Windows
         if: matrix.os == 'windows-latest'
-        shell: bash
+        shell: pwsh
         run: |
-          iscc "/DMyAppVersion=${GITHUB_REF_NAME#v}" windows_installer.iss
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          iscc "/DMyAppVersion=$version" windows_installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package macOS
         if: matrix.os == 'macos-latest'
