@@ -1527,7 +1527,7 @@ class RulateToRanobeMetadataWorker(QThread):
     def run(self):
         try:
             with sync_playwright() as p:
-                self.log("INFO", "Rulate: открываю edit/info через профиль Qidian/Fanqie -> Rulate...")
+                self.log("INFO", "Rulate: открываю edit/info через профиль Qidian/Fanqie/Ciweimao -> Rulate...")
                 self.log("INFO", f"Rulate: страница данных: {self.rulate_edit_url}")
                 self.log("INFO", f"Rulate: профиль куки: {QIDIAN_RULATE_PROFILE_DIR}")
                 self._browser = _launch_persistent_chromium_context(
@@ -1662,7 +1662,7 @@ class RulateToRanobeCreateWorker(QThread):
             self.log("INFO", "Rulate: использую данные, уже загруженные в форме. Повторно Rulate не открываю.")
             return prefetched
 
-        self.log("INFO", "Rulate: открываю edit/info через профиль Qidian/Fanqie -> Rulate...")
+        self.log("INFO", "Rulate: открываю edit/info через профиль Qidian/Fanqie/Ciweimao -> Rulate...")
         self.log("INFO", f"Rulate: страница данных: {self.rulate_edit_url}")
         self.log("INFO", f"Rulate: профиль куки: {QIDIAN_RULATE_PROFILE_DIR}")
         self._rulate_browser = _launch_persistent_chromium_context(

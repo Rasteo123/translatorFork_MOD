@@ -363,7 +363,7 @@ class RanobeUploaderApp(QMainWindow):
         self.btn_login_rulate.setToolTip(
             "Авторизация нужна только для скачивания платных глав.\n"
             "Бесплатные главы скачиваются без входа в аккаунт.\n"
-            "Создание карточки RanobeLib использует куки из Qidian/Fanqie → Rulate."
+            "Создание карточки RanobeLib использует куки из Qidian/Fanqie/Ciweimao → Rulate."
         )
         self.btn_login_rulate.clicked.connect(self._start_login_rulate)
         rulate_url_row.addWidget(self.btn_login_rulate)

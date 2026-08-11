@@ -59,6 +59,10 @@ RULATE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 QIDIAN_BOOK_RE = re.compile(r"^https?://(?:www\.)?qidian\.com/book/\d+/?(?:[?#].*)?$", re.IGNORECASE)
 FANQIE_BOOK_RE = re.compile(r"^https?://(?:www\.)?fanqienovel\.com/page/\d+/?(?:[?#].*)?$", re.IGNORECASE)
+CIWEIMAO_BOOK_RE = re.compile(
+    r"^https?://(?:www\.)?ciweimao\.com/book/\d+/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
 RULATE_CATEGORY_URL = "https://tl.rulate.ru/book/0/edit/cat"
 RULATE_INFO_URL = "https://tl.rulate.ru/book/0/edit/info#general"
 RULATE_LOGIN_URL = "https://tl.rulate.ru/book/0/edit/info"
@@ -68,6 +72,7 @@ RULATE_BOOK_TYPE_SELECTOR = 'a.create-card.card-book[href*="typ=A"]'
 RULATE_CHINESE_CATEGORY_TITLE = "Китайские"
 QIDIAN_COVER_PROMPT_CHAPTER_COUNT = 3
 QIDIAN_COVER_PROMPT_MAX_CHARS = 18000
+CIWEIMAO_CAPTCHA_TIMEOUT_MS = 300_000
 AI_REQUEST_RETRY_ATTEMPTS = 3
 TOMATO_WEB_URL_ENV = "TOMATO_NOVEL_WEB_URL"
 TOMATO_WEB_PASSWORD_ENV = "TOMATO_NOVEL_WEB_PASSWORD"
@@ -149,14 +154,20 @@ def validate_fanqie_url(url: str) -> bool:
     return bool(FANQIE_BOOK_RE.match((url or "").strip()))
 
 
+def validate_ciweimao_url(url: str) -> bool:
+    return bool(CIWEIMAO_BOOK_RE.match((url or "").strip()))
+
+
 def validate_source_url(url: str) -> bool:
     url = (url or "").strip()
-    return validate_qidian_url(url) or validate_fanqie_url(url)
+    return validate_qidian_url(url) or validate_fanqie_url(url) or validate_ciweimao_url(url)
 
 
 def _source_name(url: str) -> str:
     if validate_fanqie_url(url):
         return "Fanqie"
+    if validate_ciweimao_url(url):
+        return "Ciweimao"
     return "Qidian"
 
 
@@ -1061,6 +1072,20 @@ def _clean_qidian_chapter_text(value: str | None) -> str:
     return _clean_multiline("\n".join(lines))
 
 
+def _clean_ciweimao_chapter_text(value: str | None) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    marker_pattern = r"(?<=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])([A-Za-z0-9]{5,12})(?=\s|$)"
+    marker_candidates = re.findall(marker_pattern, text)
+    repeated_markers = {marker for marker in marker_candidates if marker_candidates.count(marker) >= 3}
+    for marker in repeated_markers:
+        text = re.sub(
+            rf"(?<=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]){re.escape(marker)}(?=\s|$)",
+            "",
+            text,
+        )
+    return _clean_qidian_chapter_text(text)
+
+
 def _strip_html_to_text(value: str | None) -> str:
     value = str(value or "")
     value = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", value)
@@ -1673,7 +1698,8 @@ class QidianFetchWorker(QThread):
             if not validate_source_url(self.qidian_url):
                 raise ValueError(
                     "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
-                    "или https://fanqienovel.com/page/7229603492648717324"
+                    "или https://fanqienovel.com/page/7229603492648717324 "
+                    "или https://www.ciweimao.com/book/100441110"
                 )
 
             configure_playwright_runtime()
@@ -1706,6 +1732,18 @@ class QidianFetchWorker(QThread):
                         except Exception:
                             page.wait_for_timeout(2500)
                         payload = page.evaluate(_FANQIE_EXTRACT_SCRIPT)
+                    elif validate_ciweimao_url(self.qidian_url):
+                        try:
+                            page.wait_for_function(
+                                """() => (
+                                    document.querySelector('meta[property="og:novel:book_name"]')
+                                    || document.querySelector('.book-info h1.title')
+                                )""",
+                                timeout=12000,
+                            )
+                        except Exception:
+                            page.wait_for_timeout(2500)
+                        payload = page.evaluate(_CIWEIMAO_EXTRACT_SCRIPT)
                     else:
                         try:
                             page.wait_for_function(
@@ -1734,7 +1772,7 @@ class QidianFetchWorker(QThread):
                 )
                 cover_url = cover_image.url
             description = _clean_multiline(payload.get("description"))
-            if not validate_fanqie_url(self.qidian_url):
+            if validate_qidian_url(self.qidian_url):
                 description = _select_qidian_description(
                     payload,
                     title=title_original,
@@ -1981,6 +2019,145 @@ def _fetch_fanqie_cover_context(
     return _truncate_cover_source_text("\n\n".join(chapters)), description
 
 
+def _wait_for_ciweimao_human_verification(page) -> dict:
+    page.wait_for_function(
+        """() => {
+            const blocked = Boolean(
+                document.querySelector('input[placeholder="验证码"], input[name*="captcha" i], .geetest_panel, .captcha')
+                || /(?:验证码|安全验证|点击刷新验证码)/.test((document.body && document.body.innerText || '').slice(0, 500))
+            );
+            const content = document.querySelector('#J_BookRead .chapter, #J_BookRead, .chapter-content, .read-content, .chapter-body, #chapter-content, article');
+            return !blocked && content && (content.innerText || content.textContent || '').trim().length > 200;
+        }""",
+        timeout=CIWEIMAO_CAPTCHA_TIMEOUT_MS,
+    )
+    return page.evaluate(_CIWEIMAO_CHAPTER_TEXT_SCRIPT)
+
+
+def _fetch_ciweimao_cover_context(
+    source_url: str,
+    *,
+    visible_browser: bool = False,
+    original_description: str = "",
+    log_callback=None,
+) -> tuple[str, str]:
+    configure_playwright_runtime()
+    from playwright.sync_api import sync_playwright
+
+    def log(level: str, message: str) -> None:
+        if callable(log_callback):
+            log_callback(level, message)
+
+    description = _clean_multiline(original_description)
+    log("INFO", "Ciweimao: ищу первые главы для контекста обложки...")
+    chapters = []
+    manual_retry_needed = False
+    with sync_playwright() as playwright:
+        browser = _launch_chromium(
+            playwright,
+            headless=not visible_browser,
+            log_callback=log,
+        )
+        page = browser.new_page(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        )
+        try:
+            page.goto(source_url, wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_function(
+                    """() => (
+                        document.querySelector('meta[property="og:novel:book_name"]')
+                        || document.querySelector('.book-info h1.title')
+                    )""",
+                    timeout=12000,
+                )
+            except Exception:
+                page.wait_for_timeout(2500)
+
+            if not description:
+                try:
+                    payload = page.evaluate(_CIWEIMAO_EXTRACT_SCRIPT)
+                    description = _clean_multiline(payload.get("description"))
+                    if description:
+                        log("SUCCESS", "Ciweimao: описание добавлено в контекст обложки.")
+                except Exception as error:
+                    log("WARNING", f"Ciweimao: не удалось получить описание для контекста обложки: {error}")
+
+            links = page.evaluate(_CIWEIMAO_CHAPTER_LINKS_SCRIPT, QIDIAN_COVER_PROMPT_CHAPTER_COUNT)
+            if not links:
+                log("WARNING", "Ciweimao: на странице книги не найдены ссылки на главы.")
+                return "", description
+
+            for index, link in enumerate(links[:QIDIAN_COVER_PROMPT_CHAPTER_COUNT], start=1):
+                href = link.get("href") if isinstance(link, dict) else ""
+                if not href:
+                    continue
+                title = _clean_text(link.get("title") if isinstance(link, dict) else "") or f"Глава {index}"
+                log("INFO", f"Ciweimao: читаю {title}...")
+                try:
+                    page.goto(href, wait_until="domcontentloaded", timeout=60000)
+                    try:
+                        page.wait_for_function(
+                            """() => (
+                                document.querySelector('#J_BookRead .chapter, #J_BookRead, .chapter-content, .read-content, .chapter-body, #chapter-content, article')
+                                || document.querySelector('input[placeholder="验证码"]')
+                            )""",
+                            timeout=12000,
+                        )
+                    except Exception:
+                        page.wait_for_timeout(2500)
+                    chapter_payload = page.evaluate(_CIWEIMAO_CHAPTER_TEXT_SCRIPT)
+                except Exception as error:
+                    log("WARNING", f"Ciweimao: не удалось открыть главу '{title}': {error}")
+                    continue
+
+                if chapter_payload.get("blocked"):
+                    if not visible_browser:
+                        log(
+                            "WARNING",
+                            "Ciweimao: появилась CAPTCHA; перезапускаю страницу в видимом браузере для ручной проверки.",
+                        )
+                        manual_retry_needed = True
+                        break
+
+                    log(
+                        "WARNING",
+                        "Ciweimao: пройдите CAPTCHA в открытом браузере. Ожидаю до 5 минут.",
+                    )
+                    try:
+                        chapter_payload = _wait_for_ciweimao_human_verification(page)
+                    except Exception:
+                        log(
+                            "WARNING",
+                            "Ciweimao: ручная проверка не завершена за 5 минут; продолжаю по описанию книги.",
+                        )
+                        break
+                chapter_title = title or _clean_text(chapter_payload.get("title")) or f"Глава {index}"
+                chapter_text = _clean_ciweimao_chapter_text(chapter_payload.get("text"))
+                if not chapter_text:
+                    log("WARNING", f"Ciweimao: текст главы '{title}' не найден, пропускаю.")
+                    continue
+                chapters.append(f"{chapter_title}\n{chapter_text}")
+        finally:
+            browser.close()
+
+    if manual_retry_needed:
+        return _fetch_ciweimao_cover_context(
+            source_url,
+            visible_browser=True,
+            original_description=description,
+            log_callback=log_callback,
+        )
+
+    log("SUCCESS", f"Ciweimao: получено глав для контекста обложки: {len(chapters)}.")
+    return _truncate_cover_source_text("\n\n".join(chapters)), description
+
+
 def _fetch_source_cover_context(
     source_url: str,
     *,
@@ -1990,6 +2167,13 @@ def _fetch_source_cover_context(
 ) -> tuple[str, str]:
     if validate_fanqie_url(source_url):
         return _fetch_fanqie_cover_context(
+            source_url,
+            visible_browser=visible_browser,
+            original_description=original_description,
+            log_callback=log_callback,
+        )
+    if validate_ciweimao_url(source_url):
+        return _fetch_ciweimao_cover_context(
             source_url,
             visible_browser=visible_browser,
             original_description=original_description,
@@ -2172,7 +2356,8 @@ class CoverPromptWorker(QThread):
             if not validate_source_url(self.qidian_url):
                 raise ValueError(
                     "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
-                    "или https://fanqienovel.com/page/7229603492648717324"
+                    "или https://fanqienovel.com/page/7229603492648717324 "
+                    "или https://www.ciweimao.com/book/100441110"
                 )
             if not self.title_ru:
                 raise ValueError("Заполните русское название перед генерацией промпта обложки.")
@@ -3877,6 +4062,140 @@ _QIDIAN_CHAPTER_TEXT_SCRIPT = r"""() => {
         if (value.length > 200) return {title, text: value};
     }
     return {title, text: ""};
+}"""
+
+
+_CIWEIMAO_EXTRACT_SCRIPT = r"""() => {
+    const text = (node) => (node && node.textContent ? node.textContent.replace(/\s+/g, " ").trim() : "");
+    const multilineText = (node) => (node && (node.innerText || node.textContent)
+        ? (node.innerText || node.textContent).replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim()
+        : "");
+    const attr = (selector, name) => {
+        const node = document.querySelector(selector);
+        return node ? (node.getAttribute(name) || "").trim() : "";
+    };
+    const meta = (name) => (
+        attr(`meta[property="${name}"]`, "content") ||
+        attr(`meta[name="${name}"]`, "content")
+    );
+    const firstText = (selectors) => {
+        for (const selector of selectors) {
+            const value = text(document.querySelector(selector));
+            if (value) return value;
+        }
+        return "";
+    };
+    const firstMultilineText = (selectors) => {
+        for (const selector of selectors) {
+            const value = multilineText(document.querySelector(selector));
+            if (value) return value;
+        }
+        return "";
+    };
+    const firstAttr = (selectors, name) => {
+        for (const selector of selectors) {
+            const value = attr(selector, name);
+            if (value) return value;
+        }
+        return "";
+    };
+    const cleanAuthor = (value) => {
+        value = (value || "").replace(/\s+/g, " ").trim();
+        const match = value.match(/^(.{1,40}?)\s*著(?:\s*\/.*)?$/);
+        return (match ? match[1] : value.replace(/^作者[:：]\s*/, "")).trim();
+    };
+    const desktopTitle = () => {
+        const node = document.querySelector(".book-info h1.title");
+        if (!node) return "";
+        for (const child of Array.from(node.childNodes || [])) {
+            if (child.nodeType === 3 && (child.textContent || "").trim()) {
+                return (child.textContent || "").trim();
+            }
+        }
+        return "";
+    };
+    const coverSelectors = [".book-hd .cover img", ".cover img", "img[alt]"];
+    const cover =
+        meta("og:image") ||
+        meta("image") ||
+        firstAttr(coverSelectors, "data-original") ||
+        firstAttr(coverSelectors, "src");
+    return {
+        title:
+            meta("og:novel:book_name") ||
+            meta("name") ||
+            desktopTitle(),
+        author:
+            cleanAuthor(meta("og:novel:author")) ||
+            cleanAuthor(firstText([".book-info h1.title a[href*='/reader/']", ".book-info .author"])),
+        description: firstMultilineText([".book-intro-cnt", ".book-desc", ".book-desc p"]),
+        cover_url: cover,
+        body_text: "",
+        meta_description: meta("description") || meta("og:description")
+    };
+}"""
+
+
+_CIWEIMAO_CHAPTER_LINKS_SCRIPT = r"""(limit) => {
+    const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+    const byHref = new Map();
+    const isChapterTitle = (value) => /^(?:第.+?章|序章|楔子|引子)/.test(value);
+    const catalog = document.querySelector("#J_book_chapter_list") || document;
+    for (const anchor of Array.from(catalog.querySelectorAll('a[href*="/chapter/"]'))) {
+        const href = anchor.href || "";
+        if (!/ciweimao\.com\/chapter\/\d+\/?(?:[?#].*)?$/.test(href)) continue;
+        const title = normalize(anchor.innerText || anchor.textContent || "");
+        if (!byHref.has(href)) {
+            byHref.set(href, {href, title: "", index: byHref.size, isChapter: false});
+        }
+        const item = byHref.get(href);
+        if (isChapterTitle(title)) {
+            item.title = title;
+            item.isChapter = true;
+        } else if (!item.title && title && title !== "立即阅读") {
+            item.title = title;
+        }
+    }
+    const items = Array.from(byHref.values()).sort((left, right) => left.index - right.index);
+    const preferred = items.filter(item => item.isChapter);
+    return (preferred.length ? preferred : items)
+        .slice(0, limit || 3)
+        .map(({href, title}) => ({href, title}));
+}"""
+
+
+_CIWEIMAO_CHAPTER_TEXT_SCRIPT = r"""() => {
+    const text = (node) => node ? (node.innerText || node.textContent || "").replace(/\r/g, "").trim() : "";
+    const bodyText = text(document.body);
+    const blocked = Boolean(
+        document.querySelector('input[placeholder="验证码"], input[name*="captcha" i], .geetest_panel, .captcha')
+        || /(?:验证码|安全验证|点击刷新验证码)/.test(bodyText.slice(0, 500))
+    );
+    const title =
+        text(document.querySelector(".chapter-title")) ||
+        text(document.querySelector(".read-title")) ||
+        text(document.querySelector("h1")) ||
+        (document.title || "").split("-")[0].trim();
+    const paragraphs = Array.from(document.querySelectorAll(
+        ".chapter-content p, .read-content p, .chapter-body p, #chapter-content p, #J_BookRead p, article p"
+    )).map(node => text(node)).filter(Boolean);
+    if (paragraphs.length) {
+        return {title, text: paragraphs.join("\n"), blocked};
+    }
+    const candidates = [
+        ".chapter-content",
+        ".read-content",
+        ".chapter-body",
+        "#chapter-content",
+        "#J_BookRead",
+        ".book-read",
+        "article",
+    ];
+    for (const selector of candidates) {
+        const value = text(document.querySelector(selector));
+        if (value.length > 200) return {title, text: value, blocked};
+    }
+    return {title, text: "", blocked};
 }"""
 
 

@@ -19,8 +19,12 @@ from qidian_rulate.workers import (
     _load_cover_image_from_file,
     _cover_url_candidates,
     _is_browser_missing_error,
+    _clean_ciweimao_chapter_text,
     _clean_qidian_description,
     _clean_qidian_chapter_text,
+    _CIWEIMAO_CHAPTER_LINKS_SCRIPT,
+    _CIWEIMAO_CHAPTER_TEXT_SCRIPT,
+    _CIWEIMAO_EXTRACT_SCRIPT,
     _extract_qidian_description_from_body,
     _FANQIE_CHAPTER_LINKS_SCRIPT,
     _FANQIE_CHAPTER_TEXT_SCRIPT,
@@ -30,9 +34,11 @@ from qidian_rulate.workers import (
     _QIDIAN_CHAPTER_LINKS_SCRIPT,
     _read_tomato_chapters_from_folder,
     _select_qidian_description,
+    _source_name,
     _tag_file_candidates,
     _tomato_bind_addr_from_base_url,
     _tomato_web_is_local,
+    _wait_for_ciweimao_human_verification,
     RULATE_BOOK_TYPE_DESCRIPTION,
     RULATE_BOOK_TYPE_SELECTOR,
     RULATE_BOOK_TYPE_TITLE,
@@ -50,6 +56,7 @@ from qidian_rulate.workers import (
     parse_catalog_metadata,
     parse_prepared_metadata,
     parse_translation_metadata,
+    validate_ciweimao_url,
     validate_fanqie_url,
     validate_qidian_url,
     validate_source_url,
@@ -253,7 +260,7 @@ def test_validate_qidian_url_accepts_book_links_only():
     assert not validate_qidian_url("https://example.com/book/1041604040/")
 
 
-def test_validate_source_url_accepts_fanqie_book_links():
+def test_validate_source_url_accepts_fanqie_and_ciweimao_book_links():
     assert validate_fanqie_url("https://fanqienovel.com/page/7229603492648717324")
     assert validate_fanqie_url("https://www.fanqienovel.com/page/7229603492648717324?enter_from=search")
     assert not validate_fanqie_url("https://fanqienovel.com/reader/7233607619578233396")
@@ -261,6 +268,15 @@ def test_validate_source_url_accepts_fanqie_book_links():
     assert validate_source_url("https://www.qidian.com/book/1041604040/")
     assert validate_source_url("https://fanqienovel.com/page/7229603492648717324")
     assert _fanqie_book_id("https://fanqienovel.com/page/7229603492648717324") == "7229603492648717324"
+
+    assert validate_ciweimao_url("https://www.ciweimao.com/book/100441110")
+    assert validate_ciweimao_url("https://www.ciweimao.com/book/100441110/?from=search")
+    assert validate_ciweimao_url("http://ciweimao.com/book/100441110")
+    assert not validate_ciweimao_url("https://wap.ciweimao.com/book/100441110")
+    assert not validate_ciweimao_url("https://www.ciweimao.com/chapter/113404377")
+    assert not validate_ciweimao_url("https://example.com/book/100441110")
+    assert validate_source_url("https://www.ciweimao.com/book/100441110")
+    assert _source_name("https://www.ciweimao.com/book/100441110") == "Ciweimao"
 
 
 def test_single_request_worker_reads_external_cancel_event():
@@ -725,6 +741,12 @@ def test_clean_qidian_chapter_text_removes_comment_counters():
     assert _clean_qidian_chapter_text(raw_text) == "Первый абзац\nВторой абзац"
 
 
+def test_clean_ciweimao_chapter_text_removes_repeated_watermark_and_counters():
+    raw_text = "第一段。3IANIx\n13\n第二段。3IANIx\n3\n第三段。3IANIx\n本章完"
+
+    assert _clean_ciweimao_chapter_text(raw_text) == "第一段。\n第二段。\n第三段。"
+
+
 def test_qidian_chapter_link_script_supports_chinese_chapter_numbers():
     assert "chineseNumber" in _QIDIAN_CHAPTER_LINKS_SCRIPT
     assert "[0-9零〇一二两三四五六七八九十百千万]+" in _QIDIAN_CHAPTER_LINKS_SCRIPT
@@ -781,6 +803,38 @@ def test_fanqie_scripts_use_initial_state_and_reader_links():
     assert "chapterListWithVolume" in _FANQIE_CHAPTER_LINKS_SCRIPT
     assert "/reader/" in _FANQIE_CHAPTER_LINKS_SCRIPT
     assert "reader.chapterData" in _FANQIE_CHAPTER_TEXT_SCRIPT
+
+
+def test_ciweimao_scripts_use_public_book_metadata_and_chapter_links():
+    assert "og:novel:book_name" in _CIWEIMAO_EXTRACT_SCRIPT
+    assert ".book-intro-cnt" in _CIWEIMAO_EXTRACT_SCRIPT
+    assert "data-original" in _CIWEIMAO_EXTRACT_SCRIPT
+    assert "#J_book_chapter_list" in _CIWEIMAO_CHAPTER_LINKS_SCRIPT
+    assert "/chapter/" in _CIWEIMAO_CHAPTER_LINKS_SCRIPT
+    assert "验证码" in _CIWEIMAO_CHAPTER_TEXT_SCRIPT
+
+
+def test_ciweimao_human_verification_waits_five_minutes_and_rechecks_page():
+    class Page:
+        def __init__(self):
+            self.waited = []
+            self.evaluated = []
+
+        def wait_for_function(self, script, timeout):
+            self.waited.append((script, timeout))
+
+        def evaluate(self, script):
+            self.evaluated.append(script)
+            return {"blocked": False, "text": "正文"}
+
+    page = Page()
+
+    payload = _wait_for_ciweimao_human_verification(page)
+
+    assert payload == {"blocked": False, "text": "正文"}
+    assert page.waited[0][1] == 300_000
+    assert "验证码" in page.waited[0][0]
+    assert page.evaluated == [_CIWEIMAO_CHAPTER_TEXT_SCRIPT]
 
 
 def test_build_cover_prompt_request_includes_ru_title_and_chapters():

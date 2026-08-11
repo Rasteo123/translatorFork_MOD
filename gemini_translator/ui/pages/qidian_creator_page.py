@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""QidianCreatorPage — Qidian/Fanqie → Rulate creator as an embeddable ShellPage."""
+"""QidianCreatorPage — Qidian/Fanqie/Ciweimao → Rulate creator as an embeddable ShellPage."""
 
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ class _CoverDropLabel(QLabel):
 
 
 class QidianCreatorPage(ShellPage):
-    page_title = "Qidian/Fanqie → Rulate"
+    page_title = "Qidian/Fanqie/Ciweimao → Rulate"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -204,7 +204,7 @@ class QidianCreatorPage(ShellPage):
         url_row.addWidget(QLabel("URL источника:"))
         self.qidian_url_edit = QLineEdit("https://www.qidian.com/book/1041604040/")
         self.qidian_url_edit.setPlaceholderText(
-            "https://www.qidian.com/book/1041604040/ или https://fanqienovel.com/page/7229603492648717324"
+            "Qidian, Fanqie или https://www.ciweimao.com/book/100441110"
         )
         url_row.addWidget(self.qidian_url_edit, 1)
         self.visible_qidian_checkbox = QCheckBox("Открывать источник видимо")
@@ -407,7 +407,8 @@ class QidianCreatorPage(ShellPage):
                 self,
                 "Источник",
                 "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
-                "или https://fanqienovel.com/page/7229603492648717324",
+                "или https://fanqienovel.com/page/7229603492648717324 "
+                "или https://www.ciweimao.com/book/100441110",
             )
             return
         self.fetch_qidian_btn.setEnabled(False)
@@ -421,7 +422,7 @@ class QidianCreatorPage(ShellPage):
     def _prepare_ai(self) -> None:
         metadata = self._collect_qidian_metadata()
         if not metadata.title_original or not metadata.description:
-            QMessageBox.warning(self, "AI", "Сначала получите или заполните название и описание Qidian.")
+            QMessageBox.warning(self, "AI", "Сначала получите или заполните название и описание источника.")
             return
 
         provider_id = self.key_widget.get_selected_provider()
@@ -462,7 +463,8 @@ class QidianCreatorPage(ShellPage):
                 self,
                 "Обложка",
                 "Введите ссылку вида https://www.qidian.com/book/1041604040/ "
-                "или https://fanqienovel.com/page/7229603492648717324",
+                "или https://fanqienovel.com/page/7229603492648717324 "
+                "или https://www.ciweimao.com/book/100441110",
             )
             return
 
