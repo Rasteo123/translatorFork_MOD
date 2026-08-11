@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -28,14 +29,14 @@ def test_staging_root_windows():
 def test_staging_root_darwin():
     env = {"HOME": "/Users/u"}
     p = inst.staging_root(platform="darwin", env=env)
-    assert str(p) == "/Users/u/Library/Application Support/GeminiTranslator/updater"
+    assert str(p).replace("\\", "/") == "/Users/u/Library/Application Support/GeminiTranslator/updater"
 
 
 def test_staging_root_linux_xdg_and_fallback():
     p = inst.staging_root(platform="linux", env={"XDG_DATA_HOME": "/xdg", "HOME": "/home/u"})
-    assert str(p) == "/xdg/GeminiTranslator/updater"
+    assert str(p).replace("\\", "/") == "/xdg/GeminiTranslator/updater"
     p2 = inst.staging_root(platform="linux", env={"HOME": "/home/u"})
-    assert str(p2) == "/home/u/.local/share/GeminiTranslator/updater"
+    assert str(p2).replace("\\", "/") == "/home/u/.local/share/GeminiTranslator/updater"
 
 
 # --- ack-протокол ---------------------------------------------------------
@@ -560,18 +561,16 @@ def _archive_env(tmp_path, app_script, zip_extra=None, old_identity=None):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
     staged = tmp_path / "staged.zip"
-    subprocess.run(["zip", "-qr", str(staged), build.name],
-                   cwd=build.parent, check=True)
-
-    reaped = subprocess.Popen(["sleep", "0.1"])
-    pid = reaped.pid
-    reaped.wait()
+    with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in build.rglob("*"):
+            if path.is_file():
+                archive.write(path, Path(build.name) / path.relative_to(build))
 
     journal = tmp_path / "journal"
     ack = tmp_path / "ack.json"
     log = tmp_path / "updater.log"
     script = inst.render_archive_helper(
-        app_pid=pid, zip_path=str(staged), root=str(root),
+        app_pid=99_999_999, zip_path=str(staged), root=str(root),
         journal_dir=str(journal), ack_path=str(ack), log_path=str(log),
         commit_sha=_NEW,
         python_argv=[sys.executable, str(root / "fake_app.py")],
@@ -624,17 +623,13 @@ def test_archive_helper_rolls_back_without_ack(tmp_path):
 
 
 def test_archive_helper_refuses_traversal(tmp_path):
-    import zipfile as zf
     root = tmp_path / "root"
     root.mkdir()
     staged = tmp_path / "evil.zip"
-    with zf.ZipFile(staged, "w") as z:
+    with zipfile.ZipFile(staged, "w") as z:
         z.writestr("top/../../evil.txt", "boom")
-    reaped = subprocess.Popen(["sleep", "0.1"])
-    pid = reaped.pid
-    reaped.wait()
     script = inst.render_archive_helper(
-        app_pid=pid, zip_path=str(staged), root=str(root),
+        app_pid=99_999_999, zip_path=str(staged), root=str(root),
         journal_dir=str(tmp_path / "j"), ack_path=str(tmp_path / "a"),
         log_path=str(tmp_path / "l"), commit_sha=_NEW,
         python_argv=[sys.executable, "-c", "pass"],

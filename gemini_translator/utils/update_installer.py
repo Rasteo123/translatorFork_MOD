@@ -754,10 +754,13 @@ def render_macos_script(*, app_pid, staged, bundle, binary_name, ack, log, is_dm
 def find_app_bundle(executable: str):
     """Путь к .app-бандлу, содержащему executable, либо None."""
     path = os.path.abspath(executable)
-    while path not in ("/", ""):
+    while path:
         if path.endswith(".app"):
             return path
-        path = os.path.dirname(path)
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
     return None
 
 
