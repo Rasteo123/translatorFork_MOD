@@ -59,7 +59,9 @@ def test_generate_build_identity_rejects_prerelease_version(tmp_path, capsys):
 def test_verify_release_tag_happy(tmp_path, version_file):
     notes = tmp_path / "notes"
     notes.mkdir()
-    (notes / "v10.5.22.md").write_text("## Изменения\n- надёжный апдейтер\n")
+    (notes / "v10.5.22.md").write_text(
+        "## Изменения\n- надёжный апдейтер\n", encoding="utf-8"
+    )
     rc = verify_release_tag.main([
         "--tag", "v10.5.22", "--notes-dir", str(notes),
         "--version-file", str(version_file)])
@@ -75,7 +77,7 @@ def test_verify_release_tag_rejects(tmp_path, version_file, tag, notes_body, cap
     notes = tmp_path / "notes"
     notes.mkdir()
     if notes_body is not None:
-        (notes / "v10.5.22.md").write_text(notes_body)
+        (notes / "v10.5.22.md").write_text(notes_body, encoding="utf-8")
     rc = verify_release_tag.main([
         "--tag", tag, "--notes-dir", str(notes), "--version-file", str(version_file)])
     assert rc == 1

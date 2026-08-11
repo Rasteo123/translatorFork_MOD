@@ -12,6 +12,13 @@ FAILURE_TAIL_LINES = 80
 RUFF_RUNTIME_RULES = "F821,F822,F823,F601,F602,F631,F632,E9"
 
 
+def _configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="backslashreplace")
+
+
 def _github_escape(message: str) -> str:
     return (
         str(message)
@@ -76,6 +83,7 @@ def _env_release_mode_enabled() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
     parser = argparse.ArgumentParser(description="Run project smoke checks.")
     parser.add_argument(
         "--release",
@@ -126,15 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         if pytest_args:
             checks.append(("pytest", [sys.executable, "-m", "pytest", "-q", *pytest_args]))
         else:
-            checks.extend(
-                [
-                    ("pytest mcp daemon", [sys.executable, "-m", "pytest", "-q", "tests/test_mcp_daemon.py"]),
-                    (
-                        "pytest",
-                        [sys.executable, "-m", "pytest", "-q", "--ignore=tests/test_mcp_daemon.py"],
-                    ),
-                ]
-            )
+            checks.append(("pytest", [sys.executable, "-m", "pytest", "-q"]))
 
     for label, command in checks:
         exit_code = _run(label, command)

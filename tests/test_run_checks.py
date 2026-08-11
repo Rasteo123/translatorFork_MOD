@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import tools.run_checks as run_checks
 
 
-def test_run_checks_isolates_mcp_daemon_tests_by_default(monkeypatch):
+def test_run_checks_runs_default_pytest_once(monkeypatch):
     commands = []
 
     def fake_run(command, cwd, **_kwargs):
@@ -25,8 +25,7 @@ def test_run_checks_isolates_mcp_daemon_tests_by_default(monkeypatch):
             "--select",
             run_checks.RUFF_RUNTIME_RULES,
         ],
-        [sys.executable, "-m", "pytest", "-q", "tests/test_mcp_daemon.py"],
-        [sys.executable, "-m", "pytest", "-q", "--ignore=tests/test_mcp_daemon.py"],
+        [sys.executable, "-m", "pytest", "-q"],
     ]
 
 
@@ -39,7 +38,7 @@ def test_run_checks_keeps_explicit_pytest_args_in_one_process(monkeypatch):
 
     monkeypatch.setattr(run_checks.subprocess, "run", fake_run)
 
-    assert run_checks.main(["--", "tests/test_mcp_daemon.py", "-k", "sse"]) == 0
+    assert run_checks.main(["--", "tests/test_updater.py", "-k", "manifest"]) == 0
     assert commands == [
         [sys.executable, "-m", "gemini_translator.scripts.check_release_metadata"],
         [
@@ -51,7 +50,7 @@ def test_run_checks_keeps_explicit_pytest_args_in_one_process(monkeypatch):
             "--select",
             run_checks.RUFF_RUNTIME_RULES,
         ],
-        [sys.executable, "-m", "pytest", "-q", "tests/test_mcp_daemon.py", "-k", "sse"],
+        [sys.executable, "-m", "pytest", "-q", "tests/test_updater.py", "-k", "manifest"],
     ]
 
 
@@ -62,12 +61,12 @@ def test_run_checks_emits_github_annotation_with_failure_tail(monkeypatch, capsy
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setattr(run_checks.subprocess, "run", fake_run)
 
-    assert run_checks._run("pytest mcp daemon", [sys.executable, "-m", "pytest"]) == 2
+    assert run_checks._run("pytest", [sys.executable, "-m", "pytest"]) == 2
 
     captured = capsys.readouterr()
-    assert "[checks] pytest mcp daemon failed with exit code 2" in captured.err
+    assert "[checks] pytest failed with exit code 2" in captured.err
     assert "::error file=tools/run_checks.py,line=1::" in captured.out
-    assert "pytest mcp daemon failed with exit code 2%0Aline 1%0Aline 2%0Aline 3" in captured.out
+    assert "pytest failed with exit code 2%0Aline 1%0Aline 2%0Aline 3" in captured.out
 
 
 def test_run_checks_isolates_windows_child_process_group(monkeypatch):
