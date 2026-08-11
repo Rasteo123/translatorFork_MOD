@@ -174,7 +174,7 @@ class ReaderAudioNormalizationTests(unittest.TestCase):
             self.assertIn("идёт", prompt)
             self.assertIn("Only avoid guessing Ё/ё in names", prompt)
 
-    def test_flash_tts_preprocess_prompt_recommends_more_bracketed_tags(self):
+    def test_flash_tts_preprocess_prompt_uses_sparse_reliable_tags(self):
         preprocess_prompt = reader._build_preprocess_prompt(
             "Он тихо вздохнул. — Пошли, — сказала она.",
             voice_mode="single",
@@ -182,9 +182,53 @@ class ReaderAudioNormalizationTests(unittest.TestCase):
             extra_directive="",
         )
 
-        self.assertIn("Recommended density: about 10-18 bracketed tags per 1000 Russian words", preprocess_prompt)
-        self.assertIn("up to 20-24 in dialogue-heavy or action-heavy passages", preprocess_prompt)
-        self.assertIn("[hesitates]", preprocess_prompt)
+        self.assertIn("Allowed tag vocabulary:", preprocess_prompt)
+        self.assertIn("[sigh]", preprocess_prompt)
+        self.assertIn("[whispering]", preprocess_prompt)
+        self.assertIn("[short pause]", preprocess_prompt)
+        self.assertIn("Most sentences should have no audio tag", preprocess_prompt)
+        self.assertIn("never target a tag count or density", preprocess_prompt)
+        self.assertIn("Gemini may pronounce them aloud", preprocess_prompt)
+        self.assertNotIn("10-18 bracketed tags", preprocess_prompt)
+        self.assertNotIn("[hesitates]", reader.TTS_AUDIO_TAG_HINT)
+        self.assertNotIn("[angry]", reader.TTS_AUDIO_TAG_HINT)
+
+    def test_flash_tts_generation_prompt_has_explicit_sections_and_spoken_boundary(self):
+        script = "Тихо. [short pause] Теперь продолжай."
+
+        prompt = reader._build_tts_generation_prompt(
+            script,
+            voice_mode="single",
+            speed_key="Normal",
+        )
+
+        headings = ("# AUDIO PROFILE", "# SCENE", "# DIRECTOR'S NOTES", "# TRANSCRIPT")
+        self.assertTrue(prompt.startswith("SYNTHESIS TASK:"))
+        self.assertEqual([prompt.index(heading) for heading in headings], sorted(prompt.index(heading) for heading in headings))
+        self.assertIn("Speak only the transcript", prompt)
+        self.assertIn("never pronounce the brackets or tag names", prompt)
+        self.assertTrue(prompt.endswith(script))
+
+    def test_flash_tts_generation_prompt_normalizes_legacy_tags(self):
+        prompt = reader._build_tts_generation_prompt(
+            "[whispers] Тише. [angry] Стой. [very fast] Бежим.",
+            voice_mode="single",
+            speed_key="Normal",
+        )
+        transcript = prompt.split("# TRANSCRIPT\n", 1)[1]
+
+        self.assertIn("[whispering]", transcript)
+        self.assertIn("[extremely fast]", transcript)
+        self.assertNotIn("[whispers]", transcript)
+        self.assertNotIn("[angry]", transcript)
+        self.assertEqual(transcript, "[whispering] Тише. Стой. [extremely fast] Бежим.")
+
+    def test_legacy_default_preprocess_directive_migrates_to_sparse_default(self):
+        self.assertEqual(
+            reader._normalize_preprocess_directive(reader.LEGACY_DEFAULT_PREPROCESS_DIRECTIVE),
+            reader.DEFAULT_PREPROCESS_DIRECTIVE,
+        )
+        self.assertEqual(reader._normalize_preprocess_directive("Custom direction"), "Custom direction")
 
     def test_duo_prompt_uses_male_female_roles(self):
         preprocess_prompt = reader._build_preprocess_prompt(
@@ -203,6 +247,7 @@ class ReaderAudioNormalizationTests(unittest.TestCase):
         self.assertIn("Use `Female:` only for direct speech", preprocess_prompt)
         self.assertNotIn("Narrator and Dialogue", preprocess_prompt)
         self.assertIn("`Male` is the male/primary voice", tts_prompt)
+        self.assertIn("Speaker labels select the voice and are not spoken aloud", tts_prompt)
 
     def test_duo_script_matching_rejects_legacy_narrator_dialogue(self):
         self.assertTrue(reader._script_matches_voice_mode("Male: ready\nFemale: ready", "duo"))

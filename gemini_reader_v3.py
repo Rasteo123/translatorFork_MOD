@@ -220,8 +220,8 @@ PIPELINE_MODE_OPTIONS = {
 }
 
 PREPROCESS_PROFILE_OPTIONS = {
-    "Бережно": "Use a controlled but noticeable number of tags. Prefer explicit emotion or sound; do not tag every line.",
-    "Выразительно": "Use a richer but still tasteful set of performance cues and non-verbal sounds when clearly supported by the scene.",
+    "Бережно": "Use very sparse, source-grounded tags. Most sentences should have no tag; add one only for an explicit pause, vocalization or local delivery change.",
+    "Выразительно": "Use a richer but still sparse set of source-grounded cues from the allowed tag vocabulary. Prefer meaningful local cues over repeated tagging.",
 }
 
 TTS_SPEAKER_NARRATOR = "Narrator"
@@ -307,15 +307,68 @@ CHATGPT_WEB_PREPROCESS_MODEL_ID = "chatgpt-web-current"
 CHATGPT_WEB_PREPROCESS_LABEL = "ChatGPT Web (current profile model)"
 CHATGPT_WEB_PLACEHOLDER_API_KEY = "__workascii_chatgpt_session__"
 
-TTS_AUDIO_TAG_HINT = (
-    "[whispers] [softly] [laughs] [sighs] [gasp] [shouting] "
-    "[angry] [sad] [nervous] [serious] [excited] [tired] "
-    "[breathless] [hesitates] [very slow] [slow] [fast] [very fast]"
+TTS_AUDIO_TAGS = (
+    "[sigh]",
+    "[laughing]",
+    "[gasp]",
+    "[uhm]",
+    "[sarcasm]",
+    "[robotic]",
+    "[shouting]",
+    "[whispering]",
+    "[extremely fast]",
+    "[short pause]",
+    "[medium pause]",
+    "[long pause]",
 )
-TTS_AUDIO_TAG_DENSITY_HINT = (
-    "Recommended density: about 10-18 bracketed tags per 1000 Russian words in regular prose, "
-    "up to 20-24 in dialogue-heavy or action-heavy passages, and fewer in calm exposition."
+TTS_AUDIO_TAG_HINT = " ".join(TTS_AUDIO_TAGS)
+TTS_AVOIDED_AUDIO_TAG_HINT = (
+    "[angry] [sad] [nervous] [serious] [excited] [tired] [scared] [curious] [bored]"
 )
+TTS_AUDIO_TAG_POLICY = (
+    "- Use English bracketed tags only as sparse, silent, local performance directions.\n"
+    f"- Allowed tag vocabulary: {TTS_AUDIO_TAG_HINT}.\n"
+    "- Most sentences should have no audio tag; never target a tag count or density.\n"
+    "- Use a non-speech tag only when the source explicitly contains or clearly describes that vocalization.\n"
+    "- Use a pause tag only where the source punctuation or scene already supports a pause.\n"
+    f"- Do not use bare emotional-adjective tags such as {TTS_AVOIDED_AUDIO_TAG_HINT}; Gemini may pronounce them aloud. Express emotion through the surrounding text and the overall direction instead.\n"
+    "- Do not invent sound effects, reactions or performance events, and never use a tag to replace or repeat source words.\n"
+)
+TTS_INLINE_ENGLISH_TAG_PATTERN = re.compile(r"\[\s*([A-Za-z][A-Za-z ,'-]{0,39})\s*\]([ \t]*)")
+TTS_AUDIO_TAG_NAMES = frozenset(tag[1:-1] for tag in TTS_AUDIO_TAGS)
+TTS_LEGACY_TAG_REPLACEMENTS = {
+    "whisper": "whispering",
+    "whispers": "whispering",
+    "laugh": "laughing",
+    "laughs": "laughing",
+    "sighs": "sigh",
+    "sighing": "sigh",
+    "gasping": "gasp",
+    "hesitates": "short pause",
+    "hesitating": "short pause",
+    "pause": "short pause",
+    "beat": "short pause",
+    "small pause": "short pause",
+    "dramatic pause": "long pause",
+    "very fast": "extremely fast",
+    "softly": None,
+    "clear": None,
+    "upbeat": None,
+    "clear, upbeat": None,
+    "angry": None,
+    "sad": None,
+    "nervous": None,
+    "serious": None,
+    "excited": None,
+    "tired": None,
+    "scared": None,
+    "curious": None,
+    "bored": None,
+    "breathless": None,
+    "very slow": None,
+    "slow": None,
+    "fast": None,
+}
 
 LIVE_TAG_STYLE_HINTS = {
     "serious": "Интонация серьёзная, собранная и сдержанная.",
@@ -332,10 +385,16 @@ LIVE_TAG_STYLE_HINTS = {
     "very fast": "Темп заметно быстрее обычного, но дикция остаётся чёткой.",
 }
 
-DEFAULT_PREPROCESS_DIRECTIVE = (
+LEGACY_DEFAULT_PREPROCESS_DIRECTIVE = (
     "Prefer compact, production-safe markup. Avoid overacting, dense tag spam and cinematic additions "
     "that are not grounded in the original text. In role-labeled scripts, keep narration, attribution and "
     "scene description out of character lines."
+)
+
+DEFAULT_PREPROCESS_DIRECTIVE = (
+    "Use sparse, source-grounded performance markup: most sentences need no tag. Add a tag only for an "
+    "explicit vocalization, pause or local delivery change. In role-labeled scripts, keep narration, "
+    "attribution and scene description out of character lines."
 )
 
 DEFAULT_TTS_DIRECTIVE = (
@@ -348,6 +407,28 @@ YO_ORTHOGRAPHY_RULE = (
     "- Preserve Ё/ё wherever it already appears in the source or draft.\n"
     "- Only avoid guessing Ё/ё in names, invented terms, titles, transliterations or truly ambiguous words.\n"
 )
+
+
+def _normalize_preprocess_directive(value):
+    normalized = str(value or "").strip()
+    if not normalized or normalized == LEGACY_DEFAULT_PREPROCESS_DIRECTIVE:
+        return DEFAULT_PREPROCESS_DIRECTIVE
+    return normalized
+
+
+def _normalize_flash_tts_audio_tags(script_text):
+    def replace_tag(match):
+        tag_name = re.sub(r"\s+", " ", match.group(1).strip().lower())
+        trailing_space = match.group(2)
+        if tag_name in TTS_AUDIO_TAG_NAMES:
+            return f"[{tag_name}]{trailing_space}"
+        if tag_name in TTS_LEGACY_TAG_REPLACEMENTS:
+            replacement = TTS_LEGACY_TAG_REPLACEMENTS[tag_name]
+            return f"[{replacement}]{trailing_space}" if replacement else ""
+        return match.group(0)
+
+    return TTS_INLINE_ENGLISH_TAG_PATTERN.sub(replace_tag, str(script_text or ""))
+
 
 LIVE_API_DEFAULT_RPM = 5
 FLASH_PREPROCESS_DEFAULT_RPM = 5
@@ -830,7 +911,7 @@ def _extract_total_tokens(count_response):
 
 def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directive=""):
     profile_line = profile_prompt or PREPROCESS_PROFILE_OPTIONS["Бережно"]
-    extra_line = (extra_directive or "").strip() or DEFAULT_PREPROCESS_DIRECTIVE
+    extra_line = _normalize_preprocess_directive(extra_directive)
     common_rules = (
         "You are preparing a Russian audiobook script for Gemini Flash TTS.\n"
         "Rules:\n"
@@ -839,9 +920,7 @@ def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directi
         "- Do not summarize, shorten, paraphrase or explain the text.\n"
         "- Do not invent any words, reactions, acknowledgements, connective phrases or narration that are absent from the source.\n"
         f"{YO_ORTHOGRAPHY_RULE}"
-        f"- Use English bracketed audio tags such as {TTS_AUDIO_TAG_HINT}.\n"
-        f"- {TTS_AUDIO_TAG_DENSITY_HINT}\n"
-        "- Tags must be short, tasteful and only where justified by the source scene.\n"
+        f"{TTS_AUDIO_TAG_POLICY}"
         "- Return only the final script text, with no markdown and no comments.\n"
         f"- Direction profile: {profile_line}\n"
         f"- Additional director note: {extra_line}\n"
@@ -903,25 +982,43 @@ def _build_preprocess_prompt(raw_text, voice_mode, profile_prompt, extra_directi
 def _build_tts_generation_prompt(script_text, voice_mode, speed_key, extra_directive=""):
     speed_prompt = TTS_SPEED_PROMPTS.get(speed_key, TTS_SPEED_PROMPTS["Normal"])
     director_note = (extra_directive or "").strip() or DEFAULT_TTS_DIRECTIVE
+    transcript = _normalize_flash_tts_audio_tags(script_text)
+    audio_profile = (
+        "A polished Russian-language two-speaker audiobook performance with two distinct, consistent "
+        "voices and clear, stable diction."
+        if voice_mode == "duo"
+        else "A polished Russian-language audiobook performance by one consistent narrator, with natural "
+        "prosody and clear, stable diction."
+    )
+    speaker_configuration = ""
     if voice_mode == "duo":
-        return (
-            "Perform the following Russian two-speaker audiobook script exactly as written.\n"
-            f"Use the speaker names `{TTS_SPEAKER_MALE}` and `{TTS_SPEAKER_FEMALE}` exactly as provided.\n"
-            f"`{TTS_SPEAKER_MALE}` is the male/primary voice; `{TTS_SPEAKER_FEMALE}` is the female/secondary voice.\n"
-            "Respect inline audio tags and emotional cues.\n"
-            f"{speed_prompt}\n"
-            f"{director_note}\n"
-            "Preserve the wording of the script.\n\n"
-            f"{script_text}"
+        speaker_configuration = (
+            "\n# SPEAKER CONFIGURATION\n"
+            f"- `{TTS_SPEAKER_MALE}` is the male/primary voice; `{TTS_SPEAKER_FEMALE}` is the female/secondary voice.\n"
+            f"- Use the speaker names `{TTS_SPEAKER_MALE}` and `{TTS_SPEAKER_FEMALE}` exactly as provided.\n"
+            "- Keep both voices distinct and consistent throughout the transcript.\n"
+            "- Speaker labels select the voice and are not spoken aloud.\n"
         )
 
     return (
-        "Perform the following Russian audiobook script exactly as written.\n"
-        "Respect inline audio tags and emotional cues.\n"
-        f"{speed_prompt}\n"
-        f"{director_note}\n"
-        "Preserve the wording of the script.\n\n"
-        f"{script_text}"
+        "SYNTHESIS TASK: Synthesize speech from the TRANSCRIPT section below. Speak only the transcript. "
+        "Never speak the section headings, audio profile, scene, director's notes, speaker configuration "
+        "or any other instruction.\n\n"
+        "# AUDIO PROFILE\n"
+        f"{audio_profile}\n\n"
+        "# SCENE\n"
+        "A clean, close-miked audiobook studio recording. Do not add music, ambience or sound effects "
+        "that are absent from the transcript.\n\n"
+        "# DIRECTOR'S NOTES\n"
+        "- Perform the transcript exactly as written and preserve every spoken word.\n"
+        f"- Pacing: {speed_prompt}\n"
+        f"- Additional direction: {director_note}\n"
+        "- Treat supported English bracketed tags inside the transcript as silent local performance "
+        "directions; never pronounce the brackets or tag names.\n"
+        "- Do not add introductions, acknowledgements, reactions, connective phrases or an outro.\n"
+        f"{speaker_configuration}\n"
+        "# TRANSCRIPT\n"
+        f"{transcript}"
     )
 
 
@@ -1464,7 +1561,7 @@ def _find_author_gender_script_issues(script_text, source_text=None):
 
 def _build_author_gender_repair_prompt(raw_text, draft_script, issues, profile_prompt, extra_directive=""):
     profile_line = profile_prompt or PREPROCESS_PROFILE_OPTIONS["Бережно"]
-    extra_line = (extra_directive or "").strip() or DEFAULT_PREPROCESS_DIRECTIVE
+    extra_line = _normalize_preprocess_directive(extra_directive)
     issue_lines = "\n".join(
         f"- line {item['line_no']}: {item['reason']} :: {item['line']}"
         for item in (issues or [])[:8]
@@ -1480,6 +1577,7 @@ def _build_author_gender_repair_prompt(raw_text, draft_script, issues, profile_p
         "- Do not invent any new words, filler phrases, reactions or connective text that are absent from the source.\n"
         "- Do not invent standalone cues like `[Да]`, `[Нет]`, `[Хм]` unless that exact spoken word is present in the source at that point.\n"
         f"{YO_ORTHOGRAPHY_RULE}"
+        f"{TTS_AUDIO_TAG_POLICY}"
         f"- Direction profile: {profile_line}\n"
         f"- Additional director note: {extra_line}\n"
         f"- `{LIVE_ROLE_MALE}:` and `{LIVE_ROLE_FEMALE}:` may contain only words actually spoken aloud by that character.\n"
@@ -4559,7 +4657,7 @@ class FlashTtsWorker(GeminiWorker):
         self.preprocess_profile = preprocess_profile or PREPROCESS_PROFILE_OPTIONS["Бережно"]
         self.voice_mode = voice_mode
         self.run_mode = run_mode
-        self.preprocess_directive = preprocess_directive or DEFAULT_PREPROCESS_DIRECTIVE
+        self.preprocess_directive = _normalize_preprocess_directive(preprocess_directive)
         self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
         self._last_chapter_started_at = 0.0
         self.preprocess_rpm_limiter = _make_rpm_limiter(self.preprocess_model_id, FLASH_PREPROCESS_DEFAULT_RPM)
@@ -5522,12 +5620,12 @@ class VoiceSampleWorker(QThread):
                     self.voice_mode = "duo"
                 if self.voice_mode == "duo":
                     test_script = (
-                        f"{TTS_SPEAKER_MALE}: [serious] Я читаю мужским голосом.\n"
-                        f"{TTS_SPEAKER_FEMALE}: [excited] А я отвечаю женским голосом."
+                        f"{TTS_SPEAKER_MALE}: Я читаю мужским голосом.\n"
+                        f"{TTS_SPEAKER_FEMALE}: [short pause] А я отвечаю женским голосом."
                     )
                     speech_config = _build_duo_voice_speech_config(self.voice, self.secondary_voice)
                 else:
-                    test_script = "[clear, upbeat] Проверка голоса. Саша сушит сушки."
+                    test_script = "Проверка голоса. [short pause] Саша сушит сушки."
                     speech_config = _build_single_voice_speech_config(self.voice)
 
                 config = genai_types.GenerateContentConfig(
@@ -7384,7 +7482,7 @@ class MainWindow(QMainWindow):
     def save_prompt_settings(self):
         if not hasattr(self, "preprocess_prompt_view"):
             return
-        self.preprocess_directive = self.preprocess_prompt_view.toPlainText().strip() or DEFAULT_PREPROCESS_DIRECTIVE
+        self.preprocess_directive = _normalize_preprocess_directive(self.preprocess_prompt_view.toPlainText())
         self.tts_directive = self.tts_prompt_view.toPlainText().strip() or DEFAULT_TTS_DIRECTIVE
         self._sync_prompt_views()
         self.save_settings()
@@ -7401,7 +7499,7 @@ class MainWindow(QMainWindow):
         dialog = PromptTuningDialog(self.preprocess_directive, self.tts_directive, self)
         if dialog.exec():
             preprocess_directive, tts_directive = dialog.get_values()
-            self.preprocess_directive = preprocess_directive or DEFAULT_PREPROCESS_DIRECTIVE
+            self.preprocess_directive = _normalize_preprocess_directive(preprocess_directive)
             self.tts_directive = tts_directive or DEFAULT_TTS_DIRECTIVE
             self._sync_prompt_views()
             self.save_settings()
@@ -8888,7 +8986,7 @@ class MainWindow(QMainWindow):
             if pipeline_idx >= 0:
                 self.combo_pipeline_mode.setCurrentIndex(pipeline_idx)
 
-            self.preprocess_directive = data.get("preprocess_directive") or DEFAULT_PREPROCESS_DIRECTIVE
+            self.preprocess_directive = _normalize_preprocess_directive(data.get("preprocess_directive"))
             self.tts_directive = data.get("tts_directive") or DEFAULT_TTS_DIRECTIVE
 
             self._set_chunk_setting_value(data.get("chunk", FLASH_TTS_DEFAULT_BLOCK_UNITS))
