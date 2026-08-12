@@ -110,9 +110,38 @@ class CoreTopicSubscriptionTests(unittest.TestCase):
         engine.power_inhibitor = inhibitor
         engine.session_settings = {"prevent_sleep_during_translation": True}
         engine.session_id = "session-1"
+        engine.summary_shown_for_session = True
 
         engine._activate_power_inhibitor_for_session()
-        engine._end_session_event("Сессия успешно завершена")
+        engine._end_session("Сессия успешно завершена")
+
+        self.assertEqual(inhibitor.prevent_calls, 1)
+        self.assertEqual(inhibitor.allow_calls, 1)
+
+    def test_translation_engine_releases_power_inhibitor_when_worker_shutdown_fails(self):
+        engine = TranslationEngine(
+            context_manager=_DummyContext(),
+            settings_manager=_DummySettings(),
+            task_manager=_DummyTaskManager(),
+            event_bus=_TopicOnlyBus(),
+        )
+        self.addCleanup(engine.cleanup)
+        inhibitor = _FakePowerInhibitor()
+        engine.power_inhibitor = inhibitor
+        engine.session_settings = {"prevent_sleep_during_translation": True}
+        engine.session_id = "session-1"
+        original_terminate_all_workers = engine._terminate_all_workers
+
+        def fail_worker_shutdown():
+            raise RuntimeError("worker shutdown failed")
+
+        engine._terminate_all_workers = fail_worker_shutdown
+        engine._activate_power_inhibitor_for_session()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "worker shutdown failed"):
+                engine._end_session("Сессия успешно завершена")
+        finally:
+            engine._terminate_all_workers = original_terminate_all_workers
 
         self.assertEqual(inhibitor.prevent_calls, 1)
         self.assertEqual(inhibitor.allow_calls, 1)
