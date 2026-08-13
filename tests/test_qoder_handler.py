@@ -356,6 +356,7 @@ def test_qoder_provider_config_and_factory_registration():
         "performance",
         "ultimate",
         "Qwen3.7-Max",
+        "Qwen3.8-Max",
         "Qwen3.7-Plus",
         "DeepSeek-V4-Pro",
         "DeepSeek-V4-Flash",

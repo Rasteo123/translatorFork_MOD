@@ -1391,6 +1391,16 @@
         "max_output_tokens": 16384,
         "min_thinking_budget": false
       },
+      "Qwen3.8-Max": {
+        "id": "Qwen3.8-Max",
+        "rpm": 30,
+        "rpd": 0,
+        "needs_chunking": true,
+        "context_length": 200000,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
       "Qwen3.7-Plus": {
         "id": "Qwen3.7-Plus",
         "rpm": 30,
