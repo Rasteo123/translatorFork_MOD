@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from constants import BROWSER_ARGS, BROWSER_PROFILE_DIR, MAX_RETRIES, RETRY_DELAY_SEC
+from constants import BROWSER_PROFILE_DIR, MAX_RETRIES, RETRY_DELAY_SEC
 from models import ChapterData
 from utils import format_num, format_timedelta
 
@@ -203,12 +203,17 @@ def _refresh_token(refresh_token_value: str) -> dict:
 def resolve_api_auth(slug: str) -> tuple[dict, dict]:
     stored_auth = None
     try:
+        # Import at call time because workers imports this module while it is
+        # initialized. The shared launcher also recovers from a stale
+        # Playwright browser revision by trying another cached/system Chromium.
+        from workers import _launch_persistent_chromium_context
+
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
+            context = _launch_persistent_chromium_context(
+                playwright,
                 user_data_dir=str(BROWSER_PROFILE_DIR),
                 headless=True,
                 viewport={"width": 1280, "height": 900},
-                args=BROWSER_ARGS,
             )
             try:
                 page = context.pages[0] if context.pages else context.new_page()

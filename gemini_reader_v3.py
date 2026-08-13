@@ -8117,7 +8117,13 @@ class MainWindow(QMainWindow):
 
     def _connect_reader_worker_signals(self, worker, *, chapter_done=False, script_ready=False):
         worker.worker_progress.connect(self._enqueue_worker_progress)
-        worker.finished_signal.connect(self._on_worker_finished)
+        # ``finished_signal`` is emitted from inside ``QThread.run()``.  Removing
+        # the last Python reference from that signal can destroy the QThread
+        # before run() has actually returned, which makes Qt abort the process.
+        # The built-in signal is emitted only when the native thread has ended.
+        worker.finished.connect(
+            lambda worker_id=worker.worker_id: self._on_worker_finished(worker_id)
+        )
         if chapter_done:
             worker.chapter_done_ui_signal.connect(self.on_chapter_done_ui)
         if script_ready:

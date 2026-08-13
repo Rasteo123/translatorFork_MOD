@@ -16,6 +16,9 @@ from parsers import FileParser  # noqa: E402
 from models import ChapterData  # noqa: E402
 from utils import is_safe_remote_http_url, parse_vol_and_chapter  # noqa: E402
 from workers import (  # noqa: E402
+    MEDIA_COVER_MODE_CODEX,
+    MEDIA_COVER_MODE_NONE,
+    MEDIA_COVER_MODE_RULATE,
     QIDIAN_RULATE_PROFILE_DIR,
     RANOBELIB_GENRES,
     RANOBELIB_TAGS,
@@ -24,6 +27,7 @@ from workers import (  # noqa: E402
     _clean_rulate_media_title,
     _find_cached_chromium_executable,
     _is_browser_missing_error,
+    _launch_persistent_chromium_context,
     _normalize_allowed_catalog_items,
     _normalize_rulate_cover_url,
     _normalize_rulate_media_payload,
@@ -486,6 +490,59 @@ def test_rulate_to_ranobelib_uses_prefetched_metadata_without_reopening_rulate()
     assert metadata["rulate_url"] == "https://tl.rulate.ru/book/123"
 
 
+def test_rulate_to_ranobelib_uses_translated_codex_cover_instead_of_rulate(tmp_path, monkeypatch):
+    translated_cover = tmp_path / "translated.png"
+    translated_cover.write_bytes(b"translated-cover" * 128)
+    worker = RulateToRanobeCreateWorker(
+        "https://tl.rulate.ru/book/123",
+        options={
+            "cover_mode": MEDIA_COVER_MODE_CODEX,
+            "cover_path": str(translated_cover),
+            "cover_url": "https://tl.rulate.ru/uploads/rulate-cover.webp",
+        },
+    )
+    monkeypatch.setattr(
+        "workers.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Rulate cover must not be downloaded in Codex mode")
+        ),
+    )
+
+    metadata = worker._apply_options({})
+
+    assert metadata["cover_mode"] == MEDIA_COVER_MODE_CODEX
+    assert worker._download_cover(metadata) == str(translated_cover.resolve())
+
+
+def test_rulate_to_ranobelib_can_skip_cover_entirely(monkeypatch):
+    worker = RulateToRanobeCreateWorker(
+        "https://tl.rulate.ru/book/123",
+        options={
+            "cover_mode": MEDIA_COVER_MODE_NONE,
+            "cover_url": "https://tl.rulate.ru/uploads/rulate-cover.webp",
+        },
+    )
+    monkeypatch.setattr(
+        "workers.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("No cover should be downloaded in none mode")
+        ),
+    )
+
+    metadata = worker._apply_options({})
+
+    assert worker._download_cover(metadata) is None
+
+
+def test_unknown_cover_mode_falls_back_to_rulate():
+    worker = RulateToRanobeCreateWorker(
+        "https://tl.rulate.ru/book/123",
+        options={"cover_mode": "unexpected"},
+    )
+
+    assert worker._apply_options({})["cover_mode"] == MEDIA_COVER_MODE_RULATE
+
+
 def test_prepare_ranobelib_author_payload_uses_romanized_name(monkeypatch):
     def fake_translate(value, target_lang, source_lang="auto", timeout=20):
         return {"en": "Far Pupil", "ru": "Далёкий зрачок"}.get(target_lang, "")
@@ -706,6 +763,49 @@ def test_cached_chromium_prefers_newest_revision(monkeypatch, tmp_path):
     monkeypatch.setattr("workers._candidate_browser_cache_roots", lambda: [tmp_path])
 
     assert _find_cached_chromium_executable() == newer
+
+
+def test_persistent_browser_launch_falls_back_from_stale_playwright_revision(monkeypatch, tmp_path):
+    cached = tmp_path / "chromium-1228" / "chrome-win64" / "chrome.exe"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("", encoding="utf-8")
+    calls = []
+    expected_context = object()
+
+    class FakeChromium:
+        def launch_persistent_context(self, **kwargs):
+            calls.append(kwargs)
+            if "executable_path" not in kwargs:
+                raise RuntimeError(
+                    "Executable doesn't exist at C:/ms-playwright/chromium-1234/chrome.exe\n"
+                    "playwright install"
+                )
+            return expected_context
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    monkeypatch.setattr("workers._find_cached_chromium_executable", lambda: cached)
+
+    context = _launch_persistent_chromium_context(
+        FakePlaywright(),
+        user_data_dir=str(tmp_path / "profile"),
+    )
+
+    assert context is expected_context
+    assert calls[1]["executable_path"] == str(cached)
+
+
+def test_embedded_login_patch_does_not_bypass_resilient_browser_launcher():
+    with open(os.path.join(PROJECT_ROOT, "main.py"), encoding="utf-8") as source_file:
+        source = source_file.read()
+    patch_body = source.split("def patch_ranobelib_login_worker():", 1)[1].split(
+        "def iter_ranobelib_source_locations():",
+        1,
+    )[0]
+
+    assert patch_body.count("workers_module._launch_persistent_chromium_context(") == 2
+    assert "playwright.chromium.launch_persistent_context(" not in patch_body
 
 
 def test_rulate_edit_info_url_is_used_for_metadata_source():

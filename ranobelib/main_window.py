@@ -4,6 +4,7 @@ import os
 import re
 import urllib.request
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from PyQt6.QtCore import QDateTime, QObject, QSettings, QThread, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import (
@@ -63,6 +64,9 @@ from utils import format_num, is_safe_remote_http_url, validate_rulate_url, vali
 from workers import (
     LastChapterDetector,
     LoginWorker,
+    MEDIA_COVER_MODE_CODEX,
+    MEDIA_COVER_MODE_NONE,
+    MEDIA_COVER_MODE_RULATE,
     RanobeLibCatalogMatchWorker,
     RANOBELIB_GENRES,
     RANOBELIB_TAGS,
@@ -71,6 +75,11 @@ from workers import (
     RulateToRanobeCreateWorker,
     UploadWorker,
     publisher_from_source_url,
+)
+from qidian_rulate.workers import (
+    CodexCoverTranslateWorker,
+    QidianFetchWorker,
+    validate_source_url,
 )
 
 SCHEDULE_LIMIT_DAYS = 60
@@ -209,6 +218,12 @@ class RanobeUploaderApp(QMainWindow):
         self._return_to_menu_handler = None
         self._rulate_media_metadata: dict = {}
         self._cover_preview_workers: list[_CoverPreviewWorker] = []
+        self._media_codex_cover_path = ""
+        self._media_source_cover_metadata = None
+        self._media_source_cover_fetch_worker = None
+        self._media_codex_cover_worker = None
+        self._media_cover_request_source_url = ""
+        self._media_cover_request_title_ru = ""
         self._ensure_event_bus()
         self.settings_manager = self._resolve_settings_manager()
         self.server_manager = getattr(QApplication.instance(), "server_manager", None)
@@ -599,6 +614,12 @@ class RanobeUploaderApp(QMainWindow):
         source_layout.addLayout(url_row)
 
         action_row = QHBoxLayout()
+        self.btn_media_login_ranobelib = QPushButton("Войти в RanobeLib")
+        self.btn_media_login_ranobelib.setToolTip(
+            "Открыть RanobeLib в браузере и сохранить авторизацию для создания карточки и загрузки глав."
+        )
+        self.btn_media_login_ranobelib.clicked.connect(self._start_login)
+        action_row.addWidget(self.btn_media_login_ranobelib)
         self.btn_fetch_rulate_media = QPushButton("Получить данные Rulate")
         self.btn_fetch_rulate_media.clicked.connect(self._fetch_rulate_media_metadata)
         action_row.addWidget(self.btn_fetch_rulate_media)
@@ -626,6 +647,10 @@ class RanobeUploaderApp(QMainWindow):
         self.media_publisher_edit.setPlaceholderText("Qidian / Fanqie Manhua")
         self.media_translator_team_edit = QLineEdit()
         self.media_translator_team_edit.setPlaceholderText("Название команды переводчиков")
+        self.media_source_url_edit = QLineEdit()
+        self.media_source_url_edit.setPlaceholderText(
+            "Qidian, Fanqie или https://www.ciweimao.com/book/100441110"
+        )
         author_widget = QWidget()
         author_layout = QHBoxLayout(author_widget)
         author_layout.setContentsMargins(0, 0, 0, 0)
@@ -644,12 +669,61 @@ class RanobeUploaderApp(QMainWindow):
         cover_url_layout.addWidget(self.media_cover_url_edit, 1)
         cover_url_layout.addWidget(self.btn_media_cover_preview)
 
+        self.media_cover_mode_combo = QComboBox()
+        self.media_cover_mode_combo.addItem("Взять с Rulate", MEDIA_COVER_MODE_RULATE)
+        self.media_cover_mode_combo.addItem(
+            "Переведённая оригинальная (Codex)",
+            MEDIA_COVER_MODE_CODEX,
+        )
+        self.media_cover_mode_combo.addItem("Не добавлять", MEDIA_COVER_MODE_NONE)
+        self.media_cover_mode_combo.currentIndexChanged.connect(self._on_media_cover_mode_changed)
+
         self.media_cover_preview_label = QLabel("Нет обложки")
         self.media_cover_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.media_cover_preview_label.setFixedSize(150, 220)
         self.media_cover_preview_label.setStyleSheet(
             "QLabel { border: 1px solid #555; background: #202020; color: #aaa; }"
         )
+
+        self.btn_media_translate_cover = QPushButton("Получить оригинал и перевести в Codex")
+        self.btn_media_translate_cover.setToolTip(
+            "Открыть ссылку оригинала, получить исходную обложку и заменить весь текст русским названием через Codex."
+        )
+        self.btn_media_translate_cover.clicked.connect(self._translate_media_source_cover_in_codex)
+        self.btn_media_open_codex_cover_folder = QPushButton("Открыть папку")
+        self.btn_media_open_codex_cover_folder.setEnabled(False)
+        self.btn_media_open_codex_cover_folder.clicked.connect(self._open_media_codex_cover_folder)
+        self.media_visible_source_checkbox = QCheckBox("Открывать источник видимо")
+
+        codex_cover_buttons = QWidget()
+        codex_cover_buttons_layout = QVBoxLayout(codex_cover_buttons)
+        codex_cover_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        codex_cover_buttons_layout.addWidget(self.btn_media_translate_cover)
+        codex_cover_buttons_layout.addWidget(self.btn_media_open_codex_cover_folder)
+        codex_cover_buttons_layout.addWidget(self.media_visible_source_checkbox)
+        codex_cover_buttons_layout.addStretch()
+
+        self.media_codex_cover_preview_label = QLabel("Обложка\nне переведена")
+        self.media_codex_cover_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.media_codex_cover_preview_label.setFixedSize(150, 220)
+        self.media_codex_cover_preview_label.setStyleSheet(
+            "QLabel { border: 1px solid #555; background: #202020; color: #aaa; }"
+        )
+        self.media_codex_cover_path_label = QLabel("")
+        self.media_codex_cover_path_label.setWordWrap(True)
+        self.media_codex_cover_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+
+        codex_cover_widget = QWidget()
+        codex_cover_layout = QHBoxLayout(codex_cover_widget)
+        codex_cover_layout.setContentsMargins(0, 0, 0, 0)
+        codex_cover_layout.addWidget(codex_cover_buttons)
+        codex_cover_preview_column = QVBoxLayout()
+        codex_cover_preview_column.addWidget(self.media_codex_cover_preview_label)
+        codex_cover_preview_column.addWidget(self.media_codex_cover_path_label)
+        codex_cover_layout.addLayout(codex_cover_preview_column)
+        codex_cover_layout.addStretch()
 
         self.media_year_edit = QLineEdit()
         self.media_year_edit.setText("2026")
@@ -718,8 +792,11 @@ class RanobeUploaderApp(QMainWindow):
         form.addRow("Автор:", author_widget)
         form.addRow("Издатель:", self.media_publisher_edit)
         form.addRow("Команда переводчиков:", self.media_translator_team_edit)
-        form.addRow("Обложка URL:", cover_url_widget)
-        form.addRow("Превью обложки:", self.media_cover_preview_label)
+        form.addRow("URL оригинала:", self.media_source_url_edit)
+        form.addRow("Обложка для RanobeLib:", self.media_cover_mode_combo)
+        form.addRow("Обложка Rulate URL:", cover_url_widget)
+        form.addRow("Превью Rulate:", self.media_cover_preview_label)
+        form.addRow("Перевод оригинала:", codex_cover_widget)
         form.addRow("Год релиза:", self.media_year_edit)
         form.addRow("Тип:", self.media_type_combo)
         form.addRow("Статус тайтла:", self.media_status_combo)
@@ -895,7 +972,14 @@ class RanobeUploaderApp(QMainWindow):
         self.settings.setValue("media_author", self.media_author_edit.text())
         self.settings.setValue("media_publisher", self.media_publisher_edit.text())
         self.settings.setValue("media_translator_team", self.media_translator_team_edit.text())
+        self.settings.setValue("media_source_url", self.media_source_url_edit.text())
         self.settings.setValue("media_cover_url", self.media_cover_url_edit.text())
+        self.settings.setValue("media_cover_mode", self._media_cover_mode())
+        self.settings.setValue("media_codex_cover_path", self._media_codex_cover_path)
+        self.settings.setValue(
+            "media_visible_source",
+            self.media_visible_source_checkbox.isChecked(),
+        )
         self.settings.setValue("media_year", self.media_year_edit.text())
         self.settings.setValue("media_description", self.media_description_edit.toPlainText())
         self.settings.setValue("media_rulate_genres", self.media_rulate_genres_edit.toPlainText())
@@ -1000,6 +1084,7 @@ class RanobeUploaderApp(QMainWindow):
             self._settings_text("media_translator_team", cached_media.get("translator_team", ""))
         )
         self.media_cover_url_edit.setText(self._settings_text("media_cover_url", cached_media.get("cover_url", "")))
+        self._restore_media_cover_settings(cached_media)
         self.media_year_edit.setText(str(self.settings.value("media_year", cached_media.get("year") or "2026") or "2026"))
         self.media_description_edit.setPlainText(
             self._settings_text("media_description", cached_media.get("description", ""))
@@ -1159,6 +1244,7 @@ class RanobeUploaderApp(QMainWindow):
             self._settings_text("media_translator_team", cached_media.get("translator_team", ""))
         )
         self.media_cover_url_edit.setText(self._settings_text("media_cover_url", cached_media.get("cover_url", "")))
+        self._restore_media_cover_settings(cached_media)
         self.media_year_edit.setText(str(self.settings.value("media_year", cached_media.get("year") or "2026") or "2026"))
         self.media_description_edit.setPlainText(
             self._settings_text("media_description", cached_media.get("description", ""))
@@ -1218,7 +1304,14 @@ class RanobeUploaderApp(QMainWindow):
         self.settings.setValue("media_author", self.media_author_edit.text())
         self.settings.setValue("media_publisher", self.media_publisher_edit.text())
         self.settings.setValue("media_translator_team", self.media_translator_team_edit.text())
+        self.settings.setValue("media_source_url", self.media_source_url_edit.text())
         self.settings.setValue("media_cover_url", self.media_cover_url_edit.text())
+        self.settings.setValue("media_cover_mode", self._media_cover_mode())
+        self.settings.setValue("media_codex_cover_path", self._media_codex_cover_path)
+        self.settings.setValue(
+            "media_visible_source",
+            self.media_visible_source_checkbox.isChecked(),
+        )
         self.settings.setValue("media_year", self.media_year_edit.text())
         self.settings.setValue("media_description", self.media_description_edit.toPlainText())
         self.settings.setValue("media_rulate_genres", self.media_rulate_genres_edit.toPlainText())
@@ -1389,16 +1482,27 @@ class RanobeUploaderApp(QMainWindow):
     # ── Авторизация ──
 
     def _start_login(self):
+        current_worker = getattr(self, "login_worker", None)
+        if current_worker is not None and current_worker.isRunning():
+            return
         self._open_process_dialog("login_lib", "RanobeLib: авторизация")
         self.login_worker = LoginWorker(site="ranobelib")
         self.login_worker.log_signal.connect(
             lambda level, msg: self._process_log("login_lib", level, msg)
         )
-        self.login_worker.finished_signal.connect(
-            lambda: (self.btn_login.setEnabled(True), self._finish_process_dialog("login_lib"))
-        )
-        self.btn_login.setEnabled(False)
+        self.login_worker.finished_signal.connect(self._on_ranobelib_login_finished)
+        self._set_ranobelib_login_buttons_enabled(False)
         self.login_worker.start()
+
+    def _set_ranobelib_login_buttons_enabled(self, enabled: bool):
+        for button_name in ("btn_login", "btn_media_login_ranobelib"):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                button.setEnabled(enabled)
+
+    def _on_ranobelib_login_finished(self):
+        self._set_ranobelib_login_buttons_enabled(True)
+        self._finish_process_dialog("login_lib")
 
     def _start_login_rulate(self):
         self._open_process_dialog("login_rulate", "Rulate: авторизация")
@@ -1426,6 +1530,30 @@ class RanobeUploaderApp(QMainWindow):
     def _settings_text(self, key: str, fallback: str = "") -> str:
         value = self.settings.value(key, fallback)
         return str(value or "")
+
+    def _restore_media_cover_settings(self, cached_media: dict):
+        self.media_source_url_edit.setText(
+            self._settings_text("media_source_url", cached_media.get("source_url", ""))
+        )
+        mode = self._settings_text(
+            "media_cover_mode",
+            cached_media.get("cover_mode", MEDIA_COVER_MODE_RULATE),
+        )
+        self._set_combo_data(self.media_cover_mode_combo, mode)
+        self.media_visible_source_checkbox.setChecked(
+            self.settings.value("media_visible_source", False, type=bool)
+        )
+
+        cover_path = self._settings_text(
+            "media_codex_cover_path",
+            cached_media.get("cover_path", ""),
+        )
+        if cover_path and Path(cover_path).is_file():
+            self._media_codex_cover_path = str(Path(cover_path).resolve())
+            self._set_media_codex_cover_preview(self._media_codex_cover_path)
+        else:
+            self._clear_media_codex_cover()
+        self._on_media_cover_mode_changed()
 
     def _media_translator_team_text(self, metadata: dict | None = None) -> str:
         metadata_team = str((metadata or {}).get("translator_team") or "").strip()
@@ -1466,6 +1594,159 @@ class RanobeUploaderApp(QMainWindow):
     def _set_media_cover_preview_text(self, text: str):
         self.media_cover_preview_label.clear()
         self.media_cover_preview_label.setText(text)
+
+    def _media_cover_mode(self) -> str:
+        mode = self.media_cover_mode_combo.currentData()
+        if mode in {MEDIA_COVER_MODE_RULATE, MEDIA_COVER_MODE_CODEX, MEDIA_COVER_MODE_NONE}:
+            return str(mode)
+        return MEDIA_COVER_MODE_RULATE
+
+    def _on_media_cover_mode_changed(self, _index: int = -1):
+        mode = self._media_cover_mode()
+        self.media_cover_url_edit.setEnabled(mode == MEDIA_COVER_MODE_RULATE)
+        self.btn_media_cover_preview.setEnabled(mode == MEDIA_COVER_MODE_RULATE)
+
+    def _set_media_codex_cover_preview(
+        self,
+        image_path: str | None,
+        placeholder: str = "Обложка\nне переведена",
+    ):
+        label = self.media_codex_cover_preview_label
+        pixmap = QPixmap()
+        if image_path and pixmap.load(image_path):
+            scaled = pixmap.scaled(
+                label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            label.setPixmap(scaled)
+            label.setToolTip(image_path)
+            self.media_codex_cover_path_label.setText(Path(image_path).name)
+            self.media_codex_cover_path_label.setToolTip(image_path)
+            self.btn_media_open_codex_cover_folder.setEnabled(True)
+            return
+
+        label.clear()
+        label.setText(placeholder)
+        label.setToolTip("")
+        self.media_codex_cover_path_label.clear()
+        self.media_codex_cover_path_label.setToolTip("")
+        self.btn_media_open_codex_cover_folder.setEnabled(False)
+
+    def _clear_media_codex_cover(self):
+        self._media_codex_cover_path = ""
+        self._media_source_cover_metadata = None
+        self.settings.setValue("media_codex_cover_path", "")
+        self._set_media_codex_cover_preview(None)
+
+    def _open_media_codex_cover_folder(self):
+        cover_path = Path(self._media_codex_cover_path or "").expanduser()
+        if not cover_path.is_file():
+            self._clear_media_codex_cover()
+            QMessageBox.warning(self, "Codex", "Сначала переведите обложку в Codex.")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(cover_path.parent))):
+            QMessageBox.warning(self, "Codex", f"Не удалось открыть папку:\n{cover_path.parent}")
+
+    def _translate_media_source_cover_in_codex(self):
+        source_url = self.media_source_url_edit.text().strip()
+        if not validate_source_url(source_url):
+            QMessageBox.warning(
+                self,
+                "Codex",
+                "Для перевода обложки нужна ссылка оригинала на Qidian, Fanqie или Ciweimao. "
+                "Сначала получите данные Rulate либо заполните поле «URL оригинала» вручную.",
+            )
+            return
+
+        title_ru = self.media_title_ru_edit.text().strip()
+        if not title_ru:
+            QMessageBox.warning(self, "Codex", "Сначала заполните русское название.")
+            return
+        if self._media_source_cover_fetch_worker or self._media_codex_cover_worker:
+            return
+
+        self._media_source_cover_metadata = None
+        self._media_codex_cover_path = ""
+        self.settings.setValue("media_codex_cover_path", "")
+        self._media_cover_request_source_url = source_url
+        self._media_cover_request_title_ru = title_ru
+        self.btn_media_translate_cover.setEnabled(False)
+        self._set_media_codex_cover_preview(None, "Получение\nоригинала...")
+        self._open_process_dialog("rulate_media_cover", "Codex: перевод оригинальной обложки")
+        worker = QidianFetchWorker(
+            source_url,
+            visible_browser=self.media_visible_source_checkbox.isChecked(),
+        )
+        self._media_source_cover_fetch_worker = worker
+        worker.log_signal.connect(
+            lambda level, msg: self._process_log("rulate_media_cover", level, msg)
+        )
+        worker.metadata_ready.connect(self._on_media_source_cover_metadata)
+        worker.finished_signal.connect(self._on_media_source_cover_fetch_finished)
+        worker.start()
+
+    def _on_media_source_cover_metadata(self, metadata):
+        if not getattr(metadata, "cover_url", "") and not getattr(metadata, "cover_image_data", b""):
+            self._process_log(
+                "rulate_media_cover",
+                "ERROR",
+                "Источник: ссылка на исходную обложку не найдена.",
+            )
+            return
+        self._media_source_cover_metadata = metadata
+
+    def _on_media_source_cover_fetch_finished(self):
+        self._media_source_cover_fetch_worker = None
+        metadata = self._media_source_cover_metadata
+        if metadata is None:
+            self._media_cover_request_source_url = ""
+            self._media_cover_request_title_ru = ""
+            self.btn_media_translate_cover.setEnabled(True)
+            self._set_media_codex_cover_preview(None)
+            self._finish_process_dialog("rulate_media_cover")
+            return
+
+        self._set_media_codex_cover_preview(None, "Перевод...")
+        worker = CodexCoverTranslateWorker(
+            getattr(metadata, "cover_url", ""),
+            self._media_cover_request_title_ru,
+            referer=self._media_cover_request_source_url,
+            source_image_data=getattr(metadata, "cover_image_data", b""),
+        )
+        self._media_codex_cover_worker = worker
+        worker.log_signal.connect(
+            lambda level, msg: self._process_log("rulate_media_cover", level, msg)
+        )
+        worker.cover_ready.connect(self._apply_media_codex_cover)
+        worker.finished_signal.connect(self._on_media_codex_cover_finished)
+        worker.start()
+
+    def _apply_media_codex_cover(self, image_path: str):
+        cover_path = Path(image_path).expanduser()
+        if not cover_path.is_file():
+            self._process_log(
+                "rulate_media_cover",
+                "ERROR",
+                f"Codex: файл результата не найден: {cover_path}",
+            )
+            return
+        self._media_codex_cover_path = str(cover_path.resolve())
+        self._set_media_codex_cover_preview(self._media_codex_cover_path)
+        self._set_combo_data(self.media_cover_mode_combo, MEDIA_COVER_MODE_CODEX)
+        self.settings.setValue("media_source_url", self.media_source_url_edit.text().strip())
+        self.settings.setValue("media_cover_mode", MEDIA_COVER_MODE_CODEX)
+        self.settings.setValue("media_codex_cover_path", self._media_codex_cover_path)
+        self._save_rulate_media_state(sync=True)
+
+    def _on_media_codex_cover_finished(self):
+        self._media_codex_cover_worker = None
+        self._media_cover_request_source_url = ""
+        self._media_cover_request_title_ru = ""
+        self.btn_media_translate_cover.setEnabled(True)
+        if not self._media_codex_cover_path:
+            self._set_media_codex_cover_preview(None)
+        self._finish_process_dialog("rulate_media_cover")
 
     def _refresh_media_cover_preview(self):
         url = self.media_cover_url_edit.text().strip()
@@ -1549,6 +1830,7 @@ class RanobeUploaderApp(QMainWindow):
         self._finish_process_dialog("rulate_media_fetch")
 
     def _apply_rulate_media_metadata(self, metadata: dict):
+        previous_source_url = str(self._rulate_media_metadata.get("source_url") or "").strip()
         self._rulate_media_metadata = dict(metadata or {})
         self.media_rulate_url_input.setText(
             metadata.get("rulate_edit_url") or metadata.get("source_url", self._media_rulate_url())
@@ -1567,6 +1849,14 @@ class RanobeUploaderApp(QMainWindow):
         if translator_team:
             self._rulate_media_metadata["translator_team"] = translator_team
             self.settings.setValue("media_translator_team", translator_team)
+        source_url = str(metadata.get("source_url") or "").strip()
+        source_url_edit = getattr(self, "media_source_url_edit", None)
+        if source_url_edit is not None:
+            source_url_edit.setText(source_url)
+        if previous_source_url and source_url and previous_source_url != source_url:
+            clear_codex_cover = getattr(self, "_clear_media_codex_cover", None)
+            if callable(clear_codex_cover):
+                clear_codex_cover()
         self.media_cover_url_edit.setText(metadata.get("cover_url", ""))
         self._refresh_media_cover_preview()
         self.media_year_edit.setText(metadata.get("year") or "2026")
@@ -1597,7 +1887,10 @@ class RanobeUploaderApp(QMainWindow):
                 "author": self.media_author_edit.text().strip(),
                 "publisher": self.media_publisher_edit.text().strip(),
                 "translator_team": self.media_translator_team_edit.text().strip(),
+                "source_url": self.media_source_url_edit.text().strip(),
                 "cover_url": self.media_cover_url_edit.text().strip(),
+                "cover_mode": self._media_cover_mode(),
+                "cover_path": self._media_codex_cover_path,
                 "year": self.media_year_edit.text().strip(),
                 "description": self.media_description_edit.toPlainText().strip(),
                 "rulate_genres": _split_csv_text(self.media_rulate_genres_edit.toPlainText()),
@@ -1681,6 +1974,16 @@ class RanobeUploaderApp(QMainWindow):
                 return
 
         options = self._collect_rulate_media_options()
+        if options.get("cover_mode") == MEDIA_COVER_MODE_CODEX:
+            cover_path = Path(options.get("cover_path") or "").expanduser()
+            if not cover_path.is_file():
+                QMessageBox.warning(
+                    self,
+                    "Обложка",
+                    "Выбран перевод оригинальной обложки, но готового файла нет. "
+                    "Сначала нажмите «Получить оригинал и перевести в Codex» либо выберите другой вариант.",
+                )
+                return
         missing = []
         if not options.get("title_ru"):
             missing.append("название RU")
