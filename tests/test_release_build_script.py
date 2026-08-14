@@ -26,19 +26,40 @@ def _load_spec_hiddenimports(spec_name):
         "EXE": lambda *_args, **_kwargs: object(),
         "COLLECT": lambda *_args, **_kwargs: object(),
         "BUNDLE": lambda *_args, **_kwargs: object(),
+        "SPECPATH": str(PROJECT_ROOT),
     }
 
     previous = {name: sys.modules.get(name) for name in modules}
+    previous_build_config = sys.modules.pop("pyinstaller_config", None)
+    previous_sys_path = list(sys.path)
     try:
         sys.modules.update(modules)
+        sys.path[:] = [
+            entry
+            for entry in sys.path
+            if Path(entry or ".").resolve() != PROJECT_ROOT
+        ]
         spec_path = PROJECT_ROOT / spec_name
-        exec(compile(spec_path.read_text(encoding="utf-8"), spec_path, "exec"), globals_dict)
+        try:
+            exec(
+                compile(spec_path.read_text(encoding="utf-8"), spec_path, "exec"),
+                globals_dict,
+            )
+        except ModuleNotFoundError as error:
+            raise AssertionError(
+                f"{spec_name} must load build helpers through SPECPATH: {error}"
+            ) from error
     finally:
+        sys.path[:] = previous_sys_path
         for name, module in previous.items():
             if module is None:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+        if previous_build_config is None:
+            sys.modules.pop("pyinstaller_config", None)
+        else:
+            sys.modules["pyinstaller_config"] = previous_build_config
 
     return captured["hiddenimports"]
 
@@ -70,11 +91,11 @@ def test_release_specs_package_every_lazy_api_module():
         for module_path in servers._LAZY_SERVER_MODULES.values()
     }
 
+    ci_release = set(_load_spec_hiddenimports("translatorFork_MOD.spec"))
+    full = set(_load_spec_hiddenimports("translatorFork-full.spec"))
     translator_only = set(
         _load_spec_hiddenimports("translatorFork-translator-only.spec")
     )
-    full = set(_load_spec_hiddenimports("translatorFork-full.spec"))
-    ci_release = set(_load_spec_hiddenimports("translatorFork_MOD.spec"))
 
     assert handler_modules <= translator_only
     assert handler_modules | server_modules <= full

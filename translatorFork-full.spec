@@ -1,8 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+import runpy
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
-from pyinstaller_config import LAZY_HANDLER_HIDDEN_IMPORTS, LAZY_SERVER_HIDDEN_IMPORTS
+
+
+_BUILD_CONFIG = runpy.run_path(str(Path(SPECPATH) / "pyinstaller_config.py"))
+LAZY_HANDLER_HIDDEN_IMPORTS = _BUILD_CONFIG["LAZY_HANDLER_HIDDEN_IMPORTS"]
+LAZY_SERVER_HIDDEN_IMPORTS = _BUILD_CONFIG["LAZY_SERVER_HIDDEN_IMPORTS"]
 
 
 PROJECT_ROOT = Path.cwd()
