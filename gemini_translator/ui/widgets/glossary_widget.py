@@ -4,6 +4,7 @@ import json
 import os
 
 import re
+import traceback
 import zipfile
 import time
 
@@ -1050,7 +1051,29 @@ class GlossaryWidget(QWidget):
             parent_dialog.is_blocked_by_child_dialog = False
             parent_dialog._check_and_sync_active_session()
             
+    def _report_glossary_error(self, context: str, error: Exception) -> None:
+        details = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        print(f"[GLOSSARY-ERROR] {context}: {details}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Ошибка глоссария")
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setText(context)
+        box.setInformativeText(f"{type(error).__name__}: {error}")
+        box.setDetailedText(details)
+        box.addButton("Закрыть", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
     def _open_ai_generation_dialog(self):
+        try:
+            self._open_ai_generation_dialog_impl()
+        except Exception as error:
+            self._report_glossary_error(
+                "Не удалось открыть генерацию глоссария.", error
+            )
+
+    def _open_ai_generation_dialog_impl(self):
         from ..dialogs.glossary_dialogs.ai_generation import GenerationSessionDialog, GenerationSessionPage
         
         # Ищем наше главное окно InitialSetupDialog/InitialSetupPage, поднимаясь по иерархии

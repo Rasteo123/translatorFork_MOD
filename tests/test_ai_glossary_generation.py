@@ -58,6 +58,34 @@ class GlossaryBackgroundPreparationTests(unittest.TestCase):
             ("Text/one.xhtml", "Text/two.xhtml"),
         )
 
+    def test_deferred_page_initialization_reports_error_without_escaping_qt_slot(self):
+        class _Harness:
+            html_files = ["Text/one.xhtml"]
+            _pending_new_terms_limit = None
+            reported = []
+
+            class _Button:
+                def setText(self, _text):
+                    return None
+
+            reselect_chapters_btn = _Button()
+
+            def _calculate_optimal_batch_size(self):
+                raise RuntimeError("windows deferred initialization failed")
+
+            def _rebuild_glossary_tasks(self):
+                raise AssertionError("task rebuild must not run after initialization failure")
+
+            def _report_glossary_error(self, context, error):
+                self.reported.append((context, error))
+
+        harness = _Harness()
+        GenerationSessionPage._deferred_initial_load(harness)
+
+        self.assertEqual(len(harness.reported), 1)
+        self.assertIn("подготовить", harness.reported[0][0].lower())
+        self.assertIsInstance(harness.reported[0][1], RuntimeError)
+
 
 class _LineEditStub:
     def __init__(self):

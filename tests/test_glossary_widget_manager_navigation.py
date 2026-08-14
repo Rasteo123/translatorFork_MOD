@@ -180,3 +180,21 @@ class GlossaryWidgetManagerNavigationTests(unittest.TestCase):
         self.assertEqual(self.session.sync_count, 1)
         self.assertEqual(self.session.prepare_count, 1)
         self.assertEqual(self.session.auto_translate_widget.refresh_count, 1)
+
+    def test_ai_generation_page_creation_error_stays_inside_ui_boundary(self):
+        reported = []
+        self.widget._report_glossary_error = (
+            lambda context, error: reported.append((context, error))
+        )
+
+        with patch.object(
+            ai_generation_module,
+            "GenerationSessionPage",
+            side_effect=RuntimeError("windows page initialization failed"),
+        ):
+            self.widget._open_ai_generation_dialog()
+
+        self.assertEqual(len(reported), 1)
+        self.assertIn("открыть", reported[0][0].lower())
+        self.assertIsInstance(reported[0][1], RuntimeError)
+        self.assertTrue(self.session.isEnabled())

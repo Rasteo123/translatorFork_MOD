@@ -5,6 +5,7 @@ import os
 import io
 import zipfile
 import time
+import traceback
 import json
 import math
 from os_patch import PatientLock
@@ -482,6 +483,26 @@ class GenerationSessionPage(ShellPage):
             0,
             lambda event=event, bus=bus, emit_to_bus=emit_to_bus: emit_to_bus(bus, event),
         )
+
+    def _report_glossary_error(self, context: str, error: Exception) -> None:
+        details = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        message = f"[GLOSSARY-ERROR] {context}: {type(error).__name__}: {error}"
+        print(f"{message}\n{details}")
+        try:
+            self._post_event('log_message', {'message': message})
+        except Exception:
+            pass
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Ошибка глоссария")
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setText(context)
+        box.setInformativeText(f"{type(error).__name__}: {error}")
+        box.setDetailedText(details)
+        box.addButton("Закрыть", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
 
     def _merge_initial_ui_settings(self, initial_ui_settings):
         merged = dict(initial_ui_settings or {})
@@ -3196,18 +3217,29 @@ class GenerationSessionPage(ShellPage):
 
     def _deferred_initial_load(self):
         """Выполняет все действия по заполнению UI после отрисовки."""
-        self.reselect_chapters_btn.setText(f"Главы: {len(self.html_files)}")
-        # 1. Считаем оптимальный размер пакета (это вызовет расчет лимита терминов через сигнал)
-        self._calculate_optimal_batch_size()
-        if self._pending_new_terms_limit is not None:
-            self._apply_new_terms_limit_value(
-                self._pending_new_terms_limit,
-                user_defined=self._pending_new_terms_limit_user_defined,
+        try:
+            self.reselect_chapters_btn.setText(f"Главы: {len(self.html_files)}")
+            # 1. Считаем оптимальный размер пакета (это вызовет расчет лимита терминов через сигнал)
+            self._calculate_optimal_batch_size()
+            if self._pending_new_terms_limit is not None:
+                self._apply_new_terms_limit_value(
+                    self._pending_new_terms_limit,
+                    user_defined=self._pending_new_terms_limit_user_defined,
+                )
+                self._pending_new_terms_limit = None
+                self._pending_new_terms_limit_user_defined = True
+            # 2. И только теперь строим задачи. Фоновый результат также обновит CJK.
+            self._rebuild_glossary_tasks()
+        except Exception as error:
+            reset_busy = getattr(self, '_set_glossary_rebuild_busy', None)
+            if callable(reset_busy):
+                try:
+                    reset_busy(False)
+                except Exception:
+                    pass
+            self._report_glossary_error(
+                "Не удалось подготовить генерацию глоссария.", error
             )
-            self._pending_new_terms_limit = None
-            self._pending_new_terms_limit_user_defined = True
-        # 2. И только теперь строим задачи. Фоновый результат также обновит CJK.
-        self._rebuild_glossary_tasks()
         
     def closeEvent(self, event):
         """Перехватываем событие закрытия (крестик) и направляем его в нашу логику reject."""
