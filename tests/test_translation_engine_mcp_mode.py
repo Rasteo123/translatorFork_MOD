@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -136,6 +137,39 @@ class TranslationEngineMcpModeTests(unittest.TestCase):
         self.assertIn("MCP AI-клиент", reason)
         self.assertIn("Сброс примерно 2026-07-02 18:30:00 +05", reason)
         self.assertNotIn("Все API ключи исчерпаны", reason)
+
+    def test_worker_initialization_failure_ends_only_the_session(self):
+        bus = _RecordingBus()
+        engine = TranslationEngine(
+            context_manager=_ContextManager(),
+            settings_manager=_SettingsManager(),
+            task_manager=_TaskManager(),
+            event_bus=bus,
+        )
+        self.addCleanup(engine.cleanup)
+        engine.session_id = "glossary-session"
+        engine.session_settings = {
+            "provider": "gemini",
+            "api_keys": ["test-key"],
+        }
+        engine.api_key_manager = ApiKeyManager(["test-key"])
+
+        with (
+            patch(
+                "gemini_translator.core.translation_engine.UniversalWorker",
+                side_effect=ModuleNotFoundError("missing Windows bundle module"),
+            ),
+            patch.object(engine, "_end_session") as end_session,
+        ):
+            engine._launch_worker("test-key")
+
+        end_session.assert_called_once()
+        reason = end_session.call_args.args[0]
+        self.assertIn("ModuleNotFoundError", reason)
+        self.assertIn("missing Windows bundle module", reason)
+        self.assertEqual(engine.keys_map, {})
+        self.assertEqual(engine.active_workers_map, {})
+        engine.session_id = None
 
 
 if __name__ == "__main__":

@@ -112,6 +112,69 @@ class _ToolCard(QtWidgets.QFrame):
         super().mouseReleaseEvent(event)
 
 
+class _UpdateAvailableDialog(QtWidgets.QDialog):
+    """Overlay-card content for release notes with fixed action buttons."""
+
+    def __init__(
+        self,
+        title_version: str,
+        html_description: str,
+        install_label: str,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Доступно обновление")
+        self.action = "later"
+        self.setMinimumWidth(420)
+        self.resize(640, 520)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
+
+        heading = QtWidgets.QLabel(
+            f"Доступна новая версия: <b>{title_version}</b>", self
+        )
+        heading.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+
+        notes = QtWidgets.QTextBrowser(self)
+        notes.setHtml(html_description)
+        notes.setOpenExternalLinks(True)
+        notes.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        notes.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        layout.addWidget(notes, 1)
+
+        buttons = QtWidgets.QDialogButtonBox(self)
+        install = buttons.addButton(
+            install_label, QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        later = buttons.addButton(
+            "Напомнить позже", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole
+        )
+        ignore = buttons.addButton(
+            "Игнорировать", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        )
+        install.setDefault(True)
+        install.clicked.connect(lambda: self._finish("install"))
+        later.clicked.connect(lambda: self._finish("later"))
+        ignore.clicked.connect(lambda: self._finish("ignore"))
+        layout.addWidget(buttons)
+
+    def _finish(self, action: str) -> None:
+        self.action = action
+        if action == "install":
+            self.accept()
+        else:
+            self.reject()
+
+
 class HomePage(ShellPage):
     page_title = ""  # home shows no Back; nav bar title stays empty
 
@@ -325,24 +388,16 @@ class HomePage(ShellPage):
     def _present_update_dialog(self, info) -> str:
         """Показывает диалог обновления; возвращает install/later/ignore."""
         import re
-        msg = QtWidgets.QMessageBox(self)
-        msg.setWindowTitle("Доступно обновление")
-        msg.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.LinksAccessibleByMouse)
         html_desc = info.description.replace("\n", "<br>")
         html_desc = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", html_desc)
         html_desc = re.sub(r"(https?://[^\s<]+)", r'<a href="\1">\1</a>', html_desc)
-        msg.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        msg.setText(f"Доступна новая версия: <b>{info.title_version}</b><br><br>{html_desc}")
         install_label = "Открыть страницу загрузки" if info.manual else "Скачать и установить"
-        btn_install = msg.addButton(install_label, QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        msg.addButton("Напомнить позже", QtWidgets.QMessageBox.ButtonRole.RejectRole)
-        btn_ignore = msg.addButton("Игнорировать", QtWidgets.QMessageBox.ButtonRole.ActionRole)
-        msg.exec()
-        if msg.clickedButton() == btn_install:
-            return "install"
-        if msg.clickedButton() == btn_ignore:
-            return "ignore"
-        return "later"
+        dialog = _UpdateAvailableDialog(
+            info.title_version, html_desc, install_label, self
+        )
+        from gemini_translator.ui.overlay_host import exec_dialog
+        exec_dialog(self, dialog)
+        return dialog.action
 
     # -- загрузка релизного ассета --
 

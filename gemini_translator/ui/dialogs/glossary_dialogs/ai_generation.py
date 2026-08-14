@@ -1,10 +1,12 @@
 # НОВЫЙ ФАЙЛ: gemini_translator\ui\dialogs\glossary_dialogs\ai_generation.py
 
+import copy
 import json
 import os
 import io
 import zipfile
 import time
+import traceback
 import json
 import math
 from os_patch import PatientLock
@@ -392,6 +394,10 @@ class GenerationSessionPage(ShellPage):
         self.pipeline_run = None
         self._pipeline_active_step_id = None
         self._pipeline_waiting_for_next_step = False
+        self._pipeline_waiting_for_task_preparation = False
+        self._pipeline_pending_session_settings = None
+        self._pipeline_pending_sequential_mode = None
+        self._pipeline_preparation_ui_locked = False
         self._pipeline_stop_requested = False
         self._is_refreshing_pipeline_table = False
         self._restore_saved_ui_settings = bool(restore_saved_ui_settings)
@@ -482,6 +488,26 @@ class GenerationSessionPage(ShellPage):
             0,
             lambda event=event, bus=bus, emit_to_bus=emit_to_bus: emit_to_bus(bus, event),
         )
+
+    def _report_glossary_error(self, context: str, error: Exception) -> None:
+        details = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        message = f"[GLOSSARY-ERROR] {context}: {type(error).__name__}: {error}"
+        print(f"{message}\n{details}")
+        try:
+            self._post_event('log_message', {'message': message})
+        except Exception:
+            pass
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Ошибка глоссария")
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setText(context)
+        box.setInformativeText(f"{type(error).__name__}: {error}")
+        box.setDetailedText(details)
+        box.addButton("Закрыть", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
 
     def _merge_initial_ui_settings(self, initial_ui_settings):
         merged = dict(initial_ui_settings or {})
@@ -809,9 +835,13 @@ class GenerationSessionPage(ShellPage):
         return None
 
     def _clear_pipeline_run_state(self):
+        self._set_pipeline_preparation_ui_locked(False)
         self.pipeline_run = None
         self._pipeline_active_step_id = None
         self._pipeline_waiting_for_next_step = False
+        self._pipeline_waiting_for_task_preparation = False
+        self._pipeline_pending_session_settings = None
+        self._pipeline_pending_sequential_mode = None
         self._pipeline_stop_requested = False
 
     def _get_selected_pipeline_step_id(self):
@@ -1165,7 +1195,10 @@ class GenerationSessionPage(ShellPage):
         has_selection = self._get_selected_pipeline_step_id() is not None
         has_steps = bool(self.pipeline_steps)
         has_templates = self.pipeline_template_combo.count() > 0
-        editable = not self.is_session_active
+        editable = (
+            not self.is_session_active
+            and not getattr(self, '_pipeline_preparation_ui_locked', False)
+        )
 
         self.pipeline_enabled_checkbox.setEnabled(editable)
         self.pipeline_template_combo.setEnabled(editable)
@@ -2082,6 +2115,23 @@ class GenerationSessionPage(ShellPage):
                 self.status_bar.clear_message()
         self._update_start_button_state()
 
+    def _set_pipeline_preparation_ui_locked(self, locked: bool):
+        locked = bool(locked)
+        self._pipeline_preparation_ui_locked = locked
+
+        if hasattr(self, 'tabs'):
+            # The results/log page is the final tab and stays available for
+            # observation; all settings-bearing pages become read-only.
+            for index in range(max(0, self.tabs.count() - 1)):
+                page = self.tabs.widget(index)
+                if page is not None:
+                    page.setEnabled(not locked)
+
+        if hasattr(self, 'glossary_widget'):
+            self.glossary_widget.set_controls_enabled(not locked)
+
+        self._update_pipeline_buttons_state()
+
     def _start_glossary_rebuild_worker(self, request):
         self._pending_glossary_rebuild_request = None
         self._set_glossary_rebuild_busy(True)
@@ -2118,6 +2168,7 @@ class GenerationSessionPage(ShellPage):
             error = result.get('error') if isinstance(result, dict) else None
             error_text = error or 'неизвестная ошибка'
             self.task_preparation_finished.emit(False, error_text)
+            self._handle_pipeline_task_preparation_finished(False, error_text)
             if self.isVisible():
                 QMessageBox.critical(
                     self,
@@ -2131,6 +2182,31 @@ class GenerationSessionPage(ShellPage):
             is_cjk_recommended=bool(result.get('is_any_cjk')),
         )
         self.task_preparation_finished.emit(True, '')
+        self._handle_pipeline_task_preparation_finished(True, '')
+
+    def _handle_pipeline_task_preparation_finished(self, succeeded, error_text):
+        if not getattr(self, '_pipeline_waiting_for_task_preparation', False):
+            return
+
+        self._pipeline_waiting_for_task_preparation = False
+        session_settings = getattr(self, '_pipeline_pending_session_settings', None)
+        sequential_mode = getattr(self, '_pipeline_pending_sequential_mode', None)
+        self._pipeline_pending_session_settings = None
+        self._pipeline_pending_sequential_mode = None
+        self._set_pipeline_preparation_ui_locked(False)
+        if not self.pipeline_run or not self._pipeline_active_step_id:
+            return
+
+        if succeeded:
+            self._start_session(
+                settings_override=session_settings,
+                sequential_mode_override=sequential_mode,
+            )
+            return
+
+        reason = f"Не удалось подготовить задачи глоссария: {error_text or 'неизвестная ошибка'}"
+        self._handle_pipeline_session_finished(reason)
+        self._finalize_pipeline_run()
 
     
     def _create_settings_tab(self):
@@ -2540,9 +2616,16 @@ class GenerationSessionPage(ShellPage):
         self._append_pipeline_log(start_message, step_id=next_step.step_id)
         self._post_event('log_message', {'message': start_message})
 
+        self._pipeline_waiting_for_task_preparation = True
+        self._set_pipeline_preparation_ui_locked(True)
         self._apply_full_ui_settings(next_step.settings)
+        self.glossary_widget.commit_active_editor()
+        session_settings = self._get_common_settings()
+        session_settings['num_instances'] = self.instances_spin.value()
+        session_settings['glossary_merge_mode'] = self.get_merge_mode()
+        self._pipeline_pending_session_settings = copy.deepcopy(session_settings)
+        self._pipeline_pending_sequential_mode = self.sequential_mode_checkbox.isChecked()
         self._rebuild_glossary_tasks()
-        self._start_session()
 
     def _handle_pipeline_log_event(self, data):
         if not self.pipeline_run or not self._pipeline_active_step_id:
@@ -2608,6 +2691,10 @@ class GenerationSessionPage(ShellPage):
             return
 
         self._pipeline_waiting_for_next_step = False
+        self._pipeline_waiting_for_task_preparation = False
+        self._pipeline_pending_session_settings = None
+        self._pipeline_pending_sequential_mode = None
+        self._set_pipeline_preparation_ui_locked(False)
         self._pipeline_active_step_id = None
         status = self.pipeline_run.status
         if status == PIPELINE_STATUS_SUCCESS:
@@ -2674,7 +2761,7 @@ class GenerationSessionPage(ShellPage):
         self.result_ready.emit(False)
 
     
-    def _start_session(self):
+    def _start_session(self, settings_override=None, sequential_mode_override=None):
         """Запускает сессию генерации, предварительно очистив старые результаты в БД."""
         worker = getattr(self, '_glossary_rebuild_worker', None)
         if getattr(self, '_is_glossary_rebuilding', False) or (worker is not None and worker.isRunning()):
@@ -2696,7 +2783,12 @@ class GenerationSessionPage(ShellPage):
         
         self._get_all_processed_chapters()
         # Очищаем таблицу глоссария в БД и добавляем начальные данные (включая ручные правки)
-        initial_glossary_for_session = self.glossary_widget.get_glossary()
+        if settings_override is None:
+            initial_glossary_for_session = self.glossary_widget.get_glossary()
+        else:
+            initial_glossary_for_session = copy.deepcopy(
+                settings_override.get('initial_glossary_list', [])
+            )
         if self.task_manager:
             self.task_manager.clear_glossary_results()
             if initial_glossary_for_session:
@@ -2715,21 +2807,41 @@ class GenerationSessionPage(ShellPage):
         self._forced_interrupt_close_finalized = False
         self._session_finished_successfully = False
         self._set_ui_active(True)
-        self.settings_manager.save_last_glossary_prompt_text(self.prompt_widget.get_prompt())
+        prompt_text = (
+            self.prompt_widget.get_prompt()
+            if settings_override is None
+            else settings_override.get('glossary_generation_prompt')
+        )
+        self.settings_manager.save_last_glossary_prompt_text(prompt_text)
         self.settings_manager.save_last_glossary_prompt_preset_name(self.prompt_widget.get_current_preset_name())
         self._save_persistent_ui_settings()
         
-        settings = self._get_common_settings()
+        settings = (
+            self._get_common_settings()
+            if settings_override is None
+            else copy.deepcopy(settings_override)
+        )
+        is_sequential = (
+            self.sequential_mode_checkbox.isChecked()
+            if sequential_mode_override is None
+            else bool(sequential_mode_override)
+        )
         
-        if self.sequential_mode_checkbox.isChecked():
+        if is_sequential:
+            settings_getter = (
+                self._get_common_settings
+                if settings_override is None
+                else lambda settings=settings: copy.deepcopy(settings)
+            )
             self.orchestrator = SequentialTaskProvider(
-                self._get_common_settings, self,
+                settings_getter, self,
                 event_bus=self.bus, translate_engine=self.engine
             )
             self.orchestrator.start()
         else:
-            settings['num_instances'] = self.instances_spin.value()
-            settings['glossary_merge_mode'] = self.get_merge_mode()
+            if settings_override is None:
+                settings['num_instances'] = self.instances_spin.value()
+                settings['glossary_merge_mode'] = self.get_merge_mode()
             self._post_event('start_session_requested', {'settings': settings})
     
     def _refresh_glossary_from_db(self):
@@ -3196,18 +3308,29 @@ class GenerationSessionPage(ShellPage):
 
     def _deferred_initial_load(self):
         """Выполняет все действия по заполнению UI после отрисовки."""
-        self.reselect_chapters_btn.setText(f"Главы: {len(self.html_files)}")
-        # 1. Считаем оптимальный размер пакета (это вызовет расчет лимита терминов через сигнал)
-        self._calculate_optimal_batch_size()
-        if self._pending_new_terms_limit is not None:
-            self._apply_new_terms_limit_value(
-                self._pending_new_terms_limit,
-                user_defined=self._pending_new_terms_limit_user_defined,
+        try:
+            self.reselect_chapters_btn.setText(f"Главы: {len(self.html_files)}")
+            # 1. Считаем оптимальный размер пакета (это вызовет расчет лимита терминов через сигнал)
+            self._calculate_optimal_batch_size()
+            if self._pending_new_terms_limit is not None:
+                self._apply_new_terms_limit_value(
+                    self._pending_new_terms_limit,
+                    user_defined=self._pending_new_terms_limit_user_defined,
+                )
+                self._pending_new_terms_limit = None
+                self._pending_new_terms_limit_user_defined = True
+            # 2. И только теперь строим задачи. Фоновый результат также обновит CJK.
+            self._rebuild_glossary_tasks()
+        except Exception as error:
+            reset_busy = getattr(self, '_set_glossary_rebuild_busy', None)
+            if callable(reset_busy):
+                try:
+                    reset_busy(False)
+                except Exception:
+                    pass
+            self._report_glossary_error(
+                "Не удалось подготовить генерацию глоссария.", error
             )
-            self._pending_new_terms_limit = None
-            self._pending_new_terms_limit_user_defined = True
-        # 2. И только теперь строим задачи. Фоновый результат также обновит CJK.
-        self._rebuild_glossary_tasks()
         
     def closeEvent(self, event):
         """Перехватываем событие закрытия (крестик) и направляем его в нашу логику reject."""

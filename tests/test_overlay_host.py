@@ -203,6 +203,70 @@ class OverlayHostTests(unittest.TestCase):
         self.assertTrue(seen["panel_shown"])
         self.assertEqual(result, int(QtWidgets.QMessageBox.StandardButton.Yes))
 
+    def test_long_update_notes_scroll_and_keep_actions_inside_card(self):
+        from gemini_translator.ui.pages.home_page import HomePage
+        from gemini_translator.utils.updater import UpdateInfo
+
+        shell = self._shell()
+        shell.resize(760, 480)
+        page = HomePage()
+        shell.navigation.push(page)
+        _drain(self.app)
+        info = UpdateInfo(
+            kind="release",
+            suppress_id="v10.5.22",
+            title_version="10.5.22",
+            description="\n".join(
+                f"- Изменение {index}: длинное описание нового поведения " * 3
+                for index in range(80)
+            ),
+        )
+        seen = {}
+
+        def _capture():
+            host = shell.overlay_host
+            panel = host._card_stack.currentWidget()
+            browser = panel.findChild(QtWidgets.QTextBrowser)
+            action_buttons = [
+                button
+                for button in panel.findChildren(QtWidgets.QPushButton)
+                if button.text()
+                in {"Скачать и установить", "Напомнить позже", "Игнорировать"}
+            ]
+            seen["has_scroller"] = browser is not None
+            seen["scrolls"] = (
+                browser is not None
+                and browser.verticalScrollBar().maximum() > 0
+            )
+            seen["all_actions_visible"] = (
+                len(action_buttons) == 3
+                and all(button.isVisibleTo(panel) for button in action_buttons)
+                and all(
+                    panel.rect().contains(
+                        button.mapTo(panel, button.rect().center())
+                    )
+                    for button in action_buttons
+                )
+            )
+            seen["card_is_bounded"] = (
+                host._card.width() <= host.width()
+                and host._card.height() <= host.height()
+            )
+            later = next(
+                button
+                for button in action_buttons
+                if button.text() == "Напомнить позже"
+            )
+            later.click()
+
+        QtCore.QTimer.singleShot(0, _capture)
+        action = page._present_update_dialog(info)
+        self.assertEqual(action, "later")
+        self.assertTrue(seen["has_scroller"])
+        self.assertTrue(seen["scrolls"])
+        self.assertTrue(seen["all_actions_visible"])
+        self.assertTrue(seen["card_is_bounded"])
+
     def test_card_refits_to_dialog_that_sizes_itself_on_show(self):
         # QMessageBox узнаёт финальный размер только в showEvent — карточка
         # должна подгоняться после показа, а не резать кнопки.

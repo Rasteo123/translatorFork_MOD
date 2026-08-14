@@ -1032,9 +1032,33 @@ class TranslationEngine(QObject):
             worker_params['browser_profiles_count'] = profile_count
             worker_params['workascii_workspace_index'] = worker_params['browser_profile_index']
         
-        worker = UniversalWorker(**worker_params)
+        worker = None
+        try:
+            worker = UniversalWorker(**worker_params)
+            future = self._spawn_worker(worker.provider_config, worker)
+        except Exception as exc:
+            if worker is not None:
+                disconnect = getattr(worker, '_disconnect_from_bus', None)
+                if callable(disconnect):
+                    try:
+                        disconnect()
+                    except Exception:
+                        pass
+            self.keys_map.pop(uuid_worker, None)
+            self.keys_map.pop(api_key, None)
+            if self.api_key_manager:
+                self.api_key_manager.update_map(self.keys_map)
+            reason = (
+                "Не удалось запустить обработчик API: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self._post_event('log_message', {
+                'message': f"[MANAGER-ERROR] {reason}"
+            })
+            print(f"[MANAGER-ERROR] {reason}\n{traceback.format_exc()}")
+            self._end_session(reason)
+            return
 
-        future = self._spawn_worker(worker.provider_config, worker)
         self.active_workers_map[uuid_worker] = future
         
         # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: Теперь колбэк ИСПУСКАЕТ СИГНАЛ ---
