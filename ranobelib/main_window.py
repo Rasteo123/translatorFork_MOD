@@ -6,6 +6,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtCore import QDateTime, QObject, QSettings, QThread, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
@@ -83,6 +84,15 @@ from qidian_rulate.workers import (
 )
 
 SCHEDULE_LIMIT_DAYS = 60
+
+
+def _qt_object_is_alive(obj) -> bool:
+    if obj is None:
+        return False
+    try:
+        return not sip.isdeleted(obj)
+    except TypeError:
+        return True
 
 
 def calculate_fit_interval_minutes(
@@ -216,6 +226,7 @@ class RanobeUploaderApp(QMainWindow):
         self._existing_lib_chapters: list[dict] = []
         self._process_dialogs: dict[str, ProcessDialog] = {}
         self._return_to_menu_handler = None
+        self._closing = False
         self._rulate_media_metadata: dict = {}
         self._cover_preview_workers: list[_CoverPreviewWorker] = []
         self._media_codex_cover_path = ""
@@ -1331,6 +1342,7 @@ class RanobeUploaderApp(QMainWindow):
         self._save_rulate_media_state()
 
     def closeEvent(self, event):
+        self._closing = True
         self._save_settings()
         for dlg in self._process_dialogs.values():
             try:
@@ -1428,20 +1440,25 @@ class RanobeUploaderApp(QMainWindow):
         return dlg
 
     def _process_log(self, key: str, level: str, message: str):
-        self._append_log(level, message)
+        if not self._append_log(level, message):
+            return
         dlg = self._process_dialogs.get(key)
-        if dlg:
+        if _qt_object_is_alive(dlg):
             dlg.append_log(level, message)
 
     def _process_progress(self, key: str, value: int):
+        if getattr(self, "_closing", False) or not _qt_object_is_alive(self):
+            return
         self.progress_bar.setValue(value)
         dlg = self._process_dialogs.get(key)
-        if dlg:
+        if _qt_object_is_alive(dlg):
             dlg.set_progress(value)
 
     def _finish_process_dialog(self, key: str):
+        if getattr(self, "_closing", False) or not _qt_object_is_alive(self):
+            return
         dlg = self._process_dialogs.get(key)
-        if dlg:
+        if _qt_object_is_alive(dlg):
             dlg.mark_finished()
 
     # ── Логирование ──
@@ -1454,6 +1471,13 @@ class RanobeUploaderApp(QMainWindow):
         else:
             logging.info(message)
 
+        if getattr(self, "_closing", False) or not _qt_object_is_alive(self):
+            return False
+
+        log_area = getattr(self, "log_area", None)
+        if not _qt_object_is_alive(log_area):
+            return False
+
         ts = datetime.now().strftime("%H:%M:%S")
         colors = {
             "ERROR": "#D32F2F",
@@ -1462,12 +1486,13 @@ class RanobeUploaderApp(QMainWindow):
         }
         color = colors.get(level, "#888" if self._is_dark else "#000")
 
-        self.log_area.append(
+        log_area.append(
             f'<span style="color:#888;">[{ts}]</span> '
             f'<span style="color:{color}; font-weight:bold;">{message}</span>'
         )
-        sb = self.log_area.verticalScrollBar()
+        sb = log_area.verticalScrollBar()
         sb.setValue(sb.maximum())
+        return True
 
     def _export_log(self):
         path, _ = QFileDialog.getSaveFileName(
