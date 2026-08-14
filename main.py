@@ -112,11 +112,11 @@ def patch_ranobelib_login_worker():
 
         try:
             with sync_playwright() as playwright:
-                context = playwright.chromium.launch_persistent_context(
+                context = workers_module._launch_persistent_chromium_context(
+                    playwright,
                     user_data_dir=str(profile_dir),
                     headless=True,
                     viewport={"width": 1280, "height": 900},
-                    args=workers_module.BROWSER_ARGS,
                 )
                 try:
                     page = context.pages[0] if context.pages else context.new_page()
@@ -178,10 +178,11 @@ def patch_ranobelib_login_worker():
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as playwright:
-                self._browser = playwright.chromium.launch_persistent_context(
+                self._browser = workers_module._launch_persistent_chromium_context(
+                    playwright,
                     user_data_dir=str(profile_dir),
                     headless=False,
-                    args=workers_module.BROWSER_ARGS,
+                    log_callback=self.log_signal.emit,
                 )
                 page = self._browser.pages[0] if self._browser.pages else self._browser.new_page()
                 try:

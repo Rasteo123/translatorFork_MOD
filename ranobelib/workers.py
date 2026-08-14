@@ -48,6 +48,10 @@ QIDIAN_RULATE_PROFILE_DIR = Path(
     )
 )
 QIDIAN_RULATE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+MEDIA_COVER_MODE_RULATE = "rulate"
+MEDIA_COVER_MODE_CODEX = "codex"
+MEDIA_COVER_MODE_NONE = "none"
+RANOBELIB_COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 RANOBELIB_GENRES = (
     "Арт", "Безумие", "Боевик", "Боевые искусства", "Вампиры", "Военное", "Гарем",
@@ -1752,6 +1756,15 @@ class RulateToRanobeCreateWorker(QThread):
             data["tags"] = []
 
         data["create_author"] = bool(self.options.get("create_author"))
+        cover_mode = str(self.options.get("cover_mode") or MEDIA_COVER_MODE_RULATE)
+        if cover_mode not in {
+            MEDIA_COVER_MODE_RULATE,
+            MEDIA_COVER_MODE_CODEX,
+            MEDIA_COVER_MODE_NONE,
+        }:
+            cover_mode = MEDIA_COVER_MODE_RULATE
+        data["cover_mode"] = cover_mode
+        data["cover_path"] = str(self.options.get("cover_path") or "").strip()
         data["source_url"] = data.get("source_url") or self.rulate_url
         data["publisher"] = (
             _normalize_publisher_for_source(data.get("publisher"), data.get("source_url"))
@@ -1767,6 +1780,27 @@ class RulateToRanobeCreateWorker(QThread):
         return data
 
     def _download_cover(self, metadata: dict) -> str | None:
+        cover_mode = str(metadata.get("cover_mode") or MEDIA_COVER_MODE_RULATE)
+        if cover_mode == MEDIA_COVER_MODE_NONE:
+            self.log("INFO", "RanobeLib: создание карточки без обложки.")
+            return None
+        if cover_mode == MEDIA_COVER_MODE_CODEX:
+            cover_path = Path(str(metadata.get("cover_path") or "")).expanduser()
+            if not cover_path.is_file():
+                raise FileNotFoundError(
+                    "Codex: выбран перевод оригинальной обложки, но файл результата не найден."
+                )
+            if cover_path.suffix.lower() not in RANOBELIB_COVER_EXTENSIONS:
+                raise ValueError(
+                    "Codex: формат переведённой обложки не поддерживается RanobeLib. "
+                    "Нужен PNG, JPG, WEBP или GIF."
+                )
+            if cover_path.stat().st_size < 1024:
+                raise RuntimeError("Codex: файл переведённой обложки слишком маленький.")
+            resolved_path = str(cover_path.resolve())
+            self.log("SUCCESS", f"Codex: переведённая обложка готова для RanobeLib: {resolved_path}")
+            return resolved_path
+
         cover_url = metadata.get("cover_url")
         if not cover_url:
             return None
@@ -1779,7 +1813,7 @@ class RulateToRanobeCreateWorker(QThread):
         self.log("INFO", "Rulate: скачиваю обложку для загрузки на RanobeLib...")
         parsed = urllib.parse.urlparse(cover_url)
         suffix = os.path.splitext(parsed.path)[1].lower()
-        if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        if suffix not in RANOBELIB_COVER_EXTENSIONS:
             suffix = ".jpg"
 
         request = urllib.request.Request(

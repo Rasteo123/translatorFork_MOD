@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import time
 from datetime import datetime, timedelta, timezone
 
 
@@ -11,6 +13,7 @@ if RANOBELIB_DIR not in sys.path:
     sys.path.insert(0, RANOBELIB_DIR)
 
 import api_upload
+import workers
 from api_upload import ApiUploadWorker
 from models import ChapterData
 
@@ -50,6 +53,67 @@ def test_format_publish_at_treats_naive_datetime_as_local_time():
 
 def test_format_publish_at_preserves_empty_schedule():
     assert api_upload._format_publish_at(None) is None
+
+
+def test_resolve_api_auth_uses_browser_launcher_with_revision_fallback(monkeypatch):
+    launcher_calls = []
+
+    class FakePage:
+        url = "https://ranobelib.me"
+
+        def goto(self, *_args, **_kwargs):
+            return None
+
+        def wait_for_timeout(self, _timeout):
+            return None
+
+        def evaluate(self, _script):
+            return {
+                "auth": json.dumps(
+                    {
+                        "token": {
+                            "access_token": "saved-token",
+                            "timestamp": int(time.time() * 1000),
+                            "expires_in": 3600,
+                        }
+                    }
+                )
+            }
+
+    class FakeContext:
+        def __init__(self):
+            self.pages = [FakePage()]
+            self.closed = False
+
+        def new_page(self):
+            return self.pages[0]
+
+        def close(self):
+            self.closed = True
+
+    class FakePlaywrightManager:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return False
+
+    context = FakeContext()
+
+    def fake_launch(playwright, **kwargs):
+        launcher_calls.append((playwright, kwargs))
+        return context
+
+    monkeypatch.setattr(api_upload, "sync_playwright", lambda: FakePlaywrightManager())
+    monkeypatch.setattr(workers, "_launch_persistent_chromium_context", fake_launch)
+    monkeypatch.setattr(api_upload, "_fetch_auth_me", lambda token: {"id": 7, "token": token})
+
+    token, auth = api_upload.resolve_api_auth("1--test-book")
+
+    assert token["access_token"] == "saved-token"
+    assert auth == {"id": 7, "token": "saved-token"}
+    assert launcher_calls[0][1]["headless"] is True
+    assert context.closed is True
 
 
 def test_api_upload_retries_chapter_after_transient_error(monkeypatch):

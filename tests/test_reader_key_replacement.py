@@ -41,6 +41,7 @@ class _FakeWorker:
         self.manager_chapter_queue = manager_chapter_queue
         self.started = False
         self.worker_progress = _Signal()
+        self.finished = _Signal()
         self.finished_signal = _Signal()
         self.chapter_done_ui_signal = _Signal()
         self.invalid_key_signal = _Signal()
@@ -110,6 +111,37 @@ class _RunningWorker:
     def __init__(self, worker_id, api_key):
         self.worker_id = worker_id
         self.api_key = api_key
+
+
+class _LifecycleHarness:
+    _connect_reader_worker_signals = reader.MainWindow._connect_reader_worker_signals
+
+    def __init__(self):
+        self.finished_worker_ids = []
+
+    def _on_worker_finished(self, worker_id):
+        self.finished_worker_ids.append(worker_id)
+
+    def _enqueue_worker_progress(self, *args):
+        pass
+
+    def on_chapter_done_ui(self, *args):
+        pass
+
+    def on_script_ready_ui(self, *args):
+        pass
+
+    def _on_invalid_worker_key(self, *args):
+        pass
+
+    def _on_quota_worker_key(self, *args):
+        pass
+
+    def _on_project_quota_worker(self, *args):
+        pass
+
+    def statusBar(self):
+        return _StatusBar()
 
 
 class _ReplacementHarness:
@@ -210,6 +242,31 @@ class ReaderKeyReplacementTests(unittest.TestCase):
         self.assertIs(replacement.manager_chapter_queue, harness._active_manager_queue)
         self.assertTrue(replacement.started)
         self.assertIn(replacement, harness.workers)
+
+    def test_worker_cleanup_waits_for_native_qthread_finished_signal(self):
+        harness = _LifecycleHarness()
+        worker = _FakeWorker(
+            7,
+            "key",
+            object(),
+            None,
+            "model",
+            "Puck",
+            "style",
+            "Normal",
+            True,
+            True,
+            1,
+            "sentences",
+            queue.Queue(),
+        )
+
+        harness._connect_reader_worker_signals(worker)
+
+        self.assertEqual(worker.finished_signal.slots, [])
+        self.assertEqual(len(worker.finished.slots), 1)
+        worker.finished.slots[0]()
+        self.assertEqual(harness.finished_worker_ids, [7])
 
     def test_replacement_is_not_started_without_spare_keys(self):
         harness = _ReplacementHarness()
