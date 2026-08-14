@@ -10,6 +10,8 @@ import importlib.util
 from pathlib import Path
 import re
 
+from pyinstaller_config import LAZY_HANDLER_HIDDEN_IMPORTS, LAZY_SERVER_HIDDEN_IMPORTS
+
 # --- ОБЩАЯ КОНФИГУРАЦИЯ ---
 PROJECT_ROOT = Path(__file__).parent.resolve()
 MAIN_PY_FILE = "main.py"
@@ -55,22 +57,18 @@ DATA_FILE_EXTENSIONS = {'.txt', '.json', '.ico', '.css', '.html', '.js'}
 # не видит его import playwright.sync_api во время анализа main.py.
 # qoder_agent_sdk импортируется лениво (при первом обращении к Qoder),
 # поэтому PyInstaller не видит его при анализе — нужен явный hidden-import.
-HIDDEN_IMPORTS_BLOCK = ['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types', 'qoder_agent_sdk',
-                        # api/handlers и api/servers ленивые (PEP 562, importlib) —
-                        # PyInstaller не видит эти импорты при анализе.
-                        'gemini_translator.api.handlers.browser',
-                        'gemini_translator.api.handlers.dry_run',
-                        'gemini_translator.api.handlers.gemini',
-                        'gemini_translator.api.handlers.huggingface',
-                        'gemini_translator.api.handlers.deepseek',
-                        'gemini_translator.api.handlers.nvidia',
-                        'gemini_translator.api.handlers.openmodel',
-                        'gemini_translator.api.handlers.local',
-                        'gemini_translator.api.handlers.mcp',
-                        'gemini_translator.api.handlers.openrouter',
-                        'gemini_translator.api.handlers.qoder',
-                        'gemini_translator.api.handlers.workascii_chatgpt',
-                        'gemini_translator.api.servers.perplexity']
+HIDDEN_IMPORTS_BLOCK = [
+    'PyQt6.sip',
+    'docx',
+    'playwright.sync_api',
+    'google.genai',
+    'google.genai.types',
+    'qoder_agent_sdk',
+    # api/handlers и api/servers ленивые (PEP 562, importlib) —
+    # PyInstaller не видит эти импорты при анализе.
+    *LAZY_HANDLER_HIDDEN_IMPORTS,
+    *LAZY_SERVER_HIDDEN_IMPORTS,
+]
 MANUAL_COLLECT_DATA_MODULES = {'certifi', 'docx', 'qoder_agent_sdk'}
 COLLECT_DATA_EXCLUDE_MODULES = {'setuptools'}
 MANUALLY_PACKAGED_PACKAGES = {'playwright'}

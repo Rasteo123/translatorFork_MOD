@@ -158,6 +158,20 @@ call :build_app_base "ПОЛНОСТЬЮ ПОРТАТИВНАЯ"
 --hidden-import="playwright.sync_api" ^
 --hidden-import="google.genai" ^
 --hidden-import="google.genai.types" ^
+--hidden-import="qoder_agent_sdk" ^
+--hidden-import="gemini_translator.api.handlers.browser" ^
+--hidden-import="gemini_translator.api.handlers.dry_run" ^
+--hidden-import="gemini_translator.api.handlers.gemini" ^
+--hidden-import="gemini_translator.api.handlers.huggingface" ^
+--hidden-import="gemini_translator.api.handlers.deepseek" ^
+--hidden-import="gemini_translator.api.handlers.nvidia" ^
+--hidden-import="gemini_translator.api.handlers.openmodel" ^
+--hidden-import="gemini_translator.api.handlers.local" ^
+--hidden-import="gemini_translator.api.handlers.mcp" ^
+--hidden-import="gemini_translator.api.handlers.openrouter" ^
+--hidden-import="gemini_translator.api.handlers.qoder" ^
+--hidden-import="gemini_translator.api.handlers.workascii_chatgpt" ^
+--hidden-import="gemini_translator.api.servers.perplexity" ^
 --onefile ^
 --add-data "config;config" ^
 --add-data "README.md;." ^
@@ -207,6 +221,20 @@ call :build_app_base "ГИБРИДНАЯ"
 --hidden-import="playwright.sync_api" ^
 --hidden-import="google.genai" ^
 --hidden-import="google.genai.types" ^
+--hidden-import="qoder_agent_sdk" ^
+--hidden-import="gemini_translator.api.handlers.browser" ^
+--hidden-import="gemini_translator.api.handlers.dry_run" ^
+--hidden-import="gemini_translator.api.handlers.gemini" ^
+--hidden-import="gemini_translator.api.handlers.huggingface" ^
+--hidden-import="gemini_translator.api.handlers.deepseek" ^
+--hidden-import="gemini_translator.api.handlers.nvidia" ^
+--hidden-import="gemini_translator.api.handlers.openmodel" ^
+--hidden-import="gemini_translator.api.handlers.local" ^
+--hidden-import="gemini_translator.api.handlers.mcp" ^
+--hidden-import="gemini_translator.api.handlers.openrouter" ^
+--hidden-import="gemini_translator.api.handlers.qoder" ^
+--hidden-import="gemini_translator.api.handlers.workascii_chatgpt" ^
+--hidden-import="gemini_translator.api.servers.perplexity" ^
 --onefile
 if %ERRORLEVEL% EQU 0 (
     echo.
@@ -277,7 +305,21 @@ call :build_app_base "ПРОДВИНУТАЯ"
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
 --hidden-import="google.genai" ^
---hidden-import="google.genai.types"
+--hidden-import="google.genai.types" ^
+--hidden-import="qoder_agent_sdk" ^
+--hidden-import="gemini_translator.api.handlers.browser" ^
+--hidden-import="gemini_translator.api.handlers.dry_run" ^
+--hidden-import="gemini_translator.api.handlers.gemini" ^
+--hidden-import="gemini_translator.api.handlers.huggingface" ^
+--hidden-import="gemini_translator.api.handlers.deepseek" ^
+--hidden-import="gemini_translator.api.handlers.nvidia" ^
+--hidden-import="gemini_translator.api.handlers.openmodel" ^
+--hidden-import="gemini_translator.api.handlers.local" ^
+--hidden-import="gemini_translator.api.handlers.mcp" ^
+--hidden-import="gemini_translator.api.handlers.openrouter" ^
+--hidden-import="gemini_translator.api.handlers.qoder" ^
+--hidden-import="gemini_translator.api.handlers.workascii_chatgpt" ^
+--hidden-import="gemini_translator.api.servers.perplexity"
 if %ERRORLEVEL% EQU 0 (
     echo.
     echo [+] Этап 3 из 3: Копирование внешних данных...
@@ -410,7 +452,21 @@ call :build_app_base "ИНСТАЛЛЯТОР"
 --hidden-import="docx" ^
 --hidden-import="playwright.sync_api" ^
 --hidden-import="google.genai" ^
---hidden-import="google.genai.types"
+--hidden-import="google.genai.types" ^
+--hidden-import="qoder_agent_sdk" ^
+--hidden-import="gemini_translator.api.handlers.browser" ^
+--hidden-import="gemini_translator.api.handlers.dry_run" ^
+--hidden-import="gemini_translator.api.handlers.gemini" ^
+--hidden-import="gemini_translator.api.handlers.huggingface" ^
+--hidden-import="gemini_translator.api.handlers.deepseek" ^
+--hidden-import="gemini_translator.api.handlers.nvidia" ^
+--hidden-import="gemini_translator.api.handlers.openmodel" ^
+--hidden-import="gemini_translator.api.handlers.local" ^
+--hidden-import="gemini_translator.api.handlers.mcp" ^
+--hidden-import="gemini_translator.api.handlers.openrouter" ^
+--hidden-import="gemini_translator.api.handlers.qoder" ^
+--hidden-import="gemini_translator.api.handlers.workascii_chatgpt" ^
+--hidden-import="gemini_translator.api.servers.perplexity"
 if %ERRORLEVEL% NEQ 0 (
     call :build_app_end
     goto :eof

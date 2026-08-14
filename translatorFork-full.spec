@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
+from pyinstaller_config import LAZY_HANDLER_HIDDEN_IMPORTS, LAZY_SERVER_HIDDEN_IMPORTS
 
 
 PROJECT_ROOT = Path.cwd()
@@ -52,7 +53,16 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['PyQt6.sip', 'docx', 'pypdf', 'playwright.sync_api', 'google.genai', 'google.genai.types'],
+    hiddenimports=[
+        'PyQt6.sip',
+        'docx',
+        'pypdf',
+        'playwright.sync_api',
+        'google.genai',
+        'google.genai.types',
+        *LAZY_HANDLER_HIDDEN_IMPORTS,
+        *LAZY_SERVER_HIDDEN_IMPORTS,
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
