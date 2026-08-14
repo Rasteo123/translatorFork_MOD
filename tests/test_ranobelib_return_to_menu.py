@@ -6,6 +6,9 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6 import sip
+from PyQt6.QtWidgets import QApplication, QTextEdit
+
 TESTS_DIR = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.dirname(TESTS_DIR)
 RANOBELIB_DIR = os.path.join(PROJECT_ROOT, "ranobelib")
@@ -180,7 +183,33 @@ class _LoginButtonsHarness:
         self.btn_media_login_ranobelib = _ButtonField()
 
 
+class _DestroyedLogHarness:
+    _append_log = RanobeUploaderApp._append_log
+    _process_log = RanobeUploaderApp._process_log
+
+    def __init__(self):
+        self._closing = False
+        self._is_dark = False
+        self._process_dialogs = {"rulate_media_ai": _ExplodingProcessDialog()}
+        self.log_area = QTextEdit()
+        sip.delete(self.log_area)
+
+
+class _ExplodingProcessDialog:
+    def append_log(self, *_args):
+        raise AssertionError("deleted main log must stop process-dialog updates")
+
+
 class RanobeUploaderReturnToMenuTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qt_app = QApplication.instance() or QApplication([])
+
+    def test_late_worker_log_ignores_deleted_qt_log_widget(self):
+        harness = _DestroyedLogHarness()
+
+        harness._process_log("rulate_media_ai", "SUCCESS", "late worker message")
+
     def test_both_ranobelib_login_buttons_follow_same_worker_state(self):
         harness = _LoginButtonsHarness()
 
