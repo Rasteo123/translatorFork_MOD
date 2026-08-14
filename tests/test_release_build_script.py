@@ -25,6 +25,7 @@ def _load_spec_hiddenimports(spec_name):
         "PYZ": lambda *_args, **_kwargs: object(),
         "EXE": lambda *_args, **_kwargs: object(),
         "COLLECT": lambda *_args, **_kwargs: object(),
+        "BUNDLE": lambda *_args, **_kwargs: object(),
     }
 
     previous = {name: sys.modules.get(name) for name in modules}
@@ -57,8 +58,24 @@ def test_dual_release_script_packages_onedir_outputs():
     assert "git archive --format=zip" in script
 
 
-def test_release_specs_package_lazy_gemini_handler():
-    module_name = "gemini_translator.api.handlers.gemini"
+def test_release_specs_package_every_lazy_api_module():
+    from gemini_translator.api import handlers, servers
 
-    assert module_name in _load_spec_hiddenimports("translatorFork-translator-only.spec")
-    assert module_name in _load_spec_hiddenimports("translatorFork-full.spec")
+    handler_modules = {
+        f"{handlers.__name__}{module_path}"
+        for module_path in handlers._LAZY_HANDLER_MODULES.values()
+    }
+    server_modules = {
+        f"{servers.__name__}{module_path}"
+        for module_path in servers._LAZY_SERVER_MODULES.values()
+    }
+
+    translator_only = set(
+        _load_spec_hiddenimports("translatorFork-translator-only.spec")
+    )
+    full = set(_load_spec_hiddenimports("translatorFork-full.spec"))
+    ci_release = set(_load_spec_hiddenimports("translatorFork_MOD.spec"))
+
+    assert handler_modules <= translator_only
+    assert handler_modules | server_modules <= full
+    assert handler_modules | server_modules <= ci_release
