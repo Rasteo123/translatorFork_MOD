@@ -884,11 +884,14 @@ class TranslationEngine(QObject):
         self.is_cancelled = True 
         self.is_soft_stopping = False
         
-        self._post_event('stop_session_requested', {'reason': reason}) 
-        self._stop_timers()
-        
-        self._terminate_all_workers()
-        self._unregister_active_session()
+        try:
+            self._post_event('stop_session_requested', {'reason': reason})
+            self._stop_timers()
+
+            self._terminate_all_workers()
+            self._unregister_active_session()
+        finally:
+            self._release_power_inhibitor()
         
         self._end_session_event(reason, self.session_id)
         if not self.summary_shown_for_session:
@@ -904,7 +907,6 @@ class TranslationEngine(QObject):
         self.is_starting = False # <-- Сбрасываем и этот флаг тоже
         
     def _end_session_event(self, reason: str, session_id_event=None):
-        self._release_power_inhibitor()
         self._post_event('session_finished', {
             'reason': reason,
             "session_id_log": self.session_id,

@@ -1,5 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+import runpy
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_data_files
+
+
+_BUILD_CONFIG = runpy.run_path(str(Path(SPECPATH) / "pyinstaller_config.py"))
+LAZY_HANDLER_HIDDEN_IMPORTS = _BUILD_CONFIG["LAZY_HANDLER_HIDDEN_IMPORTS"]
+LAZY_SERVER_HIDDEN_IMPORTS = _BUILD_CONFIG["LAZY_SERVER_HIDDEN_IMPORTS"]
 
 datas = [('config', 'config'), ('README.md', '.'), ('gemini_translator/scripts/chatgpt_workascii_bridge.cjs', 'gemini_translator/scripts'), ('gemini_translator/scripts/chatgpt_profile_launcher.cjs', 'gemini_translator/scripts'), ('qidian_rulate/tags.txt', 'qidian_rulate'), ('ranobelib/__init__.py', 'ranobelib'), ('ranobelib/api_upload.py', 'ranobelib'), ('ranobelib/constants.py', 'ranobelib'), ('ranobelib/dependencies.py', 'ranobelib'), ('ranobelib/dialogs.py', 'ranobelib'), ('ranobelib/main.py', 'ranobelib'), ('ranobelib/main_window.py', 'ranobelib'), ('ranobelib/models.py', 'ranobelib'), ('ranobelib/parsers.py', 'ranobelib'), ('ranobelib/ranobelib-upload.mjs', 'ranobelib'), ('ranobelib/ranobelib_uploader_v12.py', 'ranobelib'), ('ranobelib/utils.py', 'ranobelib'), ('ranobelib/workers.py', 'ranobelib')]
 datas += collect_data_files('PyQt6')
@@ -22,7 +30,16 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['PyQt6.sip', 'docx', 'playwright.sync_api', 'google.genai', 'google.genai.types', 'qoder_agent_sdk'],
+    hiddenimports=[
+        'PyQt6.sip',
+        'docx',
+        'playwright.sync_api',
+        'google.genai',
+        'google.genai.types',
+        'qoder_agent_sdk',
+        *LAZY_HANDLER_HIDDEN_IMPORTS,
+        *LAZY_SERVER_HIDDEN_IMPORTS,
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

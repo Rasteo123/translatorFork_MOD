@@ -147,6 +147,15 @@ def run_translator_only():
         if hasattr(app, "proxy_controller"):
             app.proxy_controller.shutdown()
         if hasattr(app, "engine_thread") and app.engine_thread.isRunning():
+            if hasattr(app, "engine"):
+                try:
+                    app_main.QtCore.QMetaObject.invokeMethod(
+                        app.engine,
+                        "cleanup",
+                        app_main.QtCore.Qt.ConnectionType.BlockingQueuedConnection,
+                    )
+                except Exception:
+                    pass
             app.engine_thread.quit()
             app.engine_thread.wait()
 

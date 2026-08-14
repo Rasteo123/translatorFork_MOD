@@ -20,24 +20,28 @@ def _install_sdk_stubs_if_needed():
     """Тесты проверяют обработчик, а не SDK: если qoder_agent_sdk недоступен
     или неполон (CI, машины без пакета), подставляем минимальные заглушки
     в модуль обработчика. При рабочем SDK ничего не подменяется."""
-    _qoder_module._ensure_sdk_imported()
-    if _qoder_module.QoderAgentOptions is not None:
-        return
-
     class _StubRecord:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
-
-    class QoderAgentOptions(_StubRecord):
-        pass
-
-    class ResultMessage(_StubRecord):
-        pass
 
     class RateLimitInfo(_StubRecord):
         pass
 
     class RateLimitEvent(_StubRecord):
+        pass
+
+    _qoder_module._ensure_sdk_imported()
+    if _qoder_module.RateLimitInfo is None:
+        _qoder_module.RateLimitInfo = RateLimitInfo
+    if _qoder_module.RateLimitEvent is None:
+        _qoder_module.RateLimitEvent = RateLimitEvent
+    if _qoder_module.QoderAgentOptions is not None:
+        return
+
+    class QoderAgentOptions(_StubRecord):
+        pass
+
+    class ResultMessage(_StubRecord):
         pass
 
     class AssistantMessage(_StubRecord):
@@ -356,6 +360,7 @@ def test_qoder_provider_config_and_factory_registration():
         "performance",
         "ultimate",
         "Qwen3.7-Max",
+        "Qwen3.8-Max",
         "Qwen3.7-Plus",
         "DeepSeek-V4-Pro",
         "DeepSeek-V4-Flash",

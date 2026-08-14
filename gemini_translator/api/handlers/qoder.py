@@ -18,7 +18,7 @@ from ..errors import (
 # Ленивый импорт qoder_agent_sdk: он тянет пакеты mcp и aiohttp (~250 мс),
 # поэтому загружается при первом обращении к Qoder-провайдеру, а не при
 # импорте модуля (модуль импортируется при старте приложения через фабрику).
-_SDK_NAMES = (
+_REQUIRED_SDK_NAMES = (
     "AssistantMessage",
     "AuthAccessTokenEnvVarError",
     "AuthNotConfiguredError",
@@ -27,13 +27,12 @@ _SDK_NAMES = (
     "ProcessError",
     "QoderAgentOptions",
     "QoderSDKError",
-    "RateLimitEvent",
-    "RateLimitInfo",
     "ResultMessage",
     "TextBlock",
     "access_token",
     "query",
 )
+_OPTIONAL_SDK_NAMES = ("RateLimitEvent", "RateLimitInfo")
 
 AssistantMessage = None
 AuthAccessTokenEnvVarError = None
@@ -69,9 +68,13 @@ def _ensure_sdk_imported():
     _SDK_IMPORT_ATTEMPTED = True
     try:
         import qoder_agent_sdk as _sdk
-        resolved = {name: getattr(_sdk, name) for name in _SDK_NAMES}
+        resolved = {name: getattr(_sdk, name) for name in _REQUIRED_SDK_NAMES}
     except (ImportError, AttributeError):  # pragma: no cover - broken installations
         return
+
+    resolved.update(
+        {name: getattr(_sdk, name, None) for name in _OPTIONAL_SDK_NAMES}
+    )
 
     module_globals = globals()
     for name, value in resolved.items():

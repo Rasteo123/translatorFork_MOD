@@ -1,7 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+import runpy
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
+
+
+_BUILD_CONFIG = runpy.run_path(str(Path(SPECPATH) / "pyinstaller_config.py"))
+LAZY_HANDLER_HIDDEN_IMPORTS = _BUILD_CONFIG["LAZY_HANDLER_HIDDEN_IMPORTS"]
+LAZY_SERVER_HIDDEN_IMPORTS = _BUILD_CONFIG["LAZY_SERVER_HIDDEN_IMPORTS"]
 
 
 PROJECT_ROOT = Path.cwd()
@@ -52,7 +58,16 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=['PyQt6.sip', 'docx', 'pypdf', 'playwright.sync_api', 'google.genai', 'google.genai.types'],
+    hiddenimports=[
+        'PyQt6.sip',
+        'docx',
+        'pypdf',
+        'playwright.sync_api',
+        'google.genai',
+        'google.genai.types',
+        *LAZY_HANDLER_HIDDEN_IMPORTS,
+        *LAZY_SERVER_HIDDEN_IMPORTS,
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

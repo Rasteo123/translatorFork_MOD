@@ -20,6 +20,20 @@ class QoderLazySdkImportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip().splitlines()[-1], "False")
 
+    def test_optional_sdk_exports_do_not_block_required_symbols(self):
+        code = (
+            "from gemini_translator.api.handlers import qoder\n"
+            "qoder._ensure_sdk_imported()\n"
+            "required = (qoder.QoderAgentOptions, qoder.query, qoder.access_token)\n"
+            "print(all(value is not None for value in required))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip().splitlines()[-1], "True")
+
 
 if __name__ == "__main__":
     unittest.main()

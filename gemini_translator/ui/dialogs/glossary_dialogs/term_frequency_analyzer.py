@@ -5,7 +5,8 @@ from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget, QGroupBox, 
-    QProgressBar, QMessageBox, QDialogButtonBox, QTabWidget, QAbstractItemView
+    QProgressBar, QMessageBox, QDialogButtonBox, QTabWidget, QAbstractItemView,
+    QApplication, QMenu
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
@@ -171,6 +172,10 @@ class TermFrequencyAnalyzerPage(ShellPage):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents) # Частота
         
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.customContextMenuRequested.connect(
+            lambda pos, source_table=table: self._show_original_term_context_menu(source_table, pos)
+        )
         
         table.setAlternatingRowColors(True)
 
@@ -182,6 +187,17 @@ class TermFrequencyAnalyzerPage(ShellPage):
         
         # Сигнал itemChanged подключим позже или в init, чтобы не двоился
         return table
+
+    def _show_original_term_context_menu(self, table, pos):
+        item = table.itemAt(pos)
+        if item is None or item.column() != 0:
+            return
+
+        menu = QMenu(self)
+        copy_action = menu.addAction("Копировать текст")
+        action = menu.exec(table.viewport().mapToGlobal(pos))
+        if action == copy_action:
+            QApplication.clipboard().setText(item.text())
 
     def _load_cached_payload(self):
         if not self.project_manager:

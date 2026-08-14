@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from gemini_translator.utils.power_inhibitor import (
     ES_CONTINUOUS,
@@ -52,9 +53,10 @@ class PowerInhibitorTests(unittest.TestCase):
             popen_factory=lambda args: calls.append(args) or process,
         )
 
-        self.assertTrue(inhibitor.prevent_sleep())
+        with patch("os.getpid", return_value=4242):
+            self.assertTrue(inhibitor.prevent_sleep())
 
-        self.assertEqual(calls, [["caffeinate", "-dims"]])
+        self.assertEqual(calls, [["caffeinate", "-dims", "-w", "4242"]])
         self.assertTrue(inhibitor.active)
 
         inhibitor.allow_sleep()

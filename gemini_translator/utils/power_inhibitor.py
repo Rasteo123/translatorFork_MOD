@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from typing import Callable
@@ -81,7 +82,9 @@ class PowerInhibitor:
                 # -i prevents idle sleep, -m prevents disk sleep, -s prevents system sleep,
                 # -d prevents display sleep. We intentionally block display sleep so that 
                 # macOS doesn't go to the lock screen, which stops our background processing.
-                self._process = self._popen_factory(["caffeinate", "-dims"])
+                self._process = self._popen_factory(
+                    ["caffeinate", "-dims", "-w", str(os.getpid())]
+                )
                 return self.active
             except Exception as exc:
                 self.last_error = str(exc)
