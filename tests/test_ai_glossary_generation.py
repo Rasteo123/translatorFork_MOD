@@ -87,6 +87,197 @@ class GlossaryBackgroundPreparationTests(unittest.TestCase):
         self.assertIsInstance(harness.reported[0][1], RuntimeError)
 
 
+class _PipelineSignalStub:
+    def __init__(self):
+        self.emitted = []
+
+    def emit(self, *args):
+        self.emitted.append(args)
+
+
+class _PipelinePageStub:
+    def __init__(self):
+        self.enabled = True
+
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
+
+
+class _PipelineTabsStub:
+    def __init__(self, count=5):
+        self.pages = [_PipelinePageStub() for _ in range(count)]
+
+    def count(self):
+        return len(self.pages)
+
+    def widget(self, index):
+        return self.pages[index]
+
+
+class _PipelineGlossaryStub:
+    def __init__(self):
+        self.controls_enabled = True
+
+    def commit_active_editor(self):
+        return None
+
+    def set_controls_enabled(self, enabled):
+        self.controls_enabled = bool(enabled)
+
+
+class _PipelinePreparationHarness:
+    _start_next_pipeline_step = GenerationSessionPage._start_next_pipeline_step
+    _on_glossary_rebuild_finished = GenerationSessionPage._on_glossary_rebuild_finished
+    _set_pipeline_preparation_ui_locked = (
+        GenerationSessionPage._set_pipeline_preparation_ui_locked
+    )
+    _handle_pipeline_task_preparation_finished = (
+        GenerationSessionPage._handle_pipeline_task_preparation_finished
+    )
+    _handle_pipeline_session_finished = GenerationSessionPage._handle_pipeline_session_finished
+    _finalize_pipeline_run = GenerationSessionPage._finalize_pipeline_run
+
+    def __init__(self):
+        step = ai_generation_module.create_step_from_settings(
+            {"temperature": 0.3, "merge_mode": "supplement"},
+            name="Дополнение",
+        )
+        self.pipeline_run = ai_generation_module.GlossaryPipelineRun([step])
+        self.pipeline_run.start()
+        self._pipeline_active_step_id = None
+        self._pipeline_waiting_for_next_step = False
+        self._pipeline_stop_requested = False
+        self._pending_glossary_rebuild_request = None
+        self._glossary_rebuild_worker = None
+        self._is_glossary_rebuilding = False
+        self.task_preparation_finished = _PipelineSignalStub()
+        self.model_settings_widget = SimpleNamespace(
+            update_cjk_options_availability=lambda **_kwargs: None,
+        )
+        self.instances_spin = SimpleNamespace(value=lambda: 1)
+        self.sequential_mode_checkbox = SimpleNamespace(isChecked=lambda: False)
+        self.tabs = _PipelineTabsStub()
+        self.glossary_widget = _PipelineGlossaryStub()
+        self.live_session_settings = {
+            "provider": "step-provider",
+            "initial_glossary_list": [],
+            "glossary_generation_prompt": "step prompt",
+        }
+        self.rebuild_calls = 0
+        self.session_start_calls = 0
+        self.started_session_settings = []
+        self.pipeline_logs = []
+
+    def _select_pipeline_step(self, _step_id):
+        return None
+
+    def _refresh_pipeline_table(self):
+        return None
+
+    def _update_pipeline_buttons_state(self):
+        return None
+
+    def _append_pipeline_log(self, message, step_id=None):
+        self.pipeline_run.append_log(message, step_id=step_id)
+
+    def _post_event(self, _event_name, payload):
+        self.pipeline_logs.append(payload.get("message", ""))
+
+    def _apply_full_ui_settings(self, _settings):
+        return None
+
+    def _rebuild_glossary_tasks(self):
+        self.rebuild_calls += 1
+
+    def _get_common_settings(self):
+        return dict(self.live_session_settings)
+
+    def get_merge_mode(self):
+        return "supplement"
+
+    def _start_session(self, settings_override=None, sequential_mode_override=None):
+        self.session_start_calls += 1
+        settings = settings_override or self._get_common_settings()
+        self.started_session_settings.append(
+            (dict(settings), sequential_mode_override)
+        )
+
+    def _set_glossary_rebuild_busy(self, busy):
+        self._is_glossary_rebuilding = bool(busy)
+
+    def isVisible(self):
+        return False
+
+    def finish_preparation(self, result):
+        worker = SimpleNamespace(
+            result=dict(result),
+            _glossary_rebuild_generation=1,
+            deleteLater=lambda: None,
+        )
+        self._glossary_rebuild_worker = worker
+        self._on_glossary_rebuild_finished(worker)
+
+
+class GlossaryPipelinePreparationTests(unittest.TestCase):
+    def test_pipeline_starts_session_only_after_task_preparation_succeeds(self):
+        harness = _PipelinePreparationHarness()
+
+        harness._start_next_pipeline_step()
+
+        self.assertEqual(harness.rebuild_calls, 1)
+        self.assertEqual(harness.session_start_calls, 0)
+
+        harness.finish_preparation({"ok": True, "task_count": 1, "is_any_cjk": False})
+
+        self.assertEqual(harness.session_start_calls, 1)
+        self.assertEqual(harness.task_preparation_finished.emitted, [(True, "")])
+
+    def test_pipeline_marks_step_failed_when_task_preparation_fails(self):
+        harness = _PipelinePreparationHarness()
+
+        harness._start_next_pipeline_step()
+        harness.finish_preparation({"ok": False, "error": "broken epub"})
+
+        self.assertEqual(harness.session_start_calls, 0)
+        self.assertEqual(
+            harness.pipeline_run.status,
+            ai_generation_module.PIPELINE_STATUS_FAILED,
+        )
+        self.assertIsNone(harness._pipeline_active_step_id)
+        self.assertIn("broken epub", harness.pipeline_run.last_reason)
+        self.assertEqual(
+            harness.task_preparation_finished.emitted,
+            [(False, "broken epub")],
+        )
+
+    def test_pipeline_launch_uses_step_settings_snapshot_after_ui_changes(self):
+        harness = _PipelinePreparationHarness()
+
+        harness._start_next_pipeline_step()
+        harness.live_session_settings["provider"] = "edited-during-preparation"
+        harness.live_session_settings["glossary_generation_prompt"] = "edited prompt"
+        harness.finish_preparation({"ok": True, "task_count": 1, "is_any_cjk": False})
+
+        started_settings, sequential_mode = harness.started_session_settings[0]
+        self.assertEqual(started_settings["provider"], "step-provider")
+        self.assertEqual(started_settings["glossary_generation_prompt"], "step prompt")
+        self.assertFalse(sequential_mode)
+
+    def test_pipeline_locks_editable_controls_while_tasks_are_prepared(self):
+        harness = _PipelinePreparationHarness()
+
+        harness._start_next_pipeline_step()
+
+        self.assertTrue(all(not page.enabled for page in harness.tabs.pages[:-1]))
+        self.assertTrue(harness.tabs.pages[-1].enabled)
+        self.assertFalse(harness.glossary_widget.controls_enabled)
+
+        harness.finish_preparation({"ok": True, "task_count": 1, "is_any_cjk": False})
+
+        self.assertTrue(all(page.enabled for page in harness.tabs.pages))
+        self.assertTrue(harness.glossary_widget.controls_enabled)
+
+
 class _LineEditStub:
     def __init__(self):
         self.textEdited = _SignalStub()
