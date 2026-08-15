@@ -27,6 +27,7 @@ from gemini_translator.ui.widgets.model_settings_widget import ModelSettingsWidg
 from gemini_translator.ui.widgets.log_widget import LogWidget
 from gemini_translator.ui.widgets.preset_widget import PresetWidget
 from gemini_translator.ui.widgets.ancestor_utils import find_ancestor_by_class_name
+from gemini_translator.ui.overlay_host import exec_dialog
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.widgets.overlay_tab_widget import OverlayTabWidget
 from gemini_translator.ui import theme_manager
@@ -2429,7 +2430,7 @@ class CorrectionSessionPage(ShellPage):
             morph_analyzer=self.morph_analyzer,
             parent=self
         )
-        if preview.exec():
+        if exec_dialog(self, preview):
             accepted_patch_list = preview.get_accepted_patch()
             if accepted_patch_list:
                 self.correction_accepted.emit(accepted_patch_list)
@@ -3610,7 +3611,7 @@ class CorrectionPreviewDialog(QDialog):
         if wiped_items_to_review:
             # Вызываем наш новый диалог-интерцептор
             dialog = NoteWipeResolutionDialog(wiped_items_to_review, self)
-            if not dialog.exec():
+            if not exec_dialog(self, dialog):
                 # Пользователь нажал "Отмена" в интерцепторе -> Отменяем всё применение
                 return
 
