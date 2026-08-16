@@ -67,6 +67,78 @@ def resolve_settings_location(config_file=None, config_dir=None, profile=None, h
     return root_dir, os.path.join(root_dir, "settings.json"), "", "default"
 
 
+_MISSING = object()
+
+# Списки, которые надо сливать поэлементно, а не заменять целиком:
+# имя настройки -> поле, по которому опознаётся запись.
+_KEYED_LIST_SETTINGS = {"api_keys_with_status": "key"}
+
+
+def _index_entries_by(entries, id_field):
+    indexed = {}
+    for entry in entries or []:
+        if isinstance(entry, dict) and entry.get(id_field) is not None:
+            indexed[entry[id_field]] = entry
+    return indexed
+
+
+def _merge_keyed_list(base, ours, theirs, id_field):
+    """Наши записи авторитетны; чужие добавления подхватываем, наши удаления держим.
+
+    Чужое удаление записи, которая у нас ещё есть, намеренно игнорируется:
+    воскресить лишний ключ безопаснее, чем потерять рабочий.
+    """
+    base_ids = set(_index_entries_by(base, id_field))
+    our_ids = set(_index_entries_by(ours, id_field))
+
+    merged = list(ours or [])
+    for entry_id, entry in _index_entries_by(theirs, id_field).items():
+        if entry_id not in our_ids and entry_id not in base_ids:
+            merged.append(entry)
+    return merged
+
+
+def merge_settings_snapshots(base, ours, theirs):
+    """Трёхсторонняя склейка настроек для файла, который делят несколько процессов.
+
+    `base` — состояние диска на момент нашей последней синхронизации, `ours` — наш
+    кэш, `theirs` — то, что лежит на диске сейчас. Поле, которого мы не касались,
+    берём в их версии; наши правки и удаления сохраняем.
+    """
+    base = base or {}
+    ours = ours or {}
+    theirs = theirs or {}
+
+    merged = {}
+    for field in set(ours) | set(theirs):
+        our_value = ours.get(field, _MISSING)
+        their_value = theirs.get(field, _MISSING)
+        base_value = base.get(field, _MISSING)
+
+        id_field = _KEYED_LIST_SETTINGS.get(field)
+        if id_field and (isinstance(our_value, list) or isinstance(their_value, list)):
+            merged[field] = _merge_keyed_list(
+                base_value if isinstance(base_value, list) else [],
+                our_value if isinstance(our_value, list) else [],
+                their_value if isinstance(their_value, list) else [],
+                id_field,
+            )
+            continue
+
+        if our_value is _MISSING:
+            # Поля у нас нет. Если в базе оно было — это наше удаление, не воскрешаем.
+            if base_value is _MISSING:
+                merged[field] = their_value
+            continue
+
+        if their_value is not _MISSING and our_value == base_value:
+            merged[field] = their_value
+        else:
+            merged[field] = our_value
+
+    return merged
+
+
 def configure_settings_scope(*, profile=None, config_dir=None):
     if config_dir:
         os.environ[SETTINGS_DIR_ENV] = os.path.abspath(os.path.expanduser(str(config_dir)))
@@ -120,6 +192,9 @@ class SettingsManager(QObject):
         # --- КЛЮЧЕВЫЕ КОМПОНЕНТЫ КЭШИРУЮЩЕЙ АРХИТЕКТУРЫ ---
         self.file_lock = PatientLock()
         self._cache = {}
+        # Снимок диска на момент последней синхронизации. Нужен, чтобы при записи
+        # отличить наши правки от чужих и не затереть другой экземпляр приложения.
+        self._disk_baseline = {}
         self._is_dirty = False
         self._last_save_error = None
         
@@ -159,6 +234,7 @@ class SettingsManager(QObject):
     def _load_from_disk_unsafe(self):
         """[Под замком] Читает файл с диска и обновляет кэш."""
         self._cache = self._load_unsafe()
+        self._disk_baseline = deepcopy(self._cache)
         self._migrate_keys_in_cache()
         self._apply_custom_provider_models_to_runtime()
 
@@ -177,8 +253,19 @@ class SettingsManager(QObject):
         self._check_and_reset_limits_in_cache()
         self._apply_custom_provider_models_to_runtime()
 
-        # 3. Записываем итоговый результат (наши настройки + общая история)
+        # 3. Если файл успел измениться со времени нашей последней синхронизации,
+        # значит, с ним работает ещё один экземпляр приложения. Сливаем его правки
+        # в свой кэш, иначе запись целиком затрёт всё, чего у нас нет: чужие ключи,
+        # папки проекта, состояние интерфейса.
+        if disk_data and disk_data != self._disk_baseline:
+            merged = merge_settings_snapshots(self._disk_baseline, self._cache, disk_data)
+            self._cache.clear()
+            self._cache.update(merged)
+            self._apply_custom_provider_models_to_runtime()
+
+        # 4. Записываем итоговый результат (наши настройки + общая история)
         self._save_unsafe(self._cache)
+        self._disk_baseline = deepcopy(self._cache)
         self._is_dirty = False
 
     def _apply_custom_provider_models_to_runtime(self):
@@ -1029,4 +1116,30 @@ class SettingsManager(QObject):
                 print(f"[SettingsManager WARN] Не удалось прочитать файл настроек с кодировкой {encoding}: {e}")
                 continue
         print(f"[SettingsManager CRITICAL] Не удалось прочитать или распарсить файл {self.config_file}. Файл может быть поврежден. Возвращаю пустые настройки.")
+        backup_path = self._quarantine_corrupt_file_unsafe()
+        if backup_path:
+            print(f"[SettingsManager] Повреждённый файл настроек сохранён как {backup_path}.")
+            self._post_event('settings_file_corrupted', {
+                'config_file': self.config_file,
+                'backup_path': backup_path,
+            })
         return {}
+
+    def _quarantine_corrupt_file_unsafe(self):
+        """[Под замком] Уводит нечитаемый файл в сторону.
+
+        Иначе приложение поднимется на дефолтах и первым же автосохранением
+        уничтожит единственную копию настроек вместе с ключами.
+        """
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = f"{self.config_file}.corrupt-{stamp}"
+        attempt = 1
+        while os.path.exists(backup_path):
+            backup_path = f"{self.config_file}.corrupt-{stamp}-{attempt}"
+            attempt += 1
+        try:
+            os.replace(self.config_file, backup_path)
+        except OSError as e:
+            print(f"[SettingsManager CRITICAL] Не удалось убрать повреждённый файл настроек: {e}")
+            return None
+        return backup_path
