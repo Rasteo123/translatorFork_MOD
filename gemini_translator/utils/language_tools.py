@@ -36,6 +36,7 @@ except ImportError:
 
 STOP_WORDS = {'the', 'a', 'an', 'to', 'in', 'on', 'of', 'for', 'with', 'am', 'i'}
 CJK_STOP_WORDS = {'的', '是', '一', '不', '人', '我', '了', '在', '有', '和', '之'}
+CJK_CHAR_RE = re.compile(r'[一-鿿぀-ヿ가-힯]')
 MORPHOLOGY_SUFFIXES_TO_IGNORE = ["'s", "es", "s"]
 # Определяем пороги
 ORDERED_SEARCH_THRESHOLD = 99      # Уровень 2: Порядок важен, но прощаем морфологию
@@ -463,13 +464,21 @@ class SmartGlossaryFilter:
             # Используем непечатный разделитель, чтобы "хвост" одного термина 
             # и "голова" другого случайно не образовали новый термин.
             search_wall = "\0".join(found_originals)
-            
+
+            # Текст без найденных многосимвольных терминов: по нему видно,
+            # есть ли у односимвольного кандидата самостоятельное вхождение.
+            residual_text = self._text_without_terms(text, found_originals)
+
             # Берем только те термины, которые еще НЕ найдены
             candidates = set(full_glossary.keys()) - found_originals
             for candidate in candidates:
                 # Python оператор 'in' работает на C и экстремально быстр (Boyer-Moore подобный алгоритм).
                 # Он находит вхождение, даже если оно внутри другого слова.
                 if candidate in search_wall:
+                    if self._is_masked_single_char(candidate, residual_text):
+                        # Иероглиф живет только внутри более длинного термина
+                        # (唐 в 唐元): переводчику бесполезен, а токены тратит.
+                        continue
                     found_originals.add(candidate)
         
         
@@ -735,22 +744,44 @@ class SmartGlossaryFilter:
     
         # === Шаг 3: Расширение (Поиск родственников) ===
         final_results = set(validated_anchors)
-        
+
         if fuzzy_threshold <= self.RELATED_SEARCH_THRESHOLD and similarity_map:
+            # Текст без найденных многосимвольных терминов: по нему проверяем,
+            # есть ли у односимвольного "родственника" самостоятельное вхождение.
+            residual_text = self._text_without_terms(normalized_text, validated_anchors)
             queue = list(validated_anchors)
             processed = set(validated_anchors)
-    
+
             while queue:
                 current_term = queue.pop(0)
                 relations = similarity_map.get(current_term, [])
                 for related_term, score in relations:
                     if score >= fuzzy_threshold:
                         if related_term not in processed:
-                            final_results.add(related_term)
                             processed.add(related_term)
+                            if self._is_masked_single_char(related_term, residual_text):
+                                # Термин живет только внутри более длинного (唐 в 唐元):
+                                # переводчику он не нужен и лишь тратит токены промпта.
+                                continue
+                            final_results.add(related_term)
                             queue.append(related_term)
-                            
+
         return final_results
+
+    @staticmethod
+    def _text_without_terms(normalized_text, terms):
+        """Убирает из текста вхождения многосимвольных терминов."""
+        residual = normalized_text or ""
+        for term in sorted((t for t in terms if len(t) > 1), key=len, reverse=True):
+            residual = residual.replace(term, "\0")
+        return residual
+
+    @staticmethod
+    def _is_masked_single_char(term, residual_text):
+        """Односимвольный CJK-термин, не встречающийся вне более длинных терминов."""
+        if len(term) != 1 or not CJK_CHAR_RE.match(term):
+            return False
+        return term not in residual_text
 
     
     def _validate_korean_candidates(self, candidates, normalized_text):
