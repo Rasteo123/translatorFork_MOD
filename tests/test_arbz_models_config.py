@@ -15,6 +15,7 @@ class ArbzModelsConfigTests(unittest.TestCase):
             "ARBZ Translator": "translator",
             "Gemini 3.1 Pro High": "gemini-3.1-pro-high",
             "Gemini 3.1 Pro Low": "gemini-3.1-pro-low",
+            "Gemini 3.7 Flash Tiered": "gemini-3.7-flash-tiered",
             "Gemini 3.5 Flash High": "gemini-3.5-flash-agent",
             "Gemini 3 Flash": "gemini-3-flash",
             "Gemini 3.5 Flash Low": "gemini-3.5-flash-low",

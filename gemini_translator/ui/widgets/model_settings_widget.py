@@ -1414,7 +1414,7 @@ class ModelSettingsWidget(QGroupBox):
 
         # Явное действие пользователя — синхронно, список обновляется на глазах.
         api_config.refresh_dynamic_models(provider_id)
-        self.set_available_models(provider_id)
+        self.set_available_models(provider_id, apply_recommended_limits=False)
         self._emit_settings_changed()
 
     @pyqtSlot(str)
@@ -1423,7 +1423,10 @@ class ModelSettingsWidget(QGroupBox):
             return
         if self._combo_matches_provider_models(provider_id):
             return
-        self.set_available_models(provider_id)
+        # Обновление списка не является выбором другой модели. Сохраняем
+        # введённые пользователем RPM/RPD/параллелизм, иначе поздний ответ
+        # discovery незаметно возвращает рекомендованные лимиты модели.
+        self.set_available_models(provider_id, apply_recommended_limits=False)
 
     def _combo_matches_provider_models(self, provider_id: str) -> bool:
         provider_config = api_config.api_providers_view().get(provider_id, {})
@@ -1511,7 +1514,12 @@ class ModelSettingsWidget(QGroupBox):
         self._emit_settings_changed()
 
     @pyqtSlot(str) # <-- Делаем его слотом
-    def set_available_models(self, provider_id: str): # <-- Теперь принимает ID
+    def set_available_models(
+        self,
+        provider_id: str,
+        *,
+        apply_recommended_limits: bool = True,
+    ): # <-- Теперь принимает ID
         """Обновляет список доступных моделей на основе ID провайдера."""
         if self._mcp_mode:
             self._mcp_restore_provider_id = provider_id or self._mcp_restore_provider_id
@@ -1561,7 +1569,10 @@ class ModelSettingsWidget(QGroupBox):
             self.model_combo.setCurrentIndex(preferred_index)
         
         self.model_combo.blockSignals(False)
-        self._on_model_changed(self.model_combo.currentIndex())
+        self._on_model_changed(
+            self.model_combo.currentIndex(),
+            apply_recommended_limits=apply_recommended_limits,
+        )
 
     def _find_model_index(self, model_name=None, model_id=None):
         if model_id is not None:

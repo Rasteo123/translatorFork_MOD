@@ -254,6 +254,44 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         widget.set_available_models("gemini")
         self.assertTrue(widget.free_deepseek_tools_btn.isHidden())
 
+    def test_dynamic_model_refresh_preserves_manual_request_limits(self):
+        widget = self._create_widget()
+        models = {
+            "Demo Model": {
+                "id": "demo-model",
+                "provider": "demo_provider",
+                "rpm": 6,
+                "max_concurrent_requests": 3,
+            }
+        }
+        provider_config = {
+            "demo_provider": {
+                "models": models,
+            }
+        }
+
+        with patch.object(widget._models_refresher, "refresh_async"), \
+             patch.object(api_config, "api_providers_view", return_value=provider_config), \
+             patch.object(api_config, "all_models_view", return_value=models):
+            widget.set_available_models("demo_provider")
+            widget.rpm_spin.setValue(1)
+            widget.max_concurrent_spin.setValue(1)
+
+            provider_config["demo_provider"]["models"] = {
+                **models,
+                "New Model": {
+                    "id": "new-model",
+                    "provider": "demo_provider",
+                    "rpm": 12,
+                    "max_concurrent_requests": 4,
+                },
+            }
+            widget._on_dynamic_models_refreshed("demo_provider")
+
+        self.assertEqual(widget.model_combo.currentText(), "Demo Model")
+        self.assertEqual(widget.rpm_spin.value(), 1)
+        self.assertEqual(widget.max_concurrent_spin.value(), 1)
+
     def test_mcp_mode_hides_stale_model_controls_and_returns_mcp_client_model(self):
         widget = self._create_widget()
         widget.set_available_models("gemini")

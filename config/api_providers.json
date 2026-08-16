@@ -1123,6 +1123,14 @@
         "max_output_tokens": 8192,
         "context_length": 128000
       },
+      "Gemini 3.7 Flash Tiered": {
+        "id": "gemini-3.7-flash-tiered",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
       "Gemini 3.5 Flash High": {
         "id": "gemini-3.5-flash-agent",
         "rpm": 6,
