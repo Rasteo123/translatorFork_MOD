@@ -65,5 +65,6 @@ Thumbs.db
 
 # Сгенерированные конфиги и результаты бенчмарка промптов
 # (содержат текст глав и глоссарий проекта, собираются локально)
-benchmarks/prompt_fidelity_*.json
+benchmarks/*.json
+!benchmarks/prompt_benchmark.example.json
 benchmark_results/
