@@ -62,3 +62,9 @@ _tmp_*
 .DS_Store
 Thumbs.db
 .worktrees/
+
+# Сгенерированные конфиги и результаты бенчмарка промптов
+# (содержат текст глав и глоссарий проекта, собираются локально)
+benchmarks/*.json
+!benchmarks/prompt_benchmark.example.json
+benchmark_results/

@@ -525,8 +525,135 @@ def normalize_xhtml_tag_case(html_content: str) -> str:
     return tag_pattern.sub(replace_tag, html_content)
 
 
+SPEECH_OPERATOR = '─'   # ─ BOX DRAWINGS LIGHT HORIZONTAL
+EN_DASH = '–'           # –
+EM_DASH = '—'           # — запрещён в выводе
+
+DASH_BLOCK_TAGS = {
+    'p', 'div', 'li', 'blockquote', 'dd', 'dt', 'figcaption',
+    'td', 'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+}
+_ATTRIBUTION_TAIL_RE = re.compile(r'[,!?…]\s*$')
+
+
+def _normalize_block_dashes(block) -> None:
+    """Заменяет — внутри одного блока на ─ (граница речи) или – (всё остальное)."""
+    nodes = [
+        node for node in block.descendants
+        if isinstance(node, NavigableString) and not isinstance(node, Comment)
+    ]
+    if not nodes:
+        return
+
+    joined = "".join(str(node) for node in nodes)
+    if EM_DASH not in joined:
+        return
+
+    leading = joined.lstrip()
+    is_speech_block = bool(leading) and leading[0] in (SPEECH_OPERATOR, EM_DASH)
+
+    chars = list(joined)
+    for index, char in enumerate(chars):
+        if char != EM_DASH:
+            continue
+        prefix = joined[:index]
+        if not prefix.strip():
+            # Тире в начале блока — это открытие реплики.
+            chars[index] = SPEECH_OPERATOR
+        elif is_speech_block and _ATTRIBUTION_TAIL_RE.search(prefix):
+            # «…реплика, — слова автора»: переход [SOUND] -> [SILENCE].
+            chars[index] = SPEECH_OPERATOR
+        else:
+            chars[index] = EN_DASH
+
+    # Замены посимвольные, длина сохраняется, поэтому режем строго по узлам.
+    normalized = "".join(chars)
+    offset = 0
+    for node in nodes:
+        length = len(str(node))
+        node.replace_with(NavigableString(normalized[offset:offset + length]))
+        offset += length
+
+
+def normalize_dialogue_dashes(html_content: str) -> str:
+    """
+    Приводит тире к правилам проекта: ─ только на границе речи и авторского
+    текста, во всех остальных случаях –. Em-dash (—) в выводе не остаётся.
+    Атрибуты, комментарии и служебные маркеры не затрагиваются.
+    """
+    if not isinstance(html_content, str) or EM_DASH not in html_content:
+        return html_content
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+    blocks = [
+        tag for tag in soup.find_all(DASH_BLOCK_TAGS)
+        if not tag.find(DASH_BLOCK_TAGS)  # только внутренние блоки, без двойной обработки
+    ]
+    for block in (blocks or [soup]):
+        _normalize_block_dashes(block)
+
+    return str(soup)
+
+
+_FIRST_HEADING_RE = re.compile(
+    r'(<h([1-6])\b[^>]*>)(?P<text>[^<]*)(</h\2\s*>)',
+    flags=re.IGNORECASE,
+)
+_NUMBERED_CHAPTER_RE = re.compile(r'^\s*Глава\s+(\d+)\s*[:.]?\s*(.*?)\s*$')
+_UNNUMBERED_CHAPTER_RE = re.compile(r'^\s*Глава\s*[:.]\s*(.+?)\s*$')
+
+
+def _format_chapter_title(raw_title: str) -> str:
+    title = raw_title.strip()
+    if title.startswith('«') and title.endswith('»'):
+        title = title[1:-1].strip()
+    title = title.replace('«', '„').replace('»', '“')
+    return f'«{title}»'
+
+
+def _normalized_chapter_heading_text(original_text: str) -> str | None:
+    match = _NUMBERED_CHAPTER_RE.match(original_text)
+    if match:
+        number, raw_title = match.groups()
+    else:
+        match = _UNNUMBERED_CHAPTER_RE.match(original_text)
+        if not match:
+            return None
+        number, raw_title = None, match.group(1)
+
+    # «Глава 165» без названия оставляем как есть — оборачивать нечего.
+    if not raw_title.strip():
+        return None
+
+    prefix = f'Глава {number}: ' if number else 'Глава: '
+    return prefix + _format_chapter_title(raw_title)
+
+
+def normalize_chapter_heading_format(html_content: str) -> str:
+    """
+    Приводит первый заголовок к стандарту проекта: `Глава N: «Название»`.
+    Вложенные кавычки становятся `„…“`. Заголовки без слова «Глава» (в том
+    числе непереведённые) и заголовки без названия остаются как есть.
+    Работает регуляркой, чтобы не платить лишним разбором HTML.
+    """
+    if not isinstance(html_content, str) or 'Глава' not in html_content:
+        return html_content
+
+    match = _FIRST_HEADING_RE.search(html_content)
+    if not match:
+        return html_content
+
+    original_text = match.group('text')
+    new_text = _normalized_chapter_heading_text(original_text)
+    if new_text is None or new_text == original_text.strip():
+        return html_content
+
+    start, end = match.span('text')
+    return html_content[:start] + new_text + html_content[end:]
+
+
 def oper_dash_symbol(html_content: str) -> str:
-    
+
     
     content = html_content
     
@@ -3308,6 +3435,8 @@ def validate_html_structure(original_html, translated_html):
     final_translated_html = normalize_translated_body_wrapper(original_html, final_translated_html)
     final_translated_html = normalize_xhtml_tag_case(final_translated_html)
     final_translated_html = _coerce_first_heading_level(original_html, final_translated_html, soup_cache)
+    final_translated_html = normalize_dialogue_dashes(final_translated_html)
+    final_translated_html = normalize_chapter_heading_format(final_translated_html)
     trans_lower = final_translated_html.lower().strip()
 
     # --- ПРОВЕРКА 1: Целостность <body> (Regex) ---

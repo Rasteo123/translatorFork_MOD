@@ -77,6 +77,7 @@ def get_resource_path(relative_path: str) -> Path:
 
 _PROVIDERS_FILE = get_resource_path("config/api_providers.json")
 _PROMPT_FILE = get_resource_path("config/default_prompt.txt")
+_HYBRID_TRANSLATION_PROMPT_FILE = get_resource_path("config/default_prompt.hybrid.txt")
 _BASIC_TRANSLATION_PROMPT_FILE = get_resource_path("config/default_basic_translation_prompt.txt")
 _SHORT_BASIC_TRANSLATION_PROMPT_FILE = get_resource_path("config/default_basic_translation_prompt_short.txt")
 _SEQUENTIAL_PROMPT_FILE = get_resource_path("config/default_sequential_prompt.txt")
@@ -1170,10 +1171,18 @@ def default_basic_translation_prompt():
     return _DEFAULT_BASIC_TRANSLATION_PROMPT
 def builtin_translation_prompt_variants():
     _ensure_configs_initialized()
-    return {
+    variants = {
         "Базовый перевод": _DEFAULT_BASIC_TRANSLATION_PROMPT,
         "сокращённый": _SHORT_BASIC_TRANSLATION_PROMPT,
     }
+    try:
+        if _HYBRID_TRANSLATION_PROMPT_FILE.exists():
+            text = _HYBRID_TRANSLATION_PROMPT_FILE.read_text(encoding='utf-8').strip()
+            if text:
+                variants["Точный перевод (приоритет верности)"] = text
+    except Exception:
+        pass
+    return variants
 def default_sequential_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_SEQUENTIAL_PROMPT
