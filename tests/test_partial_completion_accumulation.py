@@ -223,3 +223,47 @@ class RestoreWholeChapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegacySingleChunkDemotionTests(unittest.TestCase):
+    """Старые «ЧАНК 1/1» из снапшота очереди возвращаются к обычной главе."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from gemini_translator.core.task_manager import ChapterQueueManager
+
+        # QObject нельзя создать через __new__, а методу нужен только атрибут
+        # класса — поэтому зовём его как обычную функцию с лёгкой заглушкой.
+        self.demote = ChapterQueueManager._demote_legacy_single_chunk
+        self.manager = SimpleNamespace(
+            _DEMOTABLE_SINGLE_CHUNK_STATUSES=ChapterQueueManager._DEMOTABLE_SINGLE_CHUNK_STATUSES,
+        )
+
+    def test_pending_single_chunk_becomes_a_chapter(self):
+        payload = _chunk_payload(partial=CHAPTER_MIDDLE)
+
+        self.assertEqual(
+            self.demote(self.manager, payload, 'pending'),
+            ('epub', 'book.epub', 'Text/ch.xhtml'),
+        )
+
+    def test_failed_single_chunk_becomes_a_chapter(self):
+        self.assertEqual(
+            self.demote(self.manager, _chunk_payload(), 'failed'),
+            ('epub', 'book.epub', 'Text/ch.xhtml'),
+        )
+
+    def test_completed_single_chunk_is_left_for_the_assembler(self):
+        payload = _chunk_payload()
+
+        self.assertEqual(self.demote(self.manager, payload, 'completed'), payload)
+
+    def test_real_multichunk_task_is_untouched(self):
+        payload = _chunk_payload(total_chunks=2, chunk_index=1)
+
+        self.assertEqual(self.demote(self.manager, payload, 'pending'), payload)
+
+    def test_plain_chapter_is_untouched(self):
+        payload = ('epub', 'book.epub', 'Text/ch.xhtml')
+
+        self.assertEqual(self.demote(self.manager, payload, 'pending'), payload)

@@ -15,6 +15,9 @@ from gemini_translator.utils.text import (
 
 class EmergencyTask:
 
+    # Где в payload лежит хвост оборванного перевода.
+    _PARTIAL_INDEX_BY_TASK_TYPE = {'epub': 3, 'epub_chunk': 8}
+
     # Сколько провалов валидации терпим, прежде чем счесть до-генерацию
     # безнадёжной и перевести кусок с нуля. Лимит попыток по VALIDATION — 6,
     # так что после сброса остаётся ещё половина бюджета на чистый перевод.
@@ -42,9 +45,10 @@ class EmergencyTask:
 
         task_id, task_payload = task_info
         payload_list = list(task_payload or ())
-        if not payload_list or payload_list[0] != 'epub_chunk' or len(payload_list) <= 8:
+        partial_index = self._PARTIAL_INDEX_BY_TASK_TYPE.get(payload_list[0] if payload_list else None)
+        if partial_index is None or len(payload_list) <= partial_index:
             return None
-        if not str(payload_list[8] or "").strip():
+        if not str(payload_list[partial_index] or "").strip():
             return None
 
         validation_failures = (task_history or {}).get('errors', {}).get(ErrorType.VALIDATION.name, 0)
@@ -63,12 +67,14 @@ class EmergencyTask:
         """
         Сбрасывает накопленный до-перевод.
 
-        Чанк 1/1 — это не настоящий чанк, а целая глава, которую до-генерация
-        временно переодела в 'epub_chunk'. Без хвоста этот маскарад не нужен:
-        возвращаем задачу к обычному 'epub', иначе глава так и висит в списке
-        как «ЧАНК 1/1» и её приходится пересобирать руками.
+        Чанк 1/1 — это не настоящий чанк, а целая глава: такие задачи остались
+        от старой схемы, где до-генерация переодевала главу в 'epub_chunk'.
+        Без хвоста маскарад не нужен — возвращаем задачу к обычному 'epub',
+        иначе глава так и висит в списке как «ЧАНК 1/1».
         """
-        base_payload = tuple(task_payload)[:8]
+        payload = tuple(task_payload)
+        partial_index = self._PARTIAL_INDEX_BY_TASK_TYPE.get(payload[0] if payload else None)
+        base_payload = payload[:partial_index] if partial_index is not None else payload
         if base_payload[0] != 'epub_chunk' or len(base_payload) < 6:
             return base_payload
 
@@ -103,11 +109,7 @@ class EmergencyTask:
 
         task_id, task_payload = task_info
         untrimmed_partial_text = exc.partial_text
-        allow_chunk_completion = bool(
-            getattr(self.worker, 'chunking', False)
-            or getattr(self.worker, 'chunk_on_error', False)
-        )
-        
+
         # --- УМНАЯ ОБРЕЗКА ХВОСТА ---
         split_markers = ["</p>", "</div>", "</h1>", "</h2>", "</h3>", "</h4>", "</h5>", "</h6>", "</li>", "</blockquote>", "<br>", "\n"]
         best_split_pos = -1
@@ -132,9 +134,7 @@ class EmergencyTask:
                     "хвост отброшен, задача будет переведена заново."
                 )
             })
-            if list(task_payload)[0] == 'epub_chunk':
-                return (task_id, self._payload_without_partial(task_payload))
-            return task_info
+            return (task_id, self._payload_without_partial(task_payload))
 
         if sanitized_partial != partial_text:
             removed = len(partial_text) - len(sanitized_partial)
@@ -147,69 +147,50 @@ class EmergencyTask:
         partial_text = sanitized_partial
 
         # --- МУТАЦИЯ PAYLOAD ---
+        # Хвост живёт в конце payload: у главы это элемент 3, у чанка — 8.
+        # Раньше главу ради до-генерации переодевали в 'epub_chunk' 0/1, и она
+        # так и оставалась в списке как «ЧАНК 1/1» до ручной пересборки задач.
+        # Теперь до-перевод главы умеет EpubSingleFileProcessor, и глава
+        # остаётся главой.
+        partial_index = self._PARTIAL_INDEX_BY_TASK_TYPE.get(task_payload[0])
+        if partial_index is None:
+            return task_info
+
         base_payload_list = list(task_payload)
-        
-        if base_payload_list[0] == 'epub':
-            if not allow_chunk_completion:
-                self.worker._post_event('log_message', {
-                    'message': "[INFO] Получен частичный ответ, но чанки отключены. Повторяем целую главу без преобразования в epub_chunk."
-                })
-                return task_info
+        previous_partial = ""
+        if len(base_payload_list) > partial_index:
+            stored_partial = base_payload_list[partial_index]
+            previous_partial = stored_partial if isinstance(stored_partial, str) else ""
+        base_payload_list = base_payload_list[:partial_index]
 
-            _, epub_path, chapter_path = base_payload_list
-            try:
-                # zipfile.ZipFile работает прозрачно благодаря os_patch, даже если epub_path в RAM.
-                with open(epub_path, 'rb') as f:
-                    with zipfile.ZipFile(f, "r") as zf:
-                        original_content = zf.read(chapter_path).decode("utf-8", "ignore")
-                original_content = normalize_epub_chapter_heading_to_h1(original_content)
-                
-                prefix, body_content, suffix = "", original_content, ""
-                content_lower = original_content.lower()
-                start_body_tag_pos, end_body_tag_pos = content_lower.find('<body'), content_lower.rfind('</body>')
-                
-                if start_body_tag_pos != -1 and end_body_tag_pos != -1:
-                    start_body_content_pos = content_lower.find('>', start_body_tag_pos) + 1
-                    prefix, body_content, suffix = original_content[:start_body_content_pos], original_content[start_body_content_pos:end_body_tag_pos], original_content[end_body_tag_pos:]
-                
-                base_payload_list = ['epub_chunk', epub_path, chapter_path, body_content, 0, 1, prefix, suffix]
-                self.worker._post_event('log_message', {'message': f"[INFO] Задача 'epub' преобразована в 'epub_chunk' для доперевода."})
-            except Exception as e:
-                # В случае ошибки возвращаем исходную задачу, она провалится на следующем этапе
-                return task_info
-
-        elif base_payload_list[0] == 'epub_chunk' and len(base_payload_list) > 8:
+        if previous_partial:
             # PartialGenerationError несёт ТОЛЬКО что сгенерированный кусок —
             # продолжение, а не весь перевод. Если положить его в payload вместо
             # накопленного, в задаче останется фрагмент из середины главы, и любая
             # следующая до-генерация даст «середина + хвост», который валидатор
             # сравнит с целой главой и завалит. Поэтому накапливаем, а не заменяем.
-            previous_partial = base_payload_list[8] or ""
-            base_payload_list = base_payload_list[:8]
-
-            if previous_partial:
-                merged_partial, overlap_len = merge_partial_with_overlap_guard(
-                    previous_partial, partial_text
-                )
-                if len(merged_partial) <= len(previous_partial):
-                    # Попытка ничего не добавила — накопление встало. Продолжать
-                    # с тем же хвостом бессмысленно, переводим главу заново.
-                    self.worker._post_event('log_message', {
-                        'message': (
-                            "[WARN] До-генерация не продвинулась ни на символ — "
-                            "накопленный хвост сброшен, задача будет переведена заново."
-                        )
-                    })
-                    return (task_id, self._payload_without_partial(task_payload))
-
+            merged_partial, overlap_len = merge_partial_with_overlap_guard(
+                previous_partial, partial_text
+            )
+            if len(merged_partial) <= len(previous_partial):
+                # Попытка ничего не добавила — накопление встало. Продолжать
+                # с тем же хвостом бессмысленно, переводим заново.
                 self.worker._post_event('log_message', {
                     'message': (
-                        f"[INFO] Частичный перевод накоплен: "
-                        f"{len(previous_partial)} + {len(partial_text)} симв."
-                        + (f" (перекрытие {overlap_len} срезано)" if overlap_len else "")
+                        "[WARN] До-генерация не продвинулась ни на символ — "
+                        "накопленный хвост сброшен, задача будет переведена заново."
                     )
                 })
-                partial_text = merged_partial
+                return (task_id, self._payload_without_partial(task_payload))
+
+            self.worker._post_event('log_message', {
+                'message': (
+                    f"[INFO] Частичный перевод накоплен: "
+                    f"{len(previous_partial)} + {len(partial_text)} симв."
+                    + (f" (перекрытие {overlap_len} срезано)" if overlap_len else "")
+                )
+            })
+            partial_text = merged_partial
 
         new_payload = tuple((*base_payload_list, partial_text))
         return (task_id, new_payload)
