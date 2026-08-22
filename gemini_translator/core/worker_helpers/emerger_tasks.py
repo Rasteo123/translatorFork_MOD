@@ -1,21 +1,103 @@
-from gemini_translator.api.errors import PartialGenerationError
+from gemini_translator.api.errors import (
+    ErrorType,
+    PartialGenerationError,
+    ValidationFailedError,
+)
 from gemini_translator.api import config as api_config
 import zipfile
 from collections import Counter
 from gemini_translator.utils.epub_tools import normalize_epub_chapter_heading_to_h1
-from gemini_translator.utils.text import brute_force_split, sanitize_partial_translation
+from gemini_translator.utils.text import (
+    brute_force_split,
+    merge_partial_with_overlap_guard,
+    sanitize_partial_translation,
+)
 
 class EmergencyTask:
-    
+
+    # Сколько провалов валидации терпим, прежде чем счесть до-генерацию
+    # безнадёжной и перевести кусок с нуля. Лимит попыток по VALIDATION — 6,
+    # так что после сброса остаётся ещё половина бюджета на чистый перевод.
+    _MAX_VALIDATION_FAILURES_WITH_PARTIAL = 2
+
     def __init__(self, worker):
         self.worker = worker
-    
-    def _mutate_task_for_completion(self, task_info: tuple, exc):
+
+    def _reset_unconvergent_completion(self, task_info, exc, task_history):
+        """
+        Аварийный сброс до-генерации, которая не сходится.
+
+        Если хвост в payload начинается не с начала куска (такие задачи остались
+        от старых запусков, где накопленный перевод затирался продолжением), то
+        склейка «середина + хвост» никогда не сойдётся с целой главой, и задача
+        молотит попытки впустую до окончательного провала. После нескольких
+        провалов валидации выбрасываем хвост и переводим кусок заново.
+
+        Возвращает новый task_info или None, если сбрасывать нечего.
+        """
+        # Сбрасываем только по валидации: сеть и лимиты ничего не говорят о том,
+        # сходится до-генерация или нет, и терять из-за них накопленное нельзя.
+        if not isinstance(exc, ValidationFailedError):
+            return None
+
+        task_id, task_payload = task_info
+        payload_list = list(task_payload or ())
+        if not payload_list or payload_list[0] != 'epub_chunk' or len(payload_list) <= 8:
+            return None
+        if not str(payload_list[8] or "").strip():
+            return None
+
+        validation_failures = (task_history or {}).get('errors', {}).get(ErrorType.VALIDATION.name, 0)
+        if validation_failures < self._MAX_VALIDATION_FAILURES_WITH_PARTIAL:
+            return None
+
+        self.worker._post_event('log_message', {
+            'message': (
+                f"[WARN] До-генерация не сходится (провалов валидации: {validation_failures}) — "
+                "накопленный хвост отброшен, кусок будет переведён заново."
+            )
+        })
+        return (task_id, self._payload_without_partial(task_payload))
+
+    def _payload_without_partial(self, task_payload):
+        """
+        Сбрасывает накопленный до-перевод.
+
+        Чанк 1/1 — это не настоящий чанк, а целая глава, которую до-генерация
+        временно переодела в 'epub_chunk'. Без хвоста этот маскарад не нужен:
+        возвращаем задачу к обычному 'epub', иначе глава так и висит в списке
+        как «ЧАНК 1/1» и её приходится пересобирать руками.
+        """
+        base_payload = tuple(task_payload)[:8]
+        if base_payload[0] != 'epub_chunk' or len(base_payload) < 6:
+            return base_payload
+
+        try:
+            total_chunks = int(base_payload[5])
+        except (TypeError, ValueError):
+            return base_payload
+
+        if total_chunks != 1:
+            return base_payload
+
+        self.worker._post_event('log_message', {
+            'message': (
+                "[INFO] Глава возвращена к обычной задаче целиком "
+                "(до-генерация чанка 1/1 отменена)."
+            )
+        })
+        return ('epub', base_payload[1], base_payload[2])
+
+    def _mutate_task_for_completion(self, task_info: tuple, exc, task_history: dict | None = None):
         """
         Проверяет, является ли ошибка PartialGenerationError с непустым хвостом.
         Если да - мутирует payload задачи для догенерации.
         В противном случае - возвращает исходный task_info.
         """
+        reset_task_info = self._reset_unconvergent_completion(task_info, exc, task_history)
+        if reset_task_info is not None:
+            return reset_task_info
+
         if not isinstance(exc, PartialGenerationError) or not getattr(exc, 'partial_text', ''):
             return task_info
 
@@ -50,9 +132,8 @@ class EmergencyTask:
                     "хвост отброшен, задача будет переведена заново."
                 )
             })
-            payload_list = list(task_payload)
-            if payload_list[0] == 'epub_chunk' and len(payload_list) > 8:
-                return (task_id, tuple(payload_list[:-1]))
+            if list(task_payload)[0] == 'epub_chunk':
+                return (task_id, self._payload_without_partial(task_payload))
             return task_info
 
         if sanitized_partial != partial_text:
@@ -98,7 +179,37 @@ class EmergencyTask:
                 return task_info
 
         elif base_payload_list[0] == 'epub_chunk' and len(base_payload_list) > 8:
-            base_payload_list = base_payload_list[:-1]
+            # PartialGenerationError несёт ТОЛЬКО что сгенерированный кусок —
+            # продолжение, а не весь перевод. Если положить его в payload вместо
+            # накопленного, в задаче останется фрагмент из середины главы, и любая
+            # следующая до-генерация даст «середина + хвост», который валидатор
+            # сравнит с целой главой и завалит. Поэтому накапливаем, а не заменяем.
+            previous_partial = base_payload_list[8] or ""
+            base_payload_list = base_payload_list[:8]
+
+            if previous_partial:
+                merged_partial, overlap_len = merge_partial_with_overlap_guard(
+                    previous_partial, partial_text
+                )
+                if len(merged_partial) <= len(previous_partial):
+                    # Попытка ничего не добавила — накопление встало. Продолжать
+                    # с тем же хвостом бессмысленно, переводим главу заново.
+                    self.worker._post_event('log_message', {
+                        'message': (
+                            "[WARN] До-генерация не продвинулась ни на символ — "
+                            "накопленный хвост сброшен, задача будет переведена заново."
+                        )
+                    })
+                    return (task_id, self._payload_without_partial(task_payload))
+
+                self.worker._post_event('log_message', {
+                    'message': (
+                        f"[INFO] Частичный перевод накоплен: "
+                        f"{len(previous_partial)} + {len(partial_text)} симв."
+                        + (f" (перекрытие {overlap_len} срезано)" if overlap_len else "")
+                    )
+                })
+                partial_text = merged_partial
 
         new_payload = tuple((*base_payload_list, partial_text))
         return (task_id, new_payload)
