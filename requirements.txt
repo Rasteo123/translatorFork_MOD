@@ -18,12 +18,14 @@ jieba
 loguru
 lxml
 nltk
+numpy>=2.0,<3
 num2words
 opencc-python-reimplemented
 orjson
 playwright
 PyAudio
 pydantic>=2.0.0
+pandas>=3.0,<4
 pydub
 pymorphy3
 pypinyin

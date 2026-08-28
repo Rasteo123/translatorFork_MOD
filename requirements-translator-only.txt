@@ -14,12 +14,14 @@ google-genai
 idna>=3.15
 jieba
 lxml
+numpy>=2.0,<3
 num2words
 opencc-python-reimplemented
 pymorphy3
 pypdf
 PyQt6
 PySocks
+pandas>=3.0,<4
 qoder-agent-sdk>=1.0.8
 python-docx
 python-Levenshtein
