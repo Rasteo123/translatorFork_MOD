@@ -105,7 +105,7 @@ class _ValidationHarness:
         self.repeating_chars_spinbox = _SpinStub(5)
 
     def _get_current_ratio_bounds(self):
-        return 0.70, 1.80
+        return 0.92, 1.20
 
     def show_structure_details(self, errors_dict):
         return None
@@ -157,7 +157,7 @@ class ValidationReanalysisTests(unittest.TestCase):
         ]
 
         self.assertEqual(ratio_min, 2.80)
-        self.assertEqual(ratio_max, 6.50)
+        self.assertEqual(ratio_max, 3.30)
         self.assertIn("x2.8", description)
 
     def test_ratio_equal_to_lower_bound_is_not_too_short(self):
@@ -170,7 +170,7 @@ class ValidationReanalysisTests(unittest.TestCase):
                 "len_trans": 2800,
                 "ratio_value": 2.80,
             },
-            override_bounds=(2.80, 6.50),
+            override_bounds=(2.80, 3.30),
         )
 
         self.assertEqual(reasons, [])

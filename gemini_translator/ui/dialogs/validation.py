@@ -34,6 +34,7 @@ from ...utils.project_migrator import ProjectMigrator
 from ...utils.translation_versions import (
     select_target_translation_version,
 )
+from ...qa.ratio_profiles import validation_ratio_presets
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -2091,8 +2092,7 @@ class TranslationValidatorPage(ShellPage):
     )
 
     RATIO_PRESETS = {
-        "Алфавитный (A -> A)": (0.70, 1.80, "Ожидаемое соотношение перевод/оригинал для En/Fr/De -> Ru"),
-        "Иероглифический (象 -> A)": (2.80, 6.50, "Ожидаемое перевод/оригинал для Zh/Jp/Ko -> Ru; если меньше x2.8, это уже подозрительно"),
+        **validation_ratio_presets(),
         "Медиана ±20%": (-1.0, 0.20, "Отклонение от медианного значения по всем главам"),
         "Медиана ±25%": (-1.0, 0.25, "Отклонение от медианного значения по всем главам"),
         "Медиана ±30%": (-1.0, 0.30, "Отклонение от медианного значения по всем главам")
