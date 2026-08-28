@@ -28,6 +28,17 @@ class QaJournalUnsupportedVersionError(QaJournalError):
 
 class QaJournal:
     SCHEMA_VERSION = 1
+    _ROOT_KEYS = frozenset(
+        {
+            "schema_version",
+            "book_id",
+            "updated_at",
+            "metrics",
+            "candidates",
+            "repairs",
+            "glossary_observations",
+        }
+    )
 
     def __init__(
         self,
@@ -54,13 +65,15 @@ class QaJournal:
     def load(cls, path: Path) -> "QaJournal":
         try:
             with Path(path).open("r", encoding="utf-8") as stream:
-                payload = json.load(stream)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                payload = json.load(stream, parse_constant=_reject_json_constant)
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             raise QaJournalCorruptedError(f"Cannot read QA journal: {path}") from exc
 
         if not isinstance(payload, dict):
             raise QaJournalCorruptedError("QA journal root must be an object")
-        if "schema_version" not in payload or not isinstance(
+        if "schema_version" not in payload or isinstance(
+            payload["schema_version"], bool
+        ) or not isinstance(
             payload["schema_version"], int
         ):
             raise QaJournalCorruptedError("QA journal has no valid schema version")
@@ -68,6 +81,8 @@ class QaJournal:
             raise QaJournalUnsupportedVersionError(
                 f"Unsupported QA journal schema version: {payload['schema_version']}"
             )
+        if set(payload) != cls._ROOT_KEYS:
+            raise QaJournalCorruptedError("QA journal has an invalid root schema")
 
         required_lists = ("metrics", "candidates", "repairs", "glossary_observations")
         if not isinstance(payload.get("book_id"), str) or not isinstance(
@@ -85,6 +100,11 @@ class QaJournal:
             }
             if len(metrics) != len(payload["metrics"]):
                 raise ValueError("metrics entries must be objects")
+            candidates = _validated_object_entries(payload["candidates"])
+            repairs = _validated_object_entries(payload["repairs"])
+            glossary_observations = _validated_object_entries(
+                payload["glossary_observations"]
+            )
         except (KeyError, ValueError) as exc:
             raise QaJournalCorruptedError("QA journal metrics are invalid") from exc
 
@@ -92,9 +112,9 @@ class QaJournal:
             book_id=payload["book_id"],
             updated_at=payload["updated_at"],
             metrics=metrics,
-            candidates=deepcopy(payload["candidates"]),
-            repairs=deepcopy(payload["repairs"]),
-            glossary_observations=deepcopy(payload["glossary_observations"]),
+            candidates=candidates,
+            repairs=repairs,
+            glossary_observations=glossary_observations,
         )
 
     def append(self, entry: QaJournalEntry) -> None:
@@ -116,16 +136,23 @@ class QaJournal:
 
     def save(self, path: Path) -> None:
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.tmp")
-        payload = self._payload()
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = self._payload()
             with temporary.open("w", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dump(
+                    payload,
+                    stream,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
-        except OSError:
+        except BaseException:
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:
@@ -147,3 +174,19 @@ class QaJournal:
 
     def _mark_updated(self) -> None:
         self.updated_at = datetime.now().astimezone().isoformat()
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Unsupported JSON numeric constant: {value}")
+
+
+def _validated_object_entries(entries: list[Any]) -> list[dict[str, Any]]:
+    validated: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("QA journal collection entries must be objects")
+        if set(entry) == {"entry_id", "chapter_id", "decision"}:
+            validated.append(QaJournalEntry.from_dict(entry).to_dict())
+        else:
+            validated.append(deepcopy(entry))
+    return validated

@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+import math
 
 import pytest
 
@@ -8,6 +9,7 @@ from gemini_translator.qa.models import (
     CandidateKind,
     ChapterMetrics,
     Decision,
+    QaModelValidationError,
     RiskLevel,
 )
 
@@ -68,3 +70,53 @@ def test_model_enums_keep_the_persisted_values_explicit():
     assert Decision.WARNING.value == "warning"
     assert Action.REPORT_ONLY.value == "report_only"
 
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("quality_score", math.nan),
+        ("quality_score", math.inf),
+        ("duration_seconds", -math.inf),
+        ("capability_durations", {QaCapabilityKey.RAZDEL: math.nan}),
+    ],
+)
+def test_chapter_metrics_rejects_non_finite_numeric_values(field, value):
+    """Removing finite-number validation would let invalid JSON values persist."""
+    with pytest.raises(QaModelValidationError, match="finite"):
+        ChapterMetrics(
+            chapter_id="chapter-1",
+            source_language="zh",
+            target_language="ru",
+            source_chars=1,
+            translated_chars=1,
+            **{field: value},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("chapter_id", 1),
+        ("source_language", ["zh"]),
+        ("target_language", {"code": "ru"}),
+        ("quality_score", math.nan),
+        ("duration_seconds", math.inf),
+        ("length_ratio", -math.inf),
+    ],
+)
+def test_chapter_metrics_from_dict_rejects_wrong_or_non_finite_values(field, value):
+    """Dropping persisted type checks would silently accept malformed metrics."""
+    payload = ChapterMetrics(
+        chapter_id="chapter-1",
+        source_language="zh",
+        target_language="ru",
+    ).to_dict()
+    payload[field] = value
+
+    with pytest.raises(QaModelValidationError):
+        ChapterMetrics.from_dict(payload)
+
+
+def test_risk_level_includes_failed_for_excluded_book_baselines():
+    """Removing the failed state breaks Task 5's baseline eligibility contract."""
+    assert "failed" in {level.value for level in RiskLevel}

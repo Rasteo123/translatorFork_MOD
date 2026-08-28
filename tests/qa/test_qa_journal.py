@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 
@@ -98,3 +99,80 @@ def test_project_manager_uses_project_folder_for_qa_history_paths(tmp_path):
     assert manager.get_translation_qa_journal_path() == tmp_path / "translation_qa.json"
     assert manager.get_translation_qa_backup_dir() == tmp_path / "translation_qa_backups"
 
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_journal_load_rejects_non_standard_json_numbers_without_rewriting(
+    tmp_path, value
+):
+    """Using json.load defaults would accept NaN and silently poison reports."""
+    journal = QaJournal.empty(book_id="book-1")
+    journal.upsert_metrics(_metrics())
+    path = tmp_path / "translation_qa.json"
+    journal.save(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["metrics"][0]["quality_score"] = value
+    original = json.dumps(payload)
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(QaJournalCorruptedError):
+        QaJournal.load(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_journal_save_rejects_non_finite_metrics_as_strict_json(tmp_path):
+    """allow_nan=True would write JSON consumers cannot safely read."""
+    journal = QaJournal.empty(book_id="book-1")
+    journal.candidates.append({"score": math.nan})
+
+    with pytest.raises(ValueError):
+        journal.save(tmp_path / "translation_qa.json")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update({"unexpected": "data"}),
+        lambda payload: payload.update({"schema_version": True}),
+        lambda payload: payload.update({"candidates": ["not an object"]}),
+        lambda payload: payload.update(
+            {"repairs": [{"entry_id": "id", "chapter_id": "one", "decision": 1}]}
+        ),
+        lambda payload: payload.update(
+            {
+                "candidates": [
+                    {"entry_id": "id", "chapter_id": "one", "decision": "unknown"}
+                ]
+            }
+        ),
+    ],
+)
+def test_journal_load_rejects_strict_v1_schema_violations(tmp_path, mutate):
+    """Loose v1 validation would discard unknown data or invalid entry types."""
+    journal = QaJournal.empty(book_id="book-1")
+    path = tmp_path / "translation_qa.json"
+    journal.save(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mutate(payload)
+    original = json.dumps(payload)
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(QaJournalCorruptedError):
+        QaJournal.load(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_journal_save_removes_temp_and_preserves_target_on_serialization_error(tmp_path):
+    """Catching only OSError leaves partial sibling temp files after json.dump errors."""
+    journal = QaJournal.empty(book_id="book-1")
+    journal.candidates.append({"not_serializable": object()})
+    target = tmp_path / "translation_qa.json"
+    target.write_text("existing journal", encoding="utf-8")
+    temporary = tmp_path / ".translation_qa.json.tmp"
+
+    with pytest.raises(TypeError):
+        journal.save(target)
+
+    assert target.read_text(encoding="utf-8") == "existing journal"
+    assert not temporary.exists()

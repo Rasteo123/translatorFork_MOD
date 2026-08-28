@@ -2,16 +2,45 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
+import math
 from types import MappingProxyType
 from typing import Any, ClassVar, Mapping
 
 from .capabilities import QaCapabilityKey
 
 
+class QaModelValidationError(ValueError):
+    """Raised when persisted or constructed QA model data is invalid."""
+
+
+def _require_string(value: object, field_name: str, *, allow_none: bool = False) -> None:
+    if value is None and allow_none:
+        return
+    if not isinstance(value, str):
+        raise QaModelValidationError(f"{field_name} must be a string")
+
+
+def _require_integer(value: object, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise QaModelValidationError(f"{field_name} must be an integer")
+
+
+def _require_finite_number(
+    value: object, field_name: str, *, allow_none: bool = False
+) -> None:
+    if value is None and allow_none:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise QaModelValidationError(f"{field_name} must be a finite number")
+    if not math.isfinite(value):
+        raise QaModelValidationError(f"{field_name} must be finite")
+
+
 class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    FAILED = "failed"
 
 
 class CandidateKind(StrEnum):
@@ -111,14 +140,60 @@ class ChapterMetrics:
         "applied_actions",
     )
 
+    _INTEGER_FIELDS: ClassVar[tuple[str, ...]] = (
+        "source_chars",
+        "translated_chars",
+        "source_units",
+        "aligned_units",
+        "possible_gaps",
+        "glossary_expected",
+        "glossary_matched",
+        "glossary_conflicts",
+        "allowed_foreign_fragments",
+        "language_tool_issues",
+        "protected_entities",
+        "syntax_candidates",
+        "retries",
+        "input_tokens",
+        "output_tokens",
+    )
+
     def __post_init__(self) -> None:
+        for field_name in (
+            "chapter_id",
+            "source_language",
+            "target_language",
+            "content_kind",
+            "quality_score_status",
+        ):
+            _require_string(getattr(self, field_name), field_name)
+        _require_string(self.quality_estimator, "quality_estimator", allow_none=True)
+        for field_name in self._INTEGER_FIELDS:
+            _require_integer(getattr(self, field_name), field_name)
+        _require_finite_number(
+            self.quality_score, "quality_score", allow_none=True
+        )
+        _require_finite_number(self.duration_seconds, "duration_seconds")
+
+        if not isinstance(self.untranslated_by_script, (Mapping, type(None))):
+            raise QaModelValidationError("untranslated_by_script must be an object")
+        for script, count in (self.untranslated_by_script or {}).items():
+            _require_string(script, "untranslated_by_script key")
+            _require_integer(count, "untranslated_by_script count")
+
+        if not isinstance(self.capability_durations, (Mapping, type(None))):
+            raise QaModelValidationError("capability_durations must be an object")
         durations: dict[QaCapabilityKey, float] = {}
         for key, value in (self.capability_durations or {}).items():
-            capability = QaCapabilityKey(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError("capability durations must be numeric seconds")
+            try:
+                capability = QaCapabilityKey(key)
+            except ValueError as exc:
+                raise QaModelValidationError("unsupported QA capability key") from exc
+            _require_finite_number(value, "capability duration")
             if value < 0:
-                raise ValueError("capability durations must be non-negative")
+                raise QaModelValidationError(
+                    "capability durations must be non-negative"
+                )
             durations[capability] = float(value)
 
         object.__setattr__(self, "capability_durations", MappingProxyType(durations))
@@ -127,11 +202,20 @@ class ChapterMetrics:
             "untranslated_by_script",
             MappingProxyType(dict(self.untranslated_by_script or {})),
         )
-        object.__setattr__(self, "risk_level", RiskLevel(self.risk_level))
+        try:
+            object.__setattr__(self, "risk_level", RiskLevel(self.risk_level))
+        except ValueError as exc:
+            raise QaModelValidationError("unsupported risk level") from exc
+        if not isinstance(self.applied_actions, (tuple, list)):
+            raise QaModelValidationError("applied_actions must be a sequence")
+        try:
+            actions = tuple(Action(action) for action in self.applied_actions)
+        except ValueError as exc:
+            raise QaModelValidationError("unsupported applied action") from exc
         object.__setattr__(
             self,
             "applied_actions",
-            tuple(Action(action) for action in self.applied_actions),
+            actions,
         )
 
     @property
@@ -177,12 +261,19 @@ class ChapterMetrics:
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ChapterMetrics":
         if not isinstance(payload, Mapping):
-            raise ValueError("Chapter metrics must be a JSON object")
-        fields = set(cls.__dataclass_fields__) - {"_DATAFRAME_COLUMNS"}
+            raise QaModelValidationError("Chapter metrics must be a JSON object")
+        expected_fields = set(cls.dataframe_columns())
+        if set(payload) != expected_fields:
+            raise QaModelValidationError("Chapter metrics have an invalid schema")
+        _require_finite_number(payload["length_ratio"], "length_ratio")
+        fields = set(cls.__dataclass_fields__) - {
+            "_DATAFRAME_COLUMNS",
+            "_INTEGER_FIELDS",
+        }
         try:
             return cls(**{key: value for key, value in payload.items() if key in fields})
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("Invalid chapter metrics") from exc
+            raise QaModelValidationError("Invalid chapter metrics") from exc
 
     @classmethod
     def dataframe_columns(cls) -> tuple[str, ...]:
@@ -196,7 +287,12 @@ class QaJournalEntry:
     decision: Decision | str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "decision", Decision(self.decision))
+        _require_string(self.entry_id, "entry_id")
+        _require_string(self.chapter_id, "chapter_id")
+        try:
+            object.__setattr__(self, "decision", Decision(self.decision))
+        except ValueError as exc:
+            raise QaModelValidationError("unsupported journal decision") from exc
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -208,7 +304,9 @@ class QaJournalEntry:
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "QaJournalEntry":
         if not isinstance(payload, Mapping):
-            raise ValueError("Journal entry must be a JSON object")
+            raise QaModelValidationError("Journal entry must be a JSON object")
+        if set(payload) != {"entry_id", "chapter_id", "decision"}:
+            raise QaModelValidationError("Journal entry has an invalid schema")
         try:
             return cls(
                 entry_id=payload["entry_id"],
@@ -216,4 +314,4 @@ class QaJournalEntry:
                 decision=payload["decision"],
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("Invalid journal entry") from exc
+            raise QaModelValidationError("Invalid journal entry") from exc
