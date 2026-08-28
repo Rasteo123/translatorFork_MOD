@@ -3,6 +3,7 @@
 import atexit
 import os
 import json
+from pathlib import Path
 # --- ИЗМЕНЕНИЕ 1: Импортируем threading целиком ---
 import threading
 import weakref
@@ -88,6 +89,14 @@ class TranslationProjectManager:
         _LIVE_PROJECT_MANAGERS.add(self)
 
     FLUSH_DEBOUNCE_SECONDS = 1.5
+
+    def get_translation_qa_journal_path(self) -> Path:
+        """Return the durable QA decision-history journal path for this project."""
+        return Path(self.project_folder) / 'translation_qa.json'
+
+    def get_translation_qa_backup_dir(self) -> Path:
+        """Return the directory reserved for reversible QA history backups."""
+        return Path(self.project_folder) / 'translation_qa_backups'
 
     def _load(self):
         _flush_pending_for_map(self.map_file_path, exclude=self)
