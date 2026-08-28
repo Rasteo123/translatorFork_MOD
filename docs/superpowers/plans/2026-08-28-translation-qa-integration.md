@@ -2,11 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Подключить TranslationQualityService к переводческой очереди и интерфейсу: автоматическая проверка после каждой главы и в конце книги, межглавный шлюз для сильных аномалий, ручные действия для главы/книги, полный отчёт и откат, а также необязательный локальный ONNX embedding provider.
+**Goal:** Подключить TranslationQualityService к переводческой очереди и
+интерфейсу: автоматическая проверка после каждой главы и в конце книги,
+межглавный шлюз для сильных аномалий, ручные действия для главы/книги, четыре
+независимые карточки анализаторов с понятной нагрузкой, полный отчёт и откат,
+необязательный локальный ONNX embedding provider и отдельный COMETKiwi runner.
 
-**Architecture:** Queue manager получает явные QA-состояния и persisted gate. После сохранения перевода глава переходит в `qa_pending`; coordinator запускает единый сервис, затем завершает задачу, откладывает QA при инфраструктурном сбое либо ставит `qa_blocked` при подтверждённом сильном риске. UI и автоматический процесс вызывают тот же coordinator/service API. Qt-модели отображают immutable snapshots pandas-отчёта и не выполняют сетевую работу в GUI thread. Финальный проход повторно проверяет deferred и ранние главы с уже сформированной книжной статистикой.
+**Architecture:** Queue manager получает явные QA-состояния и persisted gate.
+После сохранения перевода глава переходит в `qa_pending`; coordinator запускает
+единый сервис, затем завершает задачу, откладывает QA при инфраструктурном сбое
+либо ставит `qa_blocked` при подтверждённом сильном риске. UI и автоматический
+процесс вызывают тот же coordinator/service API. Четыре независимые capability
+cards управляют Razdel, LanguageTool, Slovnet/Navec и COMETKiwi, но не содержат
+аналитической логики. Qt-модели отображают immutable snapshots pandas-отчёта и
+не выполняют сеть или model loading в GUI thread. Финальный проход повторно
+проверяет deferred и ранние главы с уже сформированной книжной статистикой;
+COMETKiwi запускается отдельным процессом только для выбранных спорных окон.
 
-**Tech Stack:** Python 3.11, PySide6, SQLite queue, asyncio/threads существующего worker runtime, pandas 3.x, NumPy 2.x, optional ONNX Runtime/tokenizers, pytest/pytest-qt, PyInstaller.
+**Tech Stack:** Python 3.11, PySide6, SQLite queue, asyncio/threads
+существующего worker runtime, pandas 3.x, NumPy 2.x, Razdel, direct
+LanguageTool HTTP, optional Slovnet/Navec, optional ONNX Runtime/tokenizers,
+optional separate PyTorch/COMET environment, pytest/pytest-qt, PyInstaller.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-translation-completeness-qa-design.md`
 
@@ -15,6 +31,13 @@
 - Предварительно полностью выполнить три предыдущих плана в порядке: foundation → semantic alignment → verification and repair.
 - Автоматический и ручной paths используют один `TranslationQualityService`; дублирующая логика QA в UI запрещена.
 - По умолчанию включены: проверка полноты после главы, auto-fix подтверждённых пропусков, языковой QA после главы, auto-fix объективных языковых дефектов.
+- Отдельные capability defaults: Razdel включён; LanguageTool, Slovnet/Navec и
+  COMETKiwi выключены. Изменение одного флага не изменяет остальные.
+- Каждая capability card показывает назначение, CPU/RAM/GPU/network нагрузку,
+  качественное влияние на скорость, пользу, ограничения, статус и длительность
+  последнего запуска.
+- Никакая галочка не устанавливает модель, не запускает Java и не отправляет
+  текст наружу без отдельного явного подтверждения.
 - Correction model по умолчанию — текущая translation model; пользователь может выбрать отдельную.
 - Сильный подтверждённый нерешённый риск блокирует выдачу следующей pending главы. Слабый статистический сигнал, style suggestion или временная недоступность QA не блокируют основную сессию.
 - Уже запущенные параллельные worker tasks не отменяются; после появления gate новые задачи не выдаются.
@@ -23,6 +46,8 @@
 - Пользовательские действия: проверить/исправить главу, проверить/исправить все главы, отменить исправления главы, отменить все автоматические исправления.
 - Любая фоновая операция поддерживает progress, cancellation и безопасную точку остановки.
 - Локальная ONNX-модель необязательна, не входит в базовые requirements/build и не включена по умолчанию.
+- Slovnet/Navec и COMETKiwi необязательны и не входят в базовые
+  requirements/PyInstaller. COMETKiwi работает только через отдельный runner.
 - NumPy-миграция многоминутного аудио не входит в этот план.
 - Не изменять и не включать в QA-коммиты несвязанные пользовательские изменения.
 
@@ -34,7 +59,9 @@
 
 - Modify: `gemini_translator/utils/settings.py`
 - Modify: `gemini_translator/ui/widgets/translation_options_widget.py`
+- Create: `gemini_translator/ui/widgets/qa_capability_card.py`
 - Test: `tests/qa/test_qa_settings.py`
+- Test: `tests/qa/test_qa_capability_card.py`
 - Modify: `tests/test_translation_options_widget.py`
 
 **Interfaces:**
@@ -52,6 +79,32 @@ class QaSettings:
     correction_provider: str = ""
     correction_model: str = ""
     final_book_pass: bool = True
+    capabilities: QaCapabilitySettings = field(
+        default_factory=QaCapabilitySettings
+    )
+    language_tool_endpoint: str = ""
+    language_tool_mode: str = "remote"
+    language_tool_disabled_rules: tuple[str, ...] = ()
+    slovnet_cpu_threads: int = 2
+    slovnet_batch_size: int = 16
+    cometkiwi_runner_path: str = ""
+    cometkiwi_model: str = ""
+    cometkiwi_device: str = "cpu"
+    cometkiwi_license_accepted: bool = False
+
+class QaCapabilityCard(QWidget):
+    enabled_changed = Signal(str, bool)
+    setup_requested = Signal(str)
+
+    def set_description(
+        self, description: QaCapabilityDescription
+    ) -> None:
+        raise NotImplementedError
+
+    def set_runtime_status(
+        self, status: QaCapabilityRuntimeStatus
+    ) -> None:
+        raise NotImplementedError
 ```
 
 - [ ] **Step 1: Написать settings round-trip/migration tests**
@@ -67,6 +120,12 @@ def test_missing_legacy_settings_migrate_to_safe_enabled_defaults(tmp_settings):
     assert qa.auto_repair_objective_language_issues is True
     assert qa.embedding_provider == "auto"
     assert qa.correction_model_mode == "translation_model"
+    assert qa.capabilities == QaCapabilitySettings(
+        razdel_enabled=True,
+        language_tool_enabled=False,
+        slovnet_enabled=False,
+        cometkiwi_enabled=False,
+    )
 
 
 def test_separate_correction_model_round_trips(tmp_settings):
@@ -77,36 +136,82 @@ def test_separate_correction_model_round_trips(tmp_settings):
     )
     tmp_settings.set_qa_settings(expected)
     assert SettingsManager(tmp_settings.path).get_qa_settings() == expected
+
+
+def test_four_capability_flags_round_trip_independently(tmp_settings):
+    expected = replace(
+        QaSettings(),
+        capabilities=QaCapabilitySettings(
+            razdel_enabled=False,
+            language_tool_enabled=True,
+            slovnet_enabled=False,
+            cometkiwi_enabled=True,
+        ),
+        language_tool_endpoint="http://127.0.0.1:8081/v2",
+        cometkiwi_license_accepted=True,
+    )
+    tmp_settings.set_qa_settings(expected)
+    restored = SettingsManager(tmp_settings.path).get_qa_settings()
+    assert restored.capabilities == expected.capabilities
+    assert restored.language_tool_endpoint == expected.language_tool_endpoint
+    assert restored.cometkiwi_license_accepted is True
 ```
 
 - [ ] **Step 2: Написать widget test**
 
-Проверить четыре checkbox, embedding provider combo и correction model mode. При `translation_model` отдельные provider/model controls disabled; при `separate` enabled. `get_settings()/set_settings()` обязаны round-trip все поля без запуска API.
+Проверить четыре общие checkbox автоматизации, четыре независимые capability
+cards, embedding provider combo и correction model mode. При
+`translation_model` отдельные provider/model controls disabled; при
+`separate` enabled. `get_settings()/set_settings()` обязаны round-trip все
+поля без запуска API, установки моделей или вызова endpoint.
+
+`test_qa_capability_card.py` проверяет, что каждая карточка берёт данные из
+`CAPABILITY_DESCRIPTIONS` и показывает title, summary, load level,
+CPU/RAM/GPU/network resources, speed impact, quality benefit, quality risk,
+network policy, availability reason и last-run duration. Галочки меняются
+независимо.
 
 - [ ] **Step 3: Запустить тесты и подтвердить отсутствие настроек**
 
-Run: `python -m pytest tests/qa/test_qa_settings.py tests/test_translation_options_widget.py -q`
+Run: `python -m pytest tests/qa/test_qa_settings.py tests/qa/test_qa_capability_card.py tests/test_translation_options_widget.py -q`
 
 Expected: FAIL, потому что `QaSettings`/controls ещё отсутствуют.
 
 - [ ] **Step 4: Реализовать versioned settings mapping**
 
-Хранить под одним ключом `translation_qa` с `schema_version: 1`. Не разбрасывать отдельные magic keys. Не сохранять API keys в QA settings: adapters используют существующее хранилище provider credentials.
+Хранить под одним ключом `translation_qa` с `schema_version: 2`. Миграция
+версии 1 добавляет capability defaults без изменения прежних полей. Это
+глобальные настройки программы для всех книг. Не разбрасывать отдельные magic
+keys. Не сохранять API keys в QA settings: adapters используют существующее
+хранилище provider credentials.
 
 - [ ] **Step 5: Добавить компактную UI-группу**
 
-В `TranslationOptionsWidget` добавить collapsible group «Контроль качества» после основных параметров перевода. Использовать обычные понятные подписи из spec; advanced provider/model controls скрыть до раскрытия. Не загружать модели и не делать сеть при построении widget.
+В `TranslationOptionsWidget` добавить collapsible group «Контроль качества»
+после основных параметров перевода. Под общими настройками разместить четыре
+`QaCapabilityCard` в порядке Razdel, LanguageTool, Slovnet/Navec, COMETKiwi.
+Краткий summary виден всегда; details раскрывают нагрузку, ресурсы, скорость,
+качество и риски. Advanced endpoint/model controls показывать только для
+включённой карточки. При отсутствии настройки статус меняется на
+«Требует настройки», но галочка не сбрасывается. Не загружать модели и не
+делать сеть при построении widget.
+
+LanguageTool setup требует явного подтверждения передачи проверяемого текста
+для удалённого endpoint и умеет проверить соединение только по отдельной
+кнопке. Slovnet/Navec setup показывает manifest, размер и кнопки
+«Установить»/«Удалить» с progress/cancel. COMETKiwi setup до Task 8 показывает
+статус «Требует настройки», не пытаясь импортировать или установить PyTorch.
 
 - [ ] **Step 6: Проверить настройки**
 
-Run: `python -m pytest tests/qa/test_qa_settings.py tests/test_translation_options_widget.py -q`
+Run: `python -m pytest tests/qa/test_qa_settings.py tests/qa/test_qa_capability_card.py tests/test_translation_options_widget.py -q`
 
 Expected: PASS.
 
 - [ ] **Step 7: Зафиксировать этап**
 
 ```bash
-git add gemini_translator/utils/settings.py gemini_translator/ui/widgets/translation_options_widget.py tests/qa/test_qa_settings.py tests/test_translation_options_widget.py
+git add gemini_translator/utils/settings.py gemini_translator/ui/widgets/translation_options_widget.py gemini_translator/ui/widgets/qa_capability_card.py tests/qa/test_qa_settings.py tests/qa/test_qa_capability_card.py tests/test_translation_options_widget.py
 git commit -m "feat: configure automatic translation QA"
 ```
 
@@ -253,6 +358,9 @@ async def test_saved_chapter_is_qa_pending_before_next_task_can_launch(harness):
 - embedding/LLM outage → deferred, next allowed, final pass scheduled;
 - cancellation → safe `qa_pending`, no corrupt output;
 - batch translation task → task remains pending until every emitted chapter result resolved.
+- изменение capability checkbox применяется к следующему check и не ставит уже
+  завершённые главы в очередь; их повторная проверка начинается только ручной
+  кнопкой или явно выбранным final pass.
 
 - [ ] **Step 3: Запустить тесты и подтвердить отсутствие coordinator**
 
@@ -271,6 +379,13 @@ Coordinator владеет одним bounded queue и semaphore. `TranslationEn
 - [ ] **Step 6: Собрать ChapterQaRequest из project state**
 
 Coordinator читает исходный/переведённый EPUB payload, текущий glossary, model settings и journal. Для batch task запускает chapters последовательно в книжном порядке, чтобы pandas baseline обновлялся детерминированно. На каждый result вызывает `resolve_task_qa()` только после завершения всех chapters task.
+
+Из `QaSettings` coordinator строит один `QaOptions` с неизменяемым
+`QaCapabilitySettings` и provider configs. Выключенный provider не
+создаётся. Для каждого включённого provider измерять monotonic duration,
+публиковать `QaCapabilityRuntimeStatus` и сохранять секунды в
+`ChapterMetrics.capability_durations` без полного текста или секретов.
+Карточка читает последнее значение по главам текущего журнала.
 
 - [ ] **Step 7: Обработать strong anomaly до следующего dispatch**
 
@@ -450,7 +565,12 @@ class QaReportBuilder:
 
 - [ ] **Step 1: Написать schema/export tests**
 
-Проверить точные поля из spec: `chapter/source_chars/translated_chars/ratio/glossary_hits/glossary_conflicts/untranslated_cn/retries/input_tokens/output_tokens/duration/risk/actions`. CSV открывается pandas с теми же row count/IDs; JSON journal остаётся источником истины.
+Проверить точные поля из spec:
+`chapter/source_chars/translated_chars/ratio/glossary_hits/glossary_conflicts/untranslated_cn/language_tool_issues/protected_entities/syntax_candidates/quality_estimator/quality_score/quality_score_status/retries/input_tokens/output_tokens/duration/risk/actions`.
+Для реально вызванных возможностей добавить
+`duration_razdel/duration_language_tool/duration_slovnet/duration_cometkiwi`.
+CSV открывается pandas с теми же row count/IDs; JSON journal остаётся источником
+истины.
 
 - [ ] **Step 2: Запустить тест и подтвердить отсутствие builder**
 
@@ -460,7 +580,12 @@ Expected: FAIL with import error.
 
 - [ ] **Step 3: Реализовать vectorized frames and summary**
 
-Использовать `DataFrame.from_records`, `groupby`, `agg`, `merge`, categorical columns и nullable dtypes. Не хранить DataFrame в journal и не сериализовать pandas-specific JSON. `untranslated_by_script` разворачивать в стабильные столбцы (`untranslated_han`, `untranslated_kana`, `untranslated_hangul`, `untranslated_latin`).
+Использовать `DataFrame.from_records`, `groupby`, `agg`, `merge`,
+categorical columns и nullable dtypes. Не хранить DataFrame в journal и не
+сериализовать pandas-specific JSON. `untranslated_by_script` разворачивать в
+стабильные столбцы (`untranslated_han`, `untranslated_kana`,
+`untranslated_hangul`, `untranslated_latin`), а
+`capability_durations` — в четыре nullable duration-столбца.
 
 - [ ] **Step 4: Добавить CSV bundle action**
 
@@ -498,12 +623,21 @@ class LocalOnnxEmbeddingProvider:
     def __init__(self, model_dir: Path, runtime_loader: Callable[[], OnnxRuntimeFacade]):
         raise NotImplementedError
 
+@dataclass(frozen=True, slots=True)
+class LocalEmbeddingModelStatus:
+    state: Literal["missing", "installing", "ready", "invalid"]
+    version: str | None
+    installed_size_bytes: int | None
+    reason: str = ""
+
 class LocalEmbeddingModelManager:
-    def status(self) -> LocalModelStatus:
+    def status(self) -> LocalEmbeddingModelStatus:
         raise NotImplementedError
-    async def install(self, progress, cancellation) -> LocalModelStatus:
+    async def install(
+        self, progress, cancellation
+    ) -> LocalEmbeddingModelStatus:
         raise NotImplementedError
-    def uninstall(self) -> LocalModelStatus:
+    def uninstall(self) -> LocalEmbeddingModelStatus:
         raise NotImplementedError
 ```
 
@@ -546,7 +680,200 @@ git add gemini_translator/qa/embeddings/local_onnx.py gemini_translator/qa/embed
 git commit -m "feat: support optional local ONNX embeddings"
 ```
 
-## Task 8: Провести интеграционные, качественные, производительные и сборочные проверки
+## Task 8: Добавить отдельный необязательный COMETKiwi runner
+
+**Files:**
+
+- Create: `gemini_translator/qa/estimators/__init__.py`
+- Create: `gemini_translator/qa/estimators/base.py`
+- Create: `gemini_translator/qa/estimators/cometkiwi_client.py`
+- Create: `gemini_translator/qa/estimators/cometkiwi_model_manager.py`
+- Create: `tools/translation_qa_cometkiwi_runner.py`
+- Modify: `gemini_translator/core/chapter_qa_coordinator.py`
+- Modify: `gemini_translator/ui/widgets/qa_capability_card.py`
+- Test: `tests/qa/test_cometkiwi_estimator.py`
+- Test: `tests/qa/test_cometkiwi_runner_protocol.py`
+- Test: `tests/qa/test_cometkiwi_model_manager.py`
+
+**Interfaces:**
+
+```python
+@dataclass(frozen=True, slots=True)
+class SourceTranslationWindow:
+    window_id: str
+    source: str
+    translation: str
+    visible_chars: int
+
+@dataclass(frozen=True, slots=True)
+class QualityEstimateRequest:
+    chapter_id: str
+    windows: tuple[SourceTranslationWindow, ...]
+    source_language: str
+    target_language: str
+
+@dataclass(frozen=True, slots=True)
+class QualityEstimate:
+    estimator: str
+    model: str
+    window_scores: tuple[float, ...]
+    chapter_score: float | None
+    minimum_score: float | None
+    p10_score: float | None
+    status: Literal["completed", "disabled", "unavailable"]
+    metadata: Mapping[str, str]
+
+class TranslationQualityEstimator(Protocol):
+    async def estimate(
+        self,
+        request: QualityEstimateRequest,
+        cancellation: CancellationToken,
+    ) -> QualityEstimate:
+        raise NotImplementedError
+
+@dataclass(frozen=True, slots=True)
+class CometKiwiModelStatus:
+    state: Literal["missing", "installing", "ready", "invalid"]
+    model: str
+    installed_size_bytes: int | None
+    license_name: str
+    reason: str = ""
+
+@dataclass(frozen=True, slots=True)
+class CometKiwiModelManifest:
+    model: str
+    source_url: str
+    size_bytes: int
+    sha256_by_file: Mapping[str, str]
+    license_name: str
+    license_url: str
+    minimum_ram_bytes: int
+
+class CometKiwiModelManager:
+    def status(self) -> CometKiwiModelStatus:
+        raise NotImplementedError
+    async def install(
+        self,
+        manifest: CometKiwiModelManifest,
+        *,
+        license_accepted: bool,
+        progress,
+        cancellation,
+    ) -> CometKiwiModelStatus:
+        raise NotImplementedError
+    def uninstall(self) -> CometKiwiModelStatus:
+        raise NotImplementedError
+```
+
+- [ ] **Step 1: Написать reference-free contract и aggregation tests**
+
+```python
+@pytest.mark.asyncio
+async def test_cometkiwi_sends_only_source_and_translation(fake_runner):
+    result = await estimator(fake_runner).estimate(
+        estimate_request([
+            ("原文一", "Первый перевод"),
+            ("原文二", "Второй перевод"),
+        ]),
+        token(),
+    )
+    payload = fake_runner.requests[0]
+    assert set(payload["segments"][0]) == {"source", "translation"}
+    assert "reference" not in payload["segments"][0]
+    assert result.window_scores == (0.81, 0.63)
+    assert result.chapter_score == pytest.approx(
+        length_weighted_mean((0.81, 0.63), payload["segments"])
+    )
+    assert not hasattr(result, "auto_fix_allowed")
+```
+
+Добавить тест, что одинаковые window scores агрегируются детерминированно,
+невалидные NaN/Inf/неправильное число scores отклоняются, а обычный
+reference-based COMET не создаётся без отдельного эталонного текста.
+
+- [ ] **Step 2: Написать тест запрета запуска для чистой главы**
+
+```python
+@pytest.mark.asyncio
+async def test_clean_interchapter_check_never_starts_comet_runner(harness):
+    harness.settings.capabilities = QaCapabilitySettings(
+        cometkiwi_enabled=True
+    )
+    await harness.coordinator.inspect_completed_task(clean_chapter_event())
+    assert harness.comet_runner.starts == 0
+```
+
+Отдельно проверить: medium/high disputed candidate в final pass запускает один
+пакет окон; выключенная галочка, неподтверждённая лицензия или пустой model
+возвращают status без старта процесса.
+
+- [ ] **Step 3: Написать protocol failure tests**
+
+JSON Lines protocol имеет request ID, schema version, model/device и segments.
+Тесты моделируют timeout, cancellation, process exit, OOM marker, stderr без
+JSON, неверную schema/version и частичный score batch. Во всех случаях
+coordinator получает `status="unavailable"`, продолжает сессию и записывает
+причину без полного текста главы.
+
+- [ ] **Step 4: Написать model/license manager tests**
+
+Манифест хранит model ID, source URL, размер, hashes, license name/text URL и
+минимальные RAM/device требования. `install()` запрещён до
+`license_accepted=True`, использует temp directory + hash verification +
+atomic rename. Никакой модели по умолчанию не скачивать. Uninstall удаляет
+только проверенную model directory и отдельное runner environment.
+
+- [ ] **Step 5: Запустить тесты и подтвердить отсутствие estimator**
+
+Run: `python -m pytest tests/qa/test_cometkiwi_estimator.py tests/qa/test_cometkiwi_runner_protocol.py tests/qa/test_cometkiwi_model_manager.py -q`
+
+Expected: FAIL with import errors.
+
+- [ ] **Step 6: Реализовать безопасный client и отдельный runner**
+
+Основной пакет не импортирует `torch` или `comet`. Client запускает явно
+настроенный interpreter/runner через существующую безопасную process
+абстракцию, пишет один JSON request и читает один bounded JSON response.
+`tools/translation_qa_cometkiwi_runner.py` импортирует PyTorch/COMET только
+после validation request, загружает указанную локальную model directory,
+оценивает source/translation segments и возвращает scores/metadata. Не
+принимать URL модели от каждого запроса и не скачивать веса во время проверки.
+
+- [ ] **Step 7: Реализовать выбор окон и калибруемый сигнал**
+
+Coordinator передаёт только окна medium/high disputed candidates либо окна
+явно выбранного итогового аудита. `chapter_score` — взвешенное числом видимых
+символов среднее валидных window scores; min и p10 хранить в типизированных
+полях `minimum_score` и `p10_score`. Estimator не содержит универсального
+порога и не меняет risk/repair:
+его score только добавляется к evidence, после чего решение остаётся за
+семантической и LLM-проверкой.
+`ChapterMetrics.quality_estimator/quality_score/quality_score_status` и
+journal metadata обновляются после результата; disabled/unavailable сохраняют
+`quality_score=None`.
+
+- [ ] **Step 8: Подключить status и last-run duration к карточке**
+
+Карточка показывает runner/model/device, лицензию, установленный размер,
+оценочную нагрузку и фактическую длительность последнего запуска. Включение
+галочки без runner/model/license переводит статус в «Требует настройки» и
+открывает setup UI, но не меняет флаг и не начинает установку.
+
+- [ ] **Step 9: Проверить отсутствие тяжёлых импортов в базовом режиме**
+
+Run: `python -m pytest tests/qa/test_cometkiwi_estimator.py tests/qa/test_cometkiwi_runner_protocol.py tests/qa/test_cometkiwi_model_manager.py tests/qa/test_final_book_qa_pass.py -q`
+
+Expected: PASS; с monkeypatched import blocker основной application imports без
+`torch`/`comet`, clean chapter не запускает процесс.
+
+- [ ] **Step 10: Зафиксировать этап**
+
+```bash
+git add gemini_translator/qa/estimators tools/translation_qa_cometkiwi_runner.py gemini_translator/core/chapter_qa_coordinator.py gemini_translator/ui/widgets/qa_capability_card.py tests/qa/test_cometkiwi_estimator.py tests/qa/test_cometkiwi_runner_protocol.py tests/qa/test_cometkiwi_model_manager.py
+git commit -m "feat: add optional COMETKiwi quality estimator"
+```
+
+## Task 9: Провести интеграционные, качественные, производительные и сборочные проверки
 
 **Files:**
 
@@ -559,7 +886,11 @@ git commit -m "feat: support optional local ONNX embeddings"
 
 - [ ] **Step 1: Собрать end-to-end fixture harness**
 
-Использовать локальные EPUB fixtures, fake embeddings и scripted completion responses. Покрыть: после главы, final pass, две check buttons, две undo buttons, restart, cancellation, provider outage, batch task, manual edit conflict и совместимость с EPUB build.
+Использовать локальные EPUB fixtures, fake embeddings, fake
+LanguageTool/Slovnet/COMET providers и scripted completion responses. Покрыть:
+после главы, final pass, две check buttons, две undo buttons, четыре независимые
+capability flags, restart, cancellation, provider outage, batch task, manual
+edit conflict и совместимость с EPUB build.
 
 - [ ] **Step 2: Зафиксировать quality corpus acceptance**
 
@@ -584,12 +915,25 @@ assert all(repair.post_validation_passed for repair in applied_repairs)
 - повторный запуск даёт ноль network embedding calls;
 - pandas aggregation 10 000 chapter metrics не использует Python row loop и завершается в согласованный тестовый budget с запасом для CI;
 - UI model snapshot обновляется одним reset/layout event, не сигналом на каждую cell.
+- выключенные LanguageTool, Slovnet и COMETKiwi дают ноль provider/process
+  calls;
+- включённые providers записывают отдельную duration, которую capability card
+  показывает как фактическое время последнего запуска;
+- COMETKiwi memory/process budget проверяется только в отдельном optional CI
+  job с подготовленным runner; обычный correctness suite использует fake
+  process.
 
 Performance test маркировать `@pytest.mark.performance`; correctness/memory assertions должны оставаться в обычном наборе, wall-clock budget запускать отдельным CI job, чтобы исключить flaky baseline.
 
 - [ ] **Step 4: Написать пользовательскую документацию**
 
-`docs/translation-quality-qa.md` объясняет четыре кнопки, автоматический режим, high/medium/low, почему длина не является доказательством, новые профили `0.92–1.20`/`2.80–3.30`, расходы сетевых запросов, limited mode, local model, журнал, экспорт и undo.
+`docs/translation-quality-qa.md` объясняет четыре кнопки, автоматический
+режим, high/medium/low, почему длина не является доказательством, новые профили
+`0.92–1.20`/`2.80–3.30`, расходы сетевых запросов, limited mode, local
+model, журнал, экспорт и undo. Отдельная таблица описывает четыре галочки:
+значения по умолчанию, CPU/RAM/GPU/network нагрузку, влияние на скорость и
+качество, ложные срабатывания, приватность LanguageTool, установку
+Slovnet/Navec и лицензию/ресурсы COMETKiwi.
 
 - [ ] **Step 5: Запустить целевые интеграционные тесты**
 
@@ -611,7 +955,14 @@ Expected: PASS with no Ruff/test failures.
 
 - [ ] **Step 8: Проверить packaged applications**
 
-Собрать normal и translator-only варианты документированными командами `build_master.py`. Smoke test обоих приложений: открыть проект, построить report из fixture journal, запустить fake-provider check и undo. Отсутствие optional ONNX packages не ломает startup. Если PyInstaller требует hooks, добавить только точечные imports/data к соответствующему `.spec` и повторить обе сборки.
+Собрать normal и translator-only варианты документированными командами
+`build_master.py`. Smoke test обоих приложений: открыть проект, построить
+report из fixture journal, открыть четыре capability cards, запустить
+fake-provider check и undo. Отсутствие optional ONNX, Slovnet/Navec, Java,
+PyTorch и COMET packages не ломает startup. Проверить, что PyInstaller не
+включил COMET runner environment или model weights. Если PyInstaller требует
+hooks, добавить только точечные базовые imports/data к соответствующему
+`.spec` и повторить обе сборки.
 
 - [ ] **Step 9: Зафиксировать финальный этап**
 
@@ -633,6 +984,13 @@ git commit -m "test: verify translation QA end to end"
 - [ ] pandas-отчёт показывает объём, профили, glossary, scripts, retries, tokens, duration и QA decisions.
 - [ ] Профили `0.92–1.20` и `2.80–3.30` берутся из общего реестра.
 - [ ] Local ONNX остаётся необязательным и не утяжеляет базовую сборку.
+- [ ] Четыре независимые галочки сохраняются между запусками; каждая карточка
+  показывает назначение, ресурсы, скорость, пользу, риск, status и last-run
+  duration.
+- [ ] Базовое приложение запускается без Java, Slovnet/Navec, PyTorch и COMET;
+  отсутствующая возможность не выключает другие.
+- [ ] COMETKiwi работает отдельным runner, не получает reference, не запускается
+  для чистой главы и не разрешает исправление по одному score.
 - [ ] Quality corpus не меняет brands/names/codes/foreign dialogue и находит все внесённые значимые пропуски.
 - [ ] Обычная и translator-only сборки проходят smoke test.
 - [ ] Полный `python tools/run_checks.py` проходит.

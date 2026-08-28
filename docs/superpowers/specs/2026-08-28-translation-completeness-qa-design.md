@@ -136,6 +136,7 @@ NumPy применяется для массивов признаков, ско�
 - `untranslated_by_script` и число исключённых допустимых фрагментов;
 - `language_tool_issues`, `protected_entities`, `syntax_candidates`;
 - `quality_estimator`, `quality_score`, `quality_score_status`;
+- `capability_durations` для фактически вызванных анализаторов;
 - `retries`, `input_tokens`, `output_tokens`, `duration_seconds`;
 - `risk_level` и `applied_actions`.
 

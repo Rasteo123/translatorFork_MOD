@@ -2,11 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Добавить строгую LLM-проверку смысловых пропусков и языковых дефектов, локальный доперевод с релевантным глоссарием, безопасную структурную вставку/замену, повторную валидацию, полный откат и обратное выявление добавленного моделью содержания.
+**Goal:** Добавить строгую LLM-проверку смысловых пропусков и языковых дефектов, независимые сигналы LanguageTool и Slovnet/Navec, локальный доперевод с релевантным глоссарием, безопасную структурную вставку/замену, повторную валидацию, полный откат и обратное выявление добавленного моделью содержания.
 
-**Architecture:** `TranslationQualityService` управляет чистым каскадом: read-only coverage → LLM verdict → локальный repair proposal → временная структурная версия главы → детерминированные и LLM post-checks → атомарное принятие либо отказ. Все LLM-ответы проходят явные JSON-схемы без эвристического разрешения правки. Полнота и языковой QA используют один completion adapter, но разные схемы и prompts. Несколько языковых дефектов главы исправляются одним пакетом, который делится только по безопасному бюджету контекста.
+**Architecture:** `TranslationQualityService` управляет чистым каскадом:
+read-only coverage → включённые LanguageTool/Slovnet signals → LLM verdict →
+локальный repair proposal → временная структурная версия главы →
+детерминированные и LLM post-checks → атомарное принятие либо отказ.
+LanguageTool работает через прямой HTTP-контракт, Slovnet/Navec — через
+необязательный ленивый runtime; ни один из них не разрешает правку. Все
+LLM-ответы проходят явные JSON-схемы без эвристического разрешения правки.
+Полнота и языковой QA используют один completion adapter, но разные схемы и
+prompts. Несколько языковых дефектов главы исправляются одним пакетом, который
+делится только по безопасному бюджету контекста.
 
-**Tech Stack:** Python 3.11, существующие API handlers/retry policy, dataclasses/JSON schema validation, BeautifulSoup/`epub_json`, NumPy alignment, pandas journal, pytest.
+**Tech Stack:** Python 3.11, существующие API handlers/retry policy, direct
+LanguageTool HTTP API, optional Slovnet/Navec, dataclasses/JSON schema
+validation, BeautifulSoup/`epub_json`, NumPy alignment, pandas journal,
+pytest.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-translation-completeness-qa-design.md`
 
@@ -20,6 +32,12 @@
 - Глоссарий фильтруется по кандидату и контексту; полный глоссарий в prompt не отправлять.
 - Бренды, имена и намеренные иностранные реплики не исправлять автоматически без явного `MUST_TRANSLATE` и подтверждения контекстом.
 - Языковой QA исправляет объективные опечатки, грамматику, пунктуацию, повторы, подтверждённые кальки и мета-комментарии; субъективная стилистика остаётся предложением.
+- LanguageTool и Slovnet запускаются только при включённых независимых флагах.
+  Их результаты — кандидаты или защитные сигналы, но не разрешение на замену.
+- LanguageTool использует только явно настроенный HTTP endpoint; скрытый
+  публичный fallback, обязательная Python-обёртка и обязательная Java запрещены.
+- Slovnet/Navec импортируются и загружаются лениво; отсутствие пакетов или
+  моделей не блокирует QA и не меняет пользовательскую галочку.
 - Несколько калек/дефектов одной главы: один diagnostic request, один batch correction request и один validation request; отдельные запросы на каждый дефект запрещены.
 - Добавленное моделью содержание выявляется обратным alignment и не удаляется автоматически без LLM-подтверждения.
 - Любая мутация проверяет fingerprint, anchors, HTML, IDs, отсутствие дубля, глоссарий и смысл; при сбое исходный файл остаётся неизменным.
@@ -453,7 +471,343 @@ git add gemini_translator/qa/repair_validator.py gemini_translator/qa/coverage_s
 git commit -m "feat: validate omission repairs before commit"
 ```
 
-## Task 6: Реализовать пакетный языковой QA для опечаток, калек и артефактов LLM
+## Task 6: Добавить прямой HTTP-провайдер LanguageTool
+
+**Files:**
+
+- Create: `gemini_translator/qa/language_rules/__init__.py`
+- Create: `gemini_translator/qa/language_rules/base.py`
+- Create: `gemini_translator/qa/language_rules/language_tool.py`
+- Create: `gemini_translator/qa/language_rules/cache.py`
+- Test: `tests/qa/test_language_tool_provider.py`
+- Test: `tests/qa/test_language_rule_cache.py`
+
+**Interfaces:**
+
+```python
+@dataclass(frozen=True, slots=True)
+class LanguageRuleRequest:
+    units: tuple[SemanticUnit, ...]
+    language: str
+    disabled_rule_ids: tuple[str, ...]
+
+@dataclass(frozen=True, slots=True)
+class LanguageRuleIssue:
+    rule_id: str
+    category: str
+    message: str
+    replacements: tuple[str, ...]
+    unit_id: str
+    block_id: str
+    unit_start: int
+    unit_end: int
+
+class LanguageRuleProvider(Protocol):
+    async def check(
+        self, request: LanguageRuleRequest
+    ) -> tuple[LanguageRuleIssue, ...]:
+        raise NotImplementedError
+
+@dataclass(frozen=True, slots=True)
+class LanguageRuleCacheKey:
+    text_fingerprint: str
+    language: str
+    endpoint: str
+    server_version: str
+    disabled_rule_ids: tuple[str, ...]
+    preprocessing_version: str
+
+class LanguageRuleCache:
+    def get(
+        self, key: LanguageRuleCacheKey
+    ) -> tuple[LanguageRuleIssue, ...] | None:
+        raise NotImplementedError
+    def put(
+        self,
+        key: LanguageRuleCacheKey,
+        issues: Sequence[LanguageRuleIssue],
+    ) -> None:
+        raise NotImplementedError
+
+@dataclass(frozen=True, slots=True)
+class LanguageRuleResult:
+    status: Literal["completed", "disabled", "unavailable"]
+    issues: tuple[LanguageRuleIssue, ...]
+    warnings: tuple[str, ...]
+
+class LanguageRuleService:
+    async def collect(
+        self,
+        units: Sequence[SemanticUnit],
+        capabilities: QaCapabilitySettings,
+    ) -> LanguageRuleResult:
+        raise NotImplementedError
+```
+
+- [ ] **Step 1: Написать HTTP-контракт и тест отображения смещений**
+
+```python
+@pytest.mark.asyncio
+async def test_language_tool_posts_sentences_and_maps_offsets_to_epub(fake_http):
+    fake_http.respond_json({
+        "software": {"version": "6.6"},
+        "matches": [{
+            "offset": 2,
+            "length": 6,
+            "message": "Возможная опечатка",
+            "rule": {"id": "MORFOLOGIK_RULE_RU_RU", "category": {"id": "TYPOS"}},
+            "replacements": [{"value": "привет"}],
+        }],
+    })
+    provider = LanguageToolHttpProvider(
+        endpoint="http://127.0.0.1:8081/v2",
+        session_factory=fake_http.session_factory,
+        timeout_seconds=10,
+    )
+    issues = await provider.check(rule_request("— Превет!", unit_id="u-1", block_id="b-1"))
+    assert fake_http.last_request.url == "http://127.0.0.1:8081/v2/check"
+    assert fake_http.last_request.form["language"] == "ru-RU"
+    assert issues[0].unit_id == "u-1"
+    assert issues[0].block_id == "b-1"
+    assert (issues[0].unit_start, issues[0].unit_end) == (2, 8)
+```
+
+Добавить случаи: несколько предложений в одном пакете, offset на границе,
+неизвестный rule, отключённое правило, невалидный JSON и offset вне текста.
+
+- [ ] **Step 2: Написать тест отсутствия скрытого fallback**
+
+```python
+@pytest.mark.asyncio
+async def test_timeout_never_sends_text_to_another_endpoint(fake_http):
+    fake_http.raise_timeout()
+    provider = LanguageToolHttpProvider(
+        endpoint="https://configured.example/v2",
+        session_factory=fake_http.session_factory,
+        timeout_seconds=1,
+    )
+    with pytest.raises(LanguageRuleUnavailable):
+        await provider.check(rule_request("Текст."))
+    assert {request.host for request in fake_http.requests} == {
+        "configured.example"
+    }
+```
+
+- [ ] **Step 3: Написать cache и disabled-capability tests**
+
+`LanguageRuleCache` должен повторно использовать неизменившийся результат по
+отпечатку текста, языку, endpoint, версии сервера, disabled rules и версии
+предобработки. Запись с истёкшим TTL или другой server version — miss.
+`LanguageRuleService` при `language_tool_enabled=False` возвращает
+`status="disabled"` и не создаёт HTTP provider.
+
+- [ ] **Step 4: Запустить тесты и подтвердить отсутствие адаптера**
+
+Run: `python -m pytest tests/qa/test_language_tool_provider.py tests/qa/test_language_rule_cache.py -q`
+
+Expected: FAIL with import errors.
+
+- [ ] **Step 5: Реализовать direct HTTP adapter и fail-closed parsing**
+
+Нормализовать endpoint только добавлением `/v2/check` к явно заданному
+пользователем адресу. Отправлять form fields `text`, `language=ru-RU` и
+`disabledRules`; не использовать `language_tool_python` и не запускать Java.
+Проверять HTTP status, типы полей, offsets и принадлежность каждого match одной
+смысловой единице. Match, пересекающий две единицы или служебную разметку,
+сохранять как report-only warning без replacement.
+
+- [ ] **Step 6: Реализовать кэш и типизированную недоступность**
+
+Кэш хранит только исходный ответ без пользовательских секретов, атомарно и с
+ограниченным TTL. Timeout, DNS, 4xx/5xx и неверный JSON превращаются в
+`LanguageRuleUnavailable` с безопасным сообщением. Сервис возвращает status,
+warning и пустой tuple кандидатов, чтобы основная сессия продолжилась.
+
+- [ ] **Step 7: Проверить адаптер**
+
+Run: `python -m pytest tests/qa/test_language_tool_provider.py tests/qa/test_language_rule_cache.py tests/qa/test_semantic_units.py -q`
+
+Expected: PASS, включая точное отображение Razdel offsets на EPUB.
+
+- [ ] **Step 8: Зафиксировать этап**
+
+```bash
+git add gemini_translator/qa/language_rules tests/qa/test_language_tool_provider.py tests/qa/test_language_rule_cache.py
+git commit -m "feat: add optional LanguageTool rule provider"
+```
+
+## Task 7: Добавить необязательный Slovnet/Navec-провайдер
+
+**Files:**
+
+- Create: `gemini_translator/qa/russian_nlp/__init__.py`
+- Create: `gemini_translator/qa/russian_nlp/base.py`
+- Create: `gemini_translator/qa/russian_nlp/slovnet_provider.py`
+- Create: `gemini_translator/qa/russian_nlp/model_manager.py`
+- Modify: `gemini_translator/qa/foreign_text_filter.py`
+- Test: `tests/qa/test_slovnet_provider.py`
+- Test: `tests/qa/test_slovnet_model_manager.py`
+
+**Interfaces:**
+
+```python
+@dataclass(frozen=True, slots=True)
+class ProtectedEntity:
+    unit_id: str
+    block_id: str
+    start: int
+    end: int
+    entity_type: Literal["PER", "ORG", "LOC"]
+    text: str
+
+@dataclass(frozen=True, slots=True)
+class MorphologyCandidate:
+    unit_id: str
+    block_id: str
+    start: int
+    end: int
+    category: str
+    confidence: Literal["high", "medium", "ambiguous"]
+    auto_fix_allowed: Literal[False] = False
+
+@dataclass(frozen=True, slots=True)
+class SyntaxCandidate:
+    unit_id: str
+    block_id: str
+    token_ids: tuple[int, ...]
+    category: str
+    confidence: Literal["high", "medium", "ambiguous"]
+    auto_fix_allowed: Literal[False] = False
+
+@dataclass(frozen=True, slots=True)
+class RussianNlpAnalysis:
+    protected_entities: tuple[ProtectedEntity, ...]
+    morphology_candidates: tuple[MorphologyCandidate, ...]
+    syntax_candidates: tuple[SyntaxCandidate, ...]
+    model_versions: Mapping[str, str]
+
+class RussianNlpProvider(Protocol):
+    def analyze(
+        self, units: Sequence[SemanticUnit]
+    ) -> RussianNlpAnalysis:
+        raise NotImplementedError
+
+@dataclass(frozen=True, slots=True)
+class RussianNlpResult:
+    status: Literal["completed", "disabled", "unavailable"]
+    analysis: RussianNlpAnalysis | None
+    warnings: tuple[str, ...]
+
+class RussianNlpService:
+    def analyze(
+        self,
+        units: Sequence[SemanticUnit],
+        capabilities: QaCapabilitySettings,
+    ) -> RussianNlpResult:
+        raise NotImplementedError
+
+@dataclass(frozen=True, slots=True)
+class SlovnetModelStatus:
+    state: Literal["missing", "installing", "ready", "invalid"]
+    version: str | None
+    installed_size_bytes: int | None
+    reason: str = ""
+
+class SlovnetModelManager:
+    def status(self) -> SlovnetModelStatus:
+        raise NotImplementedError
+    async def install(
+        self, progress, cancellation
+    ) -> SlovnetModelStatus:
+        raise NotImplementedError
+    def uninstall(self) -> SlovnetModelStatus:
+        raise NotImplementedError
+```
+
+- [ ] **Step 1: Написать optional-import и entity-protection tests**
+
+```python
+def test_import_and_disabled_mode_do_not_require_optional_packages(
+    monkeypatch,
+):
+    block_imports(monkeypatch, {"slovnet", "navec"})
+    import gemini_translator.qa.russian_nlp
+    service = RussianNlpService(
+        provider_factory=forbidden_provider_factory
+    )
+    result = service.analyze(
+        units(),
+        QaCapabilitySettings(slovnet_enabled=False),
+    )
+    assert result.status == "disabled"
+
+
+def test_per_org_loc_entities_protect_exact_ranges(fake_slovnet_runtime):
+    analysis = provider(fake_slovnet_runtime).analyze(
+        units("Анна вошла в офис Apple в Москве.")
+    )
+    assert [(item.text, item.entity_type) for item in analysis.protected_entities] == [
+        ("Анна", "PER"),
+        ("Apple", "ORG"),
+        ("Москве", "LOC"),
+    ]
+    assert ForeignTextFilter().classify(
+        candidate_inside("Apple"), context_with(analysis)
+    ).action == "report_only"
+```
+
+- [ ] **Step 2: Написать тесты морфологии, синтаксиса и доменных ограничений**
+
+Fake runtime возвращает согласование, управление и dependency arcs. Провайдер
+создаёт кандидатов с exact unit/block ranges, но каждый имеет
+`auto_fix_allowed=False`. Необычная реплика художественного диалога и
+неоднозначный разбор получают `confidence="ambiguous"` и никогда не
+перекрывают защиту глоссария или решение LLM.
+
+- [ ] **Step 3: Написать тесты менеджера моделей**
+
+Манифест содержит version, URL, size и SHA-256 для Navec, NER, morphology и
+syntax weights. Установка идёт во временную директорию, проверяет каждый hash и
+делает atomic rename. Cancellation/неверный hash не затрагивает предыдущую
+версию. Удаление разрешено только внутри точной model directory. Ни установка,
+ни загрузка не происходят при импорте или простом включении галочки.
+
+- [ ] **Step 4: Запустить тесты и подтвердить отсутствие провайдера**
+
+Run: `python -m pytest tests/qa/test_slovnet_provider.py tests/qa/test_slovnet_model_manager.py -q`
+
+Expected: FAIL with import errors.
+
+- [ ] **Step 5: Реализовать низкоуровневый ленивый runtime**
+
+Импортировать `navec.Navec`, `slovnet.NER`, `slovnet.Morph` и
+`slovnet.Syntax` только внутри loader. Входные токены и offsets брать из
+Razdel units; результаты переводить в доменные dataclass, не возвращать объекты
+Natasha/Slovnet наружу. CPU batch size и число потоков брать из config и
+ограничивать безопасным максимумом.
+
+- [ ] **Step 6: Реализовать модельный manager и деградацию**
+
+Если packages, manifest или weights отсутствуют, вернуть
+`RussianNlpUnavailable` со status/reason. `RussianNlpService` преобразует
+это в пустые дополнительные сигналы и warning, не выключая галочку в
+настройках. NER protection передаётся в `ForeignTextFilter`; morphology и
+syntax candidates передаются языковому reviewer только как evidence.
+
+- [ ] **Step 7: Проверить optional path**
+
+Run: `python -m pytest tests/qa/test_slovnet_provider.py tests/qa/test_slovnet_model_manager.py tests/qa/test_foreign_text_filter.py -q`
+
+Expected: PASS при fake runtime present и absent.
+
+- [ ] **Step 8: Зафиксировать этап**
+
+```bash
+git add gemini_translator/qa/russian_nlp gemini_translator/qa/foreign_text_filter.py tests/qa/test_slovnet_provider.py tests/qa/test_slovnet_model_manager.py
+git commit -m "feat: add optional Slovnet Russian NLP signals"
+```
+
+## Task 8: Реализовать пакетный языковой QA для опечаток, калек и артефактов LLM
 
 **Files:**
 
@@ -468,7 +822,12 @@ git commit -m "feat: validate omission repairs before commit"
 
 ```python
 class LanguageQualityReviewer:
-    async def diagnose_chapter(self, request: LanguageQaRequest) -> tuple[LanguageIssue, ...]:
+    async def diagnose_chapter(
+        self,
+        request: LanguageQaRequest,
+        rule_candidates: Sequence[LanguageRuleIssue],
+        nlp_analysis: RussianNlpAnalysis | None,
+    ) -> tuple[LanguageIssue, ...]:
         raise NotImplementedError
 
 class LanguageBatchRepairer:
@@ -496,9 +855,20 @@ async def test_several_calques_use_three_chapter_level_requests(fake_client):
 
 Отдельный тест: если diagnosis не находит auto-fixable issues, correction/validation не вызываются. Если глава превышает budget, deterministic chunker создаёт несколько трёхфазных пакетов с непересекающимися issue IDs; это единственное разрешённое деление.
 
+Добавить тесты, что несколько LanguageTool matches и Slovnet candidates
+включаются в тот же один `language_diagnosis`, но не создают собственных
+LLM-запросов. Если LLM отклоняет правило LanguageTool либо считает синтаксис
+Slovnet художественным, correction/validation не вызываются и текст не
+изменяется.
+
 - [ ] **Step 2: Добавить quality fixture**
 
-Cases: опечатка, объективная грамматика, пунктуация, повтор слова, буквальная калька, корректный необычный авторский оборот, мета-комментарий, несколько калек, термин глоссария в падеже, сюжетный иностранный диалог. Для каждого задать expected category, auto-fix eligibility и неизменяемый surrounding text.
+Cases: опечатка, объективная грамматика, пунктуация, повтор слова, буквальная
+калька, корректный необычный авторский оборот, мета-комментарий, несколько
+калек, термин глоссария в падеже, сюжетный иностранный диалог, верное и ложное
+правило LanguageTool, PER/ORG/LOC и необычный синтаксический кандидат Slovnet.
+Для каждого задать expected category, auto-fix eligibility и неизменяемый
+surrounding text.
 
 - [ ] **Step 3: Запустить тесты и подтвердить отсутствие language QA**
 
@@ -508,7 +878,14 @@ Expected: FAIL with import errors.
 
 - [ ] **Step 4: Реализовать diagnosis schema и prompt**
 
-Prompt просит локальные defects, запрещает свободную литературную редактуру и требует `objective`, exact `block_id`, exact original span, optional replacement, confidence, explanation. `style_suggestion` всегда `auto_fixable=False`. Калька auto-fixable только если модель объясняет исходную конструкцию/смысл и предлагает локальную замену.
+Prompt просит локальные defects, запрещает свободную литературную редактуру и
+требует `objective`, exact `block_id`, exact original span, optional
+replacement, confidence, explanation. Отдельный раздел входа содержит
+LanguageTool rule/message/replacements и Slovnet morphology/syntax evidence,
+явно объявленные неподтверждёнными подсказками. Защищённые NER spans запрещено
+менять без отдельного смыслового основания. `style_suggestion` всегда
+`auto_fixable=False`. Калька auto-fixable только если модель объясняет
+исходную конструкцию/смысл и предлагает локальную замену.
 
 - [ ] **Step 5: Реализовать один batch correction**
 
@@ -531,7 +908,7 @@ git add gemini_translator/qa/llm/language_reviewer.py gemini_translator/qa/llm/l
 git commit -m "feat: batch-check and repair translation language quality"
 ```
 
-## Task 7: Выявлять добавленные моделью факты обратным выравниванием
+## Task 9: Выявлять добавленные моделью факты обратным выравниванием
 
 **Files:**
 
@@ -575,7 +952,7 @@ git add gemini_translator/qa/addition_detector.py gemini_translator/qa/llm/omiss
 git commit -m "feat: detect hallucinated translation additions"
 ```
 
-## Task 8: Собрать единый TranslationQualityService
+## Task 10: Собрать единый TranslationQualityService
 
 **Files:**
 
@@ -616,10 +993,21 @@ Expected: FAIL with import error.
 
 ```python
 coverage = await self.coverage.analyze(request.coverage_request)
+rule_result = await self.language_rules.collect(
+    request.target_units, options.capabilities
+)
+nlp_result = self.russian_nlp.analyze(
+    request.target_units, options.capabilities
+)
 verified = await self._verify_candidates(coverage.accepted_candidates, request)
 omission_repairs = await self._repair_verified_once(verified, request, options)
 addition_candidates = await self.additions.detect(coverage, request.context)
-language_result = await self.language.check_chapter(request, options)
+language_result = await self.language.check_chapter(
+    request,
+    options,
+    rule_candidates=rule_result.issues,
+    nlp_analysis=nlp_result.analysis,
+)
 metrics = self.metrics.collect(request, coverage, omission_repairs, language_result)
 self.journal.record_chapter_result(
     request=request,
@@ -638,7 +1026,12 @@ return ChapterQaResult.from_pipeline(
 )
 ```
 
-LLM work ограничить semaphore и cancellation token. Journal обновлять после каждого атомарного решения, чтобы перезапуск не повторил применённую правку.
+Disabled providers не создавать и не вызывать. Недоступные включённые
+провайдеры добавляют typed warning и status, но не блокируют остальные стадии.
+`ChapterMetrics` получает counts LanguageTool issues, protected entities и
+syntax candidates. LLM work ограничить semaphore и cancellation token. Journal
+обновлять после каждого атомарного решения, чтобы перезапуск не повторил
+применённую правку.
 
 - [ ] **Step 4: Реализовать итоговый risk**
 
@@ -669,6 +1062,10 @@ git commit -m "feat: orchestrate translation QA and safe repairs"
 - [ ] Повторный запуск не дублирует вставку.
 - [ ] Откат восстанавливает исходную главу без LLM.
 - [ ] Опечатки, объективная грамматика, кальки и meta-comments диагностируются; субъективный стиль автоматически не правится.
+- [ ] LanguageTool и Slovnet/Navec запускаются только своими галочками, не
+  применяют правки самостоятельно и не блокируют QA при недоступности.
+- [ ] PER/ORG/LOC от Slovnet защищены от ложной замены; новостной
+  синтаксический сигнал без подтверждения остаётся предложением.
 - [ ] Несколько дефектов главы используют пакет `diagnosis → correction → validation`, а не запрос на каждый дефект.
 - [ ] Добавленные факты/реплики выявляются обратно и в первой версии не удаляются автоматически.
 - [ ] Сбой QA не повреждает EPUB и возвращает typed result для продолжения основной сессии.

@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Поднять проект до Python 3.11, NumPy 2.x и pandas 3.x, затем создать общий фундамент для языковых профилей длины, метрик глав, устойчивой статистики книги, журнала терминов и постоянного JSON-журнала QA.
+**Goal:** Поднять проект до Python 3.11, NumPy 2.x и pandas 3.x, добавить Razdel и создать общий фундамент для языковых профилей длины, независимых возможностей QA, метрик глав, устойчивой статистики книги, журнала терминов и постоянного JSON-журнала QA.
 
-**Architecture:** Новый пакет `gemini_translator.qa` содержит чистые модели и вычисления без зависимости от Qt. NumPy используется для векторных и устойчивых численных операций, pandas — для межглавной агрегации. Существующая валидация и новый QA получают коэффициенты из одного реестра языковых профилей. Постоянным форматом остаётся версионированный JSON; DataFrame создаются только в памяти.
+**Architecture:** Новый пакет `gemini_translator.qa` содержит чистые модели и вычисления без зависимости от Qt. NumPy используется для векторных и устойчивых численных операций, pandas — для межглавной агрегации, Razdel — для русской сегментации в следующем плане. Существующая валидация и новый QA получают коэффициенты из одного реестра языковых профилей, а интерфейс — описания анализаторов из одного реестра возможностей. Постоянным форматом остаётся версионированный JSON; DataFrame создаются только в памяти.
 
-**Tech Stack:** Python 3.11, NumPy `>=2.0,<3`, pandas `>=3.0,<4`, pytest, Ruff, zstandard, PyInstaller.
+**Tech Stack:** Python 3.11, NumPy `>=2.0,<3`, pandas `>=3.0,<4`, Razdel `>=0.5,<1`, pytest, Ruff, zstandard, PyInstaller.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-translation-completeness-qa-design.md`
 
@@ -14,6 +14,10 @@
 
 - Минимальная версия Python во всех CI- и сборочных контурах — `3.11`.
 - Поддерживаемые ветки библиотек: pandas 3.x и NumPy 2.x; PyArrow не добавлять.
+- Razdel `>=0.5,<1` — лёгкая базовая зависимость; LanguageTool, Slovnet/Navec,
+  PyTorch и COMETKiwi в базовые requirements не добавлять.
+- Значения возможностей по умолчанию: Razdel включён; LanguageTool,
+  Slovnet/Navec и COMETKiwi выключены. Все четыре флага независимы.
 - `length_ratio = translated_chars / source_chars` после одинаковой нормализации видимого текста.
 - Начальные абсолютные профили: алфавитный исходник → русский `0.92–1.20`; китайский/японский/корейский исходник → русский `2.80–3.30`.
 - Коэффициент около `2.8` для китайского → русского является нормальным, а не подозрительным сам по себе.
@@ -40,8 +44,9 @@
 
 **Interfaces:**
 
-- `build_master.ESSENTIAL_PACKAGES` обязан содержать `numpy` и `pandas`.
-- `build_master.FORCED_VERSIONS` обязан выдавать `numpy>=2.0,<3` и `pandas>=3.0,<4`.
+- `build_master.ESSENTIAL_PACKAGES` обязан содержать `numpy`, `pandas` и `razdel`.
+- `build_master.FORCED_VERSIONS` обязан выдавать `numpy>=2.0,<3`,
+  `pandas>=3.0,<4` и `razdel>=0.5,<1`.
 - Все поддерживаемые workflow используют Python 3.11.
 
 - [ ] **Step 1: Написать падающий тест единого runtime-контракта**
@@ -59,12 +64,14 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_python_and_numeric_dependency_contract_is_consistent():
     assert build_master.FORCED_VERSIONS["numpy"] == ">=2.0,<3"
     assert build_master.FORCED_VERSIONS["pandas"] == ">=3.0,<4"
-    assert {"numpy", "pandas"} <= set(build_master.ESSENTIAL_PACKAGES)
+    assert build_master.FORCED_VERSIONS["razdel"] == ">=0.5,<1"
+    assert {"numpy", "pandas", "razdel"} <= set(build_master.ESSENTIAL_PACKAGES)
 
     for path in ("requirements.txt", "requirements-translator-only.txt"):
         text = (ROOT / path).read_text(encoding="utf-8")
         assert "numpy>=2.0,<3" in text
         assert "pandas>=3.0,<4" in text
+        assert "razdel>=0.5,<1" in text
 
     assert 'target-version = "py311"' in (ROOT / "pyproject.toml").read_text()
     assert 'python-version: "3.11"' in (ROOT / ".github/workflows/tests.yml").read_text()
@@ -75,18 +82,19 @@ def test_python_and_numeric_dependency_contract_is_consistent():
 
 Run: `python -m pytest tests/test_runtime_dependencies.py -q`
 
-Expected: FAIL, потому что `FORCED_VERSIONS`/`ESSENTIAL_PACKAGES` ещё не содержат обе библиотеки и workflow/Ruff ещё указывают Python 3.10.
+Expected: FAIL, потому что `FORCED_VERSIONS`/`ESSENTIAL_PACKAGES` ещё не содержат все три библиотеки и workflow/Ruff ещё указывают Python 3.10.
 
 - [ ] **Step 3: Обновить единый источник зависимостей и окружения**
 
 В `build_master.py` добавить:
 
 ```python
-ESSENTIAL_PACKAGES.update({"numpy", "pandas"})
+ESSENTIAL_PACKAGES.update({"numpy", "pandas", "razdel"})
 FORCED_VERSIONS.update(
     {
         "numpy": ">=2.0,<3",
         "pandas": ">=3.0,<4",
+        "razdel": ">=0.5,<1",
     }
 )
 ```
@@ -99,7 +107,7 @@ Run: `python -m pip install -r requirements-dev.txt -r requirements.txt`
 
 Expected: command exits 0.
 
-Run: `python -c "import numpy, pandas; assert numpy.__version__.split('.')[0] == '2'; assert pandas.__version__.split('.')[0] == '3'"`
+Run: `python -c "import numpy, pandas, razdel; assert numpy.__version__.split('.')[0] == '2'; assert pandas.__version__.split('.')[0] == '3'"`
 
 Expected: command exits 0 with no output.
 
@@ -113,7 +121,7 @@ Expected: все существующие проверки проходят на
 
 ```bash
 git add pyproject.toml .github/workflows/tests.yml .github/workflows/release.yml build_master.py requirements.txt requirements-translator-only.txt tests/test_runtime_dependencies.py
-git commit -m "build: require python 3.11 pandas 3 and numpy 2"
+git commit -m "build: require python 3.11 numeric stack and razdel"
 ```
 
 ## Task 2: Вынести языковые профили длины в единый реестр
@@ -248,7 +256,150 @@ git add gemini_translator/qa/__init__.py gemini_translator/qa/ratio_profiles.py 
 git commit -m "refactor: centralize translation ratio profiles"
 ```
 
-## Task 3: Добавить модели метрик и версионированный JSON-журнал
+## Task 3: Добавить независимые возможности QA и реестр описаний
+
+**Files:**
+
+- Create: `gemini_translator/qa/capabilities.py`
+- Test: `tests/qa/test_qa_capabilities.py`
+
+**Interfaces:**
+
+```python
+class QaCapabilityKey(StrEnum):
+    RAZDEL = "razdel"
+    LANGUAGE_TOOL = "language_tool"
+    SLOVNET = "slovnet"
+    COMETKIWI = "cometkiwi"
+
+@dataclass(frozen=True, slots=True)
+class QaCapabilitySettings:
+    razdel_enabled: bool = True
+    language_tool_enabled: bool = False
+    slovnet_enabled: bool = False
+    cometkiwi_enabled: bool = False
+
+    def fingerprint(self) -> str:
+        raise NotImplementedError
+
+@dataclass(frozen=True, slots=True)
+class QaCapabilityDescription:
+    key: QaCapabilityKey
+    title: str
+    summary: str
+    load_level: Literal["low", "medium", "high"]
+    resources: tuple[str, ...]
+    speed_impact: str
+    quality_benefit: str
+    quality_risk: str
+    network_policy: str
+
+@dataclass(frozen=True, slots=True)
+class QaCapabilityRuntimeStatus:
+    key: QaCapabilityKey
+    state: Literal[
+        "enabled", "disabled", "needs_setup", "installing",
+        "available", "unavailable"
+    ]
+    reason: str = ""
+    last_duration_seconds: float | None = None
+    installed_size_bytes: int | None = None
+```
+
+- [ ] **Step 1: Написать тесты значений по умолчанию и независимости**
+
+```python
+# tests/qa/test_qa_capabilities.py
+from dataclasses import replace
+
+import pytest
+
+from gemini_translator.qa.capabilities import (
+    CAPABILITY_DESCRIPTIONS,
+    QaCapabilityKey,
+    QaCapabilityRuntimeStatus,
+    QaCapabilitySettings,
+)
+
+
+def test_capabilities_have_safe_independent_defaults():
+    settings = QaCapabilitySettings()
+    assert settings.razdel_enabled is True
+    assert settings.language_tool_enabled is False
+    assert settings.slovnet_enabled is False
+    assert settings.cometkiwi_enabled is False
+
+    changed = replace(settings, slovnet_enabled=True)
+    assert changed.slovnet_enabled is True
+    assert changed.razdel_enabled is True
+    assert changed.language_tool_enabled is False
+    assert changed.cometkiwi_enabled is False
+
+
+def test_every_capability_has_complete_user_facing_metadata():
+    assert set(CAPABILITY_DESCRIPTIONS) == set(QaCapabilityKey)
+    for item in CAPABILITY_DESCRIPTIONS.values():
+        assert item.title
+        assert item.summary
+        assert item.load_level in {"low", "medium", "high"}
+        assert item.resources
+        assert item.speed_impact
+        assert item.quality_benefit
+        assert item.quality_risk
+        assert item.network_policy
+```
+
+- [ ] **Step 2: Написать тест стабильного fingerprint**
+
+```python
+def test_capability_fingerprint_changes_only_with_flags():
+    base = QaCapabilitySettings()
+    assert base.fingerprint() == QaCapabilitySettings().fingerprint()
+    assert base.fingerprint() != replace(
+        base, language_tool_enabled=True
+    ).fingerprint()
+
+
+def test_runtime_status_rejects_negative_measurements():
+    with pytest.raises(ValueError):
+        QaCapabilityRuntimeStatus(
+            key=QaCapabilityKey.COMETKIWI,
+            state="available",
+            last_duration_seconds=-1,
+        )
+```
+
+- [ ] **Step 3: Запустить тест и подтвердить отсутствие реестра**
+
+Run: `python -m pytest tests/qa/test_qa_capabilities.py -q`
+
+Expected: FAIL with `ModuleNotFoundError: gemini_translator.qa.capabilities`.
+
+- [ ] **Step 4: Реализовать типизированные флаги и метаданные**
+
+`fingerprint()` сериализует только четыре bool-поля в фиксированном порядке и
+возвращает первые 20 hex-символов SHA-256. Реестр содержит утверждённые в spec
+русские названия: Razdel — улучшенная сегментация, LanguageTool — орфография и
+грамматика, Slovnet/Navec — сущности/словоформы/связи, COMETKiwi — углублённая
+оценка. Для `resources` использовать только значения `cpu`, `memory`,
+`gpu`, `network`; не обещать фиксированное время на неизвестном компьютере.
+Runtime status валидирует неотрицательные duration/size и не меняет persisted
+галочки.
+
+- [ ] **Step 5: Проверить реестр**
+
+Run: `python -m pytest tests/qa/test_qa_capabilities.py -q`
+
+Expected: PASS.
+
+- [ ] **Step 6: Зафиксировать этап**
+
+```bash
+git add gemini_translator/qa/capabilities.py tests/qa/test_qa_capabilities.py
+git commit -m "feat: define optional QA capabilities"
+```
+
+## Task 4: Добавить модели метрик и версионированный JSON-журнал
 
 **Files:**
 
@@ -311,6 +462,13 @@ def test_journal_round_trip_and_dataframe_schema(tmp_path):
         glossary_conflicts=0,
         untranslated_by_script={"han": 0},
         allowed_foreign_fragments=1,
+        language_tool_issues=0,
+        protected_entities=0,
+        syntax_candidates=0,
+        quality_estimator=None,
+        quality_score=None,
+        quality_score_status="not_run",
+        capability_durations={},
         retries=0,
         input_tokens=100,
         output_tokens=300,
@@ -338,7 +496,18 @@ Expected: FAIL with import errors.
 
 - [ ] **Step 3: Реализовать неизменяемые модели**
 
-`ChapterMetrics` должен вычислять `length_ratio` свойством с защитой от нулевого исходника и предоставлять `to_dict()/from_dict()/dataframe_columns()`. Добавить перечисления строковых значений для `risk_level`, `candidate_kind`, `decision` и `action`, но сериализовать их обычными строками для читаемости и миграций.
+`ChapterMetrics` должен вычислять `length_ratio` свойством с защитой от
+нулевого исходника и предоставлять
+`to_dict()/from_dict()/dataframe_columns()`. Схема включает
+`language_tool_issues`, `protected_entities`, `syntax_candidates`,
+`quality_estimator`, `quality_score` и `quality_score_status`; до запуска
+соответствующих провайдеров используются нули, `None` и `"not_run"`.
+`capability_durations` хранит неотрицательные секунды последнего запуска
+каждой реально вызванной возможности в этой главе; выключенные компоненты не
+получают искусственный ноль.
+Добавить перечисления строковых значений для `risk_level`, `candidate_kind`,
+`decision` и `action`, но сериализовать их обычными строками для читаемости
+и миграций.
 
 Минимальный JSON-контейнер:
 
@@ -385,7 +554,7 @@ git add gemini_translator/qa/models.py gemini_translator/qa/journal.py gemini_tr
 git commit -m "feat: add translation QA metrics journal"
 ```
 
-## Task 4: Реализовать pandas-анализ книги и устойчивые пороги
+## Task 5: Реализовать pandas-анализ книги и устойчивые пороги
 
 **Files:**
 
@@ -493,7 +662,7 @@ git add gemini_translator/qa/book_metrics.py tests/qa/test_book_metrics.py
 git commit -m "feat: add language-aware book metrics analysis"
 ```
 
-## Task 5: Добавить журнал наблюдаемых переводов терминов
+## Task 6: Добавить журнал наблюдаемых переводов терминов
 
 **Files:**
 
@@ -613,7 +782,7 @@ git add gemini_translator/qa/glossary_audit.py gemini_translator/qa/models.py ge
 git commit -m "feat: track glossary translations across chapters"
 ```
 
-## Task 6: Проверить фундамент и сборку
+## Task 7: Проверить фундамент и сборку
 
 **Files:**
 
@@ -630,13 +799,17 @@ Expected: PASS.
 
 Run: `python tools/run_checks.py`
 
-Expected: PASS with no Ruff violations.
+Expected: PASS with no Ruff violations, включая capability registry.
 
 - [ ] **Step 3: Проверить сборку двух вариантов приложения**
 
 Run: `python build_master.py --help`
 
-Expected: command exits 0 and documents the supported build selector. Затем выполнить документированные команды обычной и translator-only сборки. Обе сборки должны завершиться без missing-module warnings для `numpy`/`pandas`, а собранное приложение должно импортировать `gemini_translator.qa.book_metrics`.
+Expected: command exits 0 and documents the supported build selector. Затем
+выполнить документированные команды обычной и translator-only сборки. Обе
+сборки должны завершиться без missing-module warnings для
+`numpy`/`pandas`/`razdel`, а собранное приложение должно импортировать
+`gemini_translator.qa.book_metrics` и `razdel`.
 
 Если PyInstaller не подхватывает библиотеки автоматически, добавить только официальные collection hooks (`collect_submodules`/`collect_data_files`) в соответствующие `.spec` и покрыть это повторной сборкой. Не добавлять ONNX Runtime на этом этапе.
 
@@ -657,6 +830,10 @@ git commit -m "build: package translation QA numeric runtime"
 - [ ] Данные разных языковых пар не смешиваются.
 - [ ] Журнал переживает перезапуск и атомарно сохраняется в JSON.
 - [ ] pandas-отчёт воспроизводим из JSON без PyArrow.
+- [ ] Razdel входит в обе базовые поставки; LanguageTool, Slovnet/Navec,
+  PyTorch и COMETKiwi в них отсутствуют.
+- [ ] Реестр возможностей задаёт четыре независимых флага и полные описания
+  нагрузки, пользы и ограничений.
 - [ ] Статистический конфликт термина не исправляет текст без явного правила или последующего LLM-подтверждения.
 - [ ] Полный `python tools/run_checks.py` проходит.
 

@@ -2,11 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Построить независимый от Qt семантический конвейер, который извлекает устойчивые смысловые единицы из EPUB, пакетно получает и кэширует embeddings, выравнивает оригинал и перевод многие-ко-многим через NumPy и выдаёт локальные кандидаты на пропуск с двумя надёжными якорями.
+**Goal:** Построить независимый от Qt семантический конвейер, который извлекает устойчивые смысловые единицы из EPUB с переключаемой русской сегментацией Razdel, пакетно получает и кэширует embeddings, выравнивает оригинал и перевод многие-ко-многим через NumPy и выдаёт локальные кандидаты на пропуск с двумя надёжными якорями.
 
-**Architecture:** Структурные идентификаторы берутся из существующего `epub_json`, а сегментация создаёт дочерние стабильные unit ID без изменения EPUB. Провайдеры embeddings реализуют один async-контракт и возвращают нормализованный `float32` массив. Кэш адресуется хэшем текста, модели, размерности и версии предобработки. Монотонный динамический алгоритм работает в ограниченной полосе и возвращает typed alignment; фильтр допустимого иностранного текста применяется до передачи кандидата LLM.
+**Architecture:** Структурные идентификаторы берутся из существующего
+`epub_json`, а сегментация создаёт дочерние стабильные unit ID без изменения
+EPUB. Для русского при включённом флаге используется точное смещение
+`razdel.sentenize`, при выключенном — существующий упрощённый алгоритм; CJK
+всегда использует отдельные правила. Провайдеры embeddings реализуют один
+async-контракт и возвращают нормализованный `float32` массив. Кэш адресуется
+хэшем текста, модели, размерности, выбранного сегментатора и версии
+предобработки. Монотонный динамический алгоритм работает в ограниченной полосе
+и возвращает typed alignment; фильтр допустимого иностранного текста
+применяется до передачи кандидата LLM.
 
-**Tech Stack:** Python 3.11, NumPy 2.x, aiohttp/requests из существующего проекта, hashlib, JSON/NPZ cache, pytest.
+**Tech Stack:** Python 3.11, NumPy 2.x, Razdel `>=0.5,<1`,
+aiohttp/requests из существующего проекта, hashlib, JSON/NPZ cache, pytest.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-translation-completeness-qa-design.md`
 
@@ -14,6 +24,9 @@
 
 - Предварительно полностью выполнить `2026-08-28-translation-qa-foundation.md`.
 - Сегментация не изменяет EPUB и не считает номер абзаца семантической идентичностью.
+- Русская сегментация Razdel включена по умолчанию, но отключается независимо;
+  при отключении используется резервный сегментатор. CJK-правила от галочки
+  Razdel не зависят.
 - Unit ID детерминированно выводится из `document_id`, стабильного `block_id`, диапазона и версии сегментации.
 - Выравнивание обязано поддерживать `1→1`, `1→2`, `2→1`, `2→2`, ограниченные окна до трёх единиц и явный gap.
 - Автоматически ремонтопригодный gap обязан иметь два надёжных упорядоченных якоря. Кандидаты у начала/конца главы без двух якорей остаются только в отчёте.
@@ -57,6 +70,8 @@ class SemanticWindow:
 
 class SemanticUnitExtractor:
     PREPROCESSING_VERSION = "semantic-units-v1"
+    def __init__(self, capabilities: QaCapabilitySettings):
+        raise NotImplementedError
     def extract(self, payload: dict, language: str) -> tuple[SemanticUnit, ...]:
         raise NotImplementedError
     def windows(self, units: Sequence[SemanticUnit], max_size: int = 3) -> tuple[SemanticWindow, ...]:
@@ -72,7 +87,7 @@ class SemanticUnitExtractor:
 ```python
 # tests/qa/test_semantic_units.py
 def test_units_keep_epub_block_identity_and_are_repeatable(epub_payload):
-    extractor = SemanticUnitExtractor()
+    extractor = SemanticUnitExtractor(QaCapabilitySettings())
     first = extractor.extract(epub_payload, language="zh")
     second = extractor.extract(epub_payload, language="zh-CN")
 
@@ -82,13 +97,37 @@ def test_units_keep_epub_block_identity_and_are_repeatable(epub_payload):
 
 
 def test_inline_markup_does_not_split_one_sentence(inline_markup_payload):
-    units = SemanticUnitExtractor().extract(inline_markup_payload, "ru")
+    units = SemanticUnitExtractor(QaCapabilitySettings()).extract(
+        inline_markup_payload, "ru"
+    )
     assert [unit.text for unit in units] == ["Он сказал: «Я вернусь»." ]
 
 
+def test_razdel_offsets_cover_dialogue_abbreviation_and_ellipsis(ru_payload):
+    units = SemanticUnitExtractor(QaCapabilitySettings()).extract(
+        ru_payload, "ru"
+    )
+    assert [unit.text for unit in units] == [
+        "— Проф. Ли здесь?..",
+        "— Да, — ответил он.",
+    ]
+    assert reconstruct_visible_ranges(ru_payload, units) == [
+        unit.text for unit in units
+    ]
+
+
+def test_disabling_razdel_uses_legacy_segmenter_without_changing_epub(ru_payload):
+    before = deepcopy(ru_payload)
+    settings = QaCapabilitySettings(razdel_enabled=False)
+    units = SemanticUnitExtractor(settings).extract(ru_payload, "ru")
+    assert units
+    assert ru_payload == before
+
+
 def test_windows_are_local_and_never_cross_document_boundary(epub_payload):
-    units = SemanticUnitExtractor().extract(epub_payload, "zh")
-    windows = SemanticUnitExtractor().windows(units, max_size=3)
+    extractor = SemanticUnitExtractor(QaCapabilitySettings())
+    units = extractor.extract(epub_payload, "zh")
+    windows = extractor.windows(units, max_size=3)
     assert {len(window.unit_ids) for window in windows} <= {1, 2, 3}
     assert all(window.unit_ids == tuple(sorted(window.unit_ids, key=unit_order)) for window in windows)
 ```
@@ -101,13 +140,20 @@ Expected: FAIL with import error.
 
 - [ ] **Step 4: Реализовать извлечение без HTML-мутаций**
 
-Использовать `build_translation_payload()` как входной контракт. Рекурсивно собрать видимый текст `text`-фрагментов каждого блока, сохранив отображение символьного диапазона на block/inline IDs. Не включать comments, opaque и break как текст. Сегментировать CJK и алфавитные языки отдельными правилами, сохраняя терминальные знаки.
+Использовать `build_translation_payload()` как входной контракт. Рекурсивно
+собрать видимый текст `text`-фрагментов каждого блока, сохранив отображение
+символьного диапазона на block/inline IDs. Не включать comments, opaque и break
+как текст. CJK сегментировать отдельными правилами. Для русского при
+`razdel_enabled=True` вызывать `razdel.sentenize(visible_text)` и переносить
+`start/stop` каждого `Substring` обратно на block/inline ranges. При
+`False` вызывать изолированный `LegacyRussianSegmenter`; ни один путь не
+мутирует payload.
 
 Unit ID:
 
 ```python
 identity = "\x1f".join(
-    (PREPROCESSING_VERSION, document_id, block_id, str(start), str(end), normalized_text)
+    (PREPROCESSING_VERSION, segmenter_id, document_id, block_id, str(start), str(end), normalized_text)
 )
 unit_id = "u-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 ```
@@ -668,6 +714,8 @@ git commit -m "feat: add semantic translation coverage service"
 ## Completion Gate
 
 - [ ] Одинаковый EPUB payload всегда даёт те же unit IDs.
+- [ ] Включённый Razdel корректно сегментирует русский диалог, сокращения и
+  многоточия с точными EPUB-смещениями; выключенный использует резервный путь.
 - [ ] Абзацы можно объединять/разбивать без ложного gap за счёт many-to-many alignment.
 - [ ] Настоящий пропуск в середине имеет левый и правый anchors; краевой пропуск не считается автоматически ремонтопригодным.
 - [ ] Gemini и OpenAI-compatible providers соблюдают один контракт и не протекают секретами.
