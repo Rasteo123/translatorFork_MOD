@@ -108,6 +108,7 @@ ESSENTIAL_PACKAGES = {
     'urllib3',
     'numpy',
     'pandas',
+    'razdel',
 }
 FORCED_VERSIONS = {
     'cryptography': '>=48.0.1',
@@ -120,6 +121,7 @@ FORCED_VERSIONS = {
     'urllib3': '>=2.7.0',
     'numpy': '>=2.0,<3',
     'pandas': '>=3.0,<4',
+    'razdel': '>=0.5,<1',
 }
 CONFLICTING_PACKAGES_TO_REMOVE = {"os_patch", "pyinstaller_hooks_contrib"}
 

@@ -26,6 +26,7 @@ qoder-agent-sdk>=1.0.8
 python-docx
 python-Levenshtein
 pytz
+razdel>=0.5,<1
 recognizers-text
 recognizers-text-number
 requests

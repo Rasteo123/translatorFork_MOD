@@ -38,6 +38,7 @@ python-docx
 python-Levenshtein
 pytz
 rapidfuzz
+razdel>=0.5,<1
 recognizers-text
 recognizers-text-number
 requests
