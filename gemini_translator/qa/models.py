@@ -276,12 +276,7 @@ class ChapterMetrics:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise QaModelValidationError("Invalid chapter metrics") from exc
-        if not math.isclose(
-            payload["length_ratio"],
-            metrics.length_ratio,
-            rel_tol=1e-12,
-            abs_tol=1e-12,
-        ):
+        if payload["length_ratio"] != metrics.length_ratio:
             raise QaModelValidationError(
                 "Persisted length_ratio does not match chapter metrics"
             )

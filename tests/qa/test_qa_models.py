@@ -138,8 +138,34 @@ def test_chapter_metrics_from_dict_rejects_contradictory_persisted_ratio():
 
 
 @pytest.mark.parametrize(
+    ("source_chars", "translated_chars", "persisted_ratio"),
+    [(100, 200, 2.0000000000005), (0, 25, 5e-13)],
+)
+def test_chapter_metrics_from_dict_rejects_near_mismatched_persisted_ratio(
+    source_chars, translated_chars, persisted_ratio
+):
+    """Tolerance-based validation would hide a subtly corrupted v1 ratio."""
+    payload = ChapterMetrics(
+        chapter_id="chapter-1",
+        source_language="zh",
+        target_language="ru",
+        source_chars=source_chars,
+        translated_chars=translated_chars,
+    ).to_dict()
+    payload["length_ratio"] = persisted_ratio
+
+    with pytest.raises(QaModelValidationError, match="length_ratio"):
+        ChapterMetrics.from_dict(payload)
+
+
+@pytest.mark.parametrize(
     ("source_chars", "translated_chars", "expected_ratio"),
-    [(100, 200, 2.0), (0, 25, 0.0)],
+    [
+        (3, 1, 0.3333333333333333),
+        (7, 2, 0.2857142857142857),
+        (1000, 2800, 2.8),
+        (0, 25, 0.0),
+    ],
 )
 def test_chapter_metrics_from_dict_accepts_derived_ratio_contract(
     source_chars, translated_chars, expected_ratio
