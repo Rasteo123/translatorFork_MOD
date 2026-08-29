@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import math
 from types import MappingProxyType
-from typing import Any, ClassVar, Mapping
+from typing import Any, ClassVar, Literal, Mapping
 
 from .capabilities import QaCapabilityKey
 
@@ -77,6 +77,12 @@ class Action(StrEnum):
     REPAIR_REJECTED = "repair_rejected"
     IGNORE = "ignore"
     UNDO = "undo"
+
+
+class GlossaryPolicy(StrEnum):
+    MUST_TRANSLATE = "must_translate"
+    KEEP_ORIGINAL = "keep_original"
+    EITHER = "either"
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,3 +328,85 @@ class QaJournalEntry:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise QaModelValidationError("Invalid journal entry") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class GlossaryObservation:
+    """One observed translation of a source glossary term in a chapter."""
+
+    original_term: str
+    observed_translation: str
+    canonical_translation: str | None
+    morphology_signature: tuple[str, ...]
+    morphology_confidence: Literal["high", "ambiguous"]
+    chapter_id: str
+    occurrences: int
+    policy: GlossaryPolicy
+
+    _FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "original_term",
+            "observed_translation",
+            "canonical_translation",
+            "morphology_signature",
+            "morphology_confidence",
+            "chapter_id",
+            "occurrences",
+            "policy",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        for field_name in ("original_term", "observed_translation", "chapter_id"):
+            _require_string(getattr(self, field_name), field_name)
+        _require_string(
+            self.canonical_translation, "canonical_translation", allow_none=True
+        )
+        if not isinstance(self.morphology_signature, tuple):
+            raise QaModelValidationError("morphology_signature must be a tuple")
+        for signature in self.morphology_signature:
+            _require_string(signature, "morphology_signature entry")
+        if self.morphology_confidence not in {"high", "ambiguous"}:
+            raise QaModelValidationError("unsupported morphology confidence")
+        _require_integer(self.occurrences, "occurrences")
+        if self.occurrences <= 0:
+            raise QaModelValidationError("occurrences must be positive")
+        try:
+            object.__setattr__(self, "policy", GlossaryPolicy(self.policy))
+        except (TypeError, ValueError) as exc:
+            raise QaModelValidationError("unsupported glossary policy") from exc
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "original_term": self.original_term,
+            "observed_translation": self.observed_translation,
+            "canonical_translation": self.canonical_translation,
+            "morphology_signature": list(self.morphology_signature),
+            "morphology_confidence": self.morphology_confidence,
+            "chapter_id": self.chapter_id,
+            "occurrences": self.occurrences,
+            "policy": self.policy.value,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "GlossaryObservation":
+        if not isinstance(payload, Mapping):
+            raise QaModelValidationError("Glossary observation must be a JSON object")
+        if set(payload) != cls._FIELDS:
+            raise QaModelValidationError("Glossary observation has an invalid schema")
+        signature = payload.get("morphology_signature")
+        if not isinstance(signature, list):
+            raise QaModelValidationError("morphology_signature must be an array")
+        try:
+            return cls(
+                original_term=payload["original_term"],
+                observed_translation=payload["observed_translation"],
+                canonical_translation=payload["canonical_translation"],
+                morphology_signature=tuple(signature),
+                morphology_confidence=payload["morphology_confidence"],
+                chapter_id=payload["chapter_id"],
+                occurrences=payload["occurrences"],
+                policy=payload["policy"],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise QaModelValidationError("Invalid glossary observation") from exc

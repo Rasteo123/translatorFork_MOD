@@ -7,11 +7,11 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
-from .models import ChapterMetrics, QaJournalEntry
+from .models import ChapterMetrics, GlossaryObservation, QaJournalEntry
 
 
 class QaJournalError(ValueError):
@@ -48,7 +48,7 @@ class QaJournal:
         metrics: Mapping[str, ChapterMetrics] | None = None,
         candidates: list[dict[str, Any]] | None = None,
         repairs: list[dict[str, Any]] | None = None,
-        glossary_observations: list[dict[str, Any]] | None = None,
+        glossary_observations: Iterable[GlossaryObservation] | None = None,
     ) -> None:
         self.book_id = book_id
         self.updated_at = updated_at
@@ -56,6 +56,11 @@ class QaJournal:
         self.candidates = list(candidates or [])
         self.repairs = list(repairs or [])
         self.glossary_observations = list(glossary_observations or [])
+        if any(
+            not isinstance(observation, GlossaryObservation)
+            for observation in self.glossary_observations
+        ):
+            raise QaJournalError("glossary observations must use the typed schema")
 
     @classmethod
     def empty(cls, *, book_id: str) -> "QaJournal":
@@ -102,9 +107,10 @@ class QaJournal:
                 raise ValueError("metrics entries must be objects")
             candidates = _validated_object_entries(payload["candidates"])
             repairs = _validated_object_entries(payload["repairs"])
-            glossary_observations = _validated_object_entries(
-                payload["glossary_observations"]
-            )
+            glossary_observations = [
+                GlossaryObservation.from_dict(item)
+                for item in payload["glossary_observations"]
+            ]
         except (KeyError, ValueError) as exc:
             raise QaJournalCorruptedError("QA journal metrics are invalid") from exc
 
@@ -123,6 +129,12 @@ class QaJournal:
 
     def upsert_metrics(self, metrics: ChapterMetrics) -> None:
         self.metrics[metrics.chapter_id] = metrics
+        self._mark_updated()
+
+    def append_glossary_observation(self, observation: GlossaryObservation) -> None:
+        if not isinstance(observation, GlossaryObservation):
+            raise QaJournalError("glossary observation must use the typed schema")
+        self.glossary_observations.append(observation)
         self._mark_updated()
 
     def metrics_frame(self) -> pd.DataFrame:
@@ -169,7 +181,9 @@ class QaJournal:
             ],
             "candidates": deepcopy(self.candidates),
             "repairs": deepcopy(self.repairs),
-            "glossary_observations": deepcopy(self.glossary_observations),
+            "glossary_observations": [
+                observation.to_dict() for observation in self.glossary_observations
+            ],
         }
 
     def _mark_updated(self) -> None:
