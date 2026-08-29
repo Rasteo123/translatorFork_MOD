@@ -20,6 +20,12 @@ def _require_string(value: object, field_name: str, *, allow_none: bool = False)
         raise QaModelValidationError(f"{field_name} must be a string")
 
 
+def _require_nonempty_string(value: object, field_name: str) -> None:
+    _require_string(value, field_name)
+    if not value.strip():
+        raise QaModelValidationError(f"{field_name} must be a nonempty string")
+
+
 def _require_integer(value: object, field_name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise QaModelValidationError(f"{field_name} must be an integer")
@@ -86,6 +92,31 @@ class GlossaryPolicy(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SemanticInlineSpan:
+    """One text-fragment range inside a semantic unit and its parent block."""
+
+    inline_id: str
+    source_start: int
+    source_end: int
+    unit_start: int
+    unit_end: int
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        _require_nonempty_string(self.inline_id, "inline_id")
+        for field_name in ("source_start", "source_end", "unit_start", "unit_end"):
+            _require_integer(getattr(self, field_name), field_name)
+        if self.source_start < 0 or self.unit_start < 0:
+            raise QaModelValidationError("semantic inline span offsets must be non-negative")
+        if self.source_start > self.source_end or self.unit_start > self.unit_end:
+            raise QaModelValidationError("semantic inline span ranges must be ordered")
+        if self.source_end - self.source_start != self.unit_end - self.unit_start:
+            raise QaModelValidationError("semantic inline span ranges must have equal lengths")
+
+
+@dataclass(frozen=True, slots=True)
 class SemanticUnit:
     """One stable, sentence-sized span of visible text in an EPUB block."""
 
@@ -98,6 +129,55 @@ class SemanticUnit:
     source_start: int
     source_end: int
     kind: str
+    inline_spans: tuple[SemanticInlineSpan, ...]
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        for field_name in (
+            "unit_id",
+            "document_id",
+            "block_id",
+            "text",
+            "normalized_text",
+            "kind",
+        ):
+            _require_nonempty_string(getattr(self, field_name), field_name)
+        _require_integer(self.ordinal, "ordinal")
+        _require_integer(self.source_start, "source_start")
+        _require_integer(self.source_end, "source_end")
+        if self.ordinal < 0:
+            raise QaModelValidationError("ordinal must be non-negative")
+        if self.source_start < 0 or self.source_start >= self.source_end:
+            raise QaModelValidationError("semantic unit source range must be nonempty and ordered")
+        if self.source_end - self.source_start != len(self.text):
+            raise QaModelValidationError("semantic unit source range must match text length")
+        if not isinstance(self.inline_spans, tuple) or not self.inline_spans:
+            raise QaModelValidationError("inline_spans must be a nonempty tuple")
+
+        expected_source_start = self.source_start
+        expected_unit_start = 0
+        for span in self.inline_spans:
+            if not isinstance(span, SemanticInlineSpan):
+                raise QaModelValidationError("inline_spans entries must be SemanticInlineSpan")
+            span.validate()
+            if (
+                span.source_start < self.source_start
+                or span.source_end > self.source_end
+                or span.unit_start < 0
+                or span.unit_end > len(self.text)
+            ):
+                raise QaModelValidationError("inline span falls outside semantic unit range")
+            if (
+                span.source_start != expected_source_start
+                or span.unit_start != expected_unit_start
+            ):
+                raise QaModelValidationError("inline spans must be ordered and cover semantic unit text")
+            expected_source_start = span.source_end
+            expected_unit_start = span.unit_end
+        if expected_source_start != self.source_end or expected_unit_start != len(self.text):
+            raise QaModelValidationError("inline spans must cover semantic unit text")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +186,18 @@ class SemanticWindow:
 
     unit_ids: tuple[str, ...]
     text: str
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if not isinstance(self.unit_ids, tuple) or not self.unit_ids:
+            raise QaModelValidationError("unit_ids must be a nonempty tuple")
+        for unit_id in self.unit_ids:
+            _require_nonempty_string(unit_id, "unit_id")
+        if len(set(self.unit_ids)) != len(self.unit_ids):
+            raise QaModelValidationError("unit_ids must be unique")
+        _require_nonempty_string(self.text, "text")
 
 
 @dataclass(frozen=True, slots=True)

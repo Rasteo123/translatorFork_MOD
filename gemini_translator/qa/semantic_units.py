@@ -15,7 +15,7 @@ import unicodedata
 from razdel import sentenize
 
 from .capabilities import QaCapabilitySettings
-from .models import SemanticUnit, SemanticWindow
+from .models import SemanticInlineSpan, SemanticUnit, SemanticWindow
 
 
 class SemanticUnitExtractionError(ValueError):
@@ -144,7 +144,7 @@ class SemanticUnitExtractor:
 
         for block in blocks:
             block_id = block["id"]
-            visible_text = self._flatten_visible_text(block["inlines"])
+            visible_text, visible_segments = self._flatten_visible_text(block["inlines"])
             for start, end in self._segment_spans(visible_text, language_base):
                 trimmed = self._trim_span(visible_text, start, end)
                 if trimmed is None:
@@ -174,6 +174,9 @@ class SemanticUnitExtractor:
                         source_start=source_start,
                         source_end=source_end,
                         kind=self._block_kind(block),
+                        inline_spans=self._inline_spans_for_unit(
+                            visible_segments, source_start, source_end
+                        ),
                     )
                 )
                 ordinal += 1
@@ -187,7 +190,21 @@ class SemanticUnitExtractor:
             raise ValueError("max_size must be an integer greater than zero")
 
         grouped: dict[str, list[SemanticUnit]] = {}
+        seen_unit_ids: set[str] = set()
+        seen_ordinals_by_document: dict[str, set[int]] = {}
         for unit in units:
+            if not isinstance(unit, SemanticUnit):
+                raise ValueError("units must contain SemanticUnit values")
+            unit.validate()
+            if unit.unit_id in seen_unit_ids:
+                raise ValueError("duplicate unit_id")
+            seen_unit_ids.add(unit.unit_id)
+            document_ordinals = seen_ordinals_by_document.setdefault(
+                unit.document_id, set()
+            )
+            if unit.ordinal in document_ordinals:
+                raise ValueError("duplicate ordinal within document")
+            document_ordinals.add(unit.ordinal)
             grouped.setdefault(unit.document_id, []).append(unit)
 
         windows: list[SemanticWindow] = []
@@ -217,11 +234,12 @@ class SemanticUnitExtractor:
 
         validated_blocks: list[Mapping[str, object]] = []
         block_ids: set[str] = set()
+        seen_fragment_ids: set[str] = set()
         for block in blocks:
             if not isinstance(block, Mapping):
                 raise SemanticUnitExtractionError("payload block must be a mapping")
             block_id = block.get("id")
-            if not isinstance(block_id, str) or not block_id:
+            if not isinstance(block_id, str) or not block_id.strip():
                 raise SemanticUnitExtractionError("payload block id must be a nonempty string")
             if block_id in block_ids:
                 raise SemanticUnitExtractionError("payload block ids must be unique")
@@ -229,18 +247,23 @@ class SemanticUnitExtractor:
             inlines = block.get("inlines")
             if not isinstance(inlines, list):
                 raise SemanticUnitExtractionError("payload block inlines must be a list")
-            cls._validate_fragments(inlines)
+            cls._validate_fragments(inlines, seen_fragment_ids)
             validated_blocks.append(block)
         return document_id, validated_blocks
 
     @classmethod
-    def _validate_fragments(cls, fragments: list[object]) -> None:
+    def _validate_fragments(
+        cls, fragments: list[object], seen_fragment_ids: set[str]
+    ) -> None:
         for fragment in fragments:
             if not isinstance(fragment, Mapping):
                 raise SemanticUnitExtractionError("inline fragment must be a mapping")
             fragment_id = fragment.get("id")
-            if not isinstance(fragment_id, str) or not fragment_id:
+            if not isinstance(fragment_id, str) or not fragment_id.strip():
                 raise SemanticUnitExtractionError("inline fragment id must be a nonempty string")
+            if fragment_id in seen_fragment_ids:
+                raise SemanticUnitExtractionError("inline fragment ids must be unique")
+            seen_fragment_ids.add(fragment_id)
             fragment_type = fragment.get("type")
             if fragment_type not in {"text", "comment", "opaque", "break", "element"}:
                 raise SemanticUnitExtractionError("inline fragment type is invalid")
@@ -252,22 +275,54 @@ class SemanticUnitExtractor:
                 children = fragment.get("children")
                 if not isinstance(children, list):
                     raise SemanticUnitExtractionError("element fragment children must be a list")
-                cls._validate_fragments(children)
+                cls._validate_fragments(children, seen_fragment_ids)
 
     @classmethod
-    def _flatten_visible_text(cls, fragments: list[object]) -> str:
+    def _flatten_visible_text(
+        cls, fragments: list[object]
+    ) -> tuple[str, tuple[tuple[str, int, int], ...]]:
         pieces: list[str] = []
+        segments: list[tuple[str, int, int]] = []
+        offset = 0
 
         def walk(items: list[object]) -> None:
+            nonlocal offset
             for fragment in items:
                 fragment_mapping = fragment
                 if fragment_mapping["type"] == "text":
-                    pieces.append(fragment_mapping["text"])
+                    text = fragment_mapping["text"]
+                    pieces.append(text)
+                    if text:
+                        segments.append(
+                            (fragment_mapping["id"], offset, offset + len(text))
+                        )
+                    offset += len(text)
                 elif fragment_mapping["type"] == "element":
                     walk(fragment_mapping["children"])
 
         walk(fragments)
-        return "".join(pieces)
+        return "".join(pieces), tuple(segments)
+
+    @staticmethod
+    def _inline_spans_for_unit(
+        segments: Sequence[tuple[str, int, int]], source_start: int, source_end: int
+    ) -> tuple[SemanticInlineSpan, ...]:
+        spans: list[SemanticInlineSpan] = []
+        for inline_id, segment_start, segment_end in segments:
+            overlap_start = max(source_start, segment_start)
+            overlap_end = min(source_end, segment_end)
+            if overlap_start >= overlap_end:
+                continue
+            spans.append(
+                SemanticInlineSpan(
+                    inline_id=inline_id,
+                    source_start=overlap_start,
+                    source_end=overlap_end,
+                    unit_start=overlap_start - source_start,
+                    unit_end=overlap_end - source_start,
+                )
+            )
+        return tuple(spans)
 
     def _segment_spans(self, text: str, language_base: str) -> tuple[tuple[int, int], ...]:
         if language_base in {"zh", "ja", "ko"}:
@@ -331,9 +386,9 @@ class SemanticUnitExtractor:
     def _block_kind(block: Mapping[str, object]) -> str:
         """Use a nonempty role first, then a nonempty tag, otherwise ``block``."""
         role = block.get("role")
-        if isinstance(role, str) and role:
-            return role
+        if isinstance(role, str) and role.strip():
+            return role.strip()
         tag = block.get("tag")
-        if isinstance(tag, str) and tag:
-            return tag
+        if isinstance(tag, str) and tag.strip():
+            return tag.strip()
         return "block"
