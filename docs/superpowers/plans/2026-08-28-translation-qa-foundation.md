@@ -803,15 +803,22 @@ Expected: PASS with no Ruff violations, включая capability registry.
 
 - [ ] **Step 3: Проверить сборку двух вариантов приложения**
 
-Run: `python build_master.py --help`
-
-Expected: command exits 0 and documents the supported build selector. Затем
-выполнить документированные команды обычной и translator-only сборки. Обе
+Run: `python build_master.py --help`, только если скрипт действительно имеет
+read-only CLI/help path. Если discovery показывает, что это генератор без
+парсера аргументов, использовать два репозиторных `.spec` как авторитетные
+точки входа и не запускать генератор только ради `--help`. Затем выполнить
+обычную и translator-only сборки. Обе
 сборки должны завершиться без missing-module warnings для
 `numpy`/`pandas`/`razdel`, а собранное приложение должно импортировать
 `gemini_translator.qa.book_metrics` и `razdel`.
 
-Если PyInstaller не подхватывает библиотеки автоматически, добавить только официальные collection hooks (`collect_submodules`/`collect_data_files`) в соответствующие `.spec` и покрыть это повторной сборкой. Не добавлять ONNX Runtime на этом этапе.
+Если PyInstaller не подхватывает библиотеки автоматически, использовать
+официальные механизмы PyInstaller в соответствующих `.spec`: точечные
+`hiddenimports` для изолированных pure-Python модулей либо
+`collect_submodules`/`collect_data_files` для пакета или runtime-данных.
+Точечный вариант допустим только после повторной сборки и проверки архива,
+что транзитивные runtime-модули присутствуют, а тесты и тяжёлые опциональные
+пакеты не были собраны. Не добавлять ONNX Runtime на этом этапе.
 
 - [ ] **Step 4: Зафиксировать только необходимые сборочные изменения**
 
