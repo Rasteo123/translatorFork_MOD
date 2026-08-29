@@ -15,7 +15,9 @@ from .models import GlossaryObservation, GlossaryPolicy
 _DEFAULT_MORPHOLOGY = object()
 _WORD_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
 _QUOTE_TRANSLATION = str.maketrans({
-    "«": '"', "»": '"', "„": '"', "“": '"', "”": '"', "‟": '"', "ʼ": "'",
+    "«": '"', "»": '"', "„": '"', "“": '"', "”": '"', "‟": '"',
+    "‹": "'", "›": "'", "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    "ʼ": "'", "′": "'", "‵": "'", "＇": "'",
 })
 
 
@@ -123,6 +125,20 @@ class GlossaryAuditor:
         family_summary = family_counts.merge(
             surfaces, on=["original_term", "morphology_family"], how="inner", validate="one_to_one"
         )
+        family_confidence = (
+            frame.assign(_family_high=frame["morphology_confidence"].eq("high"))
+            .groupby(["original_term", "morphology_family"], observed=True, sort=True)[
+                "_family_high"
+            ]
+            .all()
+            .reset_index()
+        )
+        family_summary = family_summary.merge(
+            family_confidence,
+            on=["original_term", "morphology_family"],
+            how="inner",
+            validate="one_to_one",
+        )
         results: list[dict[str, Any]] = []
         for original_term, term_frame in frame.groupby("original_term", observed=True, sort=True):
             summary = family_summary[family_summary["original_term"] == original_term]
@@ -197,12 +213,10 @@ class GlossaryAuditor:
             high_confidence = bool(
                 (family_rows["morphology_confidence"] == "high").all()
                 and canonical_confidence == "high"
+                and _same_morphology_family(
+                    family_rows["morphology_signature"].iloc[0], canonical_signature
+                )
             )
-            if (
-                policy == GlossaryPolicy.MUST_TRANSLATE
-                and (family_rows["normalized_translation"] == _normalize(str(term_frame["original_term"].iloc[0]))).all()
-            ):
-                high_confidence = True
             rows.append(
                 {
                     "original_term": term_frame["original_term"].iloc[0],
@@ -214,7 +228,7 @@ class GlossaryAuditor:
                     "surface_forms": candidate["surface_forms"],
                     "policy": policy.value,
                     "high_confidence": high_confidence,
-                    "requires_llm_confirmation": False,
+                    "requires_llm_confirmation": not high_confidence,
                 }
             )
         return rows
@@ -225,7 +239,9 @@ class GlossaryAuditor:
         if len(summary) < 2:
             return []
         ranked = summary.sort_values(
-            ["occurrences", "morphology_family"], ascending=[False, True], kind="stable"
+            ["occurrences", "_family_high", "morphology_family"],
+            ascending=[False, False, True],
+            kind="stable",
         ).reset_index(drop=True)
         dominant = ranked.iloc[0]
         rows: list[dict[str, Any]] = []
@@ -288,11 +304,24 @@ class GlossaryAuditor:
                 (row for row in term_rows if row["morphology_confidence"] == "high"),
                 key=lambda row: row["normalized_translation"],
             )
-            if len({len(row["morphology_signature"]) for row in high_rows}) > 1:
+            token_counts = {
+                len(row["morphology_signature"]): 0 for row in high_rows
+            }
+            for row in high_rows:
+                token_counts[len(row["morphology_signature"])] += row["occurrences"]
+            if len(token_counts) > 1:
+                reliable_count = min(
+                    count
+                    for count, weight in token_counts.items()
+                    if weight == max(token_counts.values())
+                )
                 for row in high_rows:
-                    row["morphology_confidence"] = "ambiguous"
-                    row["morphology_signature"] = ()
-                high_rows = []
+                    if len(row["morphology_signature"]) != reliable_count:
+                        row["morphology_confidence"] = "ambiguous"
+                        row["morphology_signature"] = ()
+                high_rows = [
+                    row for row in high_rows if row["morphology_confidence"] == "high"
+                ]
             families: list[dict[str, Any]] = []
             for row in high_rows:
                 matching = next(

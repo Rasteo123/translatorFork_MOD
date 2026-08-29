@@ -112,7 +112,7 @@ def test_explicit_canonical_translation_overrides_statistical_majority():
     )
 
     assert list(conflicts["minority_translation"]) == ["Храм Боевых Душ"]
-    assert list(conflicts["requires_llm_confirmation"]) == [False]
+    assert list(conflicts["requires_llm_confirmation"]) == [True]
     assert list(conflicts["high_confidence"]) == [False]
 
 
@@ -156,7 +156,59 @@ def test_different_token_counts_are_ambiguous_not_high_confidence():
         ]
     )
 
-    assert set(frame["morphology_confidence"]) == {"ambiguous"}
+    assert frame.loc[frame["observed_translation"] == "Зал Духов", "morphology_confidence"].iloc[0] == "high"
+    assert frame.loc[frame["observed_translation"] == "Храм Боевых Душ", "morphology_confidence"].iloc[0] == "ambiguous"
+    assert not GlossaryAuditor(morphology=FakeMorphology()).conflicts(frame)["high_confidence"].any()
+
+
+def test_exact_untranslated_term_with_unavailable_morphology_needs_confirmation():
+    """Promoting an unanalyzed original surface to auto-fix confidence is unsafe."""
+    conflicts = GlossaryAuditor(morphology=None).conflicts_from_observations(
+        [
+            observation(
+                "Soul Hall",
+                "Soul Hall",
+                canonical_translation="Зал Духов",
+                policy=GlossaryPolicy.MUST_TRANSLATE,
+            )
+        ]
+    )
+
+    assert list(conflicts["minority_translation"]) == ["Soul Hall"]
+    assert list(conflicts["high_confidence"]) == [False]
+    assert list(conflicts["requires_llm_confirmation"]) == [True]
+
+
+def test_mixed_token_counts_preserve_compatible_family_and_are_order_independent():
+    """A single incompatible phrase must not downgrade valid declensions."""
+    observations = [
+        observation("武魂殿", "Зал Духов", canonical_translation="Зал Духов", chapter="1"),
+        observation("武魂殿", "Зала Духов", canonical_translation="Зал Духов", chapter="2"),
+        observation("武魂殿", "Залом Духов", canonical_translation="Зал Духов", chapter="3"),
+        observation(
+            "武魂殿",
+            "Храм Боевых Душ",
+            canonical_translation="Зал Духов",
+            chapter="4",
+        ),
+    ]
+    auditor = GlossaryAuditor(morphology=FakeMorphology())
+
+    frame = auditor.observations_frame(observations)
+    reversed_frame = auditor.observations_frame(reversed(observations))
+    conflicts = auditor.conflicts(frame)
+    reversed_conflicts = auditor.conflicts(reversed_frame)
+
+    reliable = frame[frame["observed_translation"].isin(["Зал Духов", "Зала Духов", "Залом Духов"])]
+    temple = frame[frame["observed_translation"] == "Храм Боевых Душ"].iloc[0]
+    assert reliable["morphology_family"].nunique() == 1
+    assert set(reliable["morphology_confidence"]) == {"high"}
+    assert temple.morphology_confidence == "ambiguous"
+    assert list(conflicts["minority_translation"]) == ["Храм Боевых Душ"]
+    assert list(conflicts["high_confidence"]) == [False]
+    assert list(conflicts["requires_llm_confirmation"]) == [True]
+    assert frame.sort_values("chapter_id")["morphology_family"].tolist() == reversed_frame.sort_values("chapter_id")["morphology_family"].tolist()
+    assert conflicts.equals(reversed_conflicts)
 
 
 def test_normalization_preserves_surface_but_unifies_case_quotes_spaces_and_yo():
@@ -170,6 +222,19 @@ def test_normalization_preserves_surface_but_unifies_case_quotes_spaces_and_yo()
 
     assert list(frame["observed_translation"]) == ["  «Зал Ёлки»  ", "„зал елки“"]
     assert frame["normalized_translation"].nunique() == 1
+
+
+def test_normalization_unifies_single_curly_quotes_and_preserves_family():
+    """Missing left and right curly quotes would split a single observed form."""
+    frame = GlossaryAuditor(morphology=FakeMorphology()).observations_frame(
+        [
+            observation("武魂殿", "‘Зал Ёлки’"),
+            observation("武魂殿", "зал елки"),
+        ]
+    )
+
+    assert frame["normalized_translation"].nunique() == 1
+    assert frame["morphology_family"].nunique() == 1
 
 
 def test_unavailable_or_failed_morphology_is_ambiguous_and_never_high_confidence():
