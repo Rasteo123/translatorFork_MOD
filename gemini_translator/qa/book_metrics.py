@@ -74,8 +74,8 @@ class BookMetricsAnalyzer:
     ) -> BookRatioBaseline:
         """Return the robust eligible baseline for ``chapter_id``'s language pair."""
         chapter = _chapter_row(frame, chapter_id)
-        source_language = str(chapter["source_language"])
-        target_language = str(chapter["target_language"])
+        source_language = _base_language(chapter["source_language"])
+        target_language = _base_language(chapter["target_language"])
         sample_mask = _eligible_baseline_mask(frame) & _same_pair_mask(
             frame, source_language, target_language
         )
@@ -118,8 +118,8 @@ class BookMetricsAnalyzer:
     def classify_ratio_risk(self, frame: pd.DataFrame, chapter_id: str) -> RatioRisk:
         """Classify absolute language-profile and relative book-level ratio risks."""
         chapter = _chapter_row(frame, chapter_id)
-        source_language = str(chapter["source_language"])
-        target_language = str(chapter["target_language"])
+        source_language = _base_language(chapter["source_language"])
+        target_language = _base_language(chapter["target_language"])
         ratio = _finite_ratio(chapter["length_ratio"])
         baseline = self.ratio_baseline(frame, chapter_id)
         absolute_profile, within_absolute_profile = _absolute_profile_status(
@@ -152,6 +152,10 @@ def _base_language_series(values: pd.Series) -> pd.Series:
     )
 
 
+def _base_language(value: object) -> str:
+    return str(value).strip().lower().replace("_", "-").split("-", 1)[0]
+
+
 def _chapter_row(frame: pd.DataFrame, chapter_id: str) -> pd.Series:
     matches = frame.loc[frame["chapter_id"].eq(chapter_id)]
     if matches.empty:
@@ -175,9 +179,9 @@ def _eligible_baseline_mask(frame: pd.DataFrame) -> pd.Series:
 def _same_pair_mask(
     frame: pd.DataFrame, source_language: str, target_language: str
 ) -> pd.Series:
-    return frame["source_language"].eq(source_language) & frame[
-        "target_language"
-    ].eq(target_language)
+    return _base_language_series(frame["source_language"]).eq(
+        source_language
+    ) & _base_language_series(frame["target_language"]).eq(target_language)
 
 
 def _finite_ratio(value: object) -> float | None:
@@ -195,7 +199,9 @@ def _absolute_profile_status(
         profile = get_ratio_profile(source_language, target_language)
     except KeyError:
         return "unsupported", None
-    return profile.key, ratio is not None and profile.contains(ratio)
+    if ratio is None:
+        return profile.key, None
+    return profile.key, profile.contains(ratio)
 
 
 def _robust_z(ratio: float | None, baseline: BookRatioBaseline) -> float | None:

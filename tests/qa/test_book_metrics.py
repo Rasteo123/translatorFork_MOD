@@ -7,6 +7,7 @@ from gemini_translator.qa.book_metrics import (
     BookMetricsAnalyzer,
     RelativeRisk,
 )
+from gemini_translator.qa.journal import QaJournal
 from gemini_translator.qa.models import ChapterMetrics, RiskLevel
 
 
@@ -58,8 +59,30 @@ def test_iqr_is_used_when_mad_is_zero():
     baseline = BookMetricsAnalyzer().ratio_baseline(frame, "5")
 
     assert baseline.scale_method == "iqr"
-    assert baseline.scale is not None
-    assert baseline.scale > 0
+    assert baseline.scale == pytest.approx((2.95 - 2.8) / 1.349)
+
+
+def test_raw_journal_frame_normalizes_language_variants_without_mutating_it():
+    """Using raw journal languages used to split one CJK baseline into five samples."""
+    journal = QaJournal.empty(book_id="book")
+    for index, source_language in enumerate(("zh-CN", "zh", "zh-TW", "zh", "zh")):
+        journal.upsert_metrics(
+            metric(
+                f"chapter-{index}",
+                source_language,
+                "ru-RU" if index == 0 else "ru",
+                1000,
+                2800 + index * 10,
+            )
+        )
+    raw_frame = journal.metrics_frame()
+
+    result = BookMetricsAnalyzer().classify_ratio_risk(raw_frame, "chapter-0")
+
+    assert raw_frame.loc[raw_frame["chapter_id"].eq("chapter-0"), "source_language"].item() == "zh-CN"
+    assert raw_frame.loc[raw_frame["chapter_id"].eq("chapter-0"), "target_language"].item() == "ru-RU"
+    assert result.baseline.language_pair == ("zh", "ru")
+    assert result.baseline.sample_size == 5
 
 
 def test_four_eligible_chapters_leave_relative_risk_unavailable():
@@ -149,20 +172,77 @@ def test_absolute_profile_violation_is_independent_from_relative_risk():
     assert result.auto_fix_allowed is False
 
 
-def test_zero_scale_preserves_signed_infinite_relative_deviation():
-    """Coercing zero-scale deviations to zero would hide a target ratio below its median."""
+@pytest.mark.parametrize(
+    ("translated_chars", "expected_robust_z", "expected_risk"),
+    [
+        (2000, math.inf, RelativeRisk.HIGH),
+        (0, -math.inf, RelativeRisk.HIGH),
+        (1000, 0.0, RelativeRisk.LOW),
+    ],
+)
+def test_zero_scale_distinguishes_positive_negative_and_no_deviation(
+    translated_chars, expected_robust_z, expected_risk
+):
+    """Replacing signed infinities or zero with one fallback value hides a real branch."""
     frame = BookMetricsAnalyzer().analyze(
         [
             *[metric(f"normal-{index}", "en", "ru", 1000, 1000) for index in range(4)],
-            metric("target", "en", "ru", 1000, 0),
+            metric("target", "en", "ru", 1000, translated_chars),
         ]
     )
 
     result = BookMetricsAnalyzer().classify_ratio_risk(frame, "target")
 
     assert result.baseline.scale == 0.0
-    assert result.robust_z == -math.inf
-    assert result.relative_risk is RelativeRisk.HIGH
+    assert result.robust_z == expected_robust_z
+    assert result.relative_risk is expected_risk
+
+
+def test_supported_profile_with_nonfinite_target_has_no_absolute_verdict():
+    """Turning an invalid CJK ratio into an absolute violation creates a false alert."""
+    analyzer = BookMetricsAnalyzer()
+    frame = analyzer.analyze(
+        metric(str(index), "zh", "ru", 1000, 2800) for index in range(5)
+    )
+    frame.loc[frame["chapter_id"].eq("0"), "length_ratio"] = math.nan
+
+    result = analyzer.classify_ratio_risk(frame, "0")
+
+    assert result.absolute_profile == "cjk_to_ru"
+    assert result.within_absolute_profile is None
+    assert result.robust_z is None
+    assert result.relative_risk is RelativeRisk.UNAVAILABLE
+    assert result.requires_deep_check is False
+
+
+@pytest.mark.parametrize(
+    ("source_language", "ratio", "profile", "within_profile"),
+    [
+        ("en", 0.92, "alphabetic_to_ru", True),
+        ("en", 1.20, "alphabetic_to_ru", True),
+        ("en", 0.919, "alphabetic_to_ru", False),
+        ("en", 1.201, "alphabetic_to_ru", False),
+        ("zh", 2.80, "cjk_to_ru", True),
+        ("zh", 3.30, "cjk_to_ru", True),
+        ("zh", 2.799, "cjk_to_ru", False),
+        ("zh", 3.301, "cjk_to_ru", False),
+    ],
+)
+def test_absolute_profiles_include_documented_endpoints_only(
+    source_language, ratio, profile, within_profile
+):
+    """Moving an inclusive endpoint or accepting its neighbour changes the profile contract."""
+    translated_chars = int(ratio * 10000)
+    frame = BookMetricsAnalyzer().analyze(
+        metric(str(index), source_language, "ru", 10000, translated_chars)
+        for index in range(5)
+    )
+
+    result = BookMetricsAnalyzer().classify_ratio_risk(frame, "0")
+
+    assert result.absolute_profile == profile
+    assert result.within_absolute_profile is within_profile
+    assert result.requires_deep_check is not within_profile
 
 
 def test_unsupported_profile_and_nonfinite_target_do_not_crash_analysis():
