@@ -301,8 +301,13 @@ async def test_gemini_uses_batch_embed_contents_and_preserves_order(fake_http):
     result = await provider.embed(request_for("源文", "перевод", model="models/gemini-embedding-001", dimensions=2))
 
     request = fake_http.last_request
-    assert request.url.endswith("/v1beta/models/gemini-embedding-001:batchEmbedContents?key=secret")
+    assert request.url.endswith("/v1beta/models/gemini-embedding-001:batchEmbedContents")
+    assert request.headers["x-goog-api-key"] == "secret"
     assert [item["content"]["parts"][0]["text"] for item in request.json["requests"]] == ["源文", "перевод"]
+    assert all(
+        item["embedContentConfig"]["outputDimensionality"] == 2
+        for item in request.json["requests"]
+    )
     assert result.vectors.shape == (2, 2)
 ```
 
@@ -333,7 +338,12 @@ Expected: FAIL with import errors.
 
 - [ ] **Step 4: Реализовать Gemini adapter**
 
-Использовать `batchEmbedContents`, передавать `outputDimensionality`, если указана. API key не должен попадать в exception text или debug log. Проверять HTTP status до разбора JSON, а затем пропускать ответ через `validate_and_normalize_batch()`.
+Использовать `batchEmbedContents`; API key передавать только заголовком
+`x-goog-api-key`, не query-параметром. `outputDimensionality` и нормализованный
+Gemini `taskType` передавать в `embedContentConfig` каждого вложенного
+`EmbedContentRequest`, если они заданы. API key не должен попадать в URL,
+exception text или debug log. Проверять HTTP status до разбора JSON, а затем
+пропускать ответ через `validate_and_normalize_batch()`.
 
 - [ ] **Step 5: Реализовать OpenAI-compatible adapter**
 
