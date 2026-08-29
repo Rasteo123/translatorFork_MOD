@@ -778,3 +778,216 @@ class AlignmentResult:
                 raise QaModelValidationError("left anchor must immediately precede its gap")
             if candidate.right_anchor is not None and candidate.right_anchor != immediate_right:
                 raise QaModelValidationError("right anchor must immediately follow its gap")
+
+
+_ENTITY_CATEGORIES = frozenset({"brand", "person", "organization", "title"})
+_PROTECTED_CONTEXTS = frozenset(
+    {"dialogue", "foreign_dialogue", "foreign_quote", "quote", "sign"}
+)
+_FOREIGN_TEXT_CATEGORIES = frozenset(
+    {
+        "ambiguous",
+        "glossary_must_translate",
+        "glossary_protected",
+        "intentional_foreign",
+        "invalid_context",
+        "protected_entity",
+        "protected_item",
+        "target_addition",
+    }
+)
+_FOREIGN_TEXT_ACTIONS = frozenset(
+    {"exclude", "report_only", "send_to_llm_verifier"}
+)
+_FOREIGN_TEXT_CONFIDENCES = frozenset({"high", "medium", "low"})
+_FOREIGN_TEXT_CATEGORY_ACTIONS = {
+    "ambiguous": frozenset({"report_only", "send_to_llm_verifier"}),
+    "glossary_must_translate": frozenset({"send_to_llm_verifier"}),
+    "glossary_protected": frozenset({"exclude"}),
+    "intentional_foreign": frozenset({"exclude"}),
+    "invalid_context": frozenset({"report_only"}),
+    "protected_entity": frozenset({"exclude"}),
+    "protected_item": frozenset({"exclude"}),
+    "target_addition": frozenset({"report_only"}),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedEntityHint:
+    """Explicit upstream evidence that a particular surface is intentionally preserved."""
+
+    text: str
+    category: str
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.text, "protected entity text")
+        if self.category not in _ENTITY_CATEGORIES:
+            raise QaModelValidationError("unsupported protected entity category")
+
+
+@dataclass(frozen=True, slots=True)
+class GlossaryRule:
+    """One exact glossary surface and its authoritative translation policy."""
+
+    term: str
+    policy: GlossaryPolicy
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.term, "glossary term")
+        try:
+            object.__setattr__(self, "policy", GlossaryPolicy(self.policy))
+        except (TypeError, ValueError) as exc:
+            raise QaModelValidationError("unsupported glossary policy") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class GlossaryPolicyMatch:
+    """An exact normalized glossary match; offsets refer to normalized candidate text."""
+
+    term: str
+    policy: GlossaryPolicy
+    start: int
+    end: int
+    exact: bool = True
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.term, "glossary match term")
+        try:
+            object.__setattr__(self, "policy", GlossaryPolicy(self.policy))
+        except (TypeError, ValueError) as exc:
+            raise QaModelValidationError("unsupported glossary policy") from exc
+        _require_integer(self.start, "glossary match start")
+        _require_integer(self.end, "glossary match end")
+        if self.start < 0 or self.start >= self.end:
+            raise QaModelValidationError("glossary match range must be nonempty and ordered")
+        if not isinstance(self.exact, bool) or not self.exact:
+            raise QaModelValidationError("glossary policy matches must be exact")
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateContext:
+    """Immutable source/target neighborhood and explicit protection evidence for one gap."""
+
+    candidate_id: str
+    source_text: str
+    target_text: str
+    source_before: str
+    source_after: str
+    target_before: str
+    target_after: str
+    source_language: str
+    target_language: str
+    candidate_language: str
+    protected_entities: tuple[ProtectedEntityHint, ...] = ()
+    protected_contexts: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.candidate_id, "candidate_id")
+        if re.fullmatch(r"gap-[0-9a-f]{20}", self.candidate_id) is None:
+            raise QaModelValidationError("candidate context id must match a gap candidate id")
+        for field_name in (
+            "source_text",
+            "target_text",
+            "source_before",
+            "source_after",
+            "target_before",
+            "target_after",
+        ):
+            _require_string(getattr(self, field_name), field_name)
+        for field_name in ("source_language", "target_language", "candidate_language"):
+            _require_nonempty_string(getattr(self, field_name), field_name)
+        if not isinstance(self.protected_entities, tuple):
+            raise QaModelValidationError("protected_entities must be a tuple")
+        if not all(
+            isinstance(entity, ProtectedEntityHint) for entity in self.protected_entities
+        ):
+            raise QaModelValidationError(
+                "protected_entities entries must be ProtectedEntityHint"
+            )
+        if len(set(self.protected_entities)) != len(self.protected_entities):
+            raise QaModelValidationError("protected_entities entries must be unique")
+        if not isinstance(self.protected_contexts, tuple):
+            raise QaModelValidationError("protected_contexts must be a tuple")
+        if len(set(self.protected_contexts)) != len(self.protected_contexts):
+            raise QaModelValidationError("protected_contexts entries must be unique")
+        for context in self.protected_contexts:
+            if context not in _PROTECTED_CONTEXTS:
+                raise QaModelValidationError("unsupported protected context")
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignTextDecision:
+    """A filter-only decision that can never authorize or apply a repair."""
+
+    category: str
+    action: str
+    confidence: str
+    reasons: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.category not in _FOREIGN_TEXT_CATEGORIES:
+            raise QaModelValidationError("unsupported foreign-text category")
+        if self.action not in _FOREIGN_TEXT_ACTIONS:
+            raise QaModelValidationError("unsupported foreign-text action")
+        if self.action not in _FOREIGN_TEXT_CATEGORY_ACTIONS[self.category]:
+            raise QaModelValidationError("foreign-text action does not match its category")
+        if self.confidence not in _FOREIGN_TEXT_CONFIDENCES:
+            raise QaModelValidationError("unsupported foreign-text confidence")
+        if not isinstance(self.reasons, tuple) or not self.reasons:
+            raise QaModelValidationError("foreign-text reasons must be a nonempty tuple")
+        if len(set(self.reasons)) != len(self.reasons):
+            raise QaModelValidationError("foreign-text reasons must be unique")
+        for reason in self.reasons:
+            _require_nonempty_string(reason, "foreign-text reason")
+
+
+@dataclass(frozen=True, slots=True)
+class FilteredCandidate:
+    """One gap and the filter-only disposition tied to its stable identity."""
+
+    candidate_id: str
+    candidate: GapCandidate
+    decision: ForeignTextDecision
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.candidate_id, "candidate_id")
+        if not isinstance(self.candidate, GapCandidate):
+            raise QaModelValidationError("candidate must be a GapCandidate")
+        if self.candidate_id != self.candidate.candidate_id:
+            raise QaModelValidationError("filtered candidate id must match its candidate")
+        if not isinstance(self.decision, ForeignTextDecision):
+            raise QaModelValidationError("decision must be a ForeignTextDecision")
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateFilterResult:
+    """Complete, immutable partition of alignment gaps after safety filtering."""
+
+    accepted: tuple[FilteredCandidate, ...]
+    excluded: tuple[FilteredCandidate, ...]
+    report_only: tuple[FilteredCandidate, ...]
+
+    def __post_init__(self) -> None:
+        partitions = (
+            ("accepted", self.accepted, "send_to_llm_verifier"),
+            ("excluded", self.excluded, "exclude"),
+            ("report_only", self.report_only, "report_only"),
+        )
+        seen: set[str] = set()
+        for name, values, expected_action in partitions:
+            if not isinstance(values, tuple):
+                raise QaModelValidationError(f"{name} must be a tuple")
+            for value in values:
+                if not isinstance(value, FilteredCandidate):
+                    raise QaModelValidationError(
+                        f"{name} entries must be FilteredCandidate"
+                    )
+                if value.decision.action != expected_action:
+                    raise QaModelValidationError(
+                        f"{name} entries must use {expected_action}"
+                    )
+                if value.candidate_id in seen:
+                    raise QaModelValidationError(
+                        "candidate filter partitions must not overlap"
+                    )
+                seen.add(value.candidate_id)

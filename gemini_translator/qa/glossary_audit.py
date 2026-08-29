@@ -9,7 +9,12 @@ import unicodedata
 
 import pandas as pd
 
-from .models import GlossaryObservation, GlossaryPolicy
+from .models import (
+    GlossaryObservation,
+    GlossaryPolicy,
+    GlossaryPolicyMatch,
+    GlossaryRule,
+)
 
 
 _DEFAULT_MORPHOLOGY = object()
@@ -19,6 +24,71 @@ _QUOTE_TRANSLATION = str.maketrans({
     "‹": "'", "›": "'", "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "ʼ": "'", "′": "'", "‵": "'", "＇": "'",
 })
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def match_glossary_policies(
+    text: str, rules: Iterable[GlossaryRule]
+) -> tuple[GlossaryPolicyMatch, ...]:
+    """Return only literal NFKC/casefold glossary matches in stable longest-first order.
+
+    This intentionally does not consult morphology or frequency evidence: an inferred
+    lemma family is not an authoritative policy match.
+    """
+
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    normalized_text = _normalize_policy_text(text)
+    matches: list[GlossaryPolicyMatch] = []
+    seen: set[tuple[str, GlossaryPolicy, int, int]] = set()
+    for rule in rules:
+        if not isinstance(rule, GlossaryRule):
+            raise TypeError("rules must contain GlossaryRule instances")
+        normalized_term = _normalize_policy_text(rule.term)
+        if not normalized_term:
+            continue
+        start = normalized_text.find(normalized_term)
+        while start >= 0:
+            end = start + len(normalized_term)
+            if _policy_boundary_matches(normalized_text, normalized_term, start, end):
+                key = (rule.term, rule.policy, start, end)
+                if key not in seen:
+                    matches.append(
+                        GlossaryPolicyMatch(rule.term, rule.policy, start, end, True)
+                    )
+                    seen.add(key)
+            start = normalized_text.find(normalized_term, start + 1)
+    return tuple(
+        sorted(
+            matches,
+            key=lambda match: (
+                -(match.end - match.start),
+                match.start,
+                _normalize_policy_text(match.term),
+                match.policy.value,
+                match.term,
+            ),
+        )
+    )
+
+
+def _normalize_policy_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).translate(_QUOTE_TRANSLATION)
+    return re.sub(r"\s+", " ", normalized).strip().casefold()
+
+
+def _policy_boundary_matches(
+    text: str, term: str, start: int, end: int
+) -> bool:
+    left_requires_boundary = term[0].isalnum() and _CJK_RE.fullmatch(term[0]) is None
+    right_requires_boundary = term[-1].isalnum() and _CJK_RE.fullmatch(term[-1]) is None
+    left_ok = not left_requires_boundary or start == 0 or not (
+        text[start - 1].isalnum() or text[start - 1] == "_"
+    )
+    right_ok = not right_requires_boundary or end == len(text) or not (
+        text[end].isalnum() or text[end] == "_"
+    )
+    return left_ok and right_ok
 
 
 class GlossaryAuditor:
