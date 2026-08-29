@@ -3,8 +3,11 @@
 from dataclasses import dataclass
 from enum import StrEnum
 import math
+import re
 from types import MappingProxyType
 from typing import Any, ClassVar, Literal, Mapping
+
+import numpy as np
 
 from .capabilities import QaCapabilityKey
 
@@ -529,3 +532,249 @@ class GlossaryObservation:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise QaModelValidationError("Invalid glossary observation") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentConfig:
+    """Bounded, deterministic scoring policy for chapter-local alignment."""
+
+    max_span_size: int = 3
+    max_drift_units: int = 8
+    max_cells: int = 250_000
+    merge_penalty: float = 0.05
+    gap_penalty: float = 1.2
+    local_gap_penalty: float = 0.0
+    anchor_similarity: float = 0.85
+    operation_order: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        for field in ("max_span_size", "max_drift_units", "max_cells"):
+            _require_integer(getattr(self, field), field)
+        if self.max_span_size < 1 or self.max_span_size > 3 or self.max_drift_units < 0 or self.max_cells < 1:
+            raise QaModelValidationError("alignment limits are outside supported bounds")
+        for field in ("merge_penalty", "gap_penalty", "local_gap_penalty", "anchor_similarity"):
+            _require_finite_number(getattr(self, field), field)
+        if (
+            self.merge_penalty < 0
+            or self.gap_penalty < 0
+            or self.local_gap_penalty < 0
+            or not -1.0 <= self.anchor_similarity <= 1.0
+        ):
+            raise QaModelValidationError("alignment scores are outside supported bounds")
+        valid = {
+            f"{left}:{right}"
+            for left in range(1, self.max_span_size + 1)
+            for right in range(1, self.max_span_size + 1)
+        } | {"1:0", "0:1"}
+        if self.operation_order is None:
+            preferred = (
+                "1:1", "1:2", "2:1", "2:2", "1:3", "3:1",
+                "2:3", "3:2", "3:3", "1:0", "0:1",
+            )
+            object.__setattr__(
+                self, "operation_order", tuple(operation for operation in preferred if operation in valid)
+            )
+        if not isinstance(self.operation_order, tuple) or not self.operation_order:
+            raise QaModelValidationError("operation_order must be a nonempty tuple")
+        if len(set(self.operation_order)) != len(self.operation_order) or set(self.operation_order) != valid:
+            raise QaModelValidationError("operation_order must contain every supported operation once")
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedUnits:
+    """One document's ordered semantic units and defensive vector snapshot."""
+
+    document_id: str
+    units: tuple[SemanticUnit, ...]
+    vectors: np.ndarray
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.document_id, "document_id")
+        if not isinstance(self.units, tuple) or not self.units:
+            raise QaModelValidationError("units must be a nonempty tuple")
+        if not isinstance(self.vectors, np.ndarray):
+            raise QaModelValidationError("vectors must be an ndarray")
+        if self.vectors.dtype.kind in {"O", "b", "c"}:
+            raise QaModelValidationError("vectors must be real numeric data")
+        try:
+            vectors = np.array(self.vectors, dtype=np.float32, order="C", copy=True)
+        except (TypeError, ValueError, OverflowError):
+            raise QaModelValidationError("vectors cannot be converted to float32") from None
+        if vectors.ndim != 2 or vectors.shape[0] != len(self.units) or vectors.shape[1] < 1:
+            raise QaModelValidationError("vectors must have one nonempty row per unit")
+        if not np.isfinite(vectors).all():
+            raise QaModelValidationError("vectors must be finite")
+        norms = np.linalg.norm(vectors.astype(np.float64), axis=1)
+        if np.any(norms <= np.finfo(np.float32).eps):
+            raise QaModelValidationError("vectors must not contain zero or near-zero rows")
+        vectors = np.ascontiguousarray(vectors / norms[:, None], dtype=np.float32)
+        if not np.allclose(np.linalg.norm(vectors.astype(np.float64), axis=1), 1.0, atol=1e-5, rtol=1e-5):
+            raise QaModelValidationError("vectors must normalize to unit length")
+        seen: set[str] = set()
+        for expected_ordinal, unit in enumerate(self.units):
+            if not isinstance(unit, SemanticUnit):
+                raise QaModelValidationError("units entries must be SemanticUnit")
+            unit.validate()
+            if unit.document_id != self.document_id or unit.ordinal != expected_ordinal or unit.unit_id in seen:
+                raise QaModelValidationError("units must be unique, ordered, and from one document")
+            seen.add(unit.unit_id)
+        vectors.setflags(write=False)
+        object.__setattr__(self, "vectors", vectors)
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentSpan:
+    source_unit_ids: tuple[str, ...]
+    target_unit_ids: tuple[str, ...]
+    similarity: float
+    operation: str
+
+    def __post_init__(self) -> None:
+        for field in ("source_unit_ids", "target_unit_ids"):
+            ids = getattr(self, field)
+            if not isinstance(ids, tuple):
+                raise QaModelValidationError(f"{field} must be a tuple")
+            for unit_id in ids:
+                _require_nonempty_string(unit_id, field)
+        _require_finite_number(self.similarity, "similarity")
+        if not -1.0 <= self.similarity <= 1.0:
+            raise QaModelValidationError("similarity must be a cosine score")
+        source_size = len(self.source_unit_ids)
+        target_size = len(self.target_unit_ids)
+        if len(set(self.source_unit_ids)) != source_size or len(set(self.target_unit_ids)) != target_size:
+            raise QaModelValidationError("alignment span unit ids must be unique")
+        if source_size and target_size:
+            if source_size > 3 or target_size > 3:
+                raise QaModelValidationError("alignment match spans are limited to three units per side")
+        elif (source_size, target_size) not in {(1, 0), (0, 1)} or self.similarity != 0.0:
+            raise QaModelValidationError("alignment gaps must contain one unit and zero similarity")
+        expected = f"{source_size}:{target_size}"
+        if self.operation != expected or not (self.source_unit_ids or self.target_unit_ids):
+            raise QaModelValidationError("operation must match a nonempty span")
+
+
+@dataclass(frozen=True, slots=True)
+class GapCandidate:
+    candidate_id: str
+    side: str
+    source_unit_ids: tuple[str, ...]
+    target_unit_ids: tuple[str, ...]
+    left_anchor: AlignmentSpan | None
+    right_anchor: AlignmentSpan | None
+    repairable: bool
+    signals: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.candidate_id, "candidate_id")
+        if re.fullmatch(r"gap-[0-9a-f]{20}", self.candidate_id) is None:
+            raise QaModelValidationError("candidate_id must be a deterministic SHA-256 prefix")
+        if self.side not in {"source", "target"}:
+            raise QaModelValidationError("gap side must be source or target")
+        if not isinstance(self.source_unit_ids, tuple) or not isinstance(self.target_unit_ids, tuple):
+            raise QaModelValidationError("gap unit ids must be tuples")
+        if (self.side == "source") != (bool(self.source_unit_ids) and not self.target_unit_ids):
+            raise QaModelValidationError("gap side must name the unmatched content")
+        if (self.side == "target") != (bool(self.target_unit_ids) and not self.source_unit_ids):
+            raise QaModelValidationError("gap side must name the unmatched content")
+        for ids in (self.source_unit_ids, self.target_unit_ids):
+            for unit_id in ids:
+                _require_nonempty_string(unit_id, "gap unit id")
+            if len(set(ids)) != len(ids):
+                raise QaModelValidationError("gap unit ids must be unique")
+        if self.left_anchor is not None and not isinstance(self.left_anchor, AlignmentSpan):
+            raise QaModelValidationError("left_anchor must be an AlignmentSpan")
+        if self.right_anchor is not None and not isinstance(self.right_anchor, AlignmentSpan):
+            raise QaModelValidationError("right_anchor must be an AlignmentSpan")
+        for anchor in (self.left_anchor, self.right_anchor):
+            if anchor is not None and (not anchor.source_unit_ids or not anchor.target_unit_ids):
+                raise QaModelValidationError("gap anchors must be non-gap alignment spans")
+        if not isinstance(self.repairable, bool) or not isinstance(self.signals, tuple):
+            raise QaModelValidationError("gap repairability and signals have invalid types")
+        for signal in self.signals:
+            _require_nonempty_string(signal, "signal")
+        expected_signals = ("missing_in_target",) if self.side == "source" else ("addition",)
+        if self.signals != expected_signals:
+            raise QaModelValidationError("gap signals must describe the unmatched content side")
+        if self.repairable and (
+            self.side != "source" or self.left_anchor is None or self.right_anchor is None
+        ):
+            raise QaModelValidationError("repairable gaps require source content and two anchors")
+        source_groups = [set(self.source_unit_ids)]
+        target_groups = [set(self.target_unit_ids)]
+        for anchor in (self.left_anchor, self.right_anchor):
+            if anchor is not None:
+                source_groups.append(set(anchor.source_unit_ids))
+                target_groups.append(set(anchor.target_unit_ids))
+        if any(left & right for index, left in enumerate(source_groups) for right in source_groups[index + 1:]):
+            raise QaModelValidationError("source gap and anchors must not overlap")
+        if any(left & right for index, left in enumerate(target_groups) for right in target_groups[index + 1:]):
+            raise QaModelValidationError("target gap and anchors must not overlap")
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentResult:
+    spans: tuple[AlignmentSpan, ...]
+    gaps: tuple[GapCandidate, ...]
+    visited_cells: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.spans, tuple) or not self.spans or not isinstance(self.gaps, tuple):
+            raise QaModelValidationError("alignment results must use tuples")
+        if not all(isinstance(span, AlignmentSpan) for span in self.spans) or not all(isinstance(gap, GapCandidate) for gap in self.gaps):
+            raise QaModelValidationError("alignment results contain invalid entries")
+        _require_integer(self.visited_cells, "visited_cells")
+        if self.visited_cells < 1:
+            raise QaModelValidationError("visited_cells must be positive")
+
+        seen_source_ids: set[str] = set()
+        seen_target_ids: set[str] = set()
+        gap_groups: list[tuple[int, int]] = []
+        index = 0
+        while index < len(self.spans):
+            span = self.spans[index]
+            if seen_source_ids.intersection(span.source_unit_ids) or seen_target_ids.intersection(
+                span.target_unit_ids
+            ):
+                raise QaModelValidationError("alignment spans must not repeat unit ids")
+            seen_source_ids.update(span.source_unit_ids)
+            seen_target_ids.update(span.target_unit_ids)
+            if span.source_unit_ids and span.target_unit_ids:
+                index += 1
+                continue
+            side_shape = (bool(span.source_unit_ids), bool(span.target_unit_ids))
+            end = index + 1
+            while end < len(self.spans):
+                following = self.spans[end]
+                if (bool(following.source_unit_ids), bool(following.target_unit_ids)) != side_shape:
+                    break
+                if seen_source_ids.intersection(following.source_unit_ids) or seen_target_ids.intersection(
+                    following.target_unit_ids
+                ):
+                    raise QaModelValidationError("alignment spans must not repeat unit ids")
+                seen_source_ids.update(following.source_unit_ids)
+                seen_target_ids.update(following.target_unit_ids)
+                end += 1
+            gap_groups.append((index, end))
+            index = end
+
+        if len(gap_groups) != len(self.gaps):
+            raise QaModelValidationError("alignment gaps must cover every consecutive gap group")
+        if len({gap.candidate_id for gap in self.gaps}) != len(self.gaps):
+            raise QaModelValidationError("alignment candidate ids must be unique")
+        for candidate, (start, end) in zip(self.gaps, gap_groups, strict=True):
+            group = self.spans[start:end]
+            source_ids = tuple(unit_id for span in group for unit_id in span.source_unit_ids)
+            target_ids = tuple(unit_id for span in group for unit_id in span.target_unit_ids)
+            side = "source" if source_ids else "target"
+            if (
+                candidate.side != side
+                or candidate.source_unit_ids != source_ids
+                or candidate.target_unit_ids != target_ids
+            ):
+                raise QaModelValidationError("alignment candidate does not match its gap group")
+            immediate_left = self.spans[start - 1] if start else None
+            immediate_right = self.spans[end] if end < len(self.spans) else None
+            if candidate.left_anchor is not None and candidate.left_anchor != immediate_left:
+                raise QaModelValidationError("left anchor must immediately precede its gap")
+            if candidate.right_anchor is not None and candidate.right_anchor != immediate_right:
+                raise QaModelValidationError("right anchor must immediately follow its gap")

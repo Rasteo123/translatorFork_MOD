@@ -1,0 +1,18 @@
+{
+  "one_to_one": {"source": [[1, 0]], "target": [[1, 0]]},
+  "source_split_in_translation": {"source": [[1, 0]], "target": [[1, 0], [1, 0]]},
+  "one_to_three": {"source": [[1, 1, 1]], "target": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]},
+  "source_merge_in_translation": {"source": [[1, 0], [1, 0]], "target": [[1, 0]]},
+  "two_to_two": {"source": [[1, 0], [0, 1]], "target": [[1, 1], [1, 1]]},
+  "two_to_three": {"source": [[1, 0, 0], [0, 1, 0]], "target": [[0, 1, 0], [0, 0, 1], [1, 0, 0]]},
+  "three_to_one": {"source": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "target": [[1, 1, 1]]},
+  "three_to_two": {"source": [[0, 1, 0], [0, 0, 1], [1, 0, 0]], "target": [[1, 0, 0], [0, 1, 0]]},
+  "three_to_three_reordering": {"source": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "target": [[0, 0, 1], [1, 0, 0], [0, 1, 0]]},
+  "local_reordering": {"source": [[1, 0], [0, 1]], "target": [[0, 1], [1, 0]]},
+  "missing_middle": {"source": [[1, 0], [0, 1], [1, 1]], "target": [[1, 0], [1, 1]]},
+  "missing_first": {"source": [[1, 0], [0, 1]], "target": [[0, 1]]},
+  "missing_last": {"source": [[1, 0], [0, 1]], "target": [[1, 0]]},
+  "target_addition_middle": {"source": [[1, 0, 0], [0, 0, 1]], "target": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]},
+  "two_missing_middle": {"source": [[1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1]], "target": [[1, 0, 0], [0, 0, 1]]},
+  "missing_middle_low_right_anchor": {"source": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "target": [[1, 0, 0], [0.6, 0, 0.8]]}
+}
