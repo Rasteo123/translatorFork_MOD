@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,6 +15,8 @@ from gemini_translator.qa.embeddings import (
     FallbackEmbeddingProvider,
     validate_and_normalize_batch,
 )
+from gemini_translator.qa.embeddings import base as embedding_base
+from gemini_translator.qa.embeddings import factory as embedding_factory
 
 
 def _request(*texts: str, model: str = "embedding-v1", dimensions: int | None = None):
@@ -101,6 +104,22 @@ def test_batch_requires_explicit_ndarray_and_valid_metadata():
             EmbeddingBatch(**values)
 
 
+@pytest.mark.parametrize(
+    ("vectors", "dimensions"),
+    [
+        (np.array([1.0, 0.0]), 2),
+        (np.empty((0, 2)), 2),
+        (np.empty((1, 0)), 1),
+        (np.ones((2, 3)), 2),
+        (np.array([[1, 2], [3]], dtype=object), 2),
+    ],
+)
+def test_batch_rejects_malformed_matrix_shape_before_validation(vectors, dimensions):
+    """Accepting malformed matrices defers adapter bugs past the batch boundary."""
+    with pytest.raises(EmbeddingContractError):
+        EmbeddingBatch(vectors=vectors, provider="fake", model="m", dimensions=dimensions)
+
+
 def test_validation_returns_immutable_normalized_float32_copy_without_mutating_input():
     """Returning a view or skipping normalization would leak mutable, non-unit vectors."""
     provider_vectors = np.asfortranarray(np.array([[3.0, 4.0], [0.0, 2.0]], dtype=np.float64))
@@ -130,7 +149,6 @@ def test_validation_returns_immutable_normalized_float32_copy_without_mutating_i
         np.zeros((2, 2)),
         np.array([[True, False], [False, True]]),
         np.array([[1 + 0j, 0j], [0j, 1 + 0j]]),
-        np.array([[1, 2], [3]], dtype=object),
         np.array([["3.0", "4.0"], ["0.0", "2.0"]], dtype="U"),
         np.array([[np.finfo(np.float64).max, np.finfo(np.float64).max]], dtype=np.float64),
     ],
@@ -148,7 +166,7 @@ def test_validation_rejects_invalid_batches_and_accepts_coercible_numeric_arrays
         validate_and_normalize_batch(batch, expected_rows=2)
 
 
-@pytest.mark.parametrize("expected_rows", [-1, True, 1.5])
+@pytest.mark.parametrize("expected_rows", [-1, 0, True, 1.5])
 def test_validation_rejects_invalid_expected_row_count(expected_rows):
     """Accepting invalid row expectations weakens the adapter output boundary."""
     with pytest.raises(EmbeddingContractError):
@@ -186,10 +204,10 @@ def test_fallback_skips_invalid_batches_and_model_or_dimension_mismatches():
     request = _request("one", "two", dimensions=2)
     invalid = _Provider("invalid", _batch(np.ones((1, 2)), provider="invalid", dimensions=2))
     wrong_model = _Provider(
-        "wrong-model", _batch(np.ones((2, 2)), provider="wrong-model", model="other", dimensions=2)
+        "wrong_model", _batch(np.ones((2, 2)), provider="wrong_model", model="other", dimensions=2)
     )
     wrong_dimensions = _Provider(
-        "wrong-dimensions", _batch(np.ones((2, 3)), provider="wrong-dimensions", dimensions=3)
+        "wrong_dimensions", _batch(np.ones((2, 3)), provider="wrong_dimensions", dimensions=3)
     )
     valid = _Provider(
         "valid", _batch(np.array([[1.0, 0.0], [0.0, 1.0]]), provider="valid", dimensions=2)
@@ -230,6 +248,27 @@ def test_fallback_records_sanitized_immutable_attempts_when_all_providers_fail()
     assert invalid.calls == unavailable.calls == malformed.calls == 1
 
 
+def test_unavailable_error_defensively_sanitizes_and_freezes_attempt_records():
+    """Keeping caller-provided attempt strings would expose secrets in degraded-mode reporting."""
+    secret = "api-key=SECRET"
+    error = EmbeddingUnavailableError(
+        [
+            embedding_factory.EmbeddingAttempt(
+                provider=secret,
+                error_type=secret,
+                message=secret,
+            )
+        ]
+    )
+
+    assert isinstance(error.attempts, tuple)
+    assert secret not in repr(error)
+    assert secret not in repr(error.attempts)
+    assert secret not in str(error)
+    with pytest.raises((AttributeError, FrozenInstanceError)):
+        error.attempts = ()
+
+
 def test_fallback_propagates_cancellation_without_trying_the_next_provider():
     """Swallowing cancellation prevents callers from stopping quality analysis promptly."""
     cancelled = _Provider("cancelled", asyncio.CancelledError())
@@ -242,6 +281,19 @@ def test_fallback_propagates_cancellation_without_trying_the_next_provider():
     assert later.calls == 0
 
 
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(2)])
+def test_fallback_propagates_process_interrupts_without_trying_the_next_provider(interruption):
+    """Catching process interrupts would prevent a caller from stopping the application."""
+    interrupted = _Provider("interrupted", interruption)
+    later = _Provider("later", _batch(np.ones((1, 2)), dimensions=2))
+
+    with pytest.raises(type(interruption)):
+        asyncio.run(FallbackEmbeddingProvider((interrupted, later)).embed(_request("one", dimensions=2)))
+
+    assert interrupted.calls == 1
+    assert later.calls == 0
+
+
 def test_fallback_requires_unique_named_providers():
     """Ambiguous provider identities make failure reports and fallback selection unreliable."""
     provider = _Provider("same", _batch(np.ones((1, 2)), dimensions=2))
@@ -249,3 +301,52 @@ def test_fallback_requires_unique_named_providers():
     for providers in ((), (provider, provider), (_Provider(" ", provider._outcome),)):
         with pytest.raises(EmbeddingContractError):
             FallbackEmbeddingProvider(providers)
+
+
+def test_fallback_accepts_canonical_provider_names_and_rejects_secret_bearing_names():
+    """Provider names must be safe report identifiers, not URLs, keys, or free-form labels."""
+    gemini = _Provider("gemini", _batch(np.ones((1, 2)), dimensions=2))
+    openai = _Provider("openai_compatible", _batch(np.ones((1, 2)), dimensions=2))
+
+    FallbackEmbeddingProvider((gemini, openai))
+    with pytest.raises(EmbeddingContractError):
+        FallbackEmbeddingProvider((gemini, _Provider("gemini", openai._outcome)))
+
+    for unsafe_name in (
+        "api-key=SECRET",
+        "https://embeddings.example.test/v1?key=SECRET",
+        "openai_compatible?token=SECRET",
+    ):
+        with pytest.raises(EmbeddingContractError) as captured:
+            FallbackEmbeddingProvider((_Provider(unsafe_name, gemini._outcome),))
+
+        assert unsafe_name not in str(captured.value)
+        assert unsafe_name not in repr(captured.value)
+
+
+def test_fallback_attempts_keep_the_constructor_validated_provider_identity():
+    """Reading a mutable provider name during failure handling could leak a later secret value."""
+    secret = "https://embeddings.example.test/v1?key=SECRET"
+    provider = _Provider("gemini", RuntimeError("failed"))
+    fallback = FallbackEmbeddingProvider((provider,))
+    provider.name = secret
+
+    with pytest.raises(EmbeddingUnavailableError) as captured:
+        asyncio.run(fallback.embed(_request("one", dimensions=2)))
+
+    assert captured.value.attempts[0].provider == "gemini"
+    assert secret not in str(captured.value)
+    assert secret not in repr(captured.value)
+    assert secret not in repr(captured.value.attempts)
+
+
+def test_embedding_contract_boundary_has_no_qt_or_translation_engine_imports():
+    """A UI or translation-engine dependency would make offline QA contracts unsafe to import."""
+    source = "\n".join(
+        Path(module.__file__).read_text(encoding="utf-8")
+        for module in (embedding_base, embedding_factory)
+    )
+
+    assert "PyQt" not in source
+    assert "TranslationEngine" not in source
+    assert "UniversalWorker" not in source

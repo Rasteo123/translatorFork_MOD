@@ -69,6 +69,12 @@ class EmbeddingBatch:
         object.__setattr__(self, "provider", _nonempty_string(self.provider, "provider"))
         object.__setattr__(self, "model", _nonempty_string(self.model, "model"))
         _positive_int(self.dimensions, "dimensions")
+        if self.vectors.dtype.kind == "O":
+            raise EmbeddingContractError("vectors must not use object dtype")
+        if self.vectors.ndim != 2 or self.vectors.shape[0] <= 0 or self.vectors.shape[1] <= 0:
+            raise EmbeddingContractError("vectors must be a nonempty two-dimensional matrix")
+        if self.vectors.shape[1] != self.dimensions:
+            raise EmbeddingContractError("vectors columns must match dimensions")
 
 
 class EmbeddingProvider(Protocol):
@@ -88,8 +94,8 @@ def validate_and_normalize_batch(batch: EmbeddingBatch, expected_rows: int) -> E
     """Copy, validate, and L2-normalize a provider batch without mutating its array."""
     if not isinstance(batch, EmbeddingBatch):
         raise _invalid_batch("embedding batch must be an EmbeddingBatch")
-    if isinstance(expected_rows, bool) or not isinstance(expected_rows, int) or expected_rows < 0:
-        raise _invalid_batch("expected_rows must be a nonnegative integer")
+    if isinstance(expected_rows, bool) or not isinstance(expected_rows, int) or expected_rows <= 0:
+        raise _invalid_batch("expected_rows must be a positive integer")
     if not isinstance(batch.vectors, np.ndarray):
         raise _invalid_batch("embedding vectors must be an ndarray")
     if batch.vectors.dtype.kind in {"O", "b", "c"}:
