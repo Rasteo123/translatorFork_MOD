@@ -98,6 +98,10 @@ class TranslationProjectManager:
         """Return the directory reserved for reversible QA history backups."""
         return Path(self.project_folder) / 'translation_qa_backups'
 
+    def get_translation_qa_embedding_cache_dir(self) -> Path:
+        """Return the dedicated disposable semantic-embedding cache directory."""
+        return Path(self.project_folder) / 'translation_qa_embedding_cache'
+
     def _load(self):
         _flush_pending_for_map(self.map_file_path, exclude=self)
         with self.lock:
