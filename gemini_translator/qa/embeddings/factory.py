@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import math
 import re
 from typing import Iterable
 
@@ -28,6 +29,129 @@ _SAFE_ERROR_TYPES = frozenset(
         "OSError",
     }
 )
+
+
+class EmbeddingHttpError(RuntimeError):
+    """A secret-safe HTTP failure reported by an online embedding adapter."""
+
+    def __init__(self, status: int, provider: str, retryable: bool) -> None:
+        self.status = status
+        self.provider = _provider_name_or_error(provider)
+        self.retryable = bool(retryable)
+        super().__init__(f"embedding HTTP request failed (status={status}, retryable={self.retryable})")
+
+
+class EmbeddingTransportError(RuntimeError):
+    """A secret-safe retryable transport failure reported by an online adapter."""
+
+    def __init__(self, provider: str) -> None:
+        self.provider = _provider_name_or_error(provider)
+        self.retryable = True
+        super().__init__("embedding transport request failed")
+
+
+class EmbeddingResponseError(RuntimeError):
+    """A secret-safe malformed JSON or schema failure from an online adapter."""
+
+    def __init__(self, provider: str) -> None:
+        self.provider = _provider_name_or_error(provider)
+        self.retryable = False
+        super().__init__("embedding provider returned an invalid response")
+
+
+class UnsupportedEmbeddingProvider(EmbeddingContractError):
+    """Raised when a provider kind cannot be instantiated."""
+
+    def __init__(self) -> None:
+        super().__init__("unsupported embedding provider")
+
+
+def _optional_config_string(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise EmbeddingContractError(f"{field_name} must be a nonempty string when configured")
+    return value.strip()
+
+
+def _positive_finite_timeout(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
+    return timeout
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingProviderConfig:
+    """Explicit, translation-worker-independent online embedding configuration.
+
+    ``session_factory`` is deliberately supplied to the factory rather than stored
+    here.  An ``auto`` configuration uses the ordered concrete entries in
+    ``providers``; no provider is inferred from translation-worker settings.
+    """
+
+    kind: str
+    api_key: str = field(default="", repr=False)
+    base_url: str | None = None
+    model: str | None = None
+    timeout_seconds: float = 30.0
+    providers: tuple["EmbeddingProviderConfig", ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, str) or self.kind not in {
+            "gemini",
+            "openai_compatible",
+            "auto",
+        }:
+            raise UnsupportedEmbeddingProvider()
+        if not isinstance(self.api_key, str):
+            raise EmbeddingContractError("api_key must be a string")
+        object.__setattr__(self, "api_key", self.api_key.strip())
+        object.__setattr__(self, "base_url", _optional_config_string(self.base_url, "base_url"))
+        object.__setattr__(self, "model", _optional_config_string(self.model, "model"))
+        object.__setattr__(self, "timeout_seconds", _positive_finite_timeout(self.timeout_seconds))
+        if not isinstance(self.providers, tuple):
+            raise EmbeddingContractError("providers must be a tuple")
+        if any(not isinstance(provider, EmbeddingProviderConfig) for provider in self.providers):
+            raise EmbeddingContractError("providers must contain embedding provider configurations")
+        if any(provider.kind == "auto" for provider in self.providers):
+            raise EmbeddingContractError("auto configurations cannot contain nested auto configurations")
+        if self.kind != "auto" and self.providers:
+            raise EmbeddingContractError("only auto configurations can contain providers")
+        if self.kind == "openai_compatible" and self.base_url is None:
+            raise EmbeddingContractError("openai-compatible provider requires a base URL")
+        if self.kind == "auto" and (self.api_key or self.base_url is not None or self.model is not None):
+            raise EmbeddingContractError("auto provider configuration must use explicit subconfigurations")
+
+
+def create_embedding_provider(
+    config: EmbeddingProviderConfig,
+    session_factory,
+) -> EmbeddingProvider:
+    """Instantiate an explicit online adapter without importing translation code."""
+    if not isinstance(config, EmbeddingProviderConfig):
+        raise EmbeddingContractError("config must be an EmbeddingProviderConfig")
+    if not callable(session_factory):
+        raise EmbeddingContractError("session_factory must be callable")
+
+    if config.kind == "gemini":
+        from .gemini import GeminiEmbeddingProvider
+
+        return GeminiEmbeddingProvider(config.api_key, session_factory, config.timeout_seconds)
+    if config.kind == "openai_compatible":
+        from .openai_compatible import OpenAICompatibleEmbeddingProvider
+
+        return OpenAICompatibleEmbeddingProvider(
+            config.base_url or "", config.api_key, session_factory, config.timeout_seconds
+        )
+    if config.kind == "auto":
+        concrete = tuple(create_embedding_provider(item, session_factory) for item in config.providers)
+        if not concrete:
+            raise EmbeddingUnavailableError(())
+        return FallbackEmbeddingProvider(concrete)
+    raise UnsupportedEmbeddingProvider()
 
 
 def _public_provider_name(value: object) -> str:

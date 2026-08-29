@@ -7,15 +7,31 @@ from .base import (
     EmbeddingRequest,
     validate_and_normalize_batch,
 )
-from .factory import EmbeddingAttempt, EmbeddingUnavailableError, FallbackEmbeddingProvider
+from .factory import (
+    EmbeddingAttempt,
+    EmbeddingHttpError,
+    EmbeddingProviderConfig,
+    EmbeddingResponseError,
+    EmbeddingTransportError,
+    EmbeddingUnavailableError,
+    FallbackEmbeddingProvider,
+    UnsupportedEmbeddingProvider,
+    create_embedding_provider,
+)
 
 __all__ = (
     "EmbeddingAttempt",
     "EmbeddingBatch",
     "EmbeddingContractError",
+    "EmbeddingHttpError",
     "EmbeddingProvider",
+    "EmbeddingProviderConfig",
     "EmbeddingRequest",
+    "EmbeddingResponseError",
+    "EmbeddingTransportError",
     "EmbeddingUnavailableError",
     "FallbackEmbeddingProvider",
+    "UnsupportedEmbeddingProvider",
+    "create_embedding_provider",
     "validate_and_normalize_batch",
 )
