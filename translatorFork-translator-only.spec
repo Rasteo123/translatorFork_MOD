@@ -8,6 +8,10 @@ from PyInstaller.utils.hooks import collect_data_files
 
 _BUILD_CONFIG = runpy.run_path(str(Path(SPECPATH) / "pyinstaller_config.py"))
 LAZY_HANDLER_HIDDEN_IMPORTS = _BUILD_CONFIG["LAZY_HANDLER_HIDDEN_IMPORTS"]
+QA_RUNTIME_HIDDEN_IMPORTS = [
+    "gemini_translator.qa.book_metrics",
+    "razdel",
+]
 
 
 PROJECT_ROOT = Path.cwd().resolve()
@@ -39,6 +43,7 @@ a = Analysis(
         'google.genai',
         'google.genai.types',
         *LAZY_HANDLER_HIDDEN_IMPORTS,
+        *QA_RUNTIME_HIDDEN_IMPORTS,
     ],
     hookspath=[],
     hooksconfig={},
