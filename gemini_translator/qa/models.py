@@ -110,8 +110,8 @@ class SemanticInlineSpan:
             _require_integer(getattr(self, field_name), field_name)
         if self.source_start < 0 or self.unit_start < 0:
             raise QaModelValidationError("semantic inline span offsets must be non-negative")
-        if self.source_start > self.source_end or self.unit_start > self.unit_end:
-            raise QaModelValidationError("semantic inline span ranges must be ordered")
+        if self.source_start >= self.source_end or self.unit_start >= self.unit_end:
+            raise QaModelValidationError("semantic inline span ranges must be nonempty and ordered")
         if self.source_end - self.source_start != self.unit_end - self.unit_start:
             raise QaModelValidationError("semantic inline span ranges must have equal lengths")
 
@@ -158,10 +158,14 @@ class SemanticUnit:
 
         expected_source_start = self.source_start
         expected_unit_start = 0
+        seen_inline_ids: set[str] = set()
         for span in self.inline_spans:
             if not isinstance(span, SemanticInlineSpan):
                 raise QaModelValidationError("inline_spans entries must be SemanticInlineSpan")
             span.validate()
+            if span.inline_id in seen_inline_ids:
+                raise QaModelValidationError("inline spans must not repeat an inline_id")
+            seen_inline_ids.add(span.inline_id)
             if (
                 span.source_start < self.source_start
                 or span.source_end > self.source_end

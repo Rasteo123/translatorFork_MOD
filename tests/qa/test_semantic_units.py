@@ -299,6 +299,7 @@ def test_windows_reject_duplicate_ids_and_ordinals_within_a_document(units, erro
         lambda: SemanticInlineSpan("", 0, 1, 0, 1),
         lambda: SemanticInlineSpan("i", True, 1, 0, 1),
         lambda: SemanticInlineSpan("i", 2, 1, 0, 1),
+        lambda: SemanticInlineSpan("i", 1, 1, 0, 0),
         lambda: SemanticInlineSpan("i", 0, 2, 0, 1),
         lambda: SemanticUnit(
             unit_id="",
@@ -342,6 +343,26 @@ def test_semantic_models_reject_empty_or_invalid_typed_ranges(factory):
     """Relaxing immutable model checks would persist unusable structural repair maps."""
     with pytest.raises(QaModelValidationError):
         factory()
+
+
+def test_semantic_unit_rejects_adjacent_spans_with_the_same_inline_id():
+    """One producer text leaf may contribute at most one repair span per unit."""
+    with pytest.raises(QaModelValidationError, match="inline_id"):
+        SemanticUnit(
+            unit_id="u",
+            document_id="doc",
+            block_id="b",
+            ordinal=0,
+            text="Hello",
+            normalized_text="hello",
+            source_start=0,
+            source_end=5,
+            kind="paragraph",
+            inline_spans=(
+                _span("i-shared", 0, 2, 0, 2),
+                _span("i-shared", 2, 5, 2, 5),
+            ),
+        )
 
 
 def test_semantic_window_rejects_empty_or_duplicate_unit_ids():
