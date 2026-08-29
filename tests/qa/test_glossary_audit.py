@@ -156,8 +156,7 @@ def test_different_token_counts_are_ambiguous_not_high_confidence():
         ]
     )
 
-    assert frame.loc[frame["observed_translation"] == "Зал Духов", "morphology_confidence"].iloc[0] == "high"
-    assert frame.loc[frame["observed_translation"] == "Храм Боевых Душ", "morphology_confidence"].iloc[0] == "ambiguous"
+    assert set(frame["morphology_confidence"]) == {"ambiguous"}
     assert not GlossaryAuditor(morphology=FakeMorphology()).conflicts(frame)["high_confidence"].any()
 
 
@@ -177,6 +176,30 @@ def test_exact_untranslated_term_with_unavailable_morphology_needs_confirmation(
     assert list(conflicts["minority_translation"]) == ["Soul Hall"]
     assert list(conflicts["high_confidence"]) == [False]
     assert list(conflicts["requires_llm_confirmation"]) == [True]
+
+
+def test_reliably_different_canonical_family_is_high_confidence_but_llm_gated():
+    """Making a confirmed distinct family unreachable loses useful QA severity."""
+    auditor = GlossaryAuditor(morphology=FakeMorphology())
+    conflicts = auditor.conflicts_from_observations(
+        [
+            observation(
+                "武魂殿",
+                "Храм Духов",
+                canonical_translation="Зал Духов",
+            )
+        ]
+    )
+    allowed = auditor.conflicts_from_observations(
+        [
+            observation("武魂殿", "Зал Духов", canonical_translation="Зал Духов"),
+            observation("武魂殿", "Зала Духов", canonical_translation="Зал Духов"),
+        ]
+    )
+
+    assert list(conflicts["high_confidence"]) == [True]
+    assert list(conflicts["requires_llm_confirmation"]) == [True]
+    assert allowed.empty
 
 
 def test_mixed_token_counts_preserve_compatible_family_and_are_order_independent():
@@ -209,6 +232,64 @@ def test_mixed_token_counts_preserve_compatible_family_and_are_order_independent
     assert list(conflicts["requires_llm_confirmation"]) == [True]
     assert frame.sort_values("chapter_id")["morphology_family"].tolist() == reversed_frame.sort_values("chapter_id")["morphology_family"].tolist()
     assert conflicts.equals(reversed_conflicts)
+
+
+def test_canonical_family_is_not_downgraded_by_a_heavier_wrong_token_count():
+    """Frequency must not choose which token length is morphologically reliable."""
+    observations = [
+        observation(
+            "武魂殿",
+            "Зал Духов",
+            canonical_translation="Зал Духов",
+            chapter="1",
+        ),
+        observation(
+            "武魂殿",
+            "Зала Духов",
+            canonical_translation="Зал Духов",
+            chapter="2",
+        ),
+        observation(
+            "武魂殿",
+            "Залом Духов",
+            canonical_translation="Зал Духов",
+            chapter="3",
+        ),
+        observation(
+            "武魂殿",
+            "Храм Боевых Душ",
+            canonical_translation="Зал Духов",
+            chapter="4",
+            occurrences=10,
+        ),
+    ]
+    frame = GlossaryAuditor(morphology=FakeMorphology()).observations_frame(observations)
+    conflicts = GlossaryAuditor(morphology=FakeMorphology()).conflicts(frame)
+
+    canonical_family = frame[frame["observed_translation"].isin(["Зал Духов", "Зала Духов", "Залом Духов"])]
+    wrong = frame[frame["observed_translation"] == "Храм Боевых Душ"].iloc[0]
+    assert canonical_family["morphology_family"].nunique() == 1
+    assert set(canonical_family["morphology_confidence"]) == {"high"}
+    assert wrong.morphology_confidence == "ambiguous"
+    assert list(conflicts["minority_occurrences"]) == [10]
+    assert list(conflicts["high_confidence"]) == [False]
+
+
+def test_surface_forms_and_conflict_representatives_are_permutation_independent():
+    """Using encounter order would make reports flicker between otherwise equal runs."""
+    observations = [
+        observation("武魂殿", "«Храм Духов»", canonical_translation="Зал Духов"),
+        observation("武魂殿", "храм духов", canonical_translation="Зал Духов"),
+        observation("武魂殿", "Зал Духов", canonical_translation="Зал Духов"),
+    ]
+    auditor = GlossaryAuditor(morphology=FakeMorphology())
+
+    first = auditor.conflicts_from_observations(observations)
+    second = auditor.conflicts_from_observations(reversed(observations))
+
+    assert first.equals(second)
+    assert first.iloc[0].surface_forms == ("«Храм Духов»", "храм духов")
+    assert first.iloc[0].minority_translation == "«Храм Духов»"
 
 
 def test_normalization_preserves_surface_but_unifies_case_quotes_spaces_and_yo():

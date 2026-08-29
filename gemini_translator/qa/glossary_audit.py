@@ -213,7 +213,7 @@ class GlossaryAuditor:
             high_confidence = bool(
                 (family_rows["morphology_confidence"] == "high").all()
                 and canonical_confidence == "high"
-                and _same_morphology_family(
+                and _confirmed_different_morphology(
                     family_rows["morphology_signature"].iloc[0], canonical_signature
                 )
             )
@@ -228,7 +228,7 @@ class GlossaryAuditor:
                     "surface_forms": candidate["surface_forms"],
                     "policy": policy.value,
                     "high_confidence": high_confidence,
-                    "requires_llm_confirmation": not high_confidence,
+                    "requires_llm_confirmation": True,
                 }
             )
         return rows
@@ -246,12 +246,6 @@ class GlossaryAuditor:
         dominant = ranked.iloc[0]
         rows: list[dict[str, Any]] = []
         for minority in ranked.iloc[1:].to_dict("records"):
-            family_rows = term_frame[
-                term_frame["morphology_family"] == minority["morphology_family"]
-            ]
-            dominant_rows = term_frame[
-                term_frame["morphology_family"] == dominant.morphology_family
-            ]
             rows.append(
                 {
                     "original_term": term_frame["original_term"].iloc[0],
@@ -262,10 +256,7 @@ class GlossaryAuditor:
                     "minority_occurrences": int(minority["occurrences"]),
                     "surface_forms": minority["surface_forms"],
                     "policy": policy.value,
-                    "high_confidence": bool(
-                        (dominant_rows["morphology_confidence"] == "high").all()
-                        and (family_rows["morphology_confidence"] == "high").all()
-                    ),
+                    "high_confidence": False,
                     "requires_llm_confirmation": True,
                 }
             )
@@ -304,17 +295,18 @@ class GlossaryAuditor:
                 (row for row in term_rows if row["morphology_confidence"] == "high"),
                 key=lambda row: row["normalized_translation"],
             )
-            token_counts = {
-                len(row["morphology_signature"]): 0 for row in high_rows
-            }
-            for row in high_rows:
-                token_counts[len(row["morphology_signature"])] += row["occurrences"]
-            if len(token_counts) > 1:
-                reliable_count = min(
-                    count
-                    for count, weight in token_counts.items()
-                    if weight == max(token_counts.values())
+            canonical = _first_non_null(
+                pd.Series(row["canonical_translation"] for row in term_rows)
+            )
+            canonical_signature: tuple[str, ...] = ()
+            canonical_confidence = "ambiguous"
+            if canonical is not None:
+                canonical_signature, canonical_confidence = self._signature(
+                    _normalize(canonical)
                 )
+            token_counts = {len(row["morphology_signature"]) for row in high_rows}
+            if canonical_confidence == "high":
+                reliable_count = len(canonical_signature)
                 for row in high_rows:
                     if len(row["morphology_signature"]) != reliable_count:
                         row["morphology_confidence"] = "ambiguous"
@@ -322,6 +314,11 @@ class GlossaryAuditor:
                 high_rows = [
                     row for row in high_rows if row["morphology_confidence"] == "high"
                 ]
+            elif len(token_counts) > 1:
+                for row in high_rows:
+                    row["morphology_confidence"] = "ambiguous"
+                    row["morphology_signature"] = ()
+                high_rows = []
             families: list[dict[str, Any]] = []
             for row in high_rows:
                 matching = next(
@@ -412,7 +409,7 @@ def _normalize(value: str) -> str:
 
 
 def _ordered_unique(values: pd.Series) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(values.tolist()))
+    return tuple(sorted(set(values.tolist()), key=lambda value: (_normalize(value), value)))
 
 
 def _first_non_null(values: pd.Series) -> str | None:
@@ -436,6 +433,15 @@ def _same_morphology_family(
 ) -> bool:
     return bool(left) and len(left) == len(right) and all(
         bool(set(left_forms.split("|")) & set(right_forms.split("|")))
+        for left_forms, right_forms in zip(left, right, strict=True)
+    )
+
+
+def _confirmed_different_morphology(
+    left: tuple[str, ...], right: tuple[str, ...]
+) -> bool:
+    return bool(left) and len(left) == len(right) and any(
+        not (set(left_forms.split("|")) & set(right_forms.split("|")))
         for left_forms, right_forms in zip(left, right, strict=True)
     )
 
