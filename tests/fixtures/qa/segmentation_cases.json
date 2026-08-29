@@ -1,0 +1,155 @@
+{
+  "cases": [
+    {
+      "name": "cjk_terminal_punctuation",
+      "language": "zh-CN",
+      "payload": {
+        "document_id": "chapter-cjk",
+        "blocks": [
+          {
+            "id": "b-cjk",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-cjk", "type": "text", "text": "第一句。第二句！第三句？"}
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {"block_id": "b-cjk", "text": "第一句。"},
+        {"block_id": "b-cjk", "text": "第二句！"},
+        {"block_id": "b-cjk", "text": "第三句？"}
+      ]
+    },
+    {
+      "name": "russian_dialogue_abbreviation_and_ellipsis",
+      "language": "ru",
+      "payload": {
+        "document_id": "chapter-ru-dialogue",
+        "blocks": [
+          {
+            "id": "b-dialogue",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-dialogue", "type": "text", "text": "— Проф. Ли здесь?.. — Да, — ответил он."}
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {"block_id": "b-dialogue", "text": "— Проф. Ли здесь?.."},
+        {"block_id": "b-dialogue", "text": "— Да, — ответил он."}
+      ]
+    },
+    {
+      "name": "russian_initials_and_ellipsis",
+      "language": "ru",
+      "payload": {
+        "document_id": "chapter-ru-initials",
+        "blocks": [
+          {
+            "id": "b-initials",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-initials", "type": "text", "text": "А. С. Пушкин думал… Потом ответил."}
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {"block_id": "b-initials", "text": "А. С. Пушкин думал…"},
+        {"block_id": "b-initials", "text": "Потом ответил."}
+      ]
+    },
+    {
+      "name": "inline_markup_stays_one_sentence",
+      "language": "ru",
+      "payload": {
+        "document_id": "chapter-inline",
+        "blocks": [
+          {
+            "id": "b-inline",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-inline-1", "type": "text", "text": "Он сказал: «Я "},
+              {
+                "id": "i-inline-em", "type": "element", "tag": "em", "role": null,
+                "children": [
+                  {"id": "i-inline-2", "type": "text", "text": "вернусь"}
+                ]
+              },
+              {"id": "i-inline-3", "type": "text", "text": "»."}
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {"block_id": "b-inline", "text": "Он сказал: «Я вернусь»."}
+      ]
+    },
+    {
+      "name": "empty_and_service_fragments_are_ignored",
+      "language": "en",
+      "payload": {
+        "document_id": "chapter-service",
+        "blocks": [
+          {
+            "id": "b-empty",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-empty", "type": "text", "text": "   "},
+              {"id": "i-comment", "type": "comment", "text": "not visible"},
+              {"id": "i-break", "type": "break", "tag": "br"},
+              {"id": "i-image", "type": "opaque", "tag": "img"}
+            ]
+          },
+          {
+            "id": "b-visible",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-visible", "type": "text", "text": "Visible text."}
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {"block_id": "b-visible", "text": "Visible text."}
+      ]
+    },
+    {
+      "name": "duplicate_sentences_keep_distinct_blocks",
+      "language": "en",
+      "payload": {
+        "document_id": "chapter-duplicates",
+        "blocks": [
+          {
+            "id": "b-duplicate-1",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-duplicate-1", "type": "text", "text": "The bell rang."}
+            ]
+          },
+          {
+            "id": "b-duplicate-2",
+            "tag": "p",
+            "role": "paragraph",
+            "inlines": [
+              {"id": "i-duplicate-2", "type": "text", "text": "The bell rang."}
+            ]
+          }
+        ]
+      },
+      "expected": [
+        {"block_id": "b-duplicate-1", "text": "The bell rang."},
+        {"block_id": "b-duplicate-2", "text": "The bell rang."}
+      ]
+    }
+  ]
+}

@@ -86,6 +86,29 @@ class GlossaryPolicy(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SemanticUnit:
+    """One stable, sentence-sized span of visible text in an EPUB block."""
+
+    unit_id: str
+    document_id: str
+    block_id: str
+    ordinal: int
+    text: str
+    normalized_text: str
+    source_start: int
+    source_end: int
+    kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticWindow:
+    """A deterministic contiguous view over one document's semantic units."""
+
+    unit_ids: tuple[str, ...]
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class ChapterMetrics:
     chapter_id: str
     source_language: str
