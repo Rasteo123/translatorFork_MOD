@@ -271,9 +271,21 @@ class ChapterMetrics:
             "_INTEGER_FIELDS",
         }
         try:
-            return cls(**{key: value for key, value in payload.items() if key in fields})
+            metrics = cls(
+                **{key: value for key, value in payload.items() if key in fields}
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise QaModelValidationError("Invalid chapter metrics") from exc
+        if not math.isclose(
+            payload["length_ratio"],
+            metrics.length_ratio,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise QaModelValidationError(
+                "Persisted length_ratio does not match chapter metrics"
+            )
+        return metrics
 
     @classmethod
     def dataframe_columns(cls) -> tuple[str, ...]:

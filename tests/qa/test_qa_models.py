@@ -120,3 +120,39 @@ def test_chapter_metrics_from_dict_rejects_wrong_or_non_finite_values(field, val
 def test_risk_level_includes_failed_for_excluded_book_baselines():
     """Removing the failed state breaks Task 5's baseline eligibility contract."""
     assert "failed" in {level.value for level in RiskLevel}
+
+
+def test_chapter_metrics_from_dict_rejects_contradictory_persisted_ratio():
+    """Ignoring persisted length_ratio would silently hide corrupted v1 metrics."""
+    payload = ChapterMetrics(
+        chapter_id="chapter-1",
+        source_language="zh",
+        target_language="ru",
+        source_chars=100,
+        translated_chars=200,
+    ).to_dict()
+    payload["length_ratio"] = 999.0
+
+    with pytest.raises(QaModelValidationError, match="length_ratio"):
+        ChapterMetrics.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("source_chars", "translated_chars", "expected_ratio"),
+    [(100, 200, 2.0), (0, 25, 0.0)],
+)
+def test_chapter_metrics_from_dict_accepts_derived_ratio_contract(
+    source_chars, translated_chars, expected_ratio
+):
+    """Valid persisted ratios, including the zero-source representation, round-trip."""
+    metrics = ChapterMetrics(
+        chapter_id="chapter-1",
+        source_language="zh",
+        target_language="ru",
+        source_chars=source_chars,
+        translated_chars=translated_chars,
+    )
+
+    restored = ChapterMetrics.from_dict(metrics.to_dict())
+
+    assert restored.length_ratio == expected_ratio
