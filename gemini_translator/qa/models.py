@@ -594,7 +594,7 @@ class EmbeddedUnits:
             raise QaModelValidationError("units must be a nonempty tuple")
         if not isinstance(self.vectors, np.ndarray):
             raise QaModelValidationError("vectors must be an ndarray")
-        if self.vectors.dtype.kind in {"O", "b", "c"}:
+        if self.vectors.dtype.kind not in {"i", "u", "f"}:
             raise QaModelValidationError("vectors must be real numeric data")
         try:
             vectors = np.array(self.vectors, dtype=np.float32, order="C", copy=True)

@@ -240,6 +240,8 @@ def test_embedded_units_owns_a_snapshot_of_the_provider_matrix():
         np.array([[True, False], [False, True]]),
         np.array([[1 + 0j, 0j], [0j, 1 + 0j]]),
         np.array([[1, object()], [0, 1]], dtype=object),
+        np.array([["1", "0"], ["0", "1"]], dtype="U"),
+        np.array([[b"1", b"0"], [b"0", b"1"]], dtype="S"),
         np.array([[math.nan, 0.0], [0.0, 1.0]]),
         np.array([[math.inf, 0.0], [0.0, 1.0]]),
         np.zeros((2, 2), dtype=np.float32),
