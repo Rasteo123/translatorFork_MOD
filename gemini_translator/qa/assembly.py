@@ -26,6 +26,12 @@ from .embeddings.factory import (
 )
 from .glossary_context import GlossaryTerm, glossary_terms_from_project_entries
 from .journal import QaJournal, QaJournalError
+from .language_rules import (
+    LanguageRuleCache,
+    LanguageRuleService,
+    LanguageRuleUnavailable,
+    LanguageToolHttpProvider,
+)
 from .language_validation import LanguageQualityPipeline
 from .llm.completion import ExistingHandlerCompletionClient, QaModelSelection
 from .llm.omission_repairer import OmissionRepairer
@@ -69,15 +75,18 @@ class ProjectQaPaths:
     journal: Path
     backups: Path
     embedding_cache: Path
+    rule_cache: Path
 
     @classmethod
     def for_project(cls, project_manager) -> "ProjectQaPaths":
+        cache_dir = Path(project_manager.get_translation_qa_embedding_cache_dir())
         return cls(
             journal=Path(project_manager.get_translation_qa_journal_path()),
             backups=Path(project_manager.get_translation_qa_backup_dir()),
-            embedding_cache=Path(
-                project_manager.get_translation_qa_embedding_cache_dir()
-            ),
+            embedding_cache=cache_dir,
+            # The rule cache lives beside the embedding cache: both are
+            # disposable and neither holds anything the user would miss.
+            rule_cache=cache_dir.with_name(cache_dir.name + "_rules"),
         )
 
 
@@ -169,6 +178,7 @@ def build_translation_quality_service(
     embedding_provider,
     session_id: str,
     target_language: str = "ru",
+    rule_session_factory=None,
     event_sink=None,
 ) -> TranslationQualityService:
     """Assemble the full cascade around one project's durable state."""
@@ -187,6 +197,14 @@ def build_translation_quality_service(
     )
     return TranslationQualityService(
         analysis_identity=_extractor(capabilities).preprocessing_identity,
+        language_rules=build_language_rule_service(
+            qa_settings,
+            capabilities,
+            session_factory=rule_session_factory,
+            cache_dir=paths.rule_cache,
+            preprocessing_version=_extractor(capabilities).preprocessing_identity,
+            target_language=target_language,
+        ),
         coverage=coverage,
         verifier=OmissionVerifier(client),
         repairer=OmissionRepairer(client),
@@ -197,6 +215,38 @@ def build_translation_quality_service(
         journal_path=paths.journal,
         additions=AdditionDetector(client),
         language=LanguageQualityPipeline(client),
+    )
+
+
+def build_language_rule_service(
+    qa_settings: QaSettings,
+    capabilities: QaCapabilitySettings,
+    *,
+    session_factory=None,
+    cache_dir: Path | None = None,
+    preprocessing_version: str = "",
+    target_language: str = "ru",
+) -> LanguageRuleService | None:
+    """Build the rule service only when the user both enabled and configured it."""
+    if not capabilities.language_tool_enabled:
+        return None
+    if session_factory is None:
+        session_factory = aiohttp_session_factory()
+    try:
+        provider = LanguageToolHttpProvider(
+            endpoint=qa_settings.language_tool_endpoint,
+            session_factory=session_factory,
+        )
+    except LanguageRuleUnavailable:
+        # An enabled capability with an unusable address must still produce a
+        # service, so the chapter result explains why there were no hints.
+        provider = None
+    return LanguageRuleService(
+        provider=provider,
+        cache=LanguageRuleCache(cache_dir) if cache_dir is not None else None,
+        language=target_language,
+        disabled_rule_ids=qa_settings.language_tool_disabled_rules,
+        preprocessing_version=preprocessing_version,
     )
 
 

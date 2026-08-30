@@ -255,7 +255,13 @@ class TranslationQualityService:
                 coverage, request, options, cancellation, warnings
             )
 
-        language = await self._check_language(request, options, cancellation, warnings)
+        language = await self._check_language(
+            request,
+            options,
+            cancellation,
+            warnings,
+            coverage.target_units if coverage is not None else (),
+        )
         metrics = coverage.metrics if coverage is not None else None
         risk, may_continue = _risk(verified, repairs, additions, coverage, warnings)
         result = ChapterQaResult(
@@ -539,6 +545,7 @@ class TranslationQualityService:
         options: QaOptions,
         cancellation: CancellationToken,
         warnings: list[str],
+        target_units: Sequence[SemanticUnit] = (),
     ) -> LanguageQaResult | None:
         if self._language is None or not options.check_language:
             return None
@@ -558,9 +565,9 @@ class TranslationQualityService:
             source_text_by_block=request.source_text_by_block,
         )
         rule_candidates = await self._collect_rules(
-            language_request, options, warnings
+            target_units, options, warnings
         )
-        nlp_analysis = self._analyze_nlp(language_request, options, warnings)
+        nlp_analysis = self._analyze_nlp(target_units, options, warnings)
         try:
             result = await self._language.check_chapter(
                 language_request,
@@ -582,27 +589,39 @@ class TranslationQualityService:
         return result
 
     async def _collect_rules(
-        self, request: LanguageQaRequest, options: QaOptions, warnings: list[str]
+        self,
+        target_units: Sequence[SemanticUnit],
+        options: QaOptions,
+        warnings: list[str],
     ) -> tuple[LanguageRuleIssue, ...]:
+        """Collect unconfirmed rule hints; an analyzer outage is only a warning."""
         if self._language_rules is None or not options.capabilities.language_tool_enabled:
             return ()
         try:
-            return tuple(
-                await self._language_rules.collect(request, options.capabilities)
+            result = await self._language_rules.collect(
+                tuple(target_units), options.capabilities
             )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - an unavailable analyzer is a warning
             warnings.append("language_tool_unavailable")
             return ()
+        warnings.extend(getattr(result, "warnings", ()) or ())
+        hints = getattr(result, "hints", None)
+        return tuple(hints()) if callable(hints) else tuple(result)
 
     def _analyze_nlp(
-        self, request: LanguageQaRequest, options: QaOptions, warnings: list[str]
+        self,
+        target_units: Sequence[SemanticUnit],
+        options: QaOptions,
+        warnings: list[str],
     ) -> RussianNlpAnalysis | None:
         if self._russian_nlp is None or not options.capabilities.slovnet_enabled:
             return None
         try:
-            return self._russian_nlp.analyze(request, options.capabilities)
+            return self._russian_nlp.analyze(
+                tuple(target_units), options.capabilities
+            )
         except Exception:  # noqa: BLE001 - an unavailable analyzer is a warning
             warnings.append("slovnet_unavailable")
             return None

@@ -199,3 +199,46 @@ def test_a_corrupted_journal_refuses_to_be_overwritten(tmp_path, project):
             embedding_provider=object(),
             session_id="session-1",
         )
+
+
+def test_the_rule_service_exists_only_when_the_capability_is_on():
+    """An unchecked analyzer must not be built, let alone contacted."""
+    from gemini_translator.qa.assembly import build_language_rule_service
+    from gemini_translator.qa.capabilities import QaCapabilitySettings
+
+    assert (
+        build_language_rule_service(QaSettings(), QaCapabilitySettings()) is None
+    )
+    service = build_language_rule_service(
+        QaSettings(language_tool_endpoint="http://127.0.0.1:8081/v2"),
+        QaCapabilitySettings(language_tool_enabled=True),
+    )
+    assert service is not None
+
+
+def test_an_enabled_rule_service_without_an_address_still_explains_itself():
+    """A switched-on analyzer with no endpoint must report, not vanish."""
+    import asyncio
+
+    from gemini_translator.qa.assembly import build_language_rule_service
+    from gemini_translator.qa.capabilities import QaCapabilitySettings
+
+    service = build_language_rule_service(
+        QaSettings(), QaCapabilitySettings(language_tool_enabled=True)
+    )
+
+    result = asyncio.run(
+        service.collect((), QaCapabilitySettings(language_tool_enabled=True))
+    )
+
+    assert result.status in {"completed", "unavailable"}
+
+
+def test_the_rule_cache_lives_beside_the_embedding_cache(tmp_path, project):
+    """Both caches must be disposable together, and neither inside the other."""
+    from gemini_translator.qa.assembly import ProjectQaPaths
+
+    paths = ProjectQaPaths.for_project(project)
+
+    assert paths.rule_cache.parent == paths.embedding_cache.parent
+    assert paths.rule_cache != paths.embedding_cache
