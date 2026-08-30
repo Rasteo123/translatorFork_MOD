@@ -272,6 +272,65 @@ def test_generic_label_and_number_are_not_excluded_as_device_models(text):
     assert not any("whole_protected_item:model" in reason for reason in decision.reasons)
 
 
+@pytest.mark.parametrize(
+    "text",
+    (
+        "He 2 Pro",
+        "My 2 Pro",
+        "Open 2 Pro",
+        "His 3 Max",
+        "Close 4 Ultra",
+        "Winter 5 Pro",
+    ),
+)
+def test_generic_title_case_number_and_product_suffix_reaches_semantics(text):
+    """A marketing suffix cannot turn a pronoun, verb, or ordinary title into a model."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text)
+    )
+
+    assert decision.action == "send_to_llm_verifier"
+    assert not any("whole_protected_item:model" in reason for reason in decision.reasons)
+
+
+@pytest.mark.parametrize("text", ("iPhone 15 Pro", "Galaxy S23 Ultra"))
+def test_strong_product_model_structure_remains_excluded(text):
+    """Internal mixed case or an alphanumeric model token is strong model evidence."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text)
+    )
+
+    assert decision.action == "exclude"
+    assert decision.reasons == ("whole_protected_item:model",)
+
+
+def test_unknown_dictionary_brand_number_and_suffix_reaches_semantics():
+    """An unknown dictionary-like product phrase is safer to verify than discard."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text="Pixel 8 Pro")
+    )
+
+    assert decision.action == "send_to_llm_verifier"
+
+
+def test_strong_model_identifier_embedded_in_narrative_reaches_semantics():
+    """Strong identifier evidence must not suppress the surrounding missing narrative."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate,
+        replace(context, source_text="He returned the Galaxy S23 Ultra yesterday."),
+    )
+
+    assert decision.action == "send_to_llm_verifier"
+
+
 @pytest.mark.parametrize("text", ("2024", "Chapter 2048"))
 def test_unrepairable_numbered_surface_stays_report_only(text):
     """Removing protected-item false positives must not bypass the two-anchor requirement."""
