@@ -51,6 +51,46 @@ def test_json_fence_is_accepted_but_trailing_prose_is_rejected():
         parse_single_json_object('{"decision":"no_gap"}\nЯ всё проверил.')
 
 
+def test_unfenced_json_may_contain_markdown_backticks_inside_string_value():
+    """Treating embedded backticks as a fence would reject valid model text."""
+    assert parse_single_json_object('{"explanation":"Use ``` as data"}') == {
+        "explanation": "Use ``` as data"
+    }
+
+
+def test_invalid_json_error_retains_no_raw_response_or_decoder_exception():
+    """Decoder errors and parser frames must not retain a sensitive raw response."""
+    marker = "raw-secret-marker"
+
+    with pytest.raises(QaResponseSchemaError) as raised:
+        parse_single_json_object(f'{{"secret":"{marker}", invalid}}')
+
+    error = raised.value
+    assert marker not in str(error)
+    assert marker not in repr(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    traceback = error.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_filename.endswith("json_response.py"):
+            assert marker not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"number":1e10000}',
+        '{"nested":{"values":[1e10000]}}',
+        '{"integer":' + "9" * 400 + "}",
+    ],
+)
+def test_json_parser_rejects_overflowing_numbers_at_any_depth(payload):
+    """Overflowing JSON numbers must not cross the generic parser boundary."""
+    with pytest.raises(QaResponseSchemaError):
+        parse_single_json_object(payload)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -128,6 +168,16 @@ def test_non_missing_verdict_may_have_no_missing_facts():
 
 
 @pytest.mark.parametrize(
+    "decision",
+    ["covered", "intentional_foreign", "ambiguous"],
+)
+def test_non_missing_verdict_rejects_claimed_missing_facts(decision):
+    """Only missing_content may carry evidence that can authorize repair."""
+    with pytest.raises(QaResponseSchemaError):
+        OmissionVerdict.from_dict(_omission_payload(decision=decision))
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         _omission_payload(extra="ignored"),
@@ -174,6 +224,9 @@ def test_repair_proposal_requires_expected_candidate_identity():
 
     with pytest.raises(QaResponseSchemaError):
         RepairProposal.from_dict(payload, expected_candidate_id="candidate-2")
+
+    with pytest.raises(TypeError):
+        RepairProposal.from_dict(payload)
 
 
 def test_schema_validation_preserves_exact_nonempty_text():
@@ -247,3 +300,57 @@ def test_language_issue_accepts_explicit_null_replacement():
     )
 
     assert issue.replacement_text is None
+
+
+def test_style_suggestion_can_never_claim_objective_status():
+    """Subjective style feedback must never enter an objective repair path."""
+    with pytest.raises(QaResponseSchemaError):
+        LanguageIssue.from_dict(
+            _language_issue_payload(category="style_suggestion", objective=True)
+        )
+
+
+def test_authorizing_schema_repr_never_contains_model_or_metadata_text():
+    """Logging schema objects must not leak model response content."""
+    verdict = OmissionVerdict.from_dict(
+        _omission_payload(
+            missing_facts=["missing-secret"],
+            explanation="verdict-secret",
+            metadata={"trace": "metadata-secret"},
+        )
+    )
+    proposal = RepairProposal.from_dict(
+        {
+            "candidate_id": "candidate-1",
+            "translated_fragment": "fragment-secret",
+            "glossary_terms_used": [],
+            "metadata": {"trace": "metadata-secret"},
+        },
+        expected_candidate_id="candidate-1",
+    )
+    issue = LanguageIssue.from_dict(
+        _language_issue_payload(
+            original_text="original-secret",
+            replacement_text="replacement-secret",
+            explanation="issue-secret",
+            metadata={"trace": "metadata-secret"},
+        )
+    )
+
+    combined_repr = repr((verdict, proposal, issue))
+    for secret in (
+        "missing-secret",
+        "verdict-secret",
+        "fragment-secret",
+        "original-secret",
+        "replacement-secret",
+        "issue-secret",
+        "metadata-secret",
+    ):
+        assert secret not in combined_repr
+
+
+def test_huge_integer_confidence_raises_typed_schema_error():
+    """Float conversion overflow must stay inside the typed schema boundary."""
+    with pytest.raises(QaResponseSchemaError):
+        OmissionVerdict.from_dict(_omission_payload(confidence=10**1000))

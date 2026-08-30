@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import inspect
-from threading import Event
+from threading import Event, Lock
 from typing import Awaitable, Callable, Mapping, Protocol
 from uuid import uuid4
 
@@ -30,7 +30,12 @@ class QaModelSelection:
 class CancellationToken:
     """Small thread-safe cancellation contract independent of Qt workers."""
 
-    __slots__ = ("_cancelled", "_is_cancelled_callback")
+    __slots__ = (
+        "_cancelled",
+        "_is_cancelled_callback",
+        "_waiters",
+        "_waiters_lock",
+    )
 
     def __init__(
         self,
@@ -40,6 +45,8 @@ class CancellationToken:
             raise TypeError("is_cancelled must be callable")
         self._cancelled = Event()
         self._is_cancelled_callback = is_cancelled
+        self._waiters: set[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = set()
+        self._waiters_lock = Lock()
 
     @property
     def is_cancelled(self) -> bool:
@@ -50,6 +57,36 @@ class CancellationToken:
 
     def cancel(self) -> None:
         self._cancelled.set()
+        with self._waiters_lock:
+            waiters = tuple(self._waiters)
+        for loop, future in waiters:
+            try:
+                loop.call_soon_threadsafe(self._resolve_waiter, future)
+            except RuntimeError:
+                continue
+
+    @staticmethod
+    def _resolve_waiter(future: asyncio.Future) -> None:
+        if not future.done():
+            future.set_result(None)
+
+    async def wait_cancelled(self) -> None:
+        """Wait for local ``cancel()`` without polling or a Qt event loop."""
+        if self._cancelled.is_set():
+            return
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        waiter = (loop, future)
+        with self._waiters_lock:
+            self._waiters.add(waiter)
+            cancelled = self._cancelled.is_set()
+        if cancelled:
+            self._resolve_waiter(future)
+        try:
+            await future
+        finally:
+            with self._waiters_lock:
+                self._waiters.discard(waiter)
 
     def raise_if_cancelled(self) -> None:
         if self.is_cancelled:
@@ -81,16 +118,50 @@ class ExistingHandlerCompletionClient:
     def __init__(
         self,
         handler_factory: HandlerFactory,
-        retry_policy: object,
-        event_sink: EventSink | None,
+        event_sink: EventSink | None = None,
     ) -> None:
         if not callable(handler_factory):
             raise TypeError("handler_factory must be callable")
         if event_sink is not None and not callable(event_sink):
             raise TypeError("event_sink must be callable")
         self._handler_factory = handler_factory
-        self._retry_policy = retry_policy
         self._event_sink = event_sink
+
+    @staticmethod
+    async def _drain_cancelled_task(task: asyncio.Future) -> None:
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    async def _await_with_cancellation(
+        self,
+        awaitable: Awaitable[object],
+        cancellation: CancellationToken,
+    ) -> object:
+        handler_task = asyncio.ensure_future(awaitable)
+        cancellation_task = asyncio.create_task(cancellation.wait_cancelled())
+        try:
+            done, _ = await asyncio.wait(
+                {handler_task, cancellation_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancellation_task in done or cancellation.is_cancelled:
+                await self._drain_cancelled_task(handler_task)
+                raise asyncio.CancelledError
+
+            await self._drain_cancelled_task(cancellation_task)
+            result = await handler_task
+            cancellation.raise_if_cancelled()
+            return result
+        except asyncio.CancelledError:
+            await self._drain_cancelled_task(handler_task)
+            await self._drain_cancelled_task(cancellation_task)
+            raise
 
     async def _emit(
         self,
@@ -144,10 +215,11 @@ class ExistingHandlerCompletionClient:
                 model=model,
                 status="creating_handler",
             )
+            cancellation.raise_if_cancelled()
 
             handler = self._handler_factory(model)
             if inspect.isawaitable(handler):
-                handler = await handler
+                handler = await self._await_with_cancellation(handler, cancellation)
 
             cancellation.raise_if_cancelled()
             await self._emit(
@@ -168,16 +240,30 @@ class ExistingHandlerCompletionClient:
                 max_output_tokens=max_output_tokens,
             )
             if inspect.isawaitable(raw_response):
-                raw_response = await raw_response
+                raw_response = await self._await_with_cancellation(
+                    raw_response, cancellation
+                )
+            cancellation.raise_if_cancelled()
             if not isinstance(raw_response, str):
                 raise QaResponseSchemaError("QA handler result must be text")
 
-            parsed = parse_single_json_object(raw_response)
+            parse_failed = False
+            try:
+                parsed = parse_single_json_object(raw_response)
+            except QaResponseSchemaError:
+                parse_failed = True
+            if parse_failed:
+                raw_response = None
+                raise QaResponseSchemaError(
+                    "QA handler response failed strict JSON validation"
+                ) from None
+            cancellation.raise_if_cancelled()
             await self._emit(
                 qa_request_id=qa_request_id,
                 model=model,
                 status="completed",
             )
+            cancellation.raise_if_cancelled()
             return parsed
         except asyncio.CancelledError:
             await self._emit(

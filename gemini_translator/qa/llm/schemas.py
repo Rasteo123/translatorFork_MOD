@@ -64,7 +64,10 @@ def _identifier(value: object, field_name: str) -> str:
 def _confidence(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise QaResponseSchemaError("confidence must be a finite number")
-    normalized = float(value)
+    try:
+        normalized = float(value)
+    except (OverflowError, ValueError):
+        raise QaResponseSchemaError("confidence must be a finite number") from None
     if not math.isfinite(normalized) or not 0.0 <= normalized <= 1.0:
         raise QaResponseSchemaError("confidence must be between 0 and 1")
     return normalized
@@ -92,7 +95,11 @@ def _freeze_json_value(value: object, field_name: str) -> object:
     if value is None or isinstance(value, (str, bool)):
         return value
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if not math.isfinite(float(value)):
+        try:
+            normalized = float(value)
+        except (OverflowError, ValueError):
+            raise QaResponseSchemaError(f"{field_name} numbers must be finite") from None
+        if not math.isfinite(normalized):
             raise QaResponseSchemaError(f"{field_name} numbers must be finite")
         return value
     if isinstance(value, (list, tuple)):
@@ -140,7 +147,7 @@ def _checked_payload(
     return payload
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class OmissionVerdict:
     decision: OmissionDecision
     confidence: float
@@ -170,6 +177,10 @@ class OmissionVerdict:
         if self.decision == "missing_content" and not facts:
             raise QaResponseSchemaError(
                 "missing_content verdict requires at least one missing fact"
+            )
+        if self.decision != "missing_content" and facts:
+            raise QaResponseSchemaError(
+                "only missing_content verdict may contain missing facts"
             )
         object.__setattr__(self, "missing_facts", facts)
         object.__setattr__(
@@ -201,7 +212,7 @@ class OmissionVerdict:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class RepairProposal:
     candidate_id: str
     translated_fragment: str
@@ -234,7 +245,7 @@ class RepairProposal:
         cls,
         payload: object,
         *,
-        expected_candidate_id: str | None = None,
+        expected_candidate_id: str,
     ) -> "RepairProposal":
         data = _checked_payload(
             payload,
@@ -248,16 +259,15 @@ class RepairProposal:
             glossary_terms_used=data["glossary_terms_used"],
             metadata=data.get("metadata", {}),
         )
-        if expected_candidate_id is not None:
-            expected = _identifier(expected_candidate_id, "expected_candidate_id")
-            if proposal.candidate_id != expected:
-                raise QaResponseSchemaError(
-                    "repair proposal candidate_id does not match the request"
-                )
+        expected = _identifier(expected_candidate_id, "expected_candidate_id")
+        if proposal.candidate_id != expected:
+            raise QaResponseSchemaError(
+                "repair proposal candidate_id does not match the request"
+            )
         return proposal
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class LanguageIssue:
     issue_id: str
     category: LanguageIssueCategory
@@ -294,6 +304,8 @@ class LanguageIssue:
             )
         if not isinstance(self.objective, bool):
             raise QaResponseSchemaError("objective must be a boolean")
+        if self.category == "style_suggestion" and self.objective:
+            raise QaResponseSchemaError("style_suggestion must not be objective")
         object.__setattr__(self, "confidence", _confidence(self.confidence))
         object.__setattr__(
             self, "explanation", _nonempty_string(self.explanation, "explanation")
