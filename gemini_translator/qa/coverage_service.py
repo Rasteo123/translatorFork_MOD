@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import math
+import re
 from types import MappingProxyType
 from typing import Protocol
 
@@ -64,6 +65,7 @@ _WARNING_CODES = frozenset(
 _PROTECTED_CONTEXTS = frozenset(
     {"dialogue", "foreign_dialogue", "foreign_quote", "quote", "sign"}
 )
+_SAFE_PROVIDER_ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
 class CoverageValidationError(ValueError):
@@ -183,6 +185,9 @@ class CoverageRequest:
     glossary: tuple[GlossaryRule, ...] = ()
     protection_evidence: tuple[UnitProtectionEvidence, ...] = ()
 
+    # This is a value snapshot containing mappings, not a stable dictionary key.
+    __hash__ = None
+
     def __post_init__(self) -> None:
         for field_name in (
             "chapter_id",
@@ -281,6 +286,9 @@ class CoverageAnalysis:
     warnings: tuple[str, ...]
     metrics: ChapterMetrics
 
+    # Analysis owns mapping snapshots and is deliberately not hashable.
+    __hash__ = None
+
     def __post_init__(self) -> None:
         if self.mode not in _MODES:
             raise CoverageValidationError("unsupported coverage analysis mode")
@@ -334,6 +342,12 @@ class CoverageAnalysis:
             gap_ids = tuple(candidate.candidate_id for candidate in self.alignment.gaps)
             if len(partition_ids) != len(gap_ids) or set(partition_ids) != set(gap_ids):
                 raise CoverageValidationError("filter partitions must cover every alignment gap")
+            _validate_analysis_partitions(
+                self.alignment,
+                self.candidates,
+                self.excluded,
+                self.report_only,
+            )
             if set(contexts) != set(gap_ids):
                 raise CoverageValidationError("contexts must cover every alignment gap")
         elif (
@@ -355,6 +369,94 @@ def _semantic_units_tuple(value: object, field_name: str) -> tuple[SemanticUnit,
     ):
         raise CoverageValidationError(f"{field_name} must be a tuple of SemanticUnit")
     return value
+
+
+def _validate_extracted_units(
+    value: object,
+    field_name: str,
+    expected_document_id: str,
+) -> tuple[SemanticUnit, ...]:
+    units = _semantic_units_tuple(value, field_name)
+    unit_ids = tuple(unit.unit_id for unit in units)
+    document_ids = tuple(unit.document_id for unit in units)
+    ordinals = tuple(unit.ordinal for unit in units)
+    if len(set(unit_ids)) != len(unit_ids):
+        raise CoverageValidationError(f"{field_name} unit IDs must be unique")
+    if any(document_id != expected_document_id for document_id in document_ids):
+        raise CoverageValidationError(
+            f"{field_name} must contain only the requested document"
+        )
+    if ordinals != tuple(range(len(units))):
+        raise CoverageValidationError(
+            f"{field_name} ordinals must be exactly ordered from zero"
+        )
+    return units
+
+
+def _validate_alignment_units(
+    alignment: AlignmentResult,
+    source_units: tuple[SemanticUnit, ...],
+    target_units: tuple[SemanticUnit, ...],
+) -> None:
+    aligned_source_ids = tuple(
+        unit_id for span in alignment.spans for unit_id in span.source_unit_ids
+    )
+    aligned_target_ids = tuple(
+        unit_id for span in alignment.spans for unit_id in span.target_unit_ids
+    )
+    expected_source_ids = tuple(unit.unit_id for unit in source_units)
+    expected_target_ids = tuple(unit.unit_id for unit in target_units)
+    if aligned_source_ids != expected_source_ids:
+        raise CoverageValidationError(
+            "alignment source unit IDs must exactly cover extracted source units in order"
+        )
+    if aligned_target_ids != expected_target_ids:
+        raise CoverageValidationError(
+            "alignment target unit IDs must exactly cover extracted target units in order"
+        )
+
+
+def _validate_filter_result(
+    alignment: AlignmentResult, filtered: CandidateFilterResult
+) -> None:
+    original_by_id = {
+        candidate.candidate_id: candidate for candidate in alignment.gaps
+    }
+    partitioned = filtered.accepted + filtered.excluded + filtered.report_only
+    partition_ids = tuple(item.candidate_id for item in partitioned)
+    if (
+        len(partition_ids) != len(original_by_id)
+        or len(set(partition_ids)) != len(partition_ids)
+        or set(partition_ids) != set(original_by_id)
+    ):
+        raise CoverageValidationError(
+            "filter partitions must cover every alignment gap exactly once"
+        )
+    if any(
+        item.candidate != original_by_id[item.candidate_id]
+        for item in partitioned
+    ):
+        raise CoverageValidationError(
+            "filter partitions must preserve each original alignment gap value"
+        )
+
+
+def _validate_analysis_partitions(
+    alignment: AlignmentResult,
+    candidates: tuple[GapCandidate, ...],
+    excluded: tuple[FilteredCandidate, ...],
+    report_only: tuple[FilteredCandidate, ...],
+) -> None:
+    original_by_id = {
+        candidate.candidate_id: candidate for candidate in alignment.gaps
+    }
+    values = tuple((candidate.candidate_id, candidate) for candidate in candidates)
+    values += tuple((item.candidate_id, item.candidate) for item in excluded)
+    values += tuple((item.candidate_id, item.candidate) for item in report_only)
+    if any(original_by_id.get(candidate_id) != candidate for candidate_id, candidate in values):
+        raise CoverageValidationError(
+            "filter partitions must preserve each original alignment gap value"
+        )
 
 
 def _filtered_partition(
@@ -465,13 +567,18 @@ class SemanticCoverageService:
         source_payload = _thaw_json(request.source_payload)
         target_payload = _thaw_json(request.target_payload)
         assert isinstance(source_payload, dict) and isinstance(target_payload, dict)
-        source_units = _semantic_units_tuple(
+        source_document_id = request.source_payload["document_id"]
+        target_document_id = request.target_payload["document_id"]
+        assert isinstance(source_document_id, str) and isinstance(target_document_id, str)
+        source_units = _validate_extracted_units(
             self._extractor.extract(source_payload, request.source_language),
             "source_units",
+            source_document_id,
         )
-        target_units = _semantic_units_tuple(
+        target_units = _validate_extracted_units(
             self._extractor.extract(target_payload, request.target_language),
             "target_units",
+            target_document_id,
         )
         evidence = self._validate_evidence(request, source_units, target_units)
 
@@ -494,6 +601,10 @@ class SemanticCoverageService:
             source_batch = self._validate_embedding_batch(source_batch, source_request)
             target_batch = await self._provider.embed(target_request)
             target_batch = self._validate_embedding_batch(target_batch, target_request)
+            if source_batch.provider != target_batch.provider:
+                raise EmbeddingContractError(
+                    "source and target embedding providers must match"
+                )
             if source_batch.dimensions != target_batch.dimensions:
                 raise EmbeddingContractError(
                     "source and target embedding dimensions must match"
@@ -534,6 +645,7 @@ class SemanticCoverageService:
             )
         if not isinstance(alignment, AlignmentResult):
             raise CoverageValidationError("aligner must return AlignmentResult")
+        _validate_alignment_units(alignment, source_units, target_units)
 
         contexts = self._candidate_contexts(
             request, source_units, target_units, alignment, evidence
@@ -545,6 +657,7 @@ class SemanticCoverageService:
             raise CoverageValidationError(
                 "candidate_filter must return CandidateFilterResult"
             )
+        _validate_filter_result(alignment, filtered)
         candidates = tuple(item.candidate for item in filtered.accepted)
         if any(candidate.side != "source" for candidate in candidates):
             raise CoverageValidationError(
@@ -581,6 +694,10 @@ class SemanticCoverageService:
         batch: EmbeddingBatch, request: EmbeddingRequest
     ) -> EmbeddingBatch:
         checked = validate_and_normalize_batch(batch, len(request.texts))
+        if _SAFE_PROVIDER_ID.fullmatch(checked.provider) is None:
+            raise EmbeddingContractError(
+                "embedding batch provider must be a safe canonical identifier"
+            )
         if checked.model != request.model:
             raise EmbeddingContractError("embedding batch model does not match request")
         if request.dimensions is not None and checked.dimensions != request.dimensions:
@@ -809,6 +926,7 @@ class SemanticCoverageService:
             raise CoverageValidationError(
                 "metrics_collector must return ChapterMetrics"
             )
+        self._validate_metrics(metrics, inputs)
         return CoverageAnalysis(
             mode=mode,
             source_units=source_units,
@@ -822,3 +940,32 @@ class SemanticCoverageService:
             warnings=warnings,
             metrics=metrics,
         )
+
+    @staticmethod
+    def _validate_metrics(
+        metrics: ChapterMetrics, inputs: CoverageMetricsInput
+    ) -> None:
+        aligned_source_ids: set[str] = set()
+        if inputs.alignment is not None:
+            for span in inputs.alignment.spans:
+                if span.source_unit_ids and span.target_unit_ids:
+                    aligned_source_ids.update(span.source_unit_ids)
+        expected = {
+            "chapter_id": inputs.request.chapter_id,
+            "source_language": inputs.request.source_language,
+            "target_language": inputs.request.target_language,
+            "source_chars": sum(len(unit.text) for unit in inputs.source_units),
+            "translated_chars": sum(len(unit.text) for unit in inputs.target_units),
+            "source_units": len(inputs.source_units),
+            "aligned_units": len(aligned_source_ids),
+            "possible_gaps": (
+                len(inputs.alignment.gaps) if inputs.alignment is not None else 0
+            ),
+            "allowed_foreign_fragments": len(inputs.excluded),
+            "applied_actions": (),
+        }
+        for field_name, expected_value in expected.items():
+            if getattr(metrics, field_name) != expected_value:
+                raise CoverageValidationError(
+                    f"metrics {field_name} does not match final coverage state"
+                )

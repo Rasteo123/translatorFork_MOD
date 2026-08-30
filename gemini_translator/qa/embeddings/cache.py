@@ -25,12 +25,13 @@ from .base import (
 )
 
 
-_INDEX_SCHEMA_VERSION = 1
+_INDEX_SCHEMA_VERSION = 2
 _SAFE_PROVIDER_ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ENTRY_FIELDS = frozenset(
     {
         "normalized_text",
+        "language",
         "provider",
         "model",
         "dimensions",
@@ -43,6 +44,7 @@ _ENTRY_FIELDS = frozenset(
 _DIMENSIONLESS_FIELDS = frozenset(
     {
         "normalized_text",
+        "language",
         "provider",
         "model",
         "dimensions",
@@ -72,6 +74,14 @@ def _normalized_text(value: object) -> str:
     return normalized
 
 
+def _normalized_language(value: object) -> str:
+    language = _nonempty(value, "language").replace("_", "-")
+    base = language.split("-", 1)[0].casefold()
+    if not base:
+        raise EmbeddingContractError("language must have a nonempty base language")
+    return base
+
+
 def _canonical_provider_id(value: object) -> str:
     provider = _nonempty(value, "provider").casefold()
     if not _SAFE_PROVIDER_ID.fullmatch(provider):
@@ -89,6 +99,7 @@ class EmbeddingCacheKey:
     """Immutable identity for one vector in one exact embedding space."""
 
     normalized_text: str
+    language: str
     provider: str
     model: str
     dimensions: int
@@ -98,6 +109,7 @@ class EmbeddingCacheKey:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "normalized_text", _normalized_text(self.normalized_text))
+        object.__setattr__(self, "language", _normalized_language(self.language))
         object.__setattr__(self, "provider", _canonical_provider_id(self.provider))
         object.__setattr__(self, "model", _nonempty(self.model, "model"))
         object.__setattr__(self, "dimensions", _positive_int(self.dimensions, "dimensions"))
@@ -113,6 +125,7 @@ class EmbeddingCacheKey:
             _identity_digest(
                 (
                     self.normalized_text,
+                    self.language,
                     self.provider,
                     self.model,
                     self.dimensions,
@@ -127,6 +140,7 @@ class EmbeddingCacheKey:
         cls,
         text: str,
         *,
+        language: str,
         provider: str,
         model: str,
         dimensions: int,
@@ -135,6 +149,7 @@ class EmbeddingCacheKey:
     ) -> "EmbeddingCacheKey":
         return cls(
             normalized_text=text,
+            language=language,
             provider=provider,
             model=model,
             dimensions=dimensions,
@@ -145,13 +160,21 @@ class EmbeddingCacheKey:
 
 def _dimensionless_digest(
     normalized_text: str,
+    language: str,
     provider: str,
     model: str,
     task_type: str,
     preprocessing_identity: str,
 ) -> str:
     return _identity_digest(
-        (normalized_text, provider, model, task_type, preprocessing_identity)
+        (
+            normalized_text,
+            language,
+            provider,
+            model,
+            task_type,
+            preprocessing_identity,
+        )
     )
 
 
@@ -167,6 +190,7 @@ def _empty_index() -> dict[str, object]:
 def _entry_for(key: EmbeddingCacheKey, last_access: int) -> dict[str, object]:
     return {
         "normalized_text": key.normalized_text,
+        "language": key.language,
         "provider": key.provider,
         "model": key.model,
         "dimensions": key.dimensions,
@@ -180,6 +204,7 @@ def _entry_for(key: EmbeddingCacheKey, last_access: int) -> dict[str, object]:
 def _dimensionless_entry(key: EmbeddingCacheKey) -> dict[str, object]:
     return {
         "normalized_text": key.normalized_text,
+        "language": key.language,
         "provider": key.provider,
         "model": key.model,
         "dimensions": key.dimensions,
@@ -315,6 +340,7 @@ class EmbeddingCache:
                 if dimensionless:
                     alias = _dimensionless_digest(
                         key.normalized_text,
+                        key.language,
                         key.provider,
                         key.model,
                         key.task_type,
@@ -327,11 +353,13 @@ class EmbeddingCache:
         self,
         normalized_texts: Sequence[str],
         *,
+        language: str,
         provider: str,
         model: str,
         task_type: str,
         preprocessing_identity: str,
     ) -> tuple[int | None, dict[EmbeddingCacheKey, np.ndarray]]:
+        language = _normalized_language(language)
         provider = _canonical_provider_id(provider)
         model = _nonempty(model, "model")
         task_type = _nonempty(task_type, "task_type")
@@ -345,7 +373,12 @@ class EmbeddingCache:
             dimensions: int | None = None
             for text in texts:
                 alias = _dimensionless_digest(
-                    text, provider, model, task_type, preprocessing_identity
+                    text,
+                    language,
+                    provider,
+                    model,
+                    task_type,
+                    preprocessing_identity,
                 )
                 metadata = index["dimensionless"].get(alias)
                 if metadata is None:
@@ -465,6 +498,7 @@ class EmbeddingCache:
             key = cls._key_from_dimensionless(metadata)
             expected = _dimensionless_digest(
                 key.normalized_text,
+                key.language,
                 key.provider,
                 key.model,
                 key.task_type,
@@ -478,6 +512,7 @@ class EmbeddingCache:
     def _key_from_entry(metadata: Mapping[str, object]) -> EmbeddingCacheKey:
         return EmbeddingCacheKey(
             normalized_text=metadata["normalized_text"],
+            language=metadata["language"],
             provider=metadata["provider"],
             model=metadata["model"],
             dimensions=metadata["dimensions"],
@@ -489,6 +524,7 @@ class EmbeddingCache:
     def _key_from_dimensionless(metadata: Mapping[str, object]) -> EmbeddingCacheKey:
         return EmbeddingCacheKey(
             normalized_text=metadata["normalized_text"],
+            language=metadata["language"],
             provider=metadata["provider"],
             model=metadata["model"],
             dimensions=metadata["dimensions"],
@@ -689,6 +725,7 @@ class CachedEmbeddingProvider:
         if effective_dimensions is None:
             effective_dimensions, hits = self._cache._find_dimensionless(
                 tuple(first_text),
+                language=request.language,
                 provider=self._provider_id,
                 model=request.model,
                 task_type=request.task_type,
@@ -755,6 +792,7 @@ class CachedEmbeddingProvider:
         return {
             text: EmbeddingCacheKey(
                 normalized_text=text,
+                language=request.language,
                 provider=self._provider_id,
                 model=request.model,
                 dimensions=dimensions,

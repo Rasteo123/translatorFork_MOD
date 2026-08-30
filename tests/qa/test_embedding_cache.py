@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -91,6 +92,7 @@ def _provider(upstream, root: Path, identity: str = RAZDEL_IDENTITY):
 def _key(
     text: str,
     *,
+    language: str = "ru",
     provider: str = "counting",
     model: str = "embedding-v1",
     dimensions: int = 4,
@@ -99,6 +101,7 @@ def _key(
 ) -> EmbeddingCacheKey:
     return EmbeddingCacheKey.from_text(
         text,
+        language=language,
         provider=provider,
         model=model,
         dimensions=dimensions,
@@ -172,11 +175,21 @@ def test_cache_key_is_frozen_typed_and_segmenter_identity_changes_its_sha256():
     with pytest.raises((EmbeddingContractError, TypeError, ValueError)):
         EmbeddingCacheKey.from_text(
             "text",
+            language="ru",
             provider="counting",
             model="m",
             dimensions=True,
             task_type="semantic-similarity",
             preprocessing_identity="",
+        )
+    with pytest.raises(TypeError, match="language"):
+        EmbeddingCacheKey.from_text(
+            "text",
+            provider="counting",
+            model="m",
+            dimensions=4,
+            task_type="semantic-similarity",
+            preprocessing_identity=RAZDEL_IDENTITY,
         )
 
 
@@ -472,3 +485,86 @@ print(json.dumps(blocked))
     )
 
     assert json.loads(completed.stdout) == []
+
+
+def test_language_is_part_of_cache_identity_and_normalized_before_lookup(tmp_path):
+    """Dropping language can reuse identical text across distinct embedding spaces."""
+    root = tmp_path / "cache"
+    upstream = _CountingProvider()
+    provider = _provider(upstream, root)
+
+    english = asyncio.run(provider.embed(_request("same text", language="en-US")))
+    russian = asyncio.run(provider.embed(_request("same text", language="ru_RU")))
+    english_again = asyncio.run(provider.embed(_request("same text", language="EN")))
+
+    assert [request.language for request in upstream.requests] == ["en", "ru"]
+    np.testing.assert_array_equal(english_again.vectors, english.vectors)
+    assert russian.vectors.shape == english.vectors.shape
+    assert _key("same text", language="en").digest != _key(
+        "same text", language="ru"
+    ).digest
+
+
+def test_dimensionless_aliases_are_isolated_by_normalized_language(tmp_path):
+    """A dimensions=None alias from another language must not suppress an upstream call."""
+    root = tmp_path / "cache"
+    upstream = _CountingProvider(effective_dimensions=5)
+    provider = _provider(upstream, root)
+
+    asyncio.run(provider.embed(_request("same text", dimensions=None, language="en")))
+    asyncio.run(provider.embed(_request("same text", dimensions=None, language="ru")))
+    asyncio.run(provider.embed(_request("same text", dimensions=None, language="en-US")))
+
+    assert [(request.language, request.dimensions) for request in upstream.requests] == [
+        ("en", None),
+        ("ru", None),
+    ]
+
+
+def test_schema_v1_index_is_a_clean_miss_and_is_replaced_by_v2(tmp_path):
+    """A language-blind v1 index must never be interpreted as the current cache schema."""
+    root = tmp_path / "cache"
+    root.mkdir()
+    normalized_text = "same text"
+    old_parts = (
+        normalized_text,
+        "counting",
+        "embedding-v1",
+        4,
+        "semantic-similarity",
+        RAZDEL_IDENTITY,
+    )
+    old_digest = hashlib.sha256(
+        json.dumps(old_parts, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    old_entry = {
+        "normalized_text": normalized_text,
+        "provider": "counting",
+        "model": "embedding-v1",
+        "dimensions": 4,
+        "task_type": "semantic-similarity",
+        "preprocessing_identity": RAZDEL_IDENTITY,
+        "shard": old_digest[:2],
+        "last_access": 1,
+    }
+    (root / "index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "access_counter": 1,
+                "entries": {old_digest: old_entry},
+                "dimensionless": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with (root / f"{old_digest[:2]}.npz").open("wb") as stream:
+        np.savez(stream, **{old_digest: np.ones(4, dtype=np.float32)})
+    upstream = _CountingProvider()
+
+    asyncio.run(_provider(upstream, root).embed(_request("same text", language="en")))
+
+    assert [request.language for request in upstream.requests] == ["en"]
+    assert json.loads((root / "index.json").read_text(encoding="utf-8"))[
+        "schema_version"
+    ] == 2

@@ -36,9 +36,12 @@ from gemini_translator.qa.embeddings.factory import (
 )
 from gemini_translator.qa.foreign_text_filter import filter_gap_candidates
 from gemini_translator.qa.models import (
+    Action,
     AlignmentResult,
     AlignmentSpan,
+    CandidateFilterResult,
     ChapterMetrics,
+    FilteredCandidate,
     GapCandidate,
     GlossaryPolicy,
     GlossaryRule,
@@ -715,3 +718,236 @@ def test_default_metrics_rejects_non_chapter_metrics_dependency_result():
             target_language=request.target_language,
             source_chars=True,
         )
+
+
+class ProviderSpaceMismatch(RecordingProvider):
+    async def embed(self, request):
+        batch = await super().embed(request)
+        provider = "source_space" if len(self.requests) == 1 else "target_space"
+        return EmbeddingBatch(batch.vectors, provider, batch.model, batch.dimensions)
+
+
+@async_test
+async def test_provider_metadata_and_both_embedding_spaces_match_before_alignment():
+    """Aligning batches from different provider spaces fabricates cosine similarity."""
+    events: list[str] = []
+    analysis = await _service(
+        provider=ProviderSpaceMismatch(events),
+        aligner=ThreePartitionAligner(events),
+    ).analyze(_request())
+
+    assert analysis.mode == "statistics_llm_only"
+    assert analysis.warnings == ("invalid_embedding_response",)
+    assert "align" not in events
+
+
+class UnsafeProviderMetadata(RecordingProvider):
+    async def embed(self, request):
+        batch = await super().embed(request)
+        return EmbeddingBatch(
+            batch.vectors,
+            "https://secret.example/provider",
+            batch.model,
+            batch.dimensions,
+        )
+
+
+@async_test
+async def test_unsafe_provider_metadata_is_an_invalid_response_not_an_outage():
+    """Provider metadata must remain a safe canonical embedding-space identifier."""
+    analysis = await _service(provider=UnsafeProviderMetadata()).analyze(_request())
+
+    assert analysis.mode == "statistics_llm_only"
+    assert analysis.warnings == ("invalid_embedding_response",)
+
+
+class CorruptAlignmentOrder(ThreePartitionAligner):
+    def __init__(self, corruption: str):
+        super().__init__()
+        self.corruption = corruption
+
+    def align(self, source, target):
+        result = super().align(source, target)
+        spans = list(result.spans)
+        if self.corruption == "unknown":
+            spans[0] = replace(spans[0], source_unit_ids=("u-unknown",))
+        elif self.corruption == "omitted":
+            object.__setattr__(spans[0], "source_unit_ids", ())
+        else:
+            first_ids = spans[0].source_unit_ids
+            spans[0] = replace(spans[0], source_unit_ids=spans[2].source_unit_ids)
+            spans[2] = replace(spans[2], source_unit_ids=first_ids)
+        object.__setattr__(result, "spans", tuple(spans))
+        return result
+
+
+@pytest.mark.parametrize("corruption", ["unknown", "omitted", "reordered"])
+@async_test
+async def test_alignment_must_cover_each_extracted_unit_once_in_exact_order(corruption):
+    """Unknown, missing, or reordered span IDs invalidate the aligner boundary."""
+    with pytest.raises(CoverageValidationError, match="alignment"):
+        await _service(aligner=CorruptAlignmentOrder(corruption)).analyze(_request())
+
+
+class ForgingFilter(RecordingFilter):
+    def __init__(self, corruption: str):
+        super().__init__()
+        self.corruption = corruption
+
+    def filter(self, result, contexts, glossary):
+        filtered = filter_gap_candidates(result, contexts, glossary)
+        if self.corruption == "forged":
+            original = filtered.accepted[0]
+            forged = replace(original.candidate, repairable=False)
+            replacement = FilteredCandidate(
+                original.candidate_id,
+                forged,
+                original.decision,
+            )
+            return CandidateFilterResult(
+                (replacement,) + filtered.accepted[1:],
+                filtered.excluded,
+                filtered.report_only,
+            )
+        return CandidateFilterResult(
+            filtered.accepted,
+            filtered.excluded,
+            filtered.report_only[:-1],
+        )
+
+
+@pytest.mark.parametrize("corruption", ["forged", "omitted"])
+@async_test
+async def test_filter_partitions_preserve_original_gap_values_and_cover_all_once(corruption):
+    """A same-ID forgery or omitted gap must not cross the filter boundary."""
+    with pytest.raises(CoverageValidationError, match="filter"):
+        await _service(candidate_filter=ForgingFilter(corruption)).analyze(_request())
+
+
+class ForgedMetricsCollector:
+    def __init__(self, field_name: str):
+        self.field_name = field_name
+
+    def collect(self, inputs):
+        metrics = DefaultCoverageMetricsCollector().collect(inputs)
+        wrong_values = {
+            "chapter_id": "other-chapter",
+            "source_language": "de",
+            "target_language": "fr",
+            "source_chars": metrics.source_chars + 1,
+            "translated_chars": metrics.translated_chars + 1,
+            "source_units": metrics.source_units + 1,
+            "aligned_units": metrics.aligned_units + 1,
+            "possible_gaps": metrics.possible_gaps + 1,
+            "allowed_foreign_fragments": metrics.allowed_foreign_fragments + 1,
+            "applied_actions": (Action.REPORT_ONLY,),
+        }
+        return replace(metrics, **{self.field_name: wrong_values[self.field_name]})
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "chapter_id",
+        "source_language",
+        "target_language",
+        "source_chars",
+        "translated_chars",
+        "source_units",
+        "aligned_units",
+        "possible_gaps",
+        "allowed_foreign_fragments",
+        "applied_actions",
+    ],
+)
+@async_test
+async def test_metrics_must_match_final_read_only_analysis_state(field_name):
+    """Typed but forged metrics cannot describe a different chapter or mutable run."""
+    with pytest.raises(CoverageValidationError, match="metrics"):
+        await _service(
+            metrics_collector=ForgedMetricsCollector(field_name)
+        ).analyze(_request())
+
+
+class MalformedExtractor(RecordingExtractor):
+    def __init__(self, corruption: str):
+        super().__init__()
+        self.corruption = corruption
+
+    def extract(self, payload, language):
+        units = super().extract(payload, language)
+        if self.corruption == "reversed":
+            return tuple(reversed(units))
+        if self.corruption == "duplicate":
+            return (units[0], units[0]) + units[2:]
+        if self.corruption == "cross_document":
+            return (replace(units[0], document_id="other-document"),) + units[1:]
+        return list(units)
+
+
+@pytest.mark.parametrize(
+    "corruption", ["reversed", "duplicate", "cross_document", "not_tuple"]
+)
+@async_test
+async def test_extractor_output_is_validated_before_empty_or_provider_branches(corruption):
+    """Malformed semantic units must fail before any external embedding request."""
+    provider = RecordingProvider()
+    with pytest.raises(CoverageValidationError, match="source_units"):
+        await _service(
+            extractor=MalformedExtractor(corruption), provider=provider
+        ).analyze(_request())
+    assert provider.requests == []
+
+
+@async_test
+async def test_request_and_analysis_are_explicitly_non_hashable_value_objects():
+    """Nested mapping hash failures must not define an accidental public contract."""
+    request = _request()
+    analysis = await _service().analyze(request)
+
+    assert CoverageRequest.__hash__ is None
+    assert type(analysis).__hash__ is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(request)
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(analysis)
+
+
+class OneToOneAligner:
+    def align(self, source, target):
+        return AlignmentResult(
+            (
+                AlignmentSpan(
+                    (source.units[0].unit_id,),
+                    (target.units[0].unit_id,),
+                    1.0,
+                    "1:1",
+                ),
+            ),
+            (),
+            1,
+        )
+
+
+@async_test
+async def test_repeated_same_text_analysis_keeps_source_and_target_languages_isolated(
+    tmp_path,
+):
+    """Equal normalized text in en and ru needs two first-run calls and none on repeat."""
+    upstream = CountingUpstream()
+    cached = CachedEmbeddingProvider(
+        upstream,
+        EmbeddingCache(tmp_path / "cache"),
+        preprocessing_identity="coverage-language-v1",
+    )
+    service = _service(provider=cached, aligner=OneToOneAligner())
+    request = _request(
+        source_payload=_payload("source-doc", "Same text."),
+        target_payload=_payload("target-doc", "Same text."),
+    )
+
+    first = await service.analyze(request)
+    second = await service.analyze(request)
+
+    assert [item.language for item in upstream.requests] == ["en", "ru"]
+    assert first == second
