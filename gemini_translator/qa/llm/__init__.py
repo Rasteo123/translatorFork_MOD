@@ -13,7 +13,12 @@ from .omission_repairer import (
     RepairContext,
 )
 from .omission_verifier import OmissionVerifier
-from .schemas import LanguageIssue, OmissionVerdict, RepairProposal
+from .schemas import (
+    LanguageIssue,
+    OmissionVerdict,
+    RepairPostCheck,
+    RepairProposal,
+)
 
 __all__ = (
     "CancellationToken",
@@ -27,6 +32,7 @@ __all__ = (
     "QaModelSelection",
     "QaResponseSchemaError",
     "RepairContext",
+    "RepairPostCheck",
     "RepairProposal",
     "parse_single_json_object",
 )

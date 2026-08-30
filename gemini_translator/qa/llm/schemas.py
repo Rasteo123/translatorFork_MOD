@@ -268,6 +268,80 @@ class RepairProposal:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class RepairPostCheck:
+    """Model confirmation that one committed-in-memory repair did exactly its job."""
+
+    candidate_id: str
+    confirmed: bool
+    missing_facts_present: tuple[str, ...]
+    added_meaning: bool
+    context_rewritten: bool
+    explanation: str
+    metadata: Mapping[str, object] = field(default_factory=_empty_metadata)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "candidate_id", _identifier(self.candidate_id, "candidate_id")
+        )
+        for field_name in ("confirmed", "added_meaning", "context_rewritten"):
+            if not isinstance(getattr(self, field_name), bool):
+                raise QaResponseSchemaError(f"{field_name} must be a boolean")
+        object.__setattr__(
+            self,
+            "missing_facts_present",
+            _string_tuple(
+                self.missing_facts_present, "missing_facts_present", allow_empty=True
+            ),
+        )
+        object.__setattr__(
+            self, "explanation", _nonempty_string(self.explanation, "explanation")
+        )
+        object.__setattr__(self, "metadata", _metadata(self.metadata))
+        if self.confirmed and (
+            self.added_meaning
+            or self.context_rewritten
+            or not self.missing_facts_present
+        ):
+            raise QaResponseSchemaError(
+                "a confirmed repair cannot add meaning, rewrite context, or "
+                "confirm nothing"
+            )
+
+    @classmethod
+    def from_dict(
+        cls, payload: object, *, expected_candidate_id: str
+    ) -> "RepairPostCheck":
+        data = _checked_payload(
+            payload,
+            required=frozenset(
+                {
+                    "candidate_id",
+                    "confirmed",
+                    "missing_facts_present",
+                    "added_meaning",
+                    "context_rewritten",
+                    "explanation",
+                }
+            ),
+        )
+        check = cls(
+            candidate_id=data["candidate_id"],
+            confirmed=data["confirmed"],
+            missing_facts_present=data["missing_facts_present"],
+            added_meaning=data["added_meaning"],
+            context_rewritten=data["context_rewritten"],
+            explanation=data["explanation"],
+            metadata=data.get("metadata", {}),
+        )
+        expected = _identifier(expected_candidate_id, "expected_candidate_id")
+        if check.candidate_id != expected:
+            raise QaResponseSchemaError(
+                "repair post-check candidate_id does not match the request"
+            )
+        return check
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class LanguageIssue:
     issue_id: str
     category: LanguageIssueCategory
