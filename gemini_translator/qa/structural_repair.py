@@ -288,7 +288,8 @@ class StructuralRepairEngine:
 
         current_bytes = path.read_bytes()
         current_model = build_html_document_model(
-            current_bytes.decode("utf-8"), document_id=patch.chapter_id
+            current_bytes.decode("utf-8"),
+            document_id=str(preview.document_model.get("document_id") or patch.chapter_id),
         )
         if document_fingerprint(current_model) != preview.before_fingerprint:
             raise ManualEditConflict(

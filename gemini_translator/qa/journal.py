@@ -137,6 +137,35 @@ class QaJournal:
         self.glossary_observations.append(observation)
         self._mark_updated()
 
+    def append_repair(self, record: Mapping[str, Any]) -> None:
+        """Record one applied repair so a restart never repeats it."""
+        if not isinstance(record, Mapping):
+            raise QaJournalError("repair record must be a mapping")
+        entry = {str(key): value for key, value in record.items()}
+        if not isinstance(entry.get("patch_id"), str) or not entry["patch_id"].strip():
+            raise QaJournalError("repair record needs a patch_id")
+        if any(item.get("patch_id") == entry["patch_id"] for item in self.repairs):
+            return
+        self.repairs.append(entry)
+        self._mark_updated()
+
+    def record_chapter_result(
+        self,
+        *,
+        metrics: ChapterMetrics | None = None,
+        entries: Iterable[QaJournalEntry] = (),
+        repairs: Iterable[Mapping[str, Any]] = (),
+    ) -> None:
+        """Fold one chapter QA pass into the journal in a single step."""
+        if metrics is not None:
+            self.upsert_metrics(metrics)
+        for entry in entries:
+            if not isinstance(entry, QaJournalEntry):
+                raise QaJournalError("journal entries must use the typed schema")
+            self.append(entry)
+        for repair in repairs:
+            self.append_repair(repair)
+
     def metrics_frame(self) -> pd.DataFrame:
         rows = [
             self.metrics[chapter_id].to_dict() for chapter_id in sorted(self.metrics)
