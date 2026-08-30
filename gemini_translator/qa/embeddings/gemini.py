@@ -17,11 +17,15 @@ import numpy as np
 
 from .base import EmbeddingBatch, EmbeddingContractError, EmbeddingRequest, validate_and_normalize_batch
 from .factory import EmbeddingHttpError, EmbeddingResponseError, EmbeddingTransportError
+from .retry import DEFAULT_ATTEMPTS, exponential_delay, with_retries
 
 
 _GEMINI_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _GEMINI_TASK = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta"
+MAX_KEY_ROTATIONS = 12
+# The service refuses more than this many items in one batch request.
+MAX_BATCH_REQUESTS = 100
 
 
 def _positive_finite_timeout(value: object) -> float:
@@ -81,36 +85,68 @@ class GeminiEmbeddingProvider:
 
     name = "gemini"
 
-    def __init__(self, api_key: str, session_factory, timeout_seconds: float):
-        if not isinstance(api_key, str) or not api_key.strip() or api_key.strip().startswith("__"):
+    def __init__(
+        self,
+        api_key,
+        session_factory,
+        timeout_seconds: float,
+        *,
+        retry_attempts: int = DEFAULT_ATTEMPTS,
+        retry_sleep=asyncio.sleep,
+    ):
+        keys = (api_key,) if isinstance(api_key, str) else tuple(api_key or ())
+        cleaned = tuple(
+            key.strip()
+            for key in keys
+            if isinstance(key, str) and key.strip() and not key.strip().startswith("__")
+        )
+        if not cleaned:
             raise EmbeddingContractError("Gemini API key must be configured")
         if not callable(session_factory):
             raise EmbeddingContractError("session_factory must be callable")
-        self._api_key = api_key.strip()
+        # Several keys are one provider with somewhere else to go when a key is
+        # rate limited: the cache and the provider identity stay shared.
+        self._api_keys = cleaned
+        self._api_key = cleaned[0]
         self._session_factory = session_factory
         self._timeout_seconds = _positive_finite_timeout(timeout_seconds)
+        self._retry_attempts = retry_attempts
+        self._retry_sleep = retry_sleep
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingBatch:
         if not isinstance(request, EmbeddingRequest):
             raise EmbeddingContractError("request must be an EmbeddingRequest")
         model = _model_resource(request.model)
+        # batchEmbedContents takes these as fields of each request. Nesting them
+        # the way the Python SDK does is accepted and then silently ignored: the
+        # service answers with its default task type and dimensionality.
         config: dict[str, Any] = {"taskType": _task_type(request.task_type)}
         if request.dimensions is not None:
             config["outputDimensionality"] = request.dimensions
-        payload = {
-            "requests": [
-                {
-                    "model": model,
-                    "content": {"parts": [{"text": text}]},
-                    "embedContentConfig": dict(config),
-                }
-                for text in request.texts
-            ]
-        }
         url = f"{_GEMINI_ENDPOINT}/{model}:batchEmbedContents"
-        headers = {"Content-Type": "application/json", "x-goog-api-key": self._api_key}
-        response_payload = await self._post_json(url, headers, payload)
-        matrix = _response_matrix(response_payload, len(request.texts))
+        # A chapter has more sentences than one batch may carry, so the texts
+        # travel in order-preserving chunks and are stitched back together.
+        chunks = [
+            request.texts[start : start + MAX_BATCH_REQUESTS]
+            for start in range(0, len(request.texts), MAX_BATCH_REQUESTS)
+        ]
+        matrices = []
+        for chunk in chunks:
+            payload = {
+                "requests": [
+                    {
+                        "model": model,
+                        "content": {"parts": [{"text": text}]},
+                        **config,
+                    }
+                    for text in chunk
+                ]
+            }
+            response_payload = await self._post_json(url, payload)
+            matrices.append(_response_matrix(response_payload, len(chunk)))
+        if len({item.shape[1] for item in matrices}) > 1:
+            raise EmbeddingResponseError(self.name)
+        matrix = np.vstack(matrices) if len(matrices) > 1 else matrices[0]
         try:
             batch = validate_and_normalize_batch(
                 EmbeddingBatch(
@@ -127,7 +163,27 @@ class GeminiEmbeddingProvider:
             raise EmbeddingResponseError(self.name)
         return batch
 
-    async def _post_json(self, url: str, headers: dict[str, str], payload: dict) -> object:
+    async def _post_json(self, url: str, payload: dict) -> object:
+        """Send one request, moving to the next key before it starts waiting."""
+        state = {"attempt": 0}
+
+        async def once():
+            key = self._api_keys[state["attempt"] % len(self._api_keys)]
+            state["attempt"] += 1
+            headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+            return await self._post_json_once(url, headers, payload)
+
+        keys = len(self._api_keys)
+        return await with_retries(
+            once,
+            attempts=max(self._retry_attempts, min(keys, MAX_KEY_ROTATIONS)),
+            sleep=self._retry_sleep,
+            delay_for=lambda attempt, base: (
+                0.0 if attempt < keys - 1 else exponential_delay(attempt - keys + 1, base)
+            ),
+        )
+
+    async def _post_json_once(self, url: str, headers: dict[str, str], payload: dict) -> object:
         try:
             async with self._session_factory() as session:
                 async with session.post(url, headers=headers, json=payload, timeout=self._timeout_seconds) as response:

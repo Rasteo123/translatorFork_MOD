@@ -131,32 +131,42 @@ def build_embedding_provider(
         )
         return _cached(provider, qa_settings, cache_dir, preprocessing_identity)
 
-    chosen_key = qa_settings.embedding_api_key
-    gemini_key = chosen_key or str(
-        api_keys_by_provider.get("google") or api_keys_by_provider.get("gemini") or ""
+    chosen = qa_settings.embedding_api_key
+    gemini_keys = (
+        (chosen,)
+        if chosen
+        else _keys(api_keys_by_provider.get("google"))
+        or _keys(api_keys_by_provider.get("gemini"))
     )
-    openai_key = chosen_key or str(api_keys_by_provider.get("openai") or "")
+    openai_keys = (chosen,) if chosen else _keys(api_keys_by_provider.get("openai"))
     openai_base = qa_settings.embedding_base_url or str(
         api_keys_by_provider.get("openai_base_url") or ""
     )
     if qa_settings.embedding_provider == "gemini":
-        openai_key = ""
+        openai_keys = ()
     elif qa_settings.embedding_provider == "openai_compatible":
-        gemini_key = ""
+        gemini_keys = ()
     candidates: list[EmbeddingProviderConfig] = []
-    if qa_settings.embedding_provider in {"auto", "gemini"} and gemini_key:
+    if qa_settings.embedding_provider in {"auto", "gemini"} and gemini_keys:
+        # One provider with several keys: a key that hits its rate limit hands
+        # the batch to the next one, and they all share one cache.
         candidates.append(
             EmbeddingProviderConfig(
                 kind="gemini",
-                api_key=gemini_key,
+                api_key=gemini_keys[0],
+                api_keys=tuple(gemini_keys),
                 model=qa_settings.embedding_model or DEFAULT_EMBEDDING_MODELS["gemini"],
             )
         )
-    if qa_settings.embedding_provider in {"auto", "openai_compatible"} and openai_key and openai_base:
+    if (
+        qa_settings.embedding_provider in {"auto", "openai_compatible"}
+        and openai_base
+        and openai_keys
+    ):
         candidates.append(
             EmbeddingProviderConfig(
                 kind="openai_compatible",
-                api_key=openai_key,
+                api_key=openai_keys[0],
                 base_url=openai_base,
                 model=(
                     qa_settings.embedding_model
@@ -177,6 +187,17 @@ def build_embedding_provider(
         cache_dir,
         preprocessing_identity,
     )
+
+
+def _keys(value) -> tuple[str, ...]:
+    """Accept one key or an ordered list of them, dropping anything empty."""
+    if isinstance(value, str):
+        return (value,) if value.strip() else ()
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            item.strip() for item in value if isinstance(item, str) and item.strip()
+        )
+    return ()
 
 
 def _cached(provider, qa_settings, cache_dir, preprocessing_identity):
@@ -606,12 +627,20 @@ def embedding_keys_for_session(provider: str, api_key: str) -> dict[str, str]:
 
 
 def aiohttp_session_factory():
-    """Return a callable producing one HTTP session per embedding request."""
+    """Return a callable producing one HTTP session per outbound QA request.
+
+    The session trusts the same certificate bundle as the translation handlers:
+    a Python without the system roots would otherwise fail every QA request
+    with a transport error and silently drop the check into limited mode.
+    """
 
     def factory():
         import aiohttp
 
-        return aiohttp.ClientSession(trust_env=True)
+        from ..api.base import create_ssl_context
+
+        connector = aiohttp.TCPConnector(ssl=create_ssl_context())
+        return aiohttp.ClientSession(trust_env=True, connector=connector)
 
     return factory
 

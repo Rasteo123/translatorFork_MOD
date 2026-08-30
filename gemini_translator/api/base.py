@@ -38,6 +38,11 @@ def _create_ssl_context():
         return ssl.create_default_context()
     return ssl.create_default_context(cafile=cafile)
 
+
+def create_ssl_context():
+    """Public alias: every outbound HTTPS call must trust the same bundle."""
+    return _create_ssl_context()
+
 try:
     import requests
     from requests.exceptions import RequestException as RequestsError

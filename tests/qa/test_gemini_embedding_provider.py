@@ -15,6 +15,17 @@ from gemini_translator.qa.embeddings.factory import (
 from gemini_translator.qa.embeddings.gemini import GeminiEmbeddingProvider
 
 
+async def _no_sleep(_delay: float) -> None:
+    """Retries are exercised without spending the wall clock on them."""
+    return None
+
+
+def GeminiEmbeddingProvider_fast(*args, **kwargs):
+    """Build the adapter with the retry policy tests want to control."""
+    kwargs.setdefault("retry_sleep", _no_sleep)
+    return GeminiEmbeddingProvider(*args, **kwargs)
+
+
 @dataclass
 class _RecordedRequest:
     url: str
@@ -88,7 +99,7 @@ def test_gemini_posts_documented_batch_shape_and_preserves_text_order():
         _Response(payload={"embeddings": [{"values": [1.0, 0.0]}, {"values": [0.0, 2.0]}]})
     )
     secret = "gemini-secret-never-in-url"
-    result = _embed(GeminiEmbeddingProvider(secret, _factory(session), 30), _request("源文", "перевод"))
+    result = _embed(GeminiEmbeddingProvider_fast(secret, _factory(session), 30), _request("源文", "перевод"))
 
     assert session.request.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents"
     assert "?" not in session.request.url
@@ -97,7 +108,7 @@ def test_gemini_posts_documented_batch_shape_and_preserves_text_order():
     assert [row["content"]["parts"][0]["text"] for row in session.request.json["requests"]] == ["源文", "перевод"]
     assert all(row["model"] == "models/gemini-embedding-001" for row in session.request.json["requests"])
     assert all(
-        row["embedContentConfig"] == {"taskType": "SEMANTIC_SIMILARITY", "outputDimensionality": 2}
+        row["taskType"] == "SEMANTIC_SIMILARITY" and row["outputDimensionality"] == 2
         for row in session.request.json["requests"]
     )
     assert result.vectors.shape == (2, 2)
@@ -108,20 +119,23 @@ def test_gemini_accepts_bare_model_and_omits_unrequested_dimension():
     """Failing to normalize resource names produces invalid Gemini RPC paths."""
     session = _Session(_Response(payload={"embeddings": [{"values": [3.0, 4.0]}]}))
     _embed(
-        GeminiEmbeddingProvider("key", _factory(session), 2.5),
+        GeminiEmbeddingProvider_fast("key", _factory(session), 2.5),
         _request("text", model="gemini-embedding-001", dimensions=None, task_type="retrieval-query"),
     )
 
     assert session.request.url.endswith("/models/gemini-embedding-001:batchEmbedContents")
     assert session.request.json["requests"][0]["model"] == "models/gemini-embedding-001"
-    assert session.request.json["requests"][0]["embedContentConfig"] == {"taskType": "RETRIEVAL_QUERY"}
+    first = session.request.json["requests"][0]
+    assert first["taskType"] == "RETRIEVAL_QUERY"
+    assert "outputDimensionality" not in first
+    assert "embedContentConfig" not in first
 
 
 @pytest.mark.parametrize("model", ["", "models/", "models/a/b", "../model", "model?key=x", "model#fragment"])
 def test_gemini_rejects_unsafe_model_without_echoing_it(model):
     """Permitting a configured path/query could alter the request endpoint or expose secrets."""
     with pytest.raises(Exception) as captured:
-        _embed(GeminiEmbeddingProvider("key", _factory(_Session()), 1), _request("x", model=model))
+        _embed(GeminiEmbeddingProvider_fast("key", _factory(_Session()), 1), _request("x", model=model))
 
     if model:
         assert model not in str(captured.value)
@@ -132,7 +146,7 @@ def test_gemini_rejects_unsafe_model_without_echoing_it(model):
 def test_gemini_rejects_missing_or_placeholder_api_key_without_echoing_it(key):
     """Sending a placeholder as a credential masks a misconfigured provider."""
     with pytest.raises(Exception) as captured:
-        GeminiEmbeddingProvider(key, _factory(_Session()), 1)
+        GeminiEmbeddingProvider_fast(key, _factory(_Session()), 1)
 
     if key:
         assert key not in str(captured.value)
@@ -143,7 +157,7 @@ def test_gemini_rejects_missing_or_placeholder_api_key_without_echoing_it(key):
 def test_gemini_rejects_nonpositive_or_nonfinite_timeout(timeout):
     """Invalid timeouts otherwise fail later as opaque transport errors."""
     with pytest.raises(Exception):
-        GeminiEmbeddingProvider("key", _factory(_Session()), timeout)
+        GeminiEmbeddingProvider_fast("key", _factory(_Session()), timeout)
 
 
 @pytest.mark.parametrize(
@@ -157,7 +171,7 @@ def test_gemini_maps_http_status_before_parsing_json(status, retryable):
     secret = "gemini-api-key-123"
 
     with pytest.raises(EmbeddingHttpError) as captured:
-        _embed(GeminiEmbeddingProvider(secret, _factory(session), 1), _request("text"))
+        _embed(GeminiEmbeddingProvider_fast(secret, _factory(session), 1), _request("text"))
 
     error = captured.value
     assert (error.status, error.provider, error.retryable) == (status, "gemini", retryable)
@@ -173,7 +187,7 @@ def test_gemini_maps_timeout_transport_and_keeps_contexts_closed():
     """Letting timeout details escape could disclose request data and leave a session open."""
     session = _Session(post_error=TimeoutError("request text: sensitive"))
     with pytest.raises(EmbeddingTransportError) as captured:
-        _embed(GeminiEmbeddingProvider("private", _factory(session), 1), _request("sensitive"))
+        _embed(GeminiEmbeddingProvider_fast("private", _factory(session), 1), _request("sensitive"))
 
     assert captured.value.provider == "gemini"
     assert captured.value.retryable is True
@@ -192,7 +206,7 @@ def test_gemini_maps_invalid_json_and_schema_to_secret_safe_response_errors():
         _Response(payload={"embeddings": [{"values": [1.0]}, {"values": [0.0, 1.0]}]}),
     ):
         with pytest.raises(EmbeddingResponseError) as captured:
-            _embed(GeminiEmbeddingProvider("private", _factory(_Session(response)), 1), _request("a", "b"))
+            _embed(GeminiEmbeddingProvider_fast("private", _factory(_Session(response)), 1), _request("a", "b"))
 
         assert "private" not in str(captured.value)
         assert "raw secret response" not in str(captured.value)
@@ -202,4 +216,60 @@ def test_gemini_propagates_cancellation():
     """Wrapping cancellation as transport failure would make QA impossible to stop promptly."""
     session = _Session(post_error=asyncio.CancelledError())
     with pytest.raises(asyncio.CancelledError):
-        _embed(GeminiEmbeddingProvider("key", _factory(session), 1), _request("x"))
+        _embed(GeminiEmbeddingProvider_fast("key", _factory(session), 1), _request("x"))
+
+
+class _CountingSession:
+    """Answers every batch, remembering how the texts were split."""
+
+    def __init__(self, dimensions: int = 2) -> None:
+        self.batches: list[int] = []
+        self.texts: list[str] = []
+        self.dimensions = dimensions
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    def post(self, url, *, headers, json, timeout):
+        rows = json["requests"]
+        self.batches.append(len(rows))
+        self.texts.extend(row["content"]["parts"][0]["text"] for row in rows)
+        return _Response(
+            200,
+            {
+                "embeddings": [
+                    {"values": [float(index + 1)] + [0.0] * (self.dimensions - 1)}
+                    for index, _row in enumerate(rows)
+                ]
+            },
+        )
+
+
+def test_a_long_chapter_is_split_into_batches_the_service_accepts():
+    """A chapter has more sentences than one batch may carry."""
+    session = _CountingSession()
+    texts = tuple(f"Предложение {index}." for index in range(250))
+
+    batch = _embed(
+        GeminiEmbeddingProvider_fast("key", _factory(session), 30),
+        _request(*texts, dimensions=2),
+    )
+
+    assert session.batches == [100, 100, 50]
+    assert session.texts == list(texts)
+    assert batch.vectors.shape == (250, 2)
+
+
+def test_a_short_chapter_still_travels_in_one_request():
+    """Splitting must not multiply the cost of an ordinary chapter."""
+    session = _CountingSession()
+
+    _embed(
+        GeminiEmbeddingProvider_fast("key", _factory(session), 30),
+        _request(*[f"Строка {index}." for index in range(40)], dimensions=2),
+    )
+
+    assert session.batches == [40]

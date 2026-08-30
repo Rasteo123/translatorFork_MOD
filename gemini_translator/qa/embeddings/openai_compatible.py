@@ -16,6 +16,7 @@ import numpy as np
 
 from .base import EmbeddingBatch, EmbeddingContractError, EmbeddingRequest, validate_and_normalize_batch
 from .factory import EmbeddingHttpError, EmbeddingResponseError, EmbeddingTransportError
+from .retry import DEFAULT_ATTEMPTS, with_retries
 
 
 def _positive_finite_timeout(value: object) -> float:
@@ -96,13 +97,24 @@ class OpenAICompatibleEmbeddingProvider:
 
     name = "openai_compatible"
 
-    def __init__(self, base_url: str, api_key: str, session_factory, timeout_seconds: float):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        session_factory,
+        timeout_seconds: float,
+        *,
+        retry_attempts: int = DEFAULT_ATTEMPTS,
+        retry_sleep=asyncio.sleep,
+    ):
         if not callable(session_factory):
             raise EmbeddingContractError("session_factory must be callable")
         self._url = _embeddings_url(base_url)
         self._api_key = str(api_key or "").strip()
         self._session_factory = session_factory
         self._timeout_seconds = _positive_finite_timeout(timeout_seconds)
+        self._retry_attempts = retry_attempts
+        self._retry_sleep = retry_sleep
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingBatch:
         if not isinstance(request, EmbeddingRequest):
@@ -136,6 +148,14 @@ class OpenAICompatibleEmbeddingProvider:
         return batch
 
     async def _post_json(self, headers: dict[str, str], payload: dict) -> object:
+        """Send one request, retrying only what the service called retryable."""
+        return await with_retries(
+            lambda: self._post_json_once(headers, payload),
+            attempts=self._retry_attempts,
+            sleep=self._retry_sleep,
+        )
+
+    async def _post_json_once(self, headers: dict[str, str], payload: dict) -> object:
         try:
             async with self._session_factory() as session:
                 async with session.post(self._url, headers=headers, json=payload, timeout=self._timeout_seconds) as response:

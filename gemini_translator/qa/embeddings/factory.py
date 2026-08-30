@@ -94,6 +94,7 @@ class EmbeddingProviderConfig:
 
     kind: str
     api_key: str = field(default="", repr=False)
+    api_keys: tuple[str, ...] = field(default=(), repr=False)
     base_url: str | None = None
     model: str | None = None
     timeout_seconds: float = 30.0
@@ -112,6 +113,15 @@ class EmbeddingProviderConfig:
         if not isinstance(self.api_key, str):
             raise EmbeddingContractError("api_key must be a string")
         object.__setattr__(self, "api_key", self.api_key.strip())
+        if not isinstance(self.api_keys, tuple) or not all(
+            isinstance(key, str) for key in self.api_keys
+        ):
+            raise EmbeddingContractError("api_keys must be a tuple of strings")
+        object.__setattr__(
+            self,
+            "api_keys",
+            tuple(dict.fromkeys(key.strip() for key in self.api_keys if key.strip())),
+        )
         object.__setattr__(self, "base_url", _optional_config_string(self.base_url, "base_url"))
         object.__setattr__(self, "model", _optional_config_string(self.model, "model"))
         object.__setattr__(self, "timeout_seconds", _positive_finite_timeout(self.timeout_seconds))
@@ -157,7 +167,9 @@ def create_embedding_provider(
     if config.kind == "gemini":
         from .gemini import GeminiEmbeddingProvider
 
-        return GeminiEmbeddingProvider(config.api_key, session_factory, config.timeout_seconds)
+        return GeminiEmbeddingProvider(
+            config.api_keys or config.api_key, session_factory, config.timeout_seconds
+        )
     if config.kind == "openai_compatible":
         from .openai_compatible import OpenAICompatibleEmbeddingProvider
 
