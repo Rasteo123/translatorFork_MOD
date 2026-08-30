@@ -35,7 +35,15 @@ from .models import (
     SemanticUnit,
     VerifiedCandidate,
 )
-from .repair_store import ManualEditConflict, RepairStore, UndoResult
+from .repair_store import (
+    AppliedRepair,
+    ManualEditConflict,
+    RepairStore,
+    RepairStoreError,
+    UndoResult,
+    atomic_write_bytes,
+    content_digest,
+)
 from .repair_validator import ChapterSnapshot
 from .structural_repair import (
     RepairValidationContext,
@@ -760,13 +768,61 @@ class TranslationQualityService:
             warnings.append("language_check_failed")
             return None
         if result.preview_model is not None and options.auto_repair_language:
-            try:
-                request.translated_path.write_text(
-                    render_document_html(result.preview_model), encoding="utf-8"
-                )
-            except OSError:
-                warnings.append("language_repair_not_written")
+            self._write_language_repairs(request, result, warnings)
         return result
+
+    def _write_language_repairs(
+        self, request: ChapterQaRequest, result: LanguageQaResult, warnings: list[str]
+    ) -> None:
+        """Write the confirmed language fixes the same way a repair is written.
+
+        A language fix edits the book exactly as a restored omission does, so it
+        gets the same backup and the same journal entry: without them the undo
+        button would silently leave these edits in place.
+        """
+
+        path = request.translated_path
+        payload = render_document_html(result.preview_model).encode("utf-8")
+        try:
+            before = path.read_bytes()
+            backup = self._store.backup_chapter(request.chapter_id, path)
+            atomic_write_bytes(path, payload)
+        except (OSError, RepairStoreError):
+            warnings.append("language_repair_not_written")
+            return
+        identity = "\x1f".join(
+            (request.chapter_id,)
+            + tuple(item.issue_id for item in result.applied)
+        )
+        patch_id = "lang" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+        applied = AppliedRepair(
+            patch_id=patch_id,
+            chapter_id=request.chapter_id,
+            session_id=self._store.session_id,
+            chapter_path=path,
+            backup_path=backup.path,
+            before_sha256=content_digest(before),
+            after_sha256=content_digest(payload),
+            inserted_text="; ".join(
+                item.replacement_text for item in result.applied
+            )[:500],
+        )
+        try:
+            self._store.record_applied(applied)
+        except Exception:  # noqa: BLE001 - a written fix must stay recorded or undone
+            atomic_write_bytes(path, before)
+            warnings.append("language_repair_not_recorded")
+            return
+        self._journal.append_repair(
+            {
+                "patch_id": patch_id,
+                "chapter_id": request.chapter_id,
+                "candidate_id": "language",
+                "session_id": self._store.session_id,
+                "fragment": applied.inserted_text,
+            }
+        )
+        self._save_journal()
 
     async def _collect_rules(
         self,

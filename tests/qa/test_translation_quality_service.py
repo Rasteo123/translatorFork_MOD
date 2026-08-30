@@ -560,3 +560,81 @@ def test_cancellation_stops_the_pass_immediately(tmp_path, chapter):
 
     assert verifier.calls == 0
     assert chapter.read_text(encoding="utf-8") == _CHAPTER_HTML
+
+
+def test_language_fixes_are_backed_up_and_undoable(tmp_path, chapter):
+    """A language fix edits the book, so undo must reach it like any repair."""
+    from gemini_translator.qa.language_validation import (
+        LanguageQaResult,
+        LanguageReplacement,
+        apply_language_replacements,
+    )
+
+    class _Language:
+        async def check_chapter(self, request, *, rule_candidates=(), nlp_analysis=None):
+            blocks = build_translation_payload(request.document_model)["blocks"]
+            replacement = LanguageReplacement(
+                "issue-1", blocks[-1]["id"], "сразу ушёл", "тут же ушёл"
+            )
+            return LanguageQaResult(
+                chapter_id=request.chapter_id,
+                applied=(replacement,),
+                preview_model=apply_language_replacements(
+                    request.document_model, (replacement,)
+                ),
+            )
+
+    original = chapter.read_bytes()
+    service, journal, journal_path = _service(
+        tmp_path, aligner=_CleanAligner(), language=_Language()
+    )
+
+    result = _check(service, _request(chapter))
+
+    assert "тут же ушёл" in chapter.read_text(encoding="utf-8")
+    assert result.language is not None
+    saved = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert any(entry["candidate_id"] == "language" for entry in saved["repairs"])
+
+    undo = asyncio.run(service.undo_chapter("chapter-1"))
+
+    assert undo.status == "restored"
+    assert chapter.read_bytes() == original
+
+
+def test_a_language_fix_that_cannot_be_recorded_is_rolled_back(tmp_path, chapter):
+    """An edit with no way back is worse than no edit at all."""
+    from gemini_translator.qa.language_validation import (
+        LanguageQaResult,
+        LanguageReplacement,
+        apply_language_replacements,
+    )
+
+    class _Language:
+        async def check_chapter(self, request, *, rule_candidates=(), nlp_analysis=None):
+            blocks = build_translation_payload(request.document_model)["blocks"]
+            replacement = LanguageReplacement(
+                "issue-1", blocks[-1]["id"], "сразу ушёл", "тут же ушёл"
+            )
+            return LanguageQaResult(
+                chapter_id=request.chapter_id,
+                applied=(replacement,),
+                preview_model=apply_language_replacements(
+                    request.document_model, (replacement,)
+                ),
+            )
+
+    original = chapter.read_bytes()
+    service, _journal, _path = _service(
+        tmp_path, aligner=_CleanAligner(), language=_Language()
+    )
+
+    def broken(applied):
+        raise OSError("journal is not writable")
+
+    service._store.record_applied = broken  # noqa: SLF001 - exercising the failure
+
+    result = _check(service, _request(chapter))
+
+    assert chapter.read_bytes() == original
+    assert "language_repair_not_recorded" in result.warnings
