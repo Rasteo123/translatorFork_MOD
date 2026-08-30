@@ -52,6 +52,28 @@ def _require_finite_number(
         raise QaModelValidationError(f"{field_name} must be finite")
 
 
+def _validate_prompt_resources(config: object) -> None:
+    """Validate the output budget and versioned prompt location of one QA request."""
+    max_output_tokens = getattr(config, "max_output_tokens")
+    prompt_version = getattr(config, "prompt_version")
+    prompt_path = getattr(config, "prompt_path")
+    _require_integer(max_output_tokens, "max_output_tokens")
+    if not 1 <= max_output_tokens <= _MAX_QA_OUTPUT_TOKENS:
+        raise QaModelValidationError(
+            f"max_output_tokens must be between 1 and {_MAX_QA_OUTPUT_TOKENS}"
+        )
+    _require_nonempty_string(prompt_version, "prompt_version")
+    if re.fullmatch(r"[a-z][a-z0-9_]*_v[1-9][0-9]*", prompt_version) is None:
+        raise QaModelValidationError("prompt_version must be a stable versioned key")
+    if prompt_path is None:
+        return
+    if not isinstance(prompt_path, (str, os.PathLike)):
+        raise QaModelValidationError("prompt_path must be a filesystem path")
+    if not str(prompt_path).strip():
+        raise QaModelValidationError("prompt_path must not be empty")
+    object.__setattr__(config, "prompt_path", Path(prompt_path))
+
+
 class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -101,7 +123,7 @@ class GlossaryPolicy(StrEnum):
     EITHER = "either"
 
 
-_MAX_VERIFIER_OUTPUT_TOKENS = 4096
+_MAX_QA_OUTPUT_TOKENS = 4096
 
 _OMISSION_VERIFIER_STATUSES = frozenset(
     {
@@ -920,21 +942,23 @@ class OmissionVerifierConfig:
         _require_finite_number(self.high_confidence, "high_confidence")
         if not 0.0 <= self.high_confidence <= 1.0:
             raise QaModelValidationError("high_confidence must be between 0 and 1")
-        _require_integer(self.max_output_tokens, "max_output_tokens")
-        if not 1 <= self.max_output_tokens <= _MAX_VERIFIER_OUTPUT_TOKENS:
-            raise QaModelValidationError(
-                "max_output_tokens must be between 1 and "
-                f"{_MAX_VERIFIER_OUTPUT_TOKENS}"
-            )
-        _require_nonempty_string(self.prompt_version, "prompt_version")
-        if re.fullmatch(r"[a-z][a-z0-9_]*_v[1-9][0-9]*", self.prompt_version) is None:
-            raise QaModelValidationError("prompt_version must be a stable versioned key")
-        if self.prompt_path is not None:
-            if not isinstance(self.prompt_path, (str, os.PathLike)):
-                raise QaModelValidationError("prompt_path must be a filesystem path")
-            if not str(self.prompt_path).strip():
-                raise QaModelValidationError("prompt_path must not be empty")
-            object.__setattr__(self, "prompt_path", Path(self.prompt_path))
+        _validate_prompt_resources(self)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class OmissionRepairerConfig:
+    """Bounded resource and prompt selection for one local repair attempt."""
+
+    max_output_tokens: int = 900
+    prompt_version: str = "omission_repairer_v1"
+    prompt_path: Path | None = None
+    max_glossary_terms: int = 12
+
+    def __post_init__(self) -> None:
+        _validate_prompt_resources(self)
+        _require_integer(self.max_glossary_terms, "max_glossary_terms")
+        if self.max_glossary_terms < 1:
+            raise QaModelValidationError("max_glossary_terms must be positive")
 
 
 @dataclass(frozen=True, slots=True)
