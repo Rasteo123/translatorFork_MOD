@@ -275,6 +275,30 @@ def test_generic_label_and_number_are_not_excluded_as_device_models(text):
 @pytest.mark.parametrize(
     "text",
     (
+        "Floor 2A",
+        "Part B2",
+        "Room A2",
+        "Map A2",
+        "Section C3",
+        "Figure B2",
+        "Chapter D4",
+    ),
+)
+def test_label_and_alphanumeric_reference_reaches_semantics(text):
+    """An alphanumeric reference token does not make an ordinary label a product model."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text)
+    )
+
+    assert decision.action == "send_to_llm_verifier"
+    assert not any("whole_protected_item:model" in reason for reason in decision.reasons)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
         "He 2 Pro",
         "My 2 Pro",
         "Open 2 Pro",
@@ -297,7 +321,7 @@ def test_generic_title_case_number_and_product_suffix_reaches_semantics(text):
 
 @pytest.mark.parametrize("text", ("iPhone 15 Pro", "Galaxy S23 Ultra"))
 def test_strong_product_model_structure_remains_excluded(text):
-    """Internal mixed case or an alphanumeric model token is strong model evidence."""
+    """Product suffix plus mixed case or an alphanumeric token is strong evidence."""
     candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
 
     decision = ForeignTextFilter(glossary).classify(
@@ -306,6 +330,33 @@ def test_strong_product_model_structure_remains_excluded(text):
 
     assert decision.action == "exclude"
     assert decision.reasons == ("whole_protected_item:model",)
+
+
+@pytest.mark.parametrize("text", ("S23", "A2", "Galaxy S23"))
+def test_alphanumeric_token_without_product_structure_reaches_semantics(text):
+    """A standalone identifier-shaped token is ambiguous without product structure."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text)
+    )
+
+    assert decision.action == "send_to_llm_verifier"
+
+
+def test_explicit_entity_hint_protects_an_ambiguous_model_surface():
+    """Explicit upstream evidence can protect a surface that heuristics leave ambiguous."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+    hinted = replace(
+        context,
+        source_text="S23",
+        protected_entities=(ProtectedEntityHint("S23", "title"),),
+    )
+
+    decision = ForeignTextFilter(glossary).classify(candidate, hinted)
+
+    assert decision.action == "exclude"
+    assert decision.reasons == ("explicit_protected_entity:title:S23",)
 
 
 def test_unknown_dictionary_brand_number_and_suffix_reaches_semantics():

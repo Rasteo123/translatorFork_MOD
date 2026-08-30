@@ -30,11 +30,12 @@ _SKU_RE = re.compile(
 )
 _CODE_RE = re.compile(
     r"(?=[A-Z0-9._/-]*[A-Z])(?=[A-Z0-9._/-]*\d)"
-    r"(?:[A-Z][A-Z0-9]*[-_/][A-Z0-9._/-]+|[A-Z]{1,6}\d[A-Z0-9]{1,10})",
+    r"[A-Z][A-Z0-9]*[-_/][A-Z0-9._/-]+",
     re.IGNORECASE,
 )
 _WRAPPER_CHARACTERS = " \t\r\n\"'`«»„“”‟‹›‘’‚‛ʼ—–-:;,.!?()[]{}"
 _GENERIC_NUMBER_LABELS = frozenset({"chapter", "page", "section", "version"})
+_MODEL_SUFFIXES = frozenset({"air", "max", "mini", "plus", "pro", "ultra"})
 _PATTERNS = (
     ("url", _URL_RE),
     ("email", _EMAIL_RE),
@@ -340,7 +341,8 @@ def _looks_like_full_device_model(text: str) -> bool:
     stylized_brand = tokens[0][0].islower() and any(
         character.isupper() for character in tokens[0][1:]
     )
-    return mixed_alphanumeric or stylized_brand
+    has_product_suffix = tokens[-1].casefold() in _MODEL_SUFFIXES
+    return has_product_suffix and (mixed_alphanumeric or stylized_brand)
 
 
 def _foreign_context_evidence(context: CandidateContext) -> str | None:
