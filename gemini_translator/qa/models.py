@@ -821,6 +821,7 @@ class ProtectedEntityHint:
 
     def __post_init__(self) -> None:
         _require_nonempty_string(self.text, "protected entity text")
+        _require_nonempty_string(self.category, "protected entity category")
         if self.category not in _ENTITY_CATEGORIES:
             raise QaModelValidationError("unsupported protected entity category")
 
@@ -908,6 +909,8 @@ class CandidateContext:
             raise QaModelValidationError("protected_entities entries must be unique")
         if not isinstance(self.protected_contexts, tuple):
             raise QaModelValidationError("protected_contexts must be a tuple")
+        for context in self.protected_contexts:
+            _require_nonempty_string(context, "protected context")
         if len(set(self.protected_contexts)) != len(self.protected_contexts):
             raise QaModelValidationError("protected_contexts entries must be unique")
         for context in self.protected_contexts:
@@ -925,6 +928,9 @@ class ForeignTextDecision:
     reasons: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        _require_nonempty_string(self.category, "foreign-text category")
+        _require_nonempty_string(self.action, "foreign-text action")
+        _require_nonempty_string(self.confidence, "foreign-text confidence")
         if self.category not in _FOREIGN_TEXT_CATEGORIES:
             raise QaModelValidationError("unsupported foreign-text category")
         if self.action not in _FOREIGN_TEXT_ACTIONS:
@@ -935,10 +941,10 @@ class ForeignTextDecision:
             raise QaModelValidationError("unsupported foreign-text confidence")
         if not isinstance(self.reasons, tuple) or not self.reasons:
             raise QaModelValidationError("foreign-text reasons must be a nonempty tuple")
-        if len(set(self.reasons)) != len(self.reasons):
-            raise QaModelValidationError("foreign-text reasons must be unique")
         for reason in self.reasons:
             _require_nonempty_string(reason, "foreign-text reason")
+        if len(set(self.reasons)) != len(self.reasons):
+            raise QaModelValidationError("foreign-text reasons must be unique")
 
 
 @dataclass(frozen=True, slots=True)

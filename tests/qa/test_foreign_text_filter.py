@@ -232,24 +232,106 @@ def test_numbered_narrative_is_not_mistaken_for_a_device_model():
     assert not any("whole_protected_item:model" in reason for reason in decision.reasons)
 
 
-def test_mixed_glossary_terms_keep_boundaries_on_their_alphabetic_edge():
-    """The CJK half of a mixed term must not permit a match inside a longer Latin token."""
+@pytest.mark.parametrize("text", ("2024", "1234", "3.14", "10/10", "v2", "A2"))
+def test_bare_numeric_surfaces_are_not_excluded_as_codes(text):
+    """A numeric-only surface has no alphabetic code evidence and must reach semantics."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text)
+    )
+
+    assert decision.action == "send_to_llm_verifier"
+    assert not any("whole_protected_item:code" in reason for reason in decision.reasons)
+
+
+def test_alpha_numeric_separator_surface_remains_a_strong_code_item():
+    """Narrowing numeric matching must retain a genuine compact identifier."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text="AB-2048")
+    )
+
+    assert decision.action == "exclude"
+    assert decision.reasons == ("whole_protected_item:code",)
+
+
+@pytest.mark.parametrize(
+    "text", ("Chapter 2048", "Version 2", "Page 1234", "Section A2")
+)
+def test_generic_label_and_number_are_not_excluded_as_device_models(text):
+    """A generic noun plus number is ordinary content, not strong product structure."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text)
+    )
+
+    assert decision.action == "send_to_llm_verifier"
+    assert not any("whole_protected_item:model" in reason for reason in decision.reasons)
+
+
+@pytest.mark.parametrize("text", ("2024", "Chapter 2048"))
+def test_unrepairable_numbered_surface_stays_report_only(text):
+    """Removing protected-item false positives must not bypass the two-anchor requirement."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+    unrepairable, _ = _candidate(f"unrepairable-{text}", repairable=False)
+    context = replace(
+        context,
+        candidate_id=unrepairable.candidate_id,
+        source_text=text,
+    )
+
+    decision = ForeignTextFilter(glossary).classify(unrepairable, context)
+
+    assert decision.action == "report_only"
+
+
+def test_mixed_glossary_terms_keep_outer_latin_and_digit_boundaries():
+    """A CJK edge must not let a mixed policy term match inside a larger code-like token."""
     rules = (GlossaryRule("Art武", GlossaryPolicy.KEEP_ORIGINAL),)
 
     assert match_glossary_policies("ArthurArt武 arrived", rules) == ()
+    assert match_glossary_policies("Art武A arrived", rules) == ()
+    assert match_glossary_policies("9Art武 arrived", rules) == ()
+    assert match_glossary_policies("Art武9 arrived", rules) == ()
     assert len(match_glossary_policies("Art武 arrived", rules)) == 1
 
 
-def test_conservative_name_pattern_rejects_sentence_like_title_case():
-    """Two title-case words are not enough when the first is an ordinary pronoun."""
-    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
-    sentence = replace(context, source_text="He Waited.")
-    name = replace(context, source_text="John Smith", candidate_language="en")
+def test_pure_cjk_glossary_terms_still_match_with_cjk_neighbors():
+    """Outer token boundaries for mixed terms must not disable deterministic CJK substrings."""
+    rules = (GlossaryRule("武魂", GlossaryPolicy.KEEP_ORIGINAL),)
 
-    assert ForeignTextFilter(glossary).classify(candidate, sentence).action == (
-        "send_to_llm_verifier"
+    matches = match_glossary_policies("斗罗武魂殿", rules)
+
+    assert tuple(match.term for match in matches) == ("武魂",)
+
+
+@pytest.mark.parametrize(
+    "text", ("Blue House", "His Sword", "Open Door", "Winter Night", "John Smith")
+)
+def test_title_case_surface_without_explicit_entity_evidence_reaches_semantics(text):
+    """Title casing alone cannot distinguish a name from missing narrative or a phrase."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text, candidate_language="en")
     )
-    assert ForeignTextFilter(glossary).classify(candidate, name).action == "exclude"
+
+    assert decision.action == "send_to_llm_verifier"
+
+
+def test_explicit_person_hint_still_excludes_the_whole_entity():
+    """Removing title-case inference must preserve explicit protected entity evidence."""
+    candidate, _, context, glossary, _, _ = _loaded_case("person_name")
+
+    decision = ForeignTextFilter(glossary).classify(candidate, context)
+
+    assert decision.action == "exclude"
+    assert decision.reasons == (
+        "explicit_protected_entity:person:Arthur Morgan",
+    )
 
 
 def test_filter_partitions_every_gap_once_without_mutating_inputs():
@@ -419,6 +501,34 @@ def test_context_rejects_duplicate_entity_hints_before_classification():
             context,
             protected_entities=context.protected_entities + context.protected_entities,
         )
+
+
+@pytest.mark.parametrize(
+    "builder",
+    (
+        lambda: ForeignTextDecision([], "exclude", "high", ("x",)),
+        lambda: ForeignTextDecision("ambiguous", [], "medium", ("x",)),
+        lambda: ForeignTextDecision(
+            "ambiguous", "send_to_llm_verifier", [], ("x",)
+        ),
+        lambda: ForeignTextDecision(
+            "ambiguous", "send_to_llm_verifier", "medium", ([],)
+        ),
+        lambda: ProtectedEntityHint("Apple", []),
+    ),
+)
+def test_unhashable_filter_enum_and_reason_values_raise_typed_validation(builder):
+    """Membership and duplicate checks must not leak raw TypeError for malformed values."""
+    with pytest.raises(QaModelValidationError):
+        builder()
+
+
+def test_unhashable_protected_context_value_raises_typed_validation():
+    """Protected context entries must be type-checked before uniqueness hashing."""
+    _, _, context, _, _, _ = _loaded_case("brand")
+
+    with pytest.raises(QaModelValidationError):
+        replace(context, protected_contexts=([],))
 
 
 def test_foreign_filter_import_boundary_has_no_ui_engine_or_network_dependency():

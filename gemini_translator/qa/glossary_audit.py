@@ -80,6 +80,17 @@ def _normalize_policy_text(value: str) -> str:
 def _policy_boundary_matches(
     text: str, term: str, start: int, end: int
 ) -> bool:
+    has_cjk = _CJK_RE.search(term) is not None
+    has_non_cjk_alnum = any(
+        character.isalnum() and _CJK_RE.fullmatch(character) is None
+        for character in term
+    )
+    if has_cjk and not has_non_cjk_alnum:
+        return True
+    if has_cjk:
+        left_ok = start == 0 or not _is_non_cjk_word_character(text[start - 1])
+        right_ok = end == len(text) or not _is_non_cjk_word_character(text[end])
+        return left_ok and right_ok
     left_requires_boundary = term[0].isalnum() and _CJK_RE.fullmatch(term[0]) is None
     right_requires_boundary = term[-1].isalnum() and _CJK_RE.fullmatch(term[-1]) is None
     left_ok = not left_requires_boundary or start == 0 or not (
@@ -89,6 +100,12 @@ def _policy_boundary_matches(
         text[end].isalnum() or text[end] == "_"
     )
     return left_ok and right_ok
+
+
+def _is_non_cjk_word_character(character: str) -> bool:
+    return character == "_" or (
+        character.isalnum() and _CJK_RE.fullmatch(character) is None
+    )
 
 
 class GlossaryAuditor:

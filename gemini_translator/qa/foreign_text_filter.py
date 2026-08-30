@@ -28,14 +28,14 @@ _SKU_RE = re.compile(
     r"(?:SKU|article|item|арт(?:икул)?)\s*[:#.-]?\s*[A-Z0-9][A-Z0-9._/-]{2,}",
     re.IGNORECASE,
 )
-_CODE_RE = re.compile(r"(?=[A-Z0-9._/-]*\d)[A-Z0-9][A-Z0-9._/-]{3,}")
-_LATIN_NAME_RE = re.compile(
-    r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]+){1,3}"
+_CODE_RE = re.compile(
+    r"(?=[A-Z0-9._/-]*[A-Z])(?=[A-Z0-9._/-]*\d)"
+    r"(?:[A-Z][A-Z0-9]*[-_/][A-Z0-9._/-]+|[A-Z]{1,6}\d[A-Z0-9]{1,10})",
+    re.IGNORECASE,
 )
 _WRAPPER_CHARACTERS = " \t\r\n\"'`«»„“”‟‹›‘’‚‛ʼ—–-:;,.!?()[]{}"
-_NON_NAME_LEADS = frozenset(
-    {"a", "an", "do", "he", "i", "it", "not", "she", "the", "they", "we", "you"}
-)
+_GENERIC_NUMBER_LABELS = frozenset({"chapter", "page", "version"})
+_MODEL_SUFFIXES = frozenset({"air", "max", "mini", "plus", "pro", "ultra"})
 _PATTERNS = (
     ("url", _URL_RE),
     ("email", _EMAIL_RE),
@@ -203,14 +203,6 @@ class ForeignTextFilter:
                 for hint in matching_hints
             )
             return ForeignTextFilter._semantic_or_report(candidate, *reasons)
-        surface = _display_surface(context.source_text)
-        if _LATIN_NAME_RE.fullmatch(surface) and surface.split()[0].casefold() not in _NON_NAME_LEADS:
-            return _decision(
-                "protected_entity",
-                "exclude",
-                "medium",
-                "conservative_full_span_latin_name",
-            )
         return None
 
     @staticmethod
@@ -328,6 +320,8 @@ def _looks_like_full_device_model(text: str) -> bool:
     tokens = text.split()
     if not 2 <= len(tokens) <= 5 or not any(any(character.isdigit() for character in token) for token in tokens):
         return False
+    if tokens[0].casefold() in _GENERIC_NUMBER_LABELS:
+        return False
     for token in tokens:
         compact = token.strip("+._/-")
         if not compact or not all(character.isalnum() or character in "+._/-" for character in token):
@@ -339,7 +333,25 @@ def _looks_like_full_device_model(text: str) -> bool:
         if compact[0].islower() and any(character.isupper() for character in compact[1:]):
             continue
         return False
-    return True
+    mixed_alphanumeric = any(
+        any(character.isalpha() for character in token)
+        and any(character.isdigit() for character in token)
+        for token in tokens
+    )
+    stylized_brand = tokens[0][0].islower() and any(
+        character.isupper() for character in tokens[0][1:]
+    )
+    product_suffix = tokens[-1].casefold() in _MODEL_SUFFIXES
+    separated_identifier = any(
+        any(character.isalpha() for character in token)
+        and any(character.isdigit() for character in token)
+        and any(separator in token for separator in "-_/.")
+        for token in tokens
+    )
+    return (
+        mixed_alphanumeric
+        and (stylized_brand or product_suffix or separated_identifier)
+    ) or (len(tokens) >= 3 and (stylized_brand or product_suffix))
 
 
 def _foreign_context_evidence(context: CandidateContext) -> str | None:
