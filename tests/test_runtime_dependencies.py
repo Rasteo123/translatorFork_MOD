@@ -21,3 +21,29 @@ def test_python_and_numeric_dependency_contract_is_consistent():
     assert 'target-version = "py311"' in (ROOT / "pyproject.toml").read_text()
     assert 'python-version: "3.11"' in (ROOT / ".github/workflows/tests.yml").read_text()
     assert 'python-version: "3.11"' in (ROOT / ".github/workflows/release.yml").read_text()
+
+
+def test_qa_prompt_resources_are_collected_by_both_builds():
+    """A prompt file left out of the bundle fails every QA request closed."""
+    prompts = ROOT / "gemini_translator/config/translation_qa_prompts.json"
+    assert prompts.is_file()
+
+    for spec_name in ("translatorFork_MOD.spec", "translatorFork-translator-only.spec"):
+        spec = (ROOT / spec_name).read_text(encoding="utf-8")
+        assert "gemini_translator/config/translation_qa_prompts.json" in spec
+
+
+def test_every_shipped_prompt_declares_its_data_boundary():
+    """A prompt without the untrusted-data markers would take book text as orders."""
+    import json
+
+    payload = json.loads(
+        (ROOT / "gemini_translator/config/translation_qa_prompts.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload
+    for name, template in payload.items():
+        assert template.count("__QA_DATA_TAG__") == 2, name
+        assert template.count("__QA_DATA_PAYLOAD__") == 1, name

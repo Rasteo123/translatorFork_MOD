@@ -20,6 +20,9 @@ ICON_PATH = PROJECT_ROOT / "gemini_translator" / "GT.ico"
 
 datas = [
     ('config', 'config'),
+    # Versioned QA prompts are read through importlib.resources at runtime and
+    # must therefore be collected, or every QA request fails closed.
+    ('gemini_translator/config/translation_qa_prompts.json', 'gemini_translator/config'),
 ]
 datas += collect_data_files('PyQt6')
 datas += collect_data_files('certifi')

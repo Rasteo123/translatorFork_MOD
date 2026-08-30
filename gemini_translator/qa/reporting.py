@@ -11,6 +11,7 @@ import pandas as pd
 from .capabilities import QaCapabilityKey
 from .journal import QaJournal
 from .models import ChapterMetrics
+from .report_snapshot import BookQaReportSnapshot
 
 
 SCRIPT_COLUMNS = {
@@ -137,13 +138,9 @@ class QaReportBuilder:
             ("patch_id", "chapter_id", "candidate_id", "session_id", "applied_at"),
         )
 
-    def summary(self, journal: QaJournal):
+    def summary(self, journal: QaJournal, open_gates=()) -> BookQaReportSnapshot:
         """Return the same snapshot the report window shows."""
-        from ..ui.dialogs.validation_dialogs.translation_quality_models import (
-            BookQaReportSnapshot,
-        )
-
-        return BookQaReportSnapshot.from_journal(journal)
+        return BookQaReportSnapshot.from_journal(journal, open_gates)
 
     def export_csv_bundle(self, directory: Path | str, journal: QaJournal) -> tuple[Path, ...]:
         """Write four CSV files that open anywhere, replacing them atomically."""

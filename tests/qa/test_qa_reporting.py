@@ -217,3 +217,26 @@ def test_the_journal_is_never_modified_by_reporting():
 
     assert journal.updated_at == before
     assert len(journal.metrics) == 2
+
+
+def test_reporting_never_pulls_the_interface_into_a_headless_run():
+    """The CLI and MCP paths must be able to report without Qt."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys;"
+            "import gemini_translator.qa.reporting as reporting;"
+            "from gemini_translator.qa.report_snapshot import BookQaReportSnapshot;"
+            "print(any(name.startswith('PyQt6') for name in sys.modules))",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False"
