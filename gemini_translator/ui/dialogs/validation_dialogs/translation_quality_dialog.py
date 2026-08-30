@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -78,6 +79,7 @@ class TranslationQualityDialog(QDialog):
     cancel_requested = pyqtSignal()
     settings_changed = pyqtSignal(object)
     embedding_test_requested = pyqtSignal(object)
+    export_requested = pyqtSignal(str)
 
     def __init__(self, parent=None, *, settings: QaSettings | None = None, api_keys=()) -> None:
         super().__init__(parent)
@@ -143,12 +145,14 @@ class TranslationQualityDialog(QDialog):
         self.undo_all_button = QPushButton("Отменить все автоматические исправления", self)
         self.cancel_button = QPushButton("Остановить проверку", self)
         self.cancel_button.setEnabled(False)
+        self.export_button = QPushButton("Экспорт отчёта (CSV)", self)
 
         self.check_chapter_button.clicked.connect(self._request_check_chapter)
         self.check_all_button.clicked.connect(self.check_all_requested.emit)
         self.undo_chapter_button.clicked.connect(self._request_undo_chapter)
         self.undo_all_button.clicked.connect(self._request_undo_all)
         self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        self.export_button.clicked.connect(self._request_export)
 
         for button in (
             self.check_chapter_button,
@@ -156,6 +160,7 @@ class TranslationQualityDialog(QDialog):
             self.undo_chapter_button,
             self.undo_all_button,
             self.cancel_button,
+            self.export_button,
         ):
             row.addWidget(button)
         row.addStretch(1)
@@ -537,6 +542,7 @@ class TranslationQualityDialog(QDialog):
         has_rows = self.table_model.rowCount() > 0
         chapter_id = self.selected_chapter_id()
         repaired = set(self.table_model.snapshot.repaired_chapters)
+        self.export_button.setEnabled(has_rows and not busy)
         self.check_chapter_button.setEnabled(bool(chapter_id) and not busy)
         self.check_all_button.setEnabled(not busy)
         self.undo_chapter_button.setEnabled(
@@ -545,6 +551,14 @@ class TranslationQualityDialog(QDialog):
         self.undo_all_button.setEnabled(bool(repaired) and not busy)
         self.cancel_button.setEnabled(busy)
         self.table.setEnabled(has_rows)
+
+    def _request_export(self) -> None:
+        """Ask where to write the report bundle, then hand the path over."""
+        directory = QFileDialog.getExistingDirectory(
+            self, "Куда сохранить отчёт", ""
+        )
+        if directory:
+            self.export_requested.emit(directory)
 
     def _request_check_chapter(self) -> None:
         chapter_id = self.selected_chapter_id()

@@ -252,3 +252,16 @@ def test_progress_reports_real_counts(qt_app):
     assert dialog.progress.maximum() == 6
     assert dialog.progress.value() == 2
     assert "chapter-2" in dialog.progress.format()
+
+
+def test_export_is_offered_only_when_there_is_a_report(qt_app):
+    """Exporting an empty report would hand the user four empty files."""
+    dialog = TranslationQualityDialog()
+
+    assert dialog.export_button.isEnabled() is False
+
+    dialog.set_report(BookQaReportSnapshot.from_journal(_journal()))
+    assert dialog.export_button.isEnabled() is True
+
+    dialog.set_busy(True)
+    assert dialog.export_button.isEnabled() is False

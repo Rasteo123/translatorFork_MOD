@@ -301,3 +301,32 @@ def test_embedding_probe_reports_a_provider_that_cannot_be_built(qt_app):
     message = _probe_embedding(QaSettings(embedding_provider="local_onnx"))
 
     assert "не настроен" in message
+
+
+def test_export_writes_the_bundle_and_reports_where(qt_app, tmp_path):
+    """An export the user cannot find is not an export."""
+    controller = _controller(_Coordinator())
+    statuses = []
+    controller.status_changed.connect(statuses.append)
+
+    controller.export_report(str(tmp_path))
+
+    assert (tmp_path / "chapters.csv").is_file()
+    assert (tmp_path / "glossary.csv").is_file()
+    assert str(tmp_path) in statuses[-1]
+
+
+def test_export_reports_a_broken_journal_instead_of_writing_nothing(qt_app, tmp_path):
+    """A silent no-op would look exactly like a successful export."""
+
+    def broken():
+        raise RuntimeError("journal is corrupted")
+
+    controller = _controller(_Coordinator(), journal_loader=broken)
+    statuses = []
+    controller.status_changed.connect(statuses.append)
+
+    controller.export_report(str(tmp_path))
+
+    assert "corrupted" in statuses[-1]
+    assert not list(tmp_path.glob("*.csv"))

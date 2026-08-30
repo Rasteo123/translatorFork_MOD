@@ -53,6 +53,7 @@ class TranslationQualityController(QObject):
         dialog.undo_all_requested.connect(self.undo_all)
         dialog.cancel_requested.connect(self.cancel)
         dialog.embedding_test_requested.connect(self.test_embedding)
+        dialog.export_requested.connect(self.export_report)
         self.report_ready.connect(dialog.set_report)
         self.status_changed.connect(dialog.set_status)
         self.busy_changed.connect(dialog.set_busy)
@@ -131,6 +132,24 @@ class TranslationQualityController(QObject):
         coordinator.run_background(
             lambda: coordinator.undo_all(),
             lambda result, error: self._finish_undo(result, error),
+        )
+
+    def export_report(self, directory: str) -> None:
+        """Write the book's report next to wherever the user asked for it."""
+        from ....qa.reporting import QaReportBuilder
+
+        try:
+            journal = self._journal_loader()
+        except Exception as error:  # noqa: BLE001 - a broken journal is reportable
+            self.status_changed.emit(f"Журнал проверок недоступен: {error}")
+            return
+        try:
+            written = QaReportBuilder().export_csv_bundle(directory, journal)
+        except OSError as error:
+            self.status_changed.emit(f"Не удалось сохранить отчёт: {error}")
+            return
+        self.status_changed.emit(
+            f"Отчёт сохранён: {len(written)} файла(ов) в {directory}"
         )
 
     def test_embedding(self, qa_settings) -> None:
