@@ -6,6 +6,7 @@ import pytest
 from gemini_translator.qa.journal import (
     QaJournal,
     QaJournalCorruptedError,
+    QaJournalError,
     QaJournalUnsupportedVersionError,
 )
 from gemini_translator.qa.models import ChapterMetrics
@@ -44,8 +45,8 @@ def _metrics() -> ChapterMetrics:
     )
 
 
-def test_journal_round_trip_uses_v1_json_and_dataframe_schema(tmp_path):
-    """Removing v1 persistence or metric serialization breaks a restored report."""
+def test_journal_round_trip_uses_v2_json_and_dataframe_schema(tmp_path):
+    """Removing v2 persistence or metric serialization breaks a restored report."""
     journal = QaJournal.empty(book_id="book-1")
     journal.upsert_metrics(_metrics())
     path = tmp_path / "translation_qa.json"
@@ -54,7 +55,7 @@ def test_journal_round_trip_uses_v1_json_and_dataframe_schema(tmp_path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     restored = QaJournal.load(path)
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["book_id"] == "book-1"
     assert set(payload) == {
         "schema_version",
@@ -62,6 +63,7 @@ def test_journal_round_trip_uses_v1_json_and_dataframe_schema(tmp_path):
         "updated_at",
         "metrics",
         "candidates",
+        "chapter_states",
         "repairs",
         "glossary_observations",
     }
@@ -147,8 +149,8 @@ def test_journal_save_rejects_non_finite_metrics_as_strict_json(tmp_path):
         ),
     ],
 )
-def test_journal_load_rejects_strict_v1_schema_violations(tmp_path, mutate):
-    """Loose v1 validation would discard unknown data or invalid entry types."""
+def test_journal_load_rejects_strict_schema_violations(tmp_path, mutate):
+    """Loose validation would discard unknown data or invalid entry types."""
     journal = QaJournal.empty(book_id="book-1")
     path = tmp_path / "translation_qa.json"
     journal.save(path)
@@ -176,3 +178,45 @@ def test_journal_save_removes_temp_and_preserves_target_on_serialization_error(t
 
     assert target.read_text(encoding="utf-8") == "existing journal"
     assert not temporary.exists()
+
+
+def test_a_journal_written_before_chapter_states_still_loads(tmp_path):
+    """An existing project must keep its QA history when the schema grows."""
+    path = tmp_path / "translation_qa.json"
+    journal = QaJournal.empty(book_id="book-1")
+    journal.upsert_metrics(_metrics())
+    journal.save(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("chapter_states")
+    payload["schema_version"] = 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    restored = QaJournal.load(path)
+
+    assert restored.chapter_states == {}
+    assert restored.metrics["chapter-1"].length_ratio == 2.8
+
+
+def test_chapter_state_round_trips_and_stays_typed(tmp_path):
+    """The final pass reads this state; an untyped entry would silently skip work."""
+    from gemini_translator.qa.models import QaChapterState
+
+    path = tmp_path / "translation_qa.json"
+    journal = QaJournal.empty(book_id="book-1")
+    journal.record_chapter_state(
+        QaChapterState(
+            chapter_id="chapter-1",
+            status="deferred",
+            analysis_identity="semantic-units-v1",
+            risk_level="medium",
+            book_sample_size=3,
+        )
+    )
+    journal.save(path)
+
+    restored = QaJournal.load(path)
+
+    assert restored.chapter_states["chapter-1"].status == "deferred"
+    assert restored.chapter_states["chapter-1"].book_sample_size == 3
+    with pytest.raises(QaJournalError):
+        journal.record_chapter_state({"chapter_id": "chapter-2"})

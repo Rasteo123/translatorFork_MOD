@@ -1716,6 +1716,26 @@ class ChapterQueueManager(QObject):
             for row in rows
         ]
 
+    def get_qa_pending_tasks(self) -> list:
+        """Return tasks whose quality check never finished, oldest first.
+
+        After a restart these are the only tasks whose QA is still owed; the
+        payload carries the chapters, so nothing extra has to be persisted.
+        """
+
+        rows = self._execute_light_read(
+            "SELECT task_id, payload FROM tasks WHERE status = 'qa_pending'"
+            " ORDER BY priority DESC, sequence ASC"
+        )
+        pending = []
+        for row in rows:
+            try:
+                payload = json.loads(row['payload'], object_hook=tuple_deserializer)
+            except (TypeError, ValueError):
+                continue
+            pending.append((row['task_id'], payload))
+        return pending
+
     def has_blocking_qa_gate(self) -> bool:
         """Report whether unresolved high risk currently blocks new dispatch."""
         return bool(

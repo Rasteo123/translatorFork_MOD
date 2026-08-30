@@ -186,6 +186,7 @@ def build_translation_quality_service(
         metrics_collector=DefaultCoverageMetricsCollector(),
     )
     return TranslationQualityService(
+        analysis_identity=_extractor(capabilities).preprocessing_identity,
         coverage=coverage,
         verifier=OmissionVerifier(client),
         repairer=OmissionRepairer(client),
@@ -275,6 +276,7 @@ def attach_chapter_qa_coordinator(
     session_factory: Callable[[], object],
     translation_provider: str,
     translation_model: str,
+    epub_path: str = "",
     source_language_resolver: Callable[[str], str] | None = None,
     log=None,
 ):
@@ -337,9 +339,10 @@ def attach_chapter_qa_coordinator(
         _report(log, f"[QA] Не удалось собрать проверку качества: {error}")
         return None
 
+    task_manager = getattr(app, "task_manager", None)
     coordinator = ChapterQaCoordinator(
         service=service,
-        task_manager=getattr(app, "task_manager", None),
+        task_manager=task_manager,
         request_builder=lambda event: build_chapter_qa_request(
             event,
             project_manager=project_manager,
@@ -349,6 +352,14 @@ def attach_chapter_qa_coordinator(
             source_language_resolver=source_language_resolver,
         ),
         options_provider=lambda: _current_options(settings_manager),
+        book_events_provider=lambda: build_manual_events(
+            project_manager=project_manager, epub_path=epub_path
+        ),
+        journal_provider=lambda: _load_journal(paths.journal, project_manager),
+        pending_tasks_provider=lambda: _pending_qa_tasks(task_manager),
+        analysis_identity=_extractor(
+            qa_settings.effective_capabilities()
+        ).preprocessing_identity,
         log=log,
     )
     app.qa_coordinator = coordinator
@@ -365,6 +376,16 @@ def detach_chapter_qa_coordinator(app) -> None:
     except Exception:  # noqa: BLE001 - shutdown must never raise into a session
         pass
     app.qa_coordinator = None
+
+
+def _pending_qa_tasks(task_manager):
+    """List the queued tasks whose quality check never finished, with chapters."""
+    if task_manager is None or not hasattr(task_manager, "get_qa_pending_tasks"):
+        return ()
+    return tuple(
+        (task_id, chapter_ids_from_payload(payload))
+        for task_id, payload in task_manager.get_qa_pending_tasks()
+    )
 
 
 def _current_options(settings_manager):
@@ -427,6 +448,22 @@ def build_manual_events(
             )
             break
     return tuple(events)
+
+
+def chapter_ids_from_payload(payload) -> tuple[str, ...]:
+    """Recover the chapters of one queued task without persisting them twice."""
+    if not isinstance(payload, (list, tuple)) or len(payload) < 3:
+        return ()
+    chapters = payload[2]
+    if isinstance(chapters, str):
+        return (chapters,) if chapters.strip() else ()
+    if isinstance(chapters, (list, tuple)):
+        return tuple(
+            str(item).strip()
+            for item in chapters
+            if isinstance(item, str) and item.strip()
+        )
+    return ()
 
 
 def detect_source_language(html: str) -> str:

@@ -11,7 +11,13 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
-from .models import ChapterMetrics, GlossaryObservation, QaJournalEntry
+from .models import (
+    ChapterMetrics,
+    GlossaryObservation,
+    QaChapterState,
+    QaJournalEntry,
+    QaModelValidationError,
+)
 
 
 class QaJournalError(ValueError):
@@ -27,8 +33,8 @@ class QaJournalUnsupportedVersionError(QaJournalError):
 
 
 class QaJournal:
-    SCHEMA_VERSION = 1
-    _ROOT_KEYS = frozenset(
+    SCHEMA_VERSION = 2
+    _V1_ROOT_KEYS = frozenset(
         {
             "schema_version",
             "book_id",
@@ -39,6 +45,9 @@ class QaJournal:
             "glossary_observations",
         }
     )
+    # v2 adds the per-chapter check state the final book pass selects on.
+    _ROOT_KEYS = _V1_ROOT_KEYS | {"chapter_states"}
+    _ROOT_KEYS_BY_VERSION = {1: _V1_ROOT_KEYS, 2: _ROOT_KEYS}
 
     def __init__(
         self,
@@ -49,12 +58,14 @@ class QaJournal:
         candidates: list[dict[str, Any]] | None = None,
         repairs: list[dict[str, Any]] | None = None,
         glossary_observations: Iterable[GlossaryObservation] | None = None,
+        chapter_states: Mapping[str, QaChapterState] | None = None,
     ) -> None:
         self.book_id = book_id
         self.updated_at = updated_at
         self.metrics = dict(metrics or {})
         self.candidates = list(candidates or [])
         self.repairs = list(repairs or [])
+        self.chapter_states = dict(chapter_states or {})
         self.glossary_observations = list(glossary_observations or [])
         if any(
             not isinstance(observation, GlossaryObservation)
@@ -82,11 +93,13 @@ class QaJournal:
             payload["schema_version"], int
         ):
             raise QaJournalCorruptedError("QA journal has no valid schema version")
-        if payload["schema_version"] != cls.SCHEMA_VERSION:
+        version = payload["schema_version"]
+        expected_keys = cls._ROOT_KEYS_BY_VERSION.get(version)
+        if expected_keys is None:
             raise QaJournalUnsupportedVersionError(
-                f"Unsupported QA journal schema version: {payload['schema_version']}"
+                f"Unsupported QA journal schema version: {version}"
             )
-        if set(payload) != cls._ROOT_KEYS:
+        if set(payload) != expected_keys:
             raise QaJournalCorruptedError("QA journal has an invalid root schema")
 
         required_lists = ("metrics", "candidates", "repairs", "glossary_observations")
@@ -111,7 +124,13 @@ class QaJournal:
                 GlossaryObservation.from_dict(item)
                 for item in payload["glossary_observations"]
             ]
-        except (KeyError, ValueError) as exc:
+            # A v1 journal simply has no recorded states: every chapter is then
+            # treated as never checked by the final pass, which is the safe side.
+            states = [
+                QaChapterState.from_dict(item)
+                for item in payload.get("chapter_states", [])
+            ]
+        except (KeyError, ValueError, QaModelValidationError) as exc:
             raise QaJournalCorruptedError("QA journal metrics are invalid") from exc
 
         return cls(
@@ -121,6 +140,7 @@ class QaJournal:
             candidates=candidates,
             repairs=repairs,
             glossary_observations=glossary_observations,
+            chapter_states={state.chapter_id: state for state in states},
         )
 
     def append(self, entry: QaJournalEntry) -> None:
@@ -149,16 +169,26 @@ class QaJournal:
         self.repairs.append(entry)
         self._mark_updated()
 
+    def record_chapter_state(self, state: QaChapterState) -> None:
+        """Remember how and under what rules one chapter was last checked."""
+        if not isinstance(state, QaChapterState):
+            raise QaJournalError("chapter state must use the typed schema")
+        self.chapter_states[state.chapter_id] = state
+        self._mark_updated()
+
     def record_chapter_result(
         self,
         *,
         metrics: ChapterMetrics | None = None,
         entries: Iterable[QaJournalEntry] = (),
         repairs: Iterable[Mapping[str, Any]] = (),
+        state: QaChapterState | None = None,
     ) -> None:
         """Fold one chapter QA pass into the journal in a single step."""
         if metrics is not None:
             self.upsert_metrics(metrics)
+        if state is not None:
+            self.record_chapter_state(state)
         for entry in entries:
             if not isinstance(entry, QaJournalEntry):
                 raise QaJournalError("journal entries must use the typed schema")
@@ -209,6 +239,10 @@ class QaJournal:
                 self.metrics[chapter_id].to_dict() for chapter_id in sorted(self.metrics)
             ],
             "candidates": deepcopy(self.candidates),
+            "chapter_states": [
+                self.chapter_states[chapter_id].to_dict()
+                for chapter_id in sorted(self.chapter_states)
+            ],
             "repairs": deepcopy(self.repairs),
             "glossary_observations": [
                 observation.to_dict() for observation in self.glossary_observations

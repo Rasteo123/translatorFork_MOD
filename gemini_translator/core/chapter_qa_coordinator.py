@@ -3,29 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import threading
 
+from ..qa.book_metrics import MIN_BASELINE_SAMPLE_SIZE
 from ..qa.llm.completion import CancellationToken
-from ..qa.service import ChapterQaResult, QaOptions, TranslationQualityService
-from .task_manager import QaQueueOutcome
-
-
-DEFERRED_WARNINGS = frozenset(
-    {
-        "coverage_failed",
-        "embeddings_unavailable",
-        "invalid_embedding_response",
-        "alignment_capacity_exceeded",
-        "verification_failed",
-        "language_check_failed",
-        "addition_detection_failed",
-        "chapter_not_readable",
-        "language_tool_unavailable",
-        "slovnet_unavailable",
-    }
+from ..qa.models import QaChapterState, RiskLevel
+from ..qa.service import (
+    DEFERRED_WARNINGS,
+    ChapterQaResult,
+    QaOptions,
+    TranslationQualityService,
 )
+from .task_manager import QaQueueOutcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +59,24 @@ class TaskQaOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectedChapter:
+    """One chapter the final pass will re-check, and the reason it was picked."""
+
+    event: "TranslationReadyEvent"
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeResult:
+    """What a restart recovered: which tasks were owed a check, and how it went."""
+
+    status: str = "nothing_to_resume"
+    task_ids: tuple[str, ...] = ()
+    results: tuple[ChapterQaResult, ...] = ()
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class BookQaResult:
     """Everything one manual or final multi-chapter pass produced."""
 
@@ -99,6 +108,10 @@ class ChapterQaCoordinator:
         task_manager,
         request_builder,
         options_provider=None,
+        book_events_provider=None,
+        journal_provider=None,
+        pending_tasks_provider=None,
+        analysis_identity="",
         log=None,
         max_concurrency: int = 1,
     ) -> None:
@@ -112,6 +125,10 @@ class ChapterQaCoordinator:
         self._task_manager = task_manager
         self._request_builder = request_builder
         self._options_provider = options_provider or (lambda: QaOptions())
+        self._book_events_provider = book_events_provider
+        self._journal_provider = journal_provider
+        self._pending_tasks_provider = pending_tasks_provider
+        self._analysis_identity_value = analysis_identity
         self._log = log
         self._max_concurrency = max(1, max_concurrency)
         self._cancellation = CancellationToken()
@@ -241,6 +258,68 @@ class ChapterQaCoordinator:
             task_id, _outcome_for(chapter_ids, results), tuple(results)
         )
 
+    async def run_final_book_pass(self, session_id: str) -> BookQaResult:
+        """Re-check only the chapters the book's own history says are unsettled."""
+        events = self._book_events()
+        if not events:
+            return BookQaResult()
+        journal = self._journal()
+        states = dict(getattr(journal, "chapter_states", {}) or {})
+        selected = select_final_pass_chapters(
+            events,
+            states,
+            analysis_identity=self._analysis_identity(),
+            book_sample_size=len(getattr(journal, "metrics", {}) or {}),
+        )
+        if not selected:
+            self._report(
+                f"[QA] Итоговый проход: перепроверять нечего (сессия {session_id})."
+            )
+            return BookQaResult()
+        self._report(
+            "[QA] Итоговый проход по книге: "
+            + ", ".join(
+                f"{item.event.chapter_id} ({item.reason})" for item in selected[:10]
+            )
+            + ("…" if len(selected) > 10 else "")
+        )
+        return await self.check_all_now(tuple(item.event for item in selected))
+
+    async def resume_pending_qa(self) -> ResumeResult:
+        """Finish the checks a previous run owed, without repeating applied repairs."""
+        if not callable(self._pending_tasks_provider):
+            return ResumeResult()
+        try:
+            pending = tuple(self._pending_tasks_provider() or ())
+        except Exception as error:  # noqa: BLE001 - a broken queue read is reportable
+            return ResumeResult("failed", detail=str(error)[:200])
+        if not pending:
+            return ResumeResult()
+
+        by_chapter = {event.chapter_id: event for event in self._book_events()}
+        task_ids: list[str] = []
+        results: list[ChapterQaResult] = []
+        for task_id, chapter_ids in pending:
+            events = tuple(
+                by_chapter[chapter_id]
+                for chapter_id in chapter_ids
+                if chapter_id in by_chapter
+            )
+            if not events:
+                self._resolve(
+                    task_id,
+                    QaQueueOutcome.deferred(
+                        tuple(chapter_ids), reason="chapter_translation_missing"
+                    ),
+                )
+                task_ids.append(str(task_id))
+                continue
+            outcome = await self.inspect_completed_task(str(task_id), events)
+            self._resolve(task_id, outcome.outcome)
+            task_ids.append(str(task_id))
+            results.extend(outcome.results)
+        return ResumeResult("resumed", tuple(task_ids), tuple(results))
+
     async def check_chapter_now(
         self, event: TranslationReadyEvent, options: QaOptions | None = None
     ) -> ChapterQaResult | None:
@@ -337,6 +416,32 @@ class ChapterQaCoordinator:
         except Exception as error:  # noqa: BLE001 - the queue is not QA's to break
             self._report(f"[QA] Не удалось закрыть проверку задачи: {error}")
 
+    def _book_events(self) -> tuple[TranslationReadyEvent, ...]:
+        if not callable(self._book_events_provider):
+            return ()
+        try:
+            return tuple(self._book_events_provider() or ())
+        except Exception as error:  # noqa: BLE001 - a broken project map is reportable
+            self._report(f"[QA] Не удалось собрать список глав книги: {error}")
+            return ()
+
+    def _journal(self):
+        if callable(self._journal_provider):
+            try:
+                return self._journal_provider()
+            except Exception as error:  # noqa: BLE001 - a damaged journal is reportable
+                self._report(f"[QA] Журнал проверок недоступен: {error}")
+        return _EmptyJournal()
+
+    def _analysis_identity(self) -> str:
+        value = self._analysis_identity_value
+        if callable(value):
+            try:
+                return str(value() or "")
+            except Exception:  # noqa: BLE001 - identity is advisory for selection
+                return ""
+        return str(value or "")
+
     def _options(self) -> QaOptions:
         try:
             options = self._options_provider()
@@ -377,3 +482,49 @@ def _outcome_for(
             chapter_ids, reason=", ".join(sorted(set(deferred)))
         )
     return QaQueueOutcome.completed(chapter_ids)
+
+
+class _EmptyJournal:
+    """Stand-in used when no journal is available: nothing is known, so recheck."""
+
+    metrics: dict = {}
+    chapter_states: dict = {}
+
+
+def select_final_pass_chapters(
+    events: Sequence[TranslationReadyEvent],
+    states: Mapping[str, QaChapterState],
+    *,
+    analysis_identity: str,
+    book_sample_size: int,
+    minimum_baseline_sample: int = MIN_BASELINE_SAMPLE_SIZE,
+) -> tuple[SelectedChapter, ...]:
+    """Pick the chapters whose last check no longer answers for them.
+
+    A chapter that was fully checked under the current rules, carries no
+    unresolved risk, and already had the book's statistics available is left
+    alone: the final pass exists to close gaps, not to spend the book again.
+    """
+
+    selected: list[SelectedChapter] = []
+    for event in events:
+        state = states.get(event.chapter_id)
+        reason = ""
+        if state is None:
+            reason = "never_checked"
+        elif state.status == "deferred":
+            reason = "deferred"
+        elif state.status == "blocked":
+            reason = "unresolved_risk"
+        elif analysis_identity and state.analysis_identity != analysis_identity:
+            reason = "analysis_version_changed"
+        elif RiskLevel(state.risk_level) in {RiskLevel.MEDIUM, RiskLevel.HIGH}:
+            reason = "unresolved_risk"
+        elif (
+            state.book_sample_size < minimum_baseline_sample
+            <= book_sample_size
+        ):
+            reason = "baseline_now_available"
+        if reason:
+            selected.append(SelectedChapter(event, reason))
+    return tuple(selected)

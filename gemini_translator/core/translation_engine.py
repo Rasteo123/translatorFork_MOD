@@ -141,6 +141,9 @@ class TranslationEngine(QObject):
     MONITOR_INTERVAL_MS = 5557 
     
     _worker_finished_signal = pyqtSignal(str, object)
+    # Итоговый проход контроля качества выполняется в своём потоке; сигнал
+    # возвращает результат в поток движка.
+    qa_final_pass_finished = pyqtSignal(object, object)
     # Сигналы остаются, они нужны для UI
  
     def __init__(self, context_manager=None, settings_manager=None, task_manager=None, parent=None, event_bus=None):
@@ -219,6 +222,9 @@ class TranslationEngine(QObject):
         # Для дебага утечек памяти
         self.session_id_for_log = None
         self._worker_finished_signal.connect(self._on_worker_finished)
+        self.qa_final_pass_finished.connect(self._on_final_qa_finished)
+        self._final_qa_state = 'idle'
+        self._qa_epub_path = ''
     
     def _post_event(self, name: str, data: dict = None):
         event = {
@@ -773,6 +779,12 @@ class TranslationEngine(QObject):
         # --- ИЗМЕНЕНИЕ: Логика получения первой задачи адаптирована под SQLite ---
         first_task_payload = self.task_manager.get_first_pending_task_payload()
         first_task_type = first_task_payload[0] if first_task_payload else None
+        self._qa_epub_path = (
+            str(first_task_payload[1])
+            if first_task_payload and len(first_task_payload) > 1
+            else ''
+        )
+        self._final_qa_state = 'idle' 
         
         # 3. Инициализируем нужные компоненты
 
@@ -880,14 +892,84 @@ class TranslationEngine(QObject):
                 session_factory=aiohttp_session_factory(),
                 translation_provider=provider,
                 translation_model=model_name,
+                epub_path=str(getattr(self, '_qa_epub_path', '') or ''),
                 source_language_resolver=detect_source_language,
                 log=log,
             )
             if coordinator is not None:
                 log("[QA] Проверка качества перевода включена для этой сессии.")
+                coordinator.run_background(
+                    coordinator.resume_pending_qa,
+                    lambda result, error: self._report_resumed_qa(result, error),
+                )
         except Exception as exc:
             self._post_event('log_message', {
                 'message': f"[QA WARN] Проверка качества не запущена: {exc}"
+            })
+
+    def _start_final_qa_pass(self) -> bool:
+        """Run the closing quality pass once, before the session is declared done.
+
+        Returns True while the pass is running, so the session waits for it. A
+        failure never changes a successful translation: it is reported and the
+        session ends anyway.
+        """
+
+        state = getattr(self, '_final_qa_state', 'idle')
+        if state != 'idle':
+            return state == 'running'
+        coordinator = getattr(QtWidgets.QApplication.instance(), 'qa_coordinator', None)
+        if coordinator is None:
+            self._final_qa_state = 'skipped'
+            return False
+        try:
+            qa_settings = self.settings_manager.get_qa_settings()
+        except Exception:
+            self._final_qa_state = 'skipped'
+            return False
+        if not qa_settings.final_book_pass:
+            self._final_qa_state = 'skipped'
+            return False
+
+        self._final_qa_state = 'running'
+        self._post_event('log_message', {
+            'message': "[QA] Итоговый проход по книге перед завершением сессии…"
+        })
+        session_id = str(self.session_id)
+        coordinator.run_background(
+            lambda: coordinator.run_final_book_pass(session_id),
+            lambda result, error: self.qa_final_pass_finished.emit(result, error),
+        )
+        return True
+
+    @pyqtSlot(object, object)
+    def _on_final_qa_finished(self, result, error):
+        """Report the closing pass and let the session finish."""
+        self._final_qa_state = 'done'
+        if error is not None:
+            self._post_event('log_message', {
+                'message': f"[QA WARN] Итоговый проход не завершён: {error}"
+            })
+        else:
+            blocking = tuple(getattr(result, 'blocking_chapters', ()) or ())
+            checked = len(getattr(result, 'results', ()) or ())
+            message = f"[QA] Итоговый проход завершён, проверено глав: {checked}."
+            if blocking:
+                message += " Требуют решения: " + ", ".join(blocking[:5])
+            self._post_event('log_message', {'message': message})
+        self._check_if_session_finished()
+
+    def _report_resumed_qa(self, result, error):
+        """Log what a restart recovered, without ever failing the session start."""
+        if error is not None:
+            self._post_event('log_message', {
+                'message': f"[QA WARN] Не удалось продолжить прерванные проверки: {error}"
+            })
+            return
+        task_ids = tuple(getattr(result, 'task_ids', ()) or ())
+        if task_ids:
+            self._post_event('log_message', {
+                'message': f"[QA] Продолжены прерванные проверки: {len(task_ids)}."
             })
 
     def _detach_translation_qa(self):
@@ -1316,6 +1398,8 @@ class TranslationEngine(QObject):
         # 1. ГЛАВНЫЙ ВОПРОС: Мы закончили?
         # TaskManager сам проверил и базу, и флаги оркестратора.
         if self.task_manager.is_finished():
+            if self._start_final_qa_pass():
+                return
             self._post_event('log_message', {'message': "[MANAGER] Работа завершена (Задачи выполнены / Флаг снят)."})
             self.show_summary_data()
             self._end_session("Сессия успешно завершена")

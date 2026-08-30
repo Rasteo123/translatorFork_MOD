@@ -506,6 +506,65 @@ class QaJournalEntry:
             raise QaModelValidationError("Invalid journal entry") from exc
 
 
+_CHAPTER_QA_STATUSES = frozenset({"checked", "deferred", "blocked"})
+
+
+@dataclass(frozen=True, slots=True)
+class QaChapterState:
+    """What is known about one chapter's last quality check, and under what rules.
+
+    The final book pass reads exactly this: a chapter is re-checked when it was
+    never checked, was deferred, still carries unresolved risk, or was checked
+    under different segmentation or before the book had a statistical baseline.
+    """
+
+    chapter_id: str
+    status: str
+    analysis_identity: str = ""
+    risk_level: RiskLevel | str = RiskLevel.LOW
+    book_sample_size: int = 0
+    fingerprint: str = ""
+    updated_at: str = ""
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.chapter_id, "chapter_id")
+        _require_nonempty_string(self.status, "status")
+        if self.status not in _CHAPTER_QA_STATUSES:
+            raise QaModelValidationError("unsupported chapter QA status")
+        for field_name in ("analysis_identity", "fingerprint", "updated_at"):
+            _require_string(getattr(self, field_name), field_name)
+        try:
+            object.__setattr__(self, "risk_level", RiskLevel(self.risk_level))
+        except ValueError as exc:
+            raise QaModelValidationError("unsupported chapter risk level") from exc
+        _require_integer(self.book_sample_size, "book_sample_size")
+        if self.book_sample_size < 0:
+            raise QaModelValidationError("book_sample_size must be non-negative")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "chapter_id": self.chapter_id,
+            "status": self.status,
+            "analysis_identity": self.analysis_identity,
+            "risk_level": str(self.risk_level),
+            "book_sample_size": self.book_sample_size,
+            "fingerprint": self.fingerprint,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "QaChapterState":
+        if not isinstance(payload, Mapping):
+            raise QaModelValidationError("chapter state must be an object")
+        unknown = set(payload) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise QaModelValidationError("chapter state has unsupported fields")
+        try:
+            return cls(**dict(payload))
+        except (TypeError, ValueError) as exc:
+            raise QaModelValidationError("invalid chapter state") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class GlossaryObservation:
     """One observed translation of a source glossary term in a chapter."""

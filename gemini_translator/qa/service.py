@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from .llm.omission_repairer import OmissionRepairError, RepairContext
 from .models import (
     ChapterMetrics,
     Decision,
+    QaChapterState,
     QaJournalEntry,
     QaModelValidationError,
     RiskLevel,
@@ -43,6 +45,20 @@ from .structural_repair import (
 
 
 MAX_GLOSSARY_TERMS_PER_CANDIDATE = 12
+DEFERRED_WARNINGS = frozenset(
+    {
+        "coverage_failed",
+        "embeddings_unavailable",
+        "invalid_embedding_response",
+        "alignment_capacity_exceeded",
+        "verification_failed",
+        "language_check_failed",
+        "addition_detection_failed",
+        "chapter_not_readable",
+        "language_tool_unavailable",
+        "slovnet_unavailable",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +189,7 @@ class TranslationQualityService:
         language_rules=None,
         russian_nlp=None,
         glossary_selector: GlossaryContextSelector | None = None,
+        analysis_identity: str = "",
     ) -> None:
         for dependency, method, name in (
             (coverage, "analyze", "coverage"),
@@ -196,6 +213,7 @@ class TranslationQualityService:
         self._language_rules = language_rules
         self._russian_nlp = russian_nlp
         self._glossary_selector = glossary_selector or GlossaryContextSelector()
+        self._analysis_identity = str(analysis_identity or "")
 
     async def check_chapter(
         self,
@@ -610,7 +628,18 @@ class TranslationQualityService:
             )
             for addition in result.additions
         )
-        self._journal.record_chapter_result(metrics=result.metrics, entries=entries)
+        self._journal.record_chapter_result(
+            metrics=result.metrics,
+            entries=entries,
+            state=QaChapterState(
+                chapter_id=result.chapter_id,
+                status=_chapter_status(result),
+                analysis_identity=self._analysis_identity,
+                risk_level=result.risk_level,
+                book_sample_size=len(self._journal.metrics),
+                updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
         self._save_journal()
 
     def _save_journal(self) -> None:
@@ -619,6 +648,15 @@ class TranslationQualityService:
         except OSError:
             # A journal that cannot be written must not undo an applied repair.
             return
+
+
+def _chapter_status(result: ChapterQaResult) -> str:
+    """Say whether this chapter is settled, waiting on infrastructure, or blocked."""
+    if not result.may_continue_translation:
+        return "blocked"
+    if any(warning in DEFERRED_WARNINGS for warning in result.warnings):
+        return "deferred"
+    return "checked"
 
 
 def _patch_for(
