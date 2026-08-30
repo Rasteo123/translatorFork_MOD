@@ -153,3 +153,25 @@ def test_correction_model_defaults_to_the_translation_model():
     assert default.correction_model_for("gemini", "flash") == ("gemini", "flash")
     assert custom.correction_model_for("gemini", "flash") == ("openai", "gpt-qa")
     assert incomplete.correction_model_for("gemini", "flash") == ("gemini", "flash")
+
+
+def test_only_undisputed_defect_categories_are_fixed_by_default():
+    """A rewritten calque changes the author's wording; it must be a suggestion."""
+    settings = QaSettings()
+
+    assert settings.auto_fix_language_categories == ("typo", "grammar", "punctuation")
+    assert settings.to_options().auto_fix_language_categories == (
+        "typo",
+        "grammar",
+        "punctuation",
+    )
+
+
+def test_the_category_policy_round_trips_and_rejects_invented_names():
+    """A hand-edited settings file must not smuggle in an unknown category."""
+    saved = QaSettings(
+        auto_fix_language_categories=("typo", "calque", "не существует", "typo")
+    )
+
+    assert saved.auto_fix_language_categories == ("typo", "calque")
+    assert QaSettings.from_dict(saved.to_dict()) == saved

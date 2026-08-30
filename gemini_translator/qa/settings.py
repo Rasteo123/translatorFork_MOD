@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
 from .capabilities import QaCapabilityKey, QaCapabilitySettings
+from .language_validation import DEFAULT_AUTO_FIX_CATEGORIES, LANGUAGE_ISSUE_CATEGORIES
 from .service import QaOptions
 
 
@@ -30,6 +31,7 @@ class QaSettings:
     auto_repair_confirmed_omissions: bool = True
     check_language_after_chapter: bool = True
     auto_repair_objective_language_issues: bool = True
+    auto_fix_language_categories: tuple[str, ...] = DEFAULT_AUTO_FIX_CATEGORIES
     embedding_provider: str = "auto"
     embedding_model: str = ""
     embedding_api_key: str = ""
@@ -71,6 +73,17 @@ class QaSettings:
             self,
             "cometkiwi_device",
             _choice(self.cometkiwi_device, COMETKIWI_DEVICES, "cpu"),
+        )
+        object.__setattr__(
+            self,
+            "auto_fix_language_categories",
+            tuple(
+                dict.fromkeys(
+                    str(name).strip()
+                    for name in self.auto_fix_language_categories or ()
+                    if str(name).strip() in LANGUAGE_ISSUE_CATEGORIES
+                )
+            ),
         )
         object.__setattr__(
             self,
@@ -144,6 +157,7 @@ class QaSettings:
             "auto_repair_objective_language_issues": (
                 self.auto_repair_objective_language_issues
             ),
+            "auto_fix_language_categories": list(self.auto_fix_language_categories),
             "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model,
             "embedding_api_key": self.embedding_api_key,
@@ -224,6 +238,7 @@ class QaSettings:
             auto_repair_omissions=self.auto_repair_confirmed_omissions,
             check_language=self.check_language_after_chapter,
             auto_repair_language=self.auto_repair_objective_language_issues,
+            auto_fix_language_categories=self.auto_fix_language_categories,
         )
 
     def correction_model_for(

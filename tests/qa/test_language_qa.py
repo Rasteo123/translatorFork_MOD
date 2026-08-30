@@ -103,6 +103,8 @@ def _request(model: dict | None = None, **overrides: object) -> LanguageQaReques
         "target_language": "ru",
         "model": QaModelSelection("gemini", "qa-model"),
         "cancellation": CancellationToken(),
+        # These cases exercise the pipeline, so the category policy is opened up.
+        "auto_fix_categories": ("calque", "repetition", "typo", "grammar", "punctuation"),
     }
     values.update(overrides)
     return LanguageQaRequest(**values)  # type: ignore[arg-type]
@@ -358,3 +360,43 @@ def test_auto_fix_eligibility_matches_the_reviewed_case_corpus(case):
 
     assert (refusal == "") is case["expected"]["auto_fixable"]
     assert refusal == case["expected"]["reason"]
+
+
+def test_only_objective_defect_categories_are_fixed_automatically():
+    """A rewritten repetition or calque changes wording, not a defect."""
+    from gemini_translator.qa.language_validation import DEFAULT_AUTO_FIX_CATEGORIES
+
+    block = "Это сделало его чувствовать себя одиноким."
+    rewrite = LanguageIssue(
+        issue_id="issue-1",
+        category="calque",
+        block_id="b-0",
+        original_text="сделало его чувствовать себя одиноким",
+        replacement_text="заставило его почувствовать себя одиноким",
+        objective=True,
+        confidence=0.93,
+        explanation="Калька.",
+    )
+
+    assert auto_fix_refusal(rewrite, block) == "category_not_auto_fixable"
+    assert (
+        auto_fix_refusal(rewrite, block, auto_fix_categories=("calque",)) == ""
+    )
+    assert "typo" in DEFAULT_AUTO_FIX_CATEGORIES
+    assert "calque" not in DEFAULT_AUTO_FIX_CATEGORIES
+
+
+def test_typos_and_grammar_stay_automatic():
+    """The defects nobody argues about must still be fixed without asking."""
+    typo = LanguageIssue(
+        issue_id="issue-2",
+        category="typo",
+        block_id="b-0",
+        original_text="преход",
+        replacement_text="проход",
+        objective=True,
+        confidence=0.96,
+        explanation="Опечатка.",
+    )
+
+    assert auto_fix_refusal(typo, "Он вошёл в тёмный преход.") == ""

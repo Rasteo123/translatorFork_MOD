@@ -55,8 +55,8 @@
       "confidence": 0.9
     },
     "expected": {
-      "auto_fixable": true,
-      "reason": ""
+      "auto_fixable": false,
+      "reason": "category_not_auto_fixable"
     }
   },
   {
@@ -70,8 +70,8 @@
       "confidence": 0.91
     },
     "expected": {
-      "auto_fixable": true,
-      "reason": ""
+      "auto_fixable": false,
+      "reason": "category_not_auto_fixable"
     }
   },
   {

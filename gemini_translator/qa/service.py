@@ -17,6 +17,7 @@ from .coverage_service import SEMANTIC_ALIGNMENT_MODE, CoverageAnalysis, Coverag
 from .glossary_context import GlossaryContextSelector, GlossaryTerm
 from .journal import QaJournal
 from .language_validation import (
+    DEFAULT_AUTO_FIX_CATEGORIES,
     LanguageQaRequest,
     LanguageQaResult,
     LanguageRuleIssue,
@@ -72,6 +73,7 @@ class QaOptions:
     check_language: bool = True
     auto_repair_language: bool = True
     detect_additions: bool = True
+    auto_fix_language_categories: tuple[str, ...] = DEFAULT_AUTO_FIX_CATEGORIES
     max_repairs_per_chapter: int = 5
 
     def __post_init__(self) -> None:
@@ -740,6 +742,7 @@ class TranslationQualityService:
             model=request.model,
             cancellation=cancellation,
             source_text_by_block=request.source_text_by_block,
+            auto_fix_categories=options.auto_fix_language_categories,
         )
         rule_candidates = await self._collect_rules(
             target_units, options, warnings

@@ -17,6 +17,19 @@ from .semantic_units import flatten_visible_text
 
 
 DEFAULT_MIN_CONFIDENCE = 0.85
+# Observed on a real book: the model marks a stylistic rewrite of a repetition
+# or a calque as "objective" with high confidence, and such a fix changes the
+# author's wording rather than a defect. Those categories are shown instead.
+DEFAULT_AUTO_FIX_CATEGORIES = ("typo", "grammar", "punctuation")
+LANGUAGE_ISSUE_CATEGORIES = (
+    "typo",
+    "grammar",
+    "punctuation",
+    "calque",
+    "repetition",
+    "meta_comment",
+    "hallucinated_addition",
+)
 DEFAULT_MAX_CHUNK_CHARS = 4000
 PROTECTED_ENTITY_CATEGORIES = frozenset({"PER", "ORG", "LOC"})
 
@@ -119,6 +132,7 @@ class LanguageQaRequest:
     source_text_by_block: Mapping[str, str] = field(default_factory=dict)
     glossary: tuple[RelevantGlossaryTerm, ...] = ()
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
+    auto_fix_categories: tuple[str, ...] = DEFAULT_AUTO_FIX_CATEGORIES
     max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS
 
     def __post_init__(self) -> None:
@@ -239,6 +253,7 @@ def auto_fix_refusal(
     entities: Sequence[NamedEntitySpan] = (),
     glossary: Sequence[RelevantGlossaryTerm] = (),
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    auto_fix_categories: Sequence[str] = DEFAULT_AUTO_FIX_CATEGORIES,
 ) -> str:
     """Return the stable reason one issue may not be fixed automatically.
 
@@ -272,6 +287,10 @@ def auto_fix_refusal(
             _contains_term_forms(issue.replacement_text, canonical)
         ):
             return "glossary_term_dropped"
+    # The policy check comes last: an issue that could never be applied anyway
+    # should say why in its own terms.
+    if auto_fix_categories and issue.category not in auto_fix_categories:
+        return "category_not_auto_fixable"
     return ""
 
 
@@ -449,6 +468,7 @@ class LanguageQualityPipeline:
                     entities=chunk_nlp.entities if chunk_nlp else (),
                     glossary=request.glossary,
                     min_confidence=request.min_confidence,
+                    auto_fix_categories=request.auto_fix_categories,
                 )
                 if refusal:
                     suggestions.append(issue)
