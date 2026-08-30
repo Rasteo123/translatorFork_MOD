@@ -102,13 +102,26 @@ def build_embedding_provider(
 ):
     """Create the configured embedding provider, or raise if none is usable.
 
+    An explicitly chosen key and address in the settings always win; the running
+    session's own key is only a fallback, so a book can be checked with one
+    provider while being translated by another.
+
     A cache directory is only used together with the segmentation identity the
     units were produced under: a cached vector must never survive a change of
     segmentation.
     """
-    gemini_key = str(api_keys_by_provider.get("google") or api_keys_by_provider.get("gemini") or "")
-    openai_key = str(api_keys_by_provider.get("openai") or "")
-    openai_base = str(api_keys_by_provider.get("openai_base_url") or "")
+    chosen_key = qa_settings.embedding_api_key
+    gemini_key = chosen_key or str(
+        api_keys_by_provider.get("google") or api_keys_by_provider.get("gemini") or ""
+    )
+    openai_key = chosen_key or str(api_keys_by_provider.get("openai") or "")
+    openai_base = qa_settings.embedding_base_url or str(
+        api_keys_by_provider.get("openai_base_url") or ""
+    )
+    if qa_settings.embedding_provider == "gemini":
+        openai_key = ""
+    elif qa_settings.embedding_provider == "openai_compatible":
+        gemini_key = ""
     candidates: list[EmbeddingProviderConfig] = []
     if qa_settings.embedding_provider in {"auto", "gemini"} and gemini_key:
         candidates.append(
@@ -368,6 +381,52 @@ def _report(log, message: str) -> None:
             log(message)
         except Exception:  # noqa: BLE001 - logging must never raise
             return
+
+
+def build_manual_events(
+    *,
+    project_manager,
+    epub_path: str,
+    task_id: str = "manual",
+    chapter_ids=None,
+    target_language: str = "ru",
+):
+    """List the chapters a manual pass can check, in book order.
+
+    A chapter qualifies only when the project map records a translation and that
+    file is actually on disk; everything else is silently left out, because a
+    manual pass must not invent work it cannot do.
+    """
+
+    from ..core.chapter_qa_coordinator import TranslationReadyEvent
+
+    wanted = set(chapter_ids) if chapter_ids else None
+    project_folder = Path(getattr(project_manager, "project_folder", "") or "")
+    translations = getattr(project_manager, "data", {}) or {}
+    events = []
+    for original_path in sorted(translations):
+        if wanted is not None and original_path not in wanted:
+            continue
+        versions = translations.get(original_path) or {}
+        if not isinstance(versions, Mapping):
+            continue
+        for _suffix, relative_path in sorted(versions.items()):
+            translated = project_folder / str(relative_path)
+            if not translated.is_file():
+                continue
+            events.append(
+                TranslationReadyEvent(
+                    task_id=task_id,
+                    chapter_id=str(original_path),
+                    source_path=str(original_path),
+                    translated_path=str(translated),
+                    source_language="auto",
+                    target_language=target_language,
+                    epub_path=str(epub_path or ""),
+                )
+            )
+            break
+    return tuple(events)
 
 
 def detect_source_language(html: str) -> str:

@@ -159,6 +159,38 @@ class ChapterQaCoordinator:
             self._pending.add(future)
         future.add_done_callback(self._discard_future)
 
+    def run_background(self, coroutine_factory, on_done=None) -> None:
+        """Run one coroutine on the QA loop and report its outcome exactly once.
+
+        ``on_done(result, error)`` is called from the QA thread; a caller that
+        touches the interface must marshal it back itself.
+        """
+
+        self.start()
+        loop = self._loop
+        if loop is None:  # pragma: no cover - start() guarantees a loop
+            if callable(on_done):
+                on_done(None, RuntimeError("QA runtime is not available"))
+            return
+        future = asyncio.run_coroutine_threadsafe(coroutine_factory(), loop)
+        with self._pending_lock:
+            self._pending.add(future)
+
+        def finished(completed) -> None:
+            self._discard_future(completed)
+            if not callable(on_done):
+                return
+            try:
+                on_done(completed.result(), None)
+            except Exception as error:  # noqa: BLE001 - the caller decides what to show
+                on_done(None, error)
+
+        future.add_done_callback(finished)
+
+    def reset_cancellation(self) -> None:
+        """Allow a new manual pass after the previous one was cancelled."""
+        self._cancellation = CancellationToken()
+
     def drain(self, timeout: float | None = None) -> None:
         """Wait for every scheduled check to finish."""
         with self._pending_lock:
@@ -234,6 +266,14 @@ class ChapterQaCoordinator:
             else:
                 results.append(result)
         return BookQaResult(tuple(results), tuple(dict.fromkeys(skipped)))
+
+    async def undo_chapter(self, chapter_id: str):
+        """Revert one chapter's automatic repairs through the same service."""
+        return await self._service.undo_chapter(chapter_id)
+
+    async def undo_all(self):
+        """Revert every automatic repair this service recorded."""
+        return await self._service.undo_session(self._service.session_id)
 
     async def _check_one(
         self, event: TranslationReadyEvent, options: QaOptions

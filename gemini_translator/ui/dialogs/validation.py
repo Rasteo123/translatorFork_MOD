@@ -2965,13 +2965,102 @@ class TranslationValidatorPage(ShellPage):
     
         self.btn_analyze = QPushButton("🚀 Начать проверку"); self.btn_analyze.clicked.connect(self.start_analysis)
         self.btn_exceptions_manager = QPushButton("Списки исключений…"); self.btn_exceptions_manager.clicked.connect(self._open_exceptions_manager)
+        self.btn_translation_quality = QPushButton("🎯 Качество перевода")
+        self.btn_translation_quality.setToolTip(
+            "Отчёт контроля качества: полнота перевода, языковые дефекты, термины "
+            "и статистика книги. Здесь же — ручная проверка, исправление и откат."
+        )
+        self.btn_translation_quality.clicked.connect(self.open_translation_quality_dialog)
         
         layout.addStretch()
         layout.addWidget(self.btn_sync_project) # <-- Добавляем в layout
         layout.addWidget(self.btn_analyze)
         layout.addWidget(self.btn_exceptions_manager)
+        layout.addWidget(self.btn_translation_quality)
         layout.addStretch()
         return container
+
+    def open_translation_quality_dialog(self):
+        """Open the translation quality report for the current project."""
+        from .validation_dialogs.translation_quality_controller import (
+            TranslationQualityController,
+        )
+        from .validation_dialogs.translation_quality_dialog import (
+            TranslationQualityDialog,
+        )
+
+        settings_manager = self._quality_settings_manager()
+        if settings_manager is None:
+            QMessageBox.warning(
+                self,
+                "Качество перевода",
+                "Настройки приложения недоступны, отчёт открыть нельзя.",
+            )
+            return
+        qa_settings = settings_manager.get_qa_settings()
+        dialog = TranslationQualityDialog(
+            self,
+            settings=qa_settings,
+            api_keys=self._quality_api_keys(settings_manager),
+        )
+        dialog.settings_changed.connect(settings_manager.save_qa_settings)
+        controller = TranslationQualityController(
+            coordinator_provider=self._quality_coordinator,
+            journal_loader=self._quality_journal,
+            gates_provider=self._quality_open_gates,
+            event_builder=self._quality_events,
+            parent=dialog,
+        )
+        controller.attach(dialog)
+        dialog.exec()
+
+    def _quality_settings_manager(self):
+        app = QApplication.instance()
+        getter = getattr(app, "get_settings_manager", None)
+        if callable(getter):
+            return getter()
+        return getattr(app, "settings_manager", None)
+
+    @staticmethod
+    def _quality_api_keys(settings_manager):
+        try:
+            return tuple(settings_manager.load_key_statuses())
+        except Exception:
+            return ()
+
+    @staticmethod
+    def _quality_coordinator():
+        return getattr(QApplication.instance(), "qa_coordinator", None)
+
+    def _quality_journal(self):
+        from ...qa.journal import QaJournal
+
+        project_manager = getattr(self, "project_manager", None)
+        if project_manager is None:
+            return QaJournal.empty(book_id="book")
+        path = project_manager.get_translation_qa_journal_path()
+        if not path.exists():
+            return QaJournal.empty(book_id=str(project_manager.project_folder))
+        return QaJournal.load(path)
+
+    @staticmethod
+    def _quality_open_gates():
+        task_manager = getattr(QApplication.instance(), "task_manager", None)
+        if task_manager is None or not hasattr(task_manager, "get_open_qa_gates"):
+            return ()
+        return tuple(task_manager.get_open_qa_gates())
+
+    def _quality_events(self, chapter_ids=None):
+        from ...qa.assembly import build_manual_events
+
+        project_manager = getattr(self, "project_manager", None)
+        if project_manager is None:
+            return ()
+        return build_manual_events(
+            project_manager=project_manager,
+            epub_path=str(getattr(self, "original_epub_path", "") or ""),
+            chapter_ids=chapter_ids,
+        )
     
     def _set_tooltips(self):
         """Централизованно устанавливает все всплывающие подсказки для виджетов."""

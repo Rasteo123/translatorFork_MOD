@@ -255,6 +255,11 @@ class TranslationQualityService:
         self._record(result)
         return result
 
+    @property
+    def session_id(self) -> str:
+        """The session every automatic repair of this service is recorded under."""
+        return self._store.session_id
+
     async def undo_chapter(self, chapter_id: str) -> UndoResult:
         """Revert every automatic repair of one chapter without a model call."""
         return self._store.undo_chapter(chapter_id)
