@@ -34,8 +34,6 @@ _CODE_RE = re.compile(
     re.IGNORECASE,
 )
 _WRAPPER_CHARACTERS = " \t\r\n\"'`«»„“”‟‹›‘’‚‛ʼ—–-:;,.!?()[]{}"
-_GENERIC_NUMBER_LABELS = frozenset({"chapter", "page", "section", "version"})
-_MODEL_SUFFIXES = frozenset({"air", "max", "mini", "plus", "pro", "ultra"})
 _PATTERNS = (
     ("url", _URL_RE),
     ("email", _EMAIL_RE),
@@ -285,11 +283,6 @@ def _meaningful(value: str) -> str:
     return _normalize(value).strip(_WRAPPER_CHARACTERS).strip()
 
 
-def _display_surface(value: str) -> str:
-    normalized = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip()
-    return normalized.strip(_WRAPPER_CHARACTERS).strip()
-
-
 def _same_meaningful_text(left: str, right: str) -> bool:
     return bool(_meaningful(left)) and _meaningful(left) == _meaningful(right)
 
@@ -304,9 +297,6 @@ def _contains_surface(text: str, surface: str) -> bool:
 
 def _protected_item(text: str) -> tuple[str, bool] | None:
     meaningful = _meaningful(text)
-    model_surface = _display_surface(text)
-    if _looks_like_full_device_model(model_surface):
-        return "model", True
     for category, pattern in _PATTERNS:
         full = pattern.fullmatch(meaningful)
         if full is not None:
@@ -314,35 +304,6 @@ def _protected_item(text: str) -> tuple[str, bool] | None:
         if pattern.search(text) is not None:
             return category, False
     return None
-
-
-def _looks_like_full_device_model(text: str) -> bool:
-    tokens = text.split()
-    if not 2 <= len(tokens) <= 5 or not any(any(character.isdigit() for character in token) for token in tokens):
-        return False
-    if tokens[0].casefold() in _GENERIC_NUMBER_LABELS:
-        return False
-    for token in tokens:
-        compact = token.strip("+._/-")
-        if not compact or not all(character.isalnum() or character in "+._/-" for character in token):
-            return False
-        if any(character.isdigit() for character in compact):
-            continue
-        if compact.isupper() or compact.istitle():
-            continue
-        if compact[0].islower() and any(character.isupper() for character in compact[1:]):
-            continue
-        return False
-    mixed_alphanumeric = any(
-        any(character.isalpha() for character in token)
-        and any(character.isdigit() for character in token)
-        for token in tokens
-    )
-    stylized_brand = tokens[0][0].islower() and any(
-        character.isupper() for character in tokens[0][1:]
-    )
-    has_product_suffix = tokens[-1].casefold() in _MODEL_SUFFIXES
-    return has_product_suffix and (mixed_alphanumeric or stylized_brand)
 
 
 def _foreign_context_evidence(context: CandidateContext) -> str | None:

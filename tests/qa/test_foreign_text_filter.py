@@ -319,17 +319,40 @@ def test_generic_title_case_number_and_product_suffix_reaches_semantics(text):
     assert not any("whole_protected_item:model" in reason for reason in decision.reasons)
 
 
-@pytest.mark.parametrize("text", ("iPhone 15 Pro", "Galaxy S23 Ultra"))
-def test_strong_product_model_structure_remains_excluded(text):
-    """Product suffix plus mixed case or an alphanumeric token is strong evidence."""
+@pytest.mark.parametrize(
+    "text", ("iPhone 15 Pro", "Galaxy S23 Ultra", "S23 Pro", "Pixel 8 Pro")
+)
+def test_product_model_surface_without_explicit_evidence_reaches_semantics(text):
+    """A product-looking surface cannot discard a gap without authoritative evidence."""
     candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
 
     decision = ForeignTextFilter(glossary).classify(
         candidate, replace(context, source_text=text)
     )
 
-    assert decision.action == "exclude"
-    assert decision.reasons == ("whole_protected_item:model",)
+    assert decision.action == "send_to_llm_verifier"
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "Room S23 Pro",
+        "Figure S23 Pro",
+        "Table S23 Pro",
+        "Model S23 Pro",
+        "Item S23 Pro",
+        "The S23 Pro",
+    ),
+)
+def test_label_and_product_looking_surface_without_hint_reaches_semantics(text):
+    """Adding a model-like suffix to an ordinary label cannot authorize exclusion."""
+    candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+
+    decision = ForeignTextFilter(glossary).classify(
+        candidate, replace(context, source_text=text)
+    )
+
+    assert decision.action == "send_to_llm_verifier"
 
 
 @pytest.mark.parametrize("text", ("S23", "A2", "Galaxy S23"))
@@ -344,30 +367,39 @@ def test_alphanumeric_token_without_product_structure_reaches_semantics(text):
     assert decision.action == "send_to_llm_verifier"
 
 
-def test_explicit_entity_hint_protects_an_ambiguous_model_surface():
+@pytest.mark.parametrize(
+    ("text", "category"),
+    (("S23", "device_model"), ("Pixel 8 Pro", "product")),
+)
+def test_explicit_entity_hint_protects_an_ambiguous_model_surface(text, category):
     """Explicit upstream evidence can protect a surface that heuristics leave ambiguous."""
     candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
     hinted = replace(
         context,
-        source_text="S23",
-        protected_entities=(ProtectedEntityHint("S23", "title"),),
+        source_text=text,
+        protected_entities=(ProtectedEntityHint(text, category),),
     )
 
     decision = ForeignTextFilter(glossary).classify(candidate, hinted)
 
     assert decision.action == "exclude"
-    assert decision.reasons == ("explicit_protected_entity:title:S23",)
+    assert decision.reasons == (f"explicit_protected_entity:{category}:{text}",)
 
 
-def test_unknown_dictionary_brand_number_and_suffix_reaches_semantics():
-    """An unknown dictionary-like product phrase is safer to verify than discard."""
+@pytest.mark.parametrize(
+    "policy", (GlossaryPolicy.KEEP_ORIGINAL, GlossaryPolicy.EITHER)
+)
+def test_exact_glossary_policy_protects_a_model_surface(policy):
+    """Exact authoritative glossary policy may explicitly protect a whole model surface."""
     candidate, _, context, glossary, _, _ = _loaded_case("missing_negation")
+    glossary = (GlossaryRule("Galaxy S23 Ultra", policy),)
 
     decision = ForeignTextFilter(glossary).classify(
-        candidate, replace(context, source_text="Pixel 8 Pro")
+        candidate, replace(context, source_text="Galaxy S23 Ultra")
     )
 
-    assert decision.action == "send_to_llm_verifier"
+    assert decision.action == "exclude"
+    assert decision.category == "glossary_protected"
 
 
 def test_strong_model_identifier_embedded_in_narrative_reaches_semantics():
@@ -380,6 +412,21 @@ def test_strong_model_identifier_embedded_in_narrative_reaches_semantics():
     )
 
     assert decision.action == "send_to_llm_verifier"
+
+
+def test_unrepairable_product_model_surface_without_hint_stays_report_only():
+    """Removing surface exclusion must retain the two-anchor repair boundary."""
+    _, _, context, glossary, _, _ = _loaded_case("missing_negation")
+    unrepairable, _ = _candidate("unrepairable-model-surface", repairable=False)
+    context = replace(
+        context,
+        candidate_id=unrepairable.candidate_id,
+        source_text="iPhone 15 Pro",
+    )
+
+    decision = ForeignTextFilter(glossary).classify(unrepairable, context)
+
+    assert decision.action == "report_only"
 
 
 @pytest.mark.parametrize("text", ("2024", "Chapter 2048"))

@@ -780,7 +780,9 @@ class AlignmentResult:
                 raise QaModelValidationError("right anchor must immediately follow its gap")
 
 
-_ENTITY_CATEGORIES = frozenset({"brand", "person", "organization", "title"})
+_ENTITY_CATEGORIES = frozenset(
+    {"brand", "device_model", "organization", "person", "product", "title"}
+)
 _PROTECTED_CONTEXTS = frozenset(
     {"dialogue", "foreign_dialogue", "foreign_quote", "quote", "sign"}
 )

@@ -17,11 +17,11 @@
     "source_language": "zh",
     "target_language": "ru",
     "candidate_language": "en",
-    "protected_entities": [],
+    "protected_entities": [{"text": "iPhone 15 Pro", "category": "device_model"}],
     "protected_contexts": [],
     "glossary": [],
     "expected_action": "exclude",
-    "expected_category": "protected_item"
+    "expected_category": "protected_entity"
   },
   "person_name": {
     "source_text": "Arthur Morgan",
