@@ -157,12 +157,26 @@ class ExistingHandlerCompletionClient:
         except Exception:
             return
 
-    @staticmethod
-    def _discard_unscheduled_awaitable(awaitable: Awaitable[object]) -> None:
-        if isinstance(awaitable, asyncio.Future):
-            awaitable.cancel()
-        elif inspect.iscoroutine(awaitable):
-            awaitable.close()
+    @classmethod
+    async def _discard_unscheduled_awaitable(
+        cls,
+        awaitable: Awaitable[object],
+    ) -> None:
+        cancelled_task = asyncio.ensure_future(awaitable)
+        cancelled_task.cancel()
+        await cls._drain_cancelled_task(cancelled_task)
+
+        if isinstance(awaitable, asyncio.Future) or inspect.iscoroutine(awaitable):
+            return
+        try:
+            iterator = awaitable.__await__()
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
 
     async def _await_with_cancellation(
         self,
@@ -175,7 +189,7 @@ class ExistingHandlerCompletionClient:
             if current_task is not None and current_task.cancelling():
                 raise asyncio.CancelledError
         except asyncio.CancelledError:
-            self._discard_unscheduled_awaitable(awaitable)
+            await self._discard_unscheduled_awaitable(awaitable)
             raise
 
         handler_task = asyncio.ensure_future(awaitable)

@@ -35,6 +35,18 @@ class _Handler:
         return self._outcome
 
 
+class _CustomAwaitable:
+    def __init__(self, result: object, body_started: list[bool]) -> None:
+        async def run():
+            body_started.append(True)
+            return result
+
+        self._coroutine = run()
+
+    def __await__(self):
+        return self._coroutine.__await__()
+
+
 def _pending_background_tasks() -> list[asyncio.Task]:
     current = asyncio.current_task()
     return [
@@ -399,6 +411,100 @@ def test_sink_coroutine_never_starts_when_sync_sink_cancels_token():
             )
         await asyncio.sleep(0)
         assert body_started is False
+        assert factory_calls == 0
+        assert _pending_background_tasks() == []
+
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(scenario())
+        _assert_no_unawaited_coroutine_warnings(recorded_warnings)
+
+
+def test_custom_factory_awaitable_is_drained_when_factory_cancels_token():
+    """Cancellation must release any Awaitable accepted by HandlerFactory."""
+    async def scenario():
+        body_started: list[bool] = []
+        token = CancellationToken()
+
+        def factory(selection):
+            token.cancel()
+            return _CustomAwaitable(_Handler('{"ok":true}', []), body_started)
+
+        client = ExistingHandlerCompletionClient(factory, event_sink=None)
+        with pytest.raises(asyncio.CancelledError):
+            await client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        await asyncio.sleep(0)
+        assert body_started == []
+        assert _pending_background_tasks() == []
+
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(scenario())
+        _assert_no_unawaited_coroutine_warnings(recorded_warnings)
+
+
+def test_custom_handler_awaitable_is_drained_when_wrapper_cancels_token():
+    """Cancellation must release any Awaitable returned by a handler."""
+    async def scenario():
+        body_started: list[bool] = []
+        token = CancellationToken()
+
+        def execute_result():
+            token.cancel()
+            return _CustomAwaitable('{"ok":true}', body_started)
+
+        client = ExistingHandlerCompletionClient(
+            lambda selection: _Handler(execute_result, []),
+            event_sink=None,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        await asyncio.sleep(0)
+        assert body_started == []
+        assert _pending_background_tasks() == []
+
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(scenario())
+        _assert_no_unawaited_coroutine_warnings(recorded_warnings)
+
+
+def test_custom_sink_awaitable_is_drained_when_sink_cancels_token():
+    """Cancellation must release any Awaitable returned by an event sink."""
+    async def scenario():
+        body_started: list[bool] = []
+        factory_calls = 0
+        token = CancellationToken()
+
+        def event_sink(event):
+            token.cancel()
+            return _CustomAwaitable(None, body_started)
+
+        def factory(selection):
+            nonlocal factory_calls
+            factory_calls += 1
+            return _Handler('{"ok":true}', [])
+
+        client = ExistingHandlerCompletionClient(factory, event_sink=event_sink)
+        with pytest.raises(asyncio.CancelledError):
+            await client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        await asyncio.sleep(0)
+        assert body_started == []
         assert factory_calls == 0
         assert _pending_background_tasks() == []
 
