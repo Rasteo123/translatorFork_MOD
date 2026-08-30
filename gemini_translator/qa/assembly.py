@@ -34,6 +34,7 @@ from .language_rules import (
 )
 from .language_validation import LanguageQualityPipeline
 from .llm.completion import ExistingHandlerCompletionClient, QaModelSelection
+from .russian_nlp import RussianNlpService, SlovnetProvider, load_runtime
 from .llm.omission_repairer import OmissionRepairer
 from .llm.omission_verifier import OmissionVerifier
 from .models import AlignmentConfig, GlossaryRule
@@ -197,6 +198,7 @@ def build_translation_quality_service(
     )
     return TranslationQualityService(
         analysis_identity=_extractor(capabilities).preprocessing_identity,
+        russian_nlp=build_russian_nlp_service(qa_settings, capabilities),
         language_rules=build_language_rule_service(
             qa_settings,
             capabilities,
@@ -247,6 +249,37 @@ def build_language_rule_service(
         language=target_language,
         disabled_rule_ids=qa_settings.language_tool_disabled_rules,
         preprocessing_version=preprocessing_version,
+    )
+
+
+def slovnet_model_root() -> Path:
+    """Return the shared directory the optional Russian models live in."""
+    from ..utils.settings import default_settings_dir
+
+    return Path(default_settings_dir()) / "slovnet"
+
+
+def build_russian_nlp_service(
+    qa_settings: QaSettings,
+    capabilities: QaCapabilitySettings,
+    *,
+    model_root: Path | None = None,
+) -> RussianNlpService | None:
+    """Build the local NLP service only for a capability that is switched on.
+
+    The runtime is loaded lazily on the first chapter, so an enabled but
+    uninstalled analyzer costs one warning and nothing else.
+    """
+
+    if not capabilities.slovnet_enabled:
+        return None
+    root = model_root if model_root is not None else slovnet_model_root()
+    return RussianNlpService(
+        provider_factory=lambda: SlovnetProvider(
+            load_runtime(root, cpu_threads=qa_settings.slovnet_cpu_threads),
+            cpu_threads=qa_settings.slovnet_cpu_threads,
+            batch_size=qa_settings.slovnet_batch_size,
+        )
     )
 
 

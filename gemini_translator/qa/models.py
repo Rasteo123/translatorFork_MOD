@@ -894,7 +894,8 @@ class AlignmentResult:
 
 
 _ENTITY_CATEGORIES = frozenset(
-    {"brand", "device_model", "organization", "person", "product", "title"}
+    # "location" arrives from local NER, which recognizes PER/ORG/LOC.
+    {"brand", "device_model", "location", "organization", "person", "product", "title"}
 )
 _PROTECTED_CONTEXTS = frozenset(
     {"dialogue", "foreign_dialogue", "foreign_quote", "quote", "sign"}

@@ -242,3 +242,28 @@ def test_the_rule_cache_lives_beside_the_embedding_cache(tmp_path, project):
 
     assert paths.rule_cache.parent == paths.embedding_cache.parent
     assert paths.rule_cache != paths.embedding_cache
+
+
+def test_local_nlp_is_built_only_when_switched_on(tmp_path):
+    """An unchecked analyzer must not look for weights on disk."""
+    import asyncio
+
+    from gemini_translator.qa.assembly import build_russian_nlp_service
+    from gemini_translator.qa.capabilities import QaCapabilitySettings
+
+    assert build_russian_nlp_service(QaSettings(), QaCapabilitySettings()) is None
+
+    service = build_russian_nlp_service(
+        QaSettings(),
+        QaCapabilitySettings(slovnet_enabled=True),
+        model_root=tmp_path / "no-models-here",
+    )
+    result = asyncio.run(
+        asyncio.to_thread(
+            service.analyze, (), QaCapabilitySettings(slovnet_enabled=True)
+        )
+    )
+
+    assert result.status == "unavailable"
+    assert result.analysis is None
+    assert result.warnings and result.warnings[0].startswith("slovnet_")

@@ -619,12 +619,18 @@ class TranslationQualityService:
         if self._russian_nlp is None or not options.capabilities.slovnet_enabled:
             return None
         try:
-            return self._russian_nlp.analyze(
+            result = self._russian_nlp.analyze(
                 tuple(target_units), options.capabilities
             )
         except Exception:  # noqa: BLE001 - an unavailable analyzer is a warning
             warnings.append("slovnet_unavailable")
             return None
+        warnings.extend(getattr(result, "warnings", ()) or ())
+        report = getattr(result, "analysis", None)
+        if report is None:
+            return None
+        to_analysis = getattr(report, "as_analysis", None)
+        return to_analysis() if callable(to_analysis) else report
 
     def _record(self, result: ChapterQaResult) -> None:
         entries = [
