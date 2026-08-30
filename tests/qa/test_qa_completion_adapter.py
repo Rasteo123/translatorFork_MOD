@@ -1,7 +1,9 @@
 """Behavioral tests for the existing-handler QA completion adapter."""
 
 import asyncio
+import gc
 import inspect
+import warnings
 
 import pytest
 
@@ -39,6 +41,16 @@ def _pending_background_tasks() -> list[asyncio.Task]:
         task
         for task in asyncio.all_tasks()
         if task is not current and not task.done()
+    ]
+
+
+def _assert_no_unawaited_coroutine_warnings(recorded_warnings) -> None:
+    gc.collect()
+    assert not [
+        warning
+        for warning in recorded_warnings
+        if issubclass(warning.category, RuntimeWarning)
+        and "was never awaited" in str(warning.message)
     ]
 
 
@@ -286,6 +298,114 @@ def test_callback_cancellation_interrupts_blocked_async_factory_without_task_lea
         assert _pending_background_tasks() == []
 
     asyncio.run(scenario())
+
+
+def test_factory_coroutine_never_starts_when_sync_factory_cancels_token():
+    """A returned factory coroutine must be closed before it can run."""
+    async def scenario():
+        body_started = False
+        token = CancellationToken()
+
+        async def returned_factory_result():
+            nonlocal body_started
+            body_started = True
+            return _Handler('{"ok":true}', [])
+
+        def factory(selection):
+            token.cancel()
+            return returned_factory_result()
+
+        client = ExistingHandlerCompletionClient(factory, event_sink=None)
+        with pytest.raises(asyncio.CancelledError):
+            await client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        await asyncio.sleep(0)
+        assert body_started is False
+        assert _pending_background_tasks() == []
+
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(scenario())
+        _assert_no_unawaited_coroutine_warnings(recorded_warnings)
+
+
+def test_handler_coroutine_never_starts_when_sync_wrapper_cancels_token():
+    """A returned handler coroutine must be closed before it can run."""
+    async def scenario():
+        body_started = False
+        token = CancellationToken()
+
+        async def returned_handler_result():
+            nonlocal body_started
+            body_started = True
+            return '{"ok":true}'
+
+        def execute_result():
+            token.cancel()
+            return returned_handler_result()
+
+        client = ExistingHandlerCompletionClient(
+            lambda selection: _Handler(execute_result, []),
+            event_sink=None,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        await asyncio.sleep(0)
+        assert body_started is False
+        assert _pending_background_tasks() == []
+
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(scenario())
+        _assert_no_unawaited_coroutine_warnings(recorded_warnings)
+
+
+def test_sink_coroutine_never_starts_when_sync_sink_cancels_token():
+    """A returned sink coroutine must be closed before it can run."""
+    async def scenario():
+        body_started = False
+        factory_calls = 0
+        token = CancellationToken()
+
+        async def returned_sink_result():
+            nonlocal body_started
+            body_started = True
+
+        def event_sink(event):
+            token.cancel()
+            return returned_sink_result()
+
+        def factory(selection):
+            nonlocal factory_calls
+            factory_calls += 1
+            return _Handler('{"ok":true}', [])
+
+        client = ExistingHandlerCompletionClient(factory, event_sink=event_sink)
+        with pytest.raises(asyncio.CancelledError):
+            await client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        await asyncio.sleep(0)
+        assert body_started is False
+        assert factory_calls == 0
+        assert _pending_background_tasks() == []
+
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+        asyncio.run(scenario())
+        _assert_no_unawaited_coroutine_warnings(recorded_warnings)
 
 
 def test_cancellation_is_rechecked_immediately_before_network_call():
