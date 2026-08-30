@@ -6,6 +6,9 @@ qt_api = "pyqt6"
 filterwarnings = [
     "default",
 ]
+markers = [
+    "performance: budgets that measure wall-clock time; run them in their own job",
+]
 
 [tool.ruff]
 target-version = "py311"
