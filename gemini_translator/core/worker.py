@@ -150,6 +150,8 @@ class UniversalWorker:
             from .chapter_qa_coordinator import TranslationReadyEvent
 
             task_id = str(task_info[0])
+            payload = task_info[1] if len(task_info) > 1 else ()
+            epub_path = str(payload[1]) if isinstance(payload, (list, tuple)) and len(payload) > 1 else ''
             events = tuple(
                 TranslationReadyEvent(
                     task_id=task_id,
@@ -159,6 +161,7 @@ class UniversalWorker:
                     source_language='auto',
                     target_language='ru',
                     fingerprint=str(record.get('fingerprint', '')),
+                    epub_path=epub_path,
                 )
                 for record in saved_records
                 if isinstance(record, dict) and record.get('output_path')

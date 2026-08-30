@@ -39,6 +39,7 @@ class TranslationReadyEvent:
     source_language: str
     target_language: str
     fingerprint: str = ""
+    epub_path: str = ""
     retries: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
