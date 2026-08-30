@@ -585,6 +585,145 @@ def build_html_document_model(html_content, document_id=None, source_encoding=No
     }
 
 
+def _iter_nodes_with_parent(node, parent=None):
+    yield node, parent
+    for child in node.get("children", []) or []:
+        yield from _iter_nodes_with_parent(child, node)
+
+
+def _collect_node_ids(document_model):
+    return {
+        node.get("node_id")
+        for node, _ in _iter_nodes_with_parent(document_model.get("body", {}))
+    }
+
+
+def insert_text_between_units(document_model, location, text):
+    """Insert one new node into a deep copy of ``document_model`` at ``location``.
+
+    ``location`` names the parent block node, the inline text node the insertion
+    point lives in, the character offset inside that node, and deterministic IDs
+    for the nodes this operation creates. Existing node IDs are never reused or
+    rewritten: when the offset falls inside a text node, the original node keeps
+    its ID and its leading half, and the trailing half becomes a new node.
+    """
+
+    if not isinstance(document_model, dict):
+        raise ValueError("document_model must be a dict")
+    if not isinstance(location, dict):
+        raise ValueError("location must be a dict")
+    if not isinstance(text, str) or not text:
+        raise ValueError("text must be a nonempty string")
+
+    parent_block_id = location.get("parent_block_id")
+    anchor_node_id = location.get("anchor_node_id")
+    offset = location.get("offset")
+    node_id = location.get("node_id")
+    tail_node_id = location.get("tail_node_id")
+    wrapper_tag = location.get("wrapper_tag")
+    wrapper_attrs = location.get("wrapper_attrs") or []
+    for value, name in (
+        (parent_block_id, "parent_block_id"),
+        (anchor_node_id, "anchor_node_id"),
+        (node_id, "node_id"),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"location {name} must be a nonempty string")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("location offset must be a non-negative integer")
+
+    model = copy.deepcopy(document_model)
+    existing_ids = _collect_node_ids(model)
+    if node_id in existing_ids:
+        raise ValueError("location node_id already exists in the document")
+
+    body = model.get("body", {})
+    block_node = None
+    for node, _ in _iter_nodes_with_parent(body):
+        if node.get("node_id") == parent_block_id:
+            block_node = node
+            break
+    if block_node is None:
+        raise ValueError("location parent_block_id is not part of the document")
+
+    block_node_ids = {
+        node.get("node_id") for node, _ in _iter_nodes_with_parent(block_node)
+    }
+    if anchor_node_id not in block_node_ids:
+        raise ValueError("location anchor_node_id is not part of the parent block")
+
+    anchor_node = None
+    anchor_parent = None
+    for node, parent in _iter_nodes_with_parent(body):
+        if node.get("node_id") == anchor_node_id:
+            anchor_node = node
+            anchor_parent = parent
+            break
+    if anchor_node is None or anchor_node.get("kind") != "text":
+        raise ValueError("location anchor_node_id is not a text node of the block")
+    if anchor_parent is None:
+        raise ValueError("location anchor_node_id has no editable parent")
+
+    anchor_text = anchor_node.get("text", "")
+    if offset > len(anchor_text):
+        raise ValueError("location offset is outside the anchor text node")
+
+    siblings = anchor_parent.get("children")
+    if not isinstance(siblings, list):
+        raise ValueError("anchor node has no editable parent")
+    index = next(
+        position
+        for position, child in enumerate(siblings)
+        if child.get("node_id") == anchor_node_id
+    )
+
+    if wrapper_tag:
+        inserted = {
+            "node_id": node_id,
+            "path": list(anchor_node.get("path", [])),
+            "kind": "tag",
+            "tag": str(wrapper_tag).lower(),
+            "role": "inline",
+            "attrs": [dict(item) for item in wrapper_attrs],
+            "self_closing": False,
+            "children": [
+                {
+                    "node_id": f"{node_id}.text",
+                    "path": list(anchor_node.get("path", [])),
+                    "kind": "text",
+                    "text": text,
+                }
+            ],
+        }
+    else:
+        inserted = {
+            "node_id": node_id,
+            "path": list(anchor_node.get("path", [])),
+            "kind": "text",
+            "text": text,
+        }
+
+    new_nodes = [inserted]
+    tail_text = anchor_text[offset:]
+    if tail_text:
+        if not isinstance(tail_node_id, str) or not tail_node_id.strip():
+            raise ValueError("splitting a text node requires location tail_node_id")
+        if tail_node_id in existing_ids or tail_node_id == node_id:
+            raise ValueError("location tail_node_id already exists in the document")
+        anchor_node["text"] = anchor_text[:offset]
+        new_nodes.append(
+            {
+                "node_id": tail_node_id,
+                "path": list(anchor_node.get("path", [])),
+                "kind": "text",
+                "text": tail_text,
+            }
+        )
+
+    siblings[index + 1 : index + 1] = new_nodes
+    return model
+
+
 def render_document_html(document_model):
     def render_node(node):
         kind = node.get("kind")

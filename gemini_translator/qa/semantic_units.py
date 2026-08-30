@@ -22,6 +22,36 @@ class SemanticUnitExtractionError(ValueError):
     """Raised when an EPUB translation payload lacks stable extractable identity."""
 
 
+def flatten_visible_text(
+    fragments: Sequence[object],
+) -> tuple[str, tuple[tuple[str, int, int], ...]]:
+    """Flatten one block's visible text and map it back to inline text nodes.
+
+    Each segment is ``(inline_id, start, end)`` over the flattened text, so a
+    caller can translate a block offset into an offset inside one text node.
+    """
+
+    pieces: list[str] = []
+    segments: list[tuple[str, int, int]] = []
+    offset = 0
+
+    def walk(items: Sequence[object]) -> None:
+        nonlocal offset
+        for fragment in items:
+            fragment_mapping = fragment
+            if fragment_mapping["type"] == "text":
+                text = fragment_mapping["text"]
+                pieces.append(text)
+                if text:
+                    segments.append((fragment_mapping["id"], offset, offset + len(text)))
+                offset += len(text)
+            elif fragment_mapping["type"] == "element":
+                walk(fragment_mapping["children"])
+
+    walk(fragments)
+    return "".join(pieces), tuple(segments)
+
+
 class LegacyRussianSegmenter:
     """Small deterministic fallback used when Razdel is deliberately disabled.
 
@@ -281,27 +311,7 @@ class SemanticUnitExtractor:
     def _flatten_visible_text(
         cls, fragments: list[object]
     ) -> tuple[str, tuple[tuple[str, int, int], ...]]:
-        pieces: list[str] = []
-        segments: list[tuple[str, int, int]] = []
-        offset = 0
-
-        def walk(items: list[object]) -> None:
-            nonlocal offset
-            for fragment in items:
-                fragment_mapping = fragment
-                if fragment_mapping["type"] == "text":
-                    text = fragment_mapping["text"]
-                    pieces.append(text)
-                    if text:
-                        segments.append(
-                            (fragment_mapping["id"], offset, offset + len(text))
-                        )
-                    offset += len(text)
-                elif fragment_mapping["type"] == "element":
-                    walk(fragment_mapping["children"])
-
-        walk(fragments)
-        return "".join(pieces), tuple(segments)
+        return flatten_visible_text(fragments)
 
     @staticmethod
     def _inline_spans_for_unit(
