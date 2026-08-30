@@ -3004,6 +3004,10 @@ class TranslationValidatorPage(ShellPage):
             api_keys=self._quality_api_keys(settings_manager),
         )
         dialog.settings_changed.connect(settings_manager.save_qa_settings)
+        dialog.set_status(
+            qa_settings.embedding_setup_problem()
+            or "Готово к смысловому сравнению."
+        )
         controller = TranslationQualityController(
             coordinator_provider=self._quality_coordinator,
             journal_loader=self._quality_journal,

@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTabWidget,
     QTableView,
@@ -42,7 +43,7 @@ EMBEDDING_PROVIDER_CHOICES = (
     ("OpenAI-совместимый", "openai_compatible"),
 )
 EMBEDDING_MODEL_SUGGESTIONS = {
-    "auto": ("gemini-embedding-001",),
+    "auto": ("gemini-embedding-001", "text-embedding-004"),
     "gemini": ("gemini-embedding-001", "text-embedding-004"),
     "openai_compatible": (
         "text-embedding-3-small",
@@ -161,6 +162,9 @@ class TranslationQualityDialog(QDialog):
         self.close_button = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Close, parent=self
         )
+        self.close_button.button(QDialogButtonBox.StandardButton.Close).setText(
+            "Закрыть"
+        )
         self.close_button.rejected.connect(self.reject)
         row.addWidget(self.close_button)
         return row
@@ -174,7 +178,10 @@ class TranslationQualityDialog(QDialog):
         layout.addWidget(self._build_embedding_group(page))
         layout.addWidget(self._build_capability_group(page))
         layout.addStretch(1)
-        return page
+        area = QScrollArea(self)
+        area.setWidgetResizable(True)
+        area.setWidget(page)
+        return area
 
     def _build_stage_group(self, parent) -> QGroupBox:
         group = QGroupBox("Что проверять после каждой главы", parent)
@@ -270,12 +277,21 @@ class TranslationQualityDialog(QDialog):
             layout.addWidget(caption)
             self.capability_checks[key] = check
 
+        endpoint_row = QHBoxLayout()
+        endpoint_row.addWidget(QLabel("Адрес LanguageTool:", group))
         self.language_tool_endpoint_edit = QLineEdit(group)
         self.language_tool_endpoint_edit.setPlaceholderText(
-            "Адрес LanguageTool, например http://localhost:8081/v2/check"
+            "например http://localhost:8081/v2/check"
         )
         self.language_tool_endpoint_edit.textChanged.connect(self._on_settings_edited)
-        layout.addWidget(self.language_tool_endpoint_edit)
+        endpoint_row.addWidget(self.language_tool_endpoint_edit)
+        layout.addLayout(endpoint_row)
+        self.capability_checks[QaCapabilityKey.LANGUAGE_TOOL].toggled.connect(
+            self.language_tool_endpoint_edit.setEnabled
+        )
+        self.language_tool_endpoint_edit.setEnabled(
+            self.capability_checks[QaCapabilityKey.LANGUAGE_TOOL].isChecked()
+        )
 
         self.capability_status_label = QLabel("", group)
         self.capability_status_label.setWordWrap(True)
@@ -396,6 +412,9 @@ class TranslationQualityDialog(QDialog):
         self._reload_key_choices(settings.embedding_api_key)
         self._reload_model_choices(settings.embedding_provider, settings.embedding_model)
         self.embedding_base_url_edit.setText(settings.embedding_base_url)
+        self.embedding_base_url_edit.setEnabled(
+            settings.embedding_provider == "openai_compatible"
+        )
 
         self.capability_checks[QaCapabilityKey.RAZDEL].setChecked(
             settings.capabilities.razdel_enabled
@@ -435,11 +454,16 @@ class TranslationQualityDialog(QDialog):
         self.embedding_key_edit.blockSignals(False)
 
     def _reload_model_choices(self, provider: str, selected_model: str) -> None:
+        suggestions = EMBEDDING_MODEL_SUGGESTIONS.get(provider, ())
         self.embedding_model_combo.blockSignals(True)
         self.embedding_model_combo.clear()
-        for name in EMBEDDING_MODEL_SUGGESTIONS.get(provider, ()):  # noqa: PLC0206
+        for name in suggestions:
             self.embedding_model_combo.addItem(name)
-        self.embedding_model_combo.setEditText(selected_model)
+        # An empty model field would silently fall back to a default the user
+        # never saw; show the one that will actually be used.
+        self.embedding_model_combo.setEditText(
+            selected_model or (suggestions[0] if suggestions else "")
+        )
         self.embedding_model_combo.blockSignals(False)
 
     def _on_embedding_provider_changed(self) -> None:

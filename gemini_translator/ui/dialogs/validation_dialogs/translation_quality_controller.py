@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .translation_quality_models import BookQaReportSnapshot
@@ -49,6 +52,7 @@ class TranslationQualityController(QObject):
         dialog.undo_chapter_requested.connect(self.undo_chapter)
         dialog.undo_all_requested.connect(self.undo_all)
         dialog.cancel_requested.connect(self.cancel)
+        dialog.embedding_test_requested.connect(self.test_embedding)
         self.report_ready.connect(dialog.set_report)
         self.status_changed.connect(dialog.set_status)
         self.busy_changed.connect(dialog.set_busy)
@@ -128,6 +132,20 @@ class TranslationQualityController(QObject):
             lambda: coordinator.undo_all(),
             lambda result, error: self._finish_undo(result, error),
         )
+
+    def test_embedding(self, qa_settings) -> None:
+        """Send one tiny embedding request so a wrong key is found here, not later."""
+        problem = qa_settings.embedding_setup_problem()
+        if problem:
+            self.status_changed.emit(problem)
+            return
+        self.status_changed.emit("Проверяем подключение…")
+
+        def run() -> None:
+            message = _probe_embedding(qa_settings)
+            self.status_changed.emit(message)
+
+        threading.Thread(target=run, name="qa-embedding-probe", daemon=True).start()
 
     def cancel(self) -> None:
         """Ask the running pass to stop at its next safe point."""
@@ -213,3 +231,30 @@ class TranslationQualityController(QObject):
             return
         self._busy = bool(busy)
         self.busy_changed.emit(self._busy)
+
+
+def _probe_embedding(qa_settings) -> str:
+    """Return a human-readable verdict about the configured embedding provider."""
+    from ....qa.assembly import aiohttp_session_factory, build_embedding_provider
+    from ....qa.embeddings.base import EmbeddingRequest
+
+    try:
+        provider = build_embedding_provider(
+            qa_settings, aiohttp_session_factory(), {}
+        )
+    except Exception as error:  # noqa: BLE001 - the user needs the reason, not a trace
+        return f"Провайдер не настроен: {error}"
+    request = EmbeddingRequest(
+        texts=("Проверка подключения.",),
+        language="ru",
+        model=qa_settings.embedding_model or "gemini-embedding-001",
+        task_type="semantic-similarity",
+    )
+    try:
+        batch = asyncio.run(provider.embed(request))
+    except Exception as error:  # noqa: BLE001 - any failure is a plain answer here
+        return f"Подключение не удалось: {type(error).__name__}"
+    return (
+        f"Подключение работает: {batch.provider}, модель {batch.model}, "
+        f"{batch.dimensions} измерений."
+    )

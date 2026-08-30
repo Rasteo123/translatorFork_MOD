@@ -276,3 +276,28 @@ def test_attaching_a_dialog_connects_both_directions(qt_app):
     dialog.select_chapter("chapter-1")
     dialog.check_chapter_requested.emit("chapter-1")
     assert coordinator.checked == ["chapter-1"]
+
+
+def test_embedding_probe_refuses_an_incomplete_setup(qt_app):
+    """Testing a connection that cannot be built must explain, not throw."""
+    from gemini_translator.qa.settings import QaSettings
+
+    controller = _controller(_Coordinator())
+    statuses = []
+    controller.status_changed.connect(statuses.append)
+
+    controller.test_embedding(QaSettings(embedding_provider="openai_compatible"))
+
+    assert statuses and "ключ" in statuses[-1].lower()
+
+
+def test_embedding_probe_reports_a_provider_that_cannot_be_built(qt_app):
+    """A key that no provider accepts must be named as a setup problem."""
+    from gemini_translator.qa.settings import QaSettings
+    from gemini_translator.ui.dialogs.validation_dialogs.translation_quality_controller import (
+        _probe_embedding,
+    )
+
+    message = _probe_embedding(QaSettings(embedding_provider="local_onnx"))
+
+    assert "не настроен" in message

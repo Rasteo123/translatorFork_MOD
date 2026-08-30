@@ -195,6 +195,7 @@ class ChapterQaTableModel(QAbstractTableModel):
 
     COLUMNS = (
         ("Глава", "chapter_id"),
+        ("Риск", "risk_label"),
         ("Языковая пара", "language_pair"),
         ("Коэффициент", "length_ratio"),
         ("Профиль длины", "profile_status"),
@@ -205,7 +206,6 @@ class ChapterQaTableModel(QAbstractTableModel):
         ("Подтверждённые", "confirmed_gaps"),
         ("Языковые дефекты", "language_issues"),
         ("Исправлено", "applied_repairs"),
-        ("Риск", "risk_label"),
         ("Время, с", "duration_seconds"),
         ("Токены", "tokens"),
     )
@@ -258,6 +258,9 @@ class ChapterQaTableModel(QAbstractTableModel):
             return None
         field_name = self.COLUMNS[index.column()][1]
         if role == Qt.ItemDataRole.DisplayRole:
+            if field_name == "risk_label" and row.blocked_reason:
+                # Colour is never the only signal: a blocked chapter says so.
+                return f"⛔ {row.risk_label} — перевод остановлен"
             return _format(getattr(row, field_name))
         if role == Qt.ItemDataRole.ToolTipRole and row.blocked_reason:
             return f"Перевод остановлен: {row.blocked_reason}"
