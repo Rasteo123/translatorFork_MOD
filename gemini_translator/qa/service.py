@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 import hashlib
 from pathlib import Path
 
@@ -138,6 +139,22 @@ class OmissionRepairOutcome:
     attempted: bool = False
     patch_id: str = ""
     reasons: tuple[str, ...] = ()
+    source_text: str = ""
+    inserted_text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ChapterChange:
+    """One thing this pass changed, refused, or proposed, with both texts."""
+
+    kind: str
+    identity: str
+    before: str = ""
+    after: str = ""
+    note: str = ""
+    # A source fragment and its translation share no words: a word-level diff
+    # between them would highlight almost everything and mean nothing.
+    same_language: bool = False
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -154,6 +171,185 @@ class ChapterQaResult:
     language: LanguageQaResult | None = None
     metrics: ChapterMetrics | None = None
     warnings: tuple[str, ...] = ()
+
+    def changes(self) -> tuple["ChapterChange", ...]:
+        """List every change and refusal this pass produced, in reading order."""
+        categories = {
+            issue.issue_id: issue.category
+            for issue in (getattr(self.language, "issues", ()) if self.language else ())
+        }
+        records: list[ChapterChange] = []
+        for repair in self.repairs:
+            records.append(
+                ChapterChange(
+                    kind=(
+                        "omission"
+                        if repair.decision is Decision.FIXED
+                        else "rejected"
+                    ),
+                    identity=repair.candidate_id,
+                    before=repair.source_text,
+                    after=repair.inserted_text,
+                    note=", ".join(repair.reasons),
+                )
+            )
+        for replacement in getattr(self.language, "applied", ()) or ():
+            records.append(
+                ChapterChange(
+                    kind="language",
+                    identity=replacement.issue_id,
+                    before=replacement.original_text,
+                    after=replacement.replacement_text,
+                    note=categories.get(replacement.issue_id, ""),
+                    same_language=True,
+                )
+            )
+        for issue in getattr(self.language, "suggestions", ()) or ():
+            records.append(
+                ChapterChange(
+                    kind="suggestion",
+                    identity=issue.issue_id,
+                    before=issue.original_text,
+                    after=issue.replacement_text or "",
+                    note=issue.category,
+                    same_language=True,
+                )
+            )
+        for addition in self.additions:
+            if addition.blocks_gate:
+                records.append(
+                    ChapterChange(
+                        kind="addition",
+                        identity=addition.candidate_id,
+                        before="",
+                        after=addition.context.target_text,
+                    )
+                )
+        return tuple(records)
+
+    def change_details_html(self) -> str:
+        """Render the same report with the exact words that changed marked.
+
+        The highlight is an addition to the labels, never a replacement for
+        them: each pair still says which line is the original.
+        """
+
+        from .text_diff import highlight_added, highlight_pair
+
+        groups = (
+            ("omission", "Восстановленные пропуски", "было (оригинал)", "стало (перевод)"),
+            ("language", "Языковые исправления", "было", "стало"),
+            ("rejected", "Отклонённые исправления", "фрагмент оригинала", "предложенный перевод"),
+            ("suggestion", "Предложения без применения", "было", "предложено"),
+            ("addition", "Добавленные моделью факты", "", "в переводе"),
+        )
+        changes = self.changes()
+        parts = [
+            "<div style=\"font-family: Consolas, monospace;\">",
+            f"<p><b>Глава:</b> {_escape(self.chapter_id)}</p>",
+        ]
+        for kind, title, before_label, after_label in groups:
+            selected = [change for change in changes if change.kind == kind]
+            if not selected:
+                continue
+            parts.append(f"<p><b>{title}: {len(selected)}</b></p>")
+            for change in selected:
+                note = f", {_escape(change.note)}" if change.note else ""
+                parts.append(f"<p>[{_escape(change.identity)}{note}]<br>")
+                if change.before and change.after and change.same_language:
+                    before_html, after_html = highlight_pair(change.before, change.after)
+                    parts.append(f"{before_label}: {before_html}<br>")
+                    parts.append(f"{after_label}: {after_html}</p>")
+                elif change.before and change.after:
+                    parts.append(f"{before_label}: {_escape(change.before)}<br>")
+                    parts.append(
+                        f"{after_label}: {highlight_added(change.after)}</p>"
+                    )
+                elif change.after:
+                    parts.append(
+                        f"{after_label}: {highlight_added(change.after)}</p>"
+                    )
+                else:
+                    parts.append(f"{before_label}: {_escape(change.before)}</p>")
+        parts.append("</div>")
+        return "".join(parts)
+
+    @property
+    def changed_anything(self) -> bool:
+        """Report whether this pass actually rewrote part of the chapter."""
+        return bool(self.applied_repair_ids) or bool(
+            getattr(self.language, "applied", ()) if self.language else ()
+        )
+
+    def change_details(self) -> str:
+        """Describe every change and refusal as before/after pairs, for the log.
+
+        The log is where a reader decides whether to trust an automatic edit, so
+        it must show the text that triggered it and the text that replaced it —
+        not just a count.
+        """
+
+        lines: list[str] = [f"Глава: {self.chapter_id}"]
+        categories = {
+            issue.issue_id: issue.category
+            for issue in (getattr(self.language, "issues", ()) if self.language else ())
+        }
+        applied = [
+            repair for repair in self.repairs if repair.decision is Decision.FIXED
+        ]
+        rejected = [
+            repair for repair in self.repairs if repair.decision is not Decision.FIXED
+        ]
+
+        if applied:
+            lines.append("")
+            lines.append(f"Восстановленные пропуски: {len(applied)}")
+            for repair in applied:
+                lines.append("")
+                lines.append(f"  [{repair.candidate_id}]")
+                lines.append(f"  было (оригинал): {repair.source_text or '—'}")
+                lines.append(f"  стало (перевод): {repair.inserted_text or '—'}")
+
+        language_applied = tuple(
+            getattr(self.language, "applied", ()) if self.language else ()
+        )
+        if language_applied:
+            lines.append("")
+            lines.append(f"Языковые исправления: {len(language_applied)}")
+            for replacement in language_applied:
+                category = categories.get(replacement.issue_id, "")
+                suffix = f", {category}" if category else ""
+                lines.append("")
+                lines.append(f"  [{replacement.issue_id}{suffix}]")
+                lines.append(f"  было:  {replacement.original_text}")
+                lines.append(f"  стало: {replacement.replacement_text}")
+
+        if rejected:
+            lines.append("")
+            lines.append(f"Отклонённые исправления: {len(rejected)}")
+            for repair in rejected:
+                reasons = ", ".join(repair.reasons) or "без причины"
+                lines.append(f"  [{repair.candidate_id}] {reasons}")
+                if repair.source_text:
+                    lines.append(f"  фрагмент оригинала: {repair.source_text}")
+
+        suggestions = tuple(
+            getattr(self.language, "suggestions", ()) if self.language else ()
+        )
+        if suggestions:
+            lines.append("")
+            lines.append(f"Предложения без применения: {len(suggestions)}")
+            for issue in suggestions[:20]:
+                lines.append(f"  [{issue.issue_id}, {issue.category}] {issue.original_text}")
+
+        additions = [addition for addition in self.additions if addition.blocks_gate]
+        if additions:
+            lines.append("")
+            lines.append(f"Добавленные моделью факты: {len(additions)}")
+            for addition in additions:
+                lines.append(f"  {addition.context.target_text}")
+
+        return "\n".join(lines)
 
     @property
     def applied_repair_ids(self) -> tuple[str, ...]:
@@ -409,38 +605,38 @@ class TranslationQualityService:
                     Decision.REPAIR_REJECTED,
                     attempted=error.reason != "not_eligible",
                     reasons=(error.reason, error.detail) if error.detail else (error.reason,),
+                    source_text=item.context.source_text,
                 ),
                 model,
             )
 
         patch = _patch_for(item, units, model, request.chapter_id, proposal.translated_fragment)
+        rejected = partial(
+            OmissionRepairOutcome,
+            candidate_id,
+            Decision.REPAIR_REJECTED,
+            attempted=True,
+            source_text=item.context.source_text,
+            inserted_text=proposal.translated_fragment,
+        )
         if patch is None:
-            return (
-                OmissionRepairOutcome(
-                    candidate_id,
-                    Decision.REPAIR_REJECTED,
-                    attempted=True,
-                    reasons=("anchor_units_unavailable",),
-                ),
-                model,
-            )
+            return rejected(reasons=("anchor_units_unavailable",)), model
         try:
             preview = self._engine.preview(model, patch)
         except StructuralRepairError as error:
             return (
-                OmissionRepairOutcome(
-                    candidate_id,
-                    Decision.REPAIR_REJECTED,
-                    attempted=True,
-                    patch_id=patch.patch_id,
-                    reasons=(type(error).__name__,),
-                ),
+                rejected(patch_id=patch.patch_id, reasons=(type(error).__name__,)),
                 model,
             )
         if preview.status == "already_applied":
             return (
                 OmissionRepairOutcome(
-                    candidate_id, Decision.FIXED, attempted=False, patch_id=patch.patch_id
+                    candidate_id,
+                    Decision.FIXED,
+                    attempted=False,
+                    patch_id=patch.patch_id,
+                    source_text=item.context.source_text,
+                    inserted_text=proposal.translated_fragment,
                 ),
                 model,
             )
@@ -450,16 +646,7 @@ class TranslationQualityService:
             RepairValidationContext(item.context.source_text, glossary),
         )
         if not local.accepted:
-            return (
-                OmissionRepairOutcome(
-                    candidate_id,
-                    Decision.REPAIR_REJECTED,
-                    attempted=True,
-                    patch_id=patch.patch_id,
-                    reasons=local.reasons,
-                ),
-                model,
-            )
+            return rejected(patch_id=patch.patch_id, reasons=local.reasons), model
 
         validation = await self._repair_validator.validate(
             ChapterSnapshot(request.chapter_id, preview.before_html),
@@ -471,28 +658,13 @@ class TranslationQualityService:
             glossary=glossary,
         )
         if not validation.accepted:
-            return (
-                OmissionRepairOutcome(
-                    candidate_id,
-                    Decision.REPAIR_REJECTED,
-                    attempted=True,
-                    patch_id=patch.patch_id,
-                    reasons=validation.reasons,
-                ),
-                model,
-            )
+            return rejected(patch_id=patch.patch_id, reasons=validation.reasons), model
 
         try:
             self._engine.commit(preview, request.translated_path, self._store)
         except (ManualEditConflict, OSError) as error:
             return (
-                OmissionRepairOutcome(
-                    candidate_id,
-                    Decision.REPAIR_REJECTED,
-                    attempted=True,
-                    patch_id=patch.patch_id,
-                    reasons=(type(error).__name__,),
-                ),
+                rejected(patch_id=patch.patch_id, reasons=(type(error).__name__,)),
                 model,
             )
         self._journal.append_repair(
@@ -507,7 +679,12 @@ class TranslationQualityService:
         self._save_journal()
         return (
             OmissionRepairOutcome(
-                candidate_id, Decision.FIXED, attempted=True, patch_id=patch.patch_id
+                candidate_id,
+                Decision.FIXED,
+                attempted=True,
+                patch_id=patch.patch_id,
+                source_text=item.context.source_text,
+                inserted_text=preview.inserted_text.strip() or proposal.translated_fragment,
             ),
             preview.document_model,
         )
@@ -673,6 +850,12 @@ class TranslationQualityService:
         except OSError:
             # A journal that cannot be written must not undo an applied repair.
             return
+
+
+def _escape(value: str) -> str:
+    from html import escape
+
+    return escape(str(value or ""))
 
 
 def _chapter_status(result: ChapterQaResult) -> str:

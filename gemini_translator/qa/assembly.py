@@ -120,6 +120,17 @@ def build_embedding_provider(
     units were produced under: a cached vector must never survive a change of
     segmentation.
     """
+    if qa_settings.embedding_provider == "local_onnx":
+        provider = create_embedding_provider(
+            EmbeddingProviderConfig(
+                kind="local_onnx",
+                model_dir=str(local_embedding_model_root()),
+                intra_op_threads=qa_settings.slovnet_cpu_threads,
+            ),
+            session_factory,
+        )
+        return _cached(provider, qa_settings, cache_dir, preprocessing_identity)
+
     chosen_key = qa_settings.embedding_api_key
     gemini_key = chosen_key or str(
         api_keys_by_provider.get("google") or api_keys_by_provider.get("gemini") or ""
@@ -160,7 +171,16 @@ def build_embedding_provider(
         if len(candidates) == 1
         else EmbeddingProviderConfig(kind="auto", providers=tuple(candidates))
     )
-    provider = create_embedding_provider(config, session_factory)
+    return _cached(
+        create_embedding_provider(config, session_factory),
+        qa_settings,
+        cache_dir,
+        preprocessing_identity,
+    )
+
+
+def _cached(provider, qa_settings, cache_dir, preprocessing_identity):
+    """Wrap one provider in the project cache, keyed by the segmentation used."""
     if cache_dir is None:
         return provider
     identity = preprocessing_identity or _extractor(
@@ -169,6 +189,20 @@ def build_embedding_provider(
     return CachedEmbeddingProvider(
         provider, EmbeddingCache(cache_dir), preprocessing_identity=identity
     )
+
+
+def local_embedding_model_root() -> Path:
+    """Return the shared directory the optional local embedding model lives in."""
+    from ..utils.settings import default_settings_dir
+
+    return Path(default_settings_dir()) / "embeddings" / "multilingual-e5"
+
+
+def local_embedding_model_state() -> tuple[bool, Path]:
+    """Report whether the local model is present, and where it is looked for."""
+    root = local_embedding_model_root()
+    installed = (root / "model.onnx").is_file() and (root / "tokenizer.json").is_file()
+    return installed, root
 
 
 def build_translation_quality_service(

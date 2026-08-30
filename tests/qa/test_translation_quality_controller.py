@@ -292,7 +292,19 @@ def test_embedding_probe_refuses_an_incomplete_setup(qt_app):
 
 
 def test_embedding_probe_reports_a_provider_that_cannot_be_built(qt_app):
-    """A key that no provider accepts must be named as a setup problem."""
+    """A provider with nothing configured must be named as a setup problem."""
+    from gemini_translator.qa.settings import QaSettings
+    from gemini_translator.ui.dialogs.validation_dialogs.translation_quality_controller import (
+        _probe_embedding,
+    )
+
+    message = _probe_embedding(QaSettings(embedding_provider="gemini"))
+
+    assert "не настроен" in message
+
+
+def test_embedding_probe_reports_a_missing_local_model(qt_app):
+    """Choosing the local model without installing it must say exactly that."""
     from gemini_translator.qa.settings import QaSettings
     from gemini_translator.ui.dialogs.validation_dialogs.translation_quality_controller import (
         _probe_embedding,
@@ -300,7 +312,7 @@ def test_embedding_probe_reports_a_provider_that_cannot_be_built(qt_app):
 
     message = _probe_embedding(QaSettings(embedding_provider="local_onnx"))
 
-    assert "не настроен" in message
+    assert "не удалось" in message.lower() or "не настроен" in message.lower()
 
 
 def test_export_writes_the_bundle_and_reports_where(qt_app, tmp_path):

@@ -365,12 +365,38 @@ class ChapterQaCoordinator:
         if request is None:
             return None
         try:
-            return await self._service.check_chapter(request, options, self._cancellation)
+            result = await self._service.check_chapter(
+                request, options, self._cancellation
+            )
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - QA never breaks translation
             self._report(f"[QA] Проверка главы '{event.chapter_id}' не удалась: {error}")
             return None
+        self._report_chapter(event, result)
+        return result
+
+    def _report_chapter(self, event: TranslationReadyEvent, result) -> None:
+        """Log what the check changed, with the text before and after each edit."""
+        applied = len(getattr(result, "applied_repair_ids", ()) or ())
+        language = len(getattr(getattr(result, "language", None), "applied", ()) or ())
+        if not getattr(result, "changed_anything", False):
+            if not result.may_continue_translation:
+                self._report(
+                    f"[QA] Глава '{event.chapter_id}': перевод остановлен, "
+                    "нужно решение.",
+                    details_title=f"Проверка главы '{event.chapter_id}'",
+                    details_text=result.change_details(),
+                    details_html=result.change_details_html(),
+                )
+            return
+        self._report(
+            f"[QA] Глава '{event.chapter_id}': исправлено пропусков — {applied}, "
+            f"языковых дефектов — {language}.",
+            details_title=f"Исправления в главе '{event.chapter_id}'",
+            details_text=result.change_details(),
+            details_html=result.change_details_html(),
+        )
 
     async def _inspect_and_resolve(
         self, task_id: str, events: Sequence[TranslationReadyEvent]
@@ -449,12 +475,33 @@ class ChapterQaCoordinator:
             return QaOptions()
         return options if isinstance(options, QaOptions) else QaOptions()
 
-    def _report(self, message: str) -> None:
-        if callable(self._log):
+    def _report(
+        self,
+        message: str,
+        details_title: str = "",
+        details_text: str = "",
+        details_html: str = "",
+    ) -> None:
+        """Log one line, with an expandable detail block when there is one."""
+        if not callable(self._log):
+            return
+        try:
+            if details_text:
+                self._log(
+                    message,
+                    details_title=details_title,
+                    details_text=details_text,
+                    details_html=details_html,
+                )
+            else:
+                self._log(message)
+        except TypeError:
             try:
                 self._log(message)
             except Exception:  # noqa: BLE001 - logging must never raise
                 return
+        except Exception:  # noqa: BLE001 - logging must never raise
+            return
 
     def _discard_future(self, future: asyncio.Future) -> None:
         with self._pending_lock:

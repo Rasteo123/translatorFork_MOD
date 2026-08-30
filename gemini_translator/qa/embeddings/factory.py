@@ -98,11 +98,14 @@ class EmbeddingProviderConfig:
     model: str | None = None
     timeout_seconds: float = 30.0
     providers: tuple["EmbeddingProviderConfig", ...] = ()
+    model_dir: str | None = None
+    intra_op_threads: int = 2
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or self.kind not in {
             "gemini",
             "openai_compatible",
+            "local_onnx",
             "auto",
         }:
             raise UnsupportedEmbeddingProvider()
@@ -118,10 +121,25 @@ class EmbeddingProviderConfig:
             raise EmbeddingContractError("providers must contain embedding provider configurations")
         if any(provider.kind == "auto" for provider in self.providers):
             raise EmbeddingContractError("auto configurations cannot contain nested auto configurations")
+        if any(provider.kind == "local_onnx" for provider in self.providers):
+            # An automatic setup must never start loading a local model the user
+            # did not choose; the fallback chain stays online.
+            raise EmbeddingContractError("auto configurations are online only")
         if self.kind != "auto" and self.providers:
             raise EmbeddingContractError("only auto configurations can contain providers")
         if self.kind == "openai_compatible" and self.base_url is None:
             raise EmbeddingContractError("openai-compatible provider requires a base URL")
+        object.__setattr__(
+            self, "model_dir", _optional_config_string(self.model_dir, "model_dir")
+        )
+        if self.kind == "local_onnx" and self.model_dir is None:
+            raise EmbeddingContractError("local provider requires a model directory")
+        if (
+            isinstance(self.intra_op_threads, bool)
+            or not isinstance(self.intra_op_threads, int)
+            or self.intra_op_threads < 1
+        ):
+            raise EmbeddingContractError("intra_op_threads must be a positive integer")
         if self.kind == "auto" and (self.api_key or self.base_url is not None or self.model is not None):
             raise EmbeddingContractError("auto provider configuration must use explicit subconfigurations")
 
@@ -145,6 +163,16 @@ def create_embedding_provider(
 
         return OpenAICompatibleEmbeddingProvider(
             config.base_url or "", config.api_key, session_factory, config.timeout_seconds
+        )
+    if config.kind == "local_onnx":
+        from .local_onnx import LocalOnnxEmbeddingProvider, load_local_runtime
+
+        model_dir = config.model_dir or ""
+        return LocalOnnxEmbeddingProvider(
+            model_dir,
+            lambda: load_local_runtime(
+                model_dir, intra_op_threads=config.intra_op_threads
+            ),
         )
     if config.kind == "auto":
         concrete = tuple(create_embedding_provider(item, session_factory) for item in config.providers)

@@ -42,6 +42,7 @@ EMBEDDING_PROVIDER_CHOICES = (
     ("Автоматически (ключ сессии)", "auto"),
     ("Gemini", "gemini"),
     ("OpenAI-совместимый", "openai_compatible"),
+    ("Локальная модель (без сети)", "local_onnx"),
 )
 EMBEDDING_MODEL_SUGGESTIONS = {
     "auto": ("gemini-embedding-001", "text-embedding-004"),
@@ -51,7 +52,7 @@ EMBEDDING_MODEL_SUGGESTIONS = {
         "text-embedding-3-large",
         "text-embedding-ada-002",
     ),
-    "local_onnx": (),
+    "local_onnx": ("multilingual-e5-small", "multilingual-e5-base"),
 }
 CAPABILITY_ORDER = (
     QaCapabilityKey.RAZDEL,
@@ -249,6 +250,11 @@ class TranslationQualityDialog(QDialog):
         self.embedding_status_label.setWordWrap(True)
         layout.addRow("", self.embedding_status_label)
 
+        self.local_model_label = QLabel("", group)
+        self.local_model_label.setWordWrap(True)
+        self.local_model_label.setVisible(False)
+        layout.addRow("Локальная модель:", self.local_model_label)
+
         self.embedding_test_button = QPushButton("Проверить подключение", group)
         self.embedding_test_button.clicked.connect(
             lambda: self.embedding_test_requested.emit(self.qa_settings())
@@ -420,6 +426,7 @@ class TranslationQualityDialog(QDialog):
         self.embedding_base_url_edit.setEnabled(
             settings.embedding_provider == "openai_compatible"
         )
+        self._refresh_local_model_state(settings.embedding_provider)
 
         self.capability_checks[QaCapabilityKey.RAZDEL].setChecked(
             settings.capabilities.razdel_enabled
@@ -475,7 +482,31 @@ class TranslationQualityDialog(QDialog):
         provider = str(self.embedding_provider_combo.currentData() or "auto")
         self._reload_model_choices(provider, self.embedding_model_combo.currentText().strip())
         self.embedding_base_url_edit.setEnabled(provider == "openai_compatible")
+        self._refresh_local_model_state(provider)
         self._on_settings_edited()
+
+    def _refresh_local_model_state(self, provider: str) -> None:
+        """Say plainly whether the local model is present, and where it is sought."""
+        self.local_model_label.setVisible(provider == "local_onnx")
+        self.embedding_key_combo.setEnabled(provider != "local_onnx")
+        self.embedding_key_edit.setEnabled(provider != "local_onnx")
+        if provider != "local_onnx":
+            return
+        try:
+            from ....qa.assembly import local_embedding_model_state
+
+            installed, root = local_embedding_model_state()
+        except Exception:  # noqa: BLE001 - the dialog must open regardless
+            self.local_model_label.setText("Состояние локальной модели неизвестно.")
+            return
+        self.local_model_label.setText(
+            (
+                f"Модель найдена: {root}"
+                if installed
+                else "Модель не установлена. Положите model.onnx и tokenizer.json в "
+                f"{root} — загрузка не выполняется автоматически."
+            )
+        )
 
     def _on_key_choice_changed(self) -> None:
         if self.embedding_key_combo.currentData():

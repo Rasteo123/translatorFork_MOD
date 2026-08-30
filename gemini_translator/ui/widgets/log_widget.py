@@ -195,17 +195,24 @@ class LogWidget(QWidget):
             return
         self._log_flush_timer.start(max(0, int(delay_ms)))
 
-    def _show_details_dialog(self, title: str, text: str):
+    def _show_details_dialog(self, title: str, text: str, html_text: str = ""):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setMinimumSize(900, 650)
 
         layout = QVBoxLayout(dialog)
 
-        viewer = QtWidgets.QPlainTextEdit(dialog)
-        viewer.setReadOnly(True)
-        viewer.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
-        viewer.setPlainText(text)
+        if html_text:
+            # Rich details highlight exactly what changed; the plain text stays
+            # the thing the copy button hands over.
+            viewer = QtWidgets.QTextBrowser(dialog)
+            viewer.setOpenExternalLinks(False)
+            viewer.setHtml(html_text)
+        else:
+            viewer = QtWidgets.QPlainTextEdit(dialog)
+            viewer.setReadOnly(True)
+            viewer.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+            viewer.setPlainText(text)
         viewer.setFont(QtGui.QFont("Consolas", 10))
         layout.addWidget(viewer)
 
@@ -232,7 +239,9 @@ class LogWidget(QWidget):
             return
 
         if scheme == "logdetail":
-            self._show_details_dialog(payload['title'], payload['text'])
+            self._show_details_dialog(
+                payload['title'], payload['text'], payload.get('html', "")
+            )
             return
 
         file_path = payload.get('path')
@@ -294,9 +303,11 @@ class LogWidget(QWidget):
         if isinstance(details_text, str) and details_text.strip():
             details_text = self._truncate_details_text(details_text)
             detail_id = uuid.uuid4().hex
+            details_html = data.get('details_html')
             self._details_map[detail_id] = {
                 'title': data.get('details_title') or "Детали сообщения",
-                'text': details_text
+                'text': details_text,
+                'html': details_html if isinstance(details_html, str) else "",
             }
             self._trim_details_map()
             links_html.append(f"<a href='logdetail:{detail_id}'>[details]</a>")

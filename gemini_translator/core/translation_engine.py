@@ -873,8 +873,14 @@ class TranslationEngine(QObject):
                 settings.get('model') or settings.get('model_id') or ''
             )
 
-            def log(message):
-                self._post_event('log_message', {'message': message})
+            def log(message, details_title='', details_text='', details_html=''):
+                payload = {'message': message}
+                if details_text:
+                    payload['details_title'] = details_title or "Детали проверки"
+                    payload['details_text'] = details_text
+                    if details_html:
+                        payload['details_html'] = details_html
+                self._post_event('log_message', payload)
 
             handler_factory = build_qa_handler_factory(
                 settings_manager=self.settings_manager,

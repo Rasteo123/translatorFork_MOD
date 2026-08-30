@@ -178,7 +178,9 @@ class QaSettings:
         """
 
         if self.embedding_provider == "local_onnx":
-            return "Локальная ONNX-модель ещё не поддерживается."
+            # A local model needs no key; whether it is installed is a question
+            # for the place that can actually look at the disk.
+            return ""
         if self.embedding_provider == "gemini" and not self.embedding_api_key:
             return "Для Gemini-эмбеддингов не выбран ключ."
         if self.embedding_provider == "openai_compatible":

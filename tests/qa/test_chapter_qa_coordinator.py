@@ -260,3 +260,261 @@ def test_translation_ready_event_rejects_incomplete_identity():
             source_language="en",
             target_language="ru",
         )
+
+
+def _repair(candidate_id="gap-1", source="He never told her.", inserted="Он не сказал ей."):
+    from gemini_translator.qa.models import Decision
+    from gemini_translator.qa.service import OmissionRepairOutcome
+
+    return OmissionRepairOutcome(
+        candidate_id=candidate_id,
+        decision=Decision.FIXED,
+        attempted=True,
+        patch_id="qa-1",
+        source_text=source,
+        inserted_text=inserted,
+    )
+
+
+def test_a_chapter_that_changed_is_logged_with_before_and_after():
+    """A reader must be able to judge an automatic edit from the log alone."""
+    from gemini_translator.qa.language_validation import (
+        LanguageQaResult,
+        LanguageReplacement,
+    )
+    from gemini_translator.qa.llm.schemas import LanguageIssue
+
+    result = ChapterQaResult(
+        chapter_id="chapter-1",
+        risk_level=RiskLevel.MEDIUM,
+        may_continue_translation=True,
+        coverage_mode="semantic_alignment",
+        repairs=(_repair(),),
+        language=LanguageQaResult(
+            chapter_id="chapter-1",
+            issues=(
+                LanguageIssue(
+                    issue_id="issue-1",
+                    category="calque",
+                    block_id="b-1",
+                    original_text="сделало его чувствовать",
+                    replacement_text="заставило его почувствовать",
+                    objective=True,
+                    confidence=0.93,
+                    explanation="Калька.",
+                ),
+            ),
+            applied=(
+                LanguageReplacement(
+                    "issue-1",
+                    "b-1",
+                    "сделало его чувствовать",
+                    "заставило его почувствовать",
+                ),
+            ),
+        ),
+    )
+    logged: list[tuple] = []
+
+    class _Service:
+        async def check_chapter(self, request, options, cancellation):
+            return result
+
+    coordinator = ChapterQaCoordinator(
+        service=_Service(),
+        task_manager=None,
+        request_builder=lambda event: event.chapter_id,
+        log=lambda message, details_title="", details_text="", details_html="": (
+            logged.append((message, details_title, details_text))
+        ),
+    )
+
+    asyncio.run(coordinator.inspect_completed_task("task-1", (_event("chapter-1"),)))
+
+    assert logged
+    message, title, details = logged[-1]
+    assert "исправлено пропусков — 1" in message
+    assert "языковых дефектов — 1" in message
+    assert "chapter-1" in title
+    assert "было (оригинал): He never told her." in details
+    assert "стало (перевод): Он не сказал ей." in details
+    assert "было:  сделало его чувствовать" in details
+    assert "стало: заставило его почувствовать" in details
+
+
+def test_a_chapter_that_changed_nothing_is_not_logged_with_details():
+    """A clean chapter must not fill the log with empty detail blocks."""
+    logged: list[tuple] = []
+
+    class _Service:
+        async def check_chapter(self, request, options, cancellation):
+            return _result(request.chapter_id if hasattr(request, "chapter_id") else request)
+
+    coordinator = ChapterQaCoordinator(
+        service=_Service(),
+        task_manager=None,
+        request_builder=lambda event: event.chapter_id,
+        log=lambda message, details_title="", details_text="", details_html="": (
+            logged.append((message, details_title, details_text))
+        ),
+    )
+
+    asyncio.run(coordinator.inspect_completed_task("task-1", (_event("chapter-1"),)))
+
+    assert logged == []
+
+
+def test_a_blocked_chapter_is_logged_with_the_reason():
+    """A stopped translation must say in the log exactly what stopped it."""
+    logged: list[tuple] = []
+    from gemini_translator.qa.models import Decision
+    from gemini_translator.qa.service import OmissionRepairOutcome
+
+    result = ChapterQaResult(
+        chapter_id="chapter-1",
+        risk_level=RiskLevel.HIGH,
+        may_continue_translation=False,
+        coverage_mode="semantic_alignment",
+        repairs=(
+            OmissionRepairOutcome(
+                candidate_id="gap-1",
+                decision=Decision.REPAIR_REJECTED,
+                attempted=True,
+                reasons=("post_check_rejected",),
+                source_text="He never told her.",
+            ),
+        ),
+    )
+
+    class _Service:
+        async def check_chapter(self, request, options, cancellation):
+            return result
+
+    coordinator = ChapterQaCoordinator(
+        service=_Service(),
+        task_manager=None,
+        request_builder=lambda event: event.chapter_id,
+        log=lambda message, details_title="", details_text="", details_html="": (
+            logged.append((message, details_title, details_text))
+        ),
+    )
+
+    asyncio.run(coordinator.inspect_completed_task("task-1", (_event("chapter-1"),)))
+
+    message, _title, details = logged[-1]
+    assert "перевод остановлен" in message
+    assert "post_check_rejected" in details
+    assert "He never told her." in details
+
+
+def test_a_logger_without_details_support_still_works():
+    """An older log callback must keep working, not swallow the message."""
+    logged: list[str] = []
+
+    class _Service:
+        async def check_chapter(self, request, options, cancellation):
+            return ChapterQaResult(
+                chapter_id="chapter-1",
+                risk_level=RiskLevel.LOW,
+                may_continue_translation=True,
+                coverage_mode="semantic_alignment",
+                repairs=(_repair(),),
+            )
+
+    coordinator = ChapterQaCoordinator(
+        service=_Service(),
+        task_manager=None,
+        request_builder=lambda event: event.chapter_id,
+        log=logged.append,
+    )
+
+    asyncio.run(coordinator.inspect_completed_task("task-1", (_event("chapter-1"),)))
+
+    assert logged and "исправлено пропусков — 1" in logged[-1]
+
+
+def test_the_details_mark_exactly_the_words_that_changed():
+    """A reader must see what was replaced, not just two similar sentences."""
+    from gemini_translator.qa.language_validation import (
+        LanguageQaResult,
+        LanguageReplacement,
+    )
+    from gemini_translator.qa.llm.schemas import LanguageIssue
+    from gemini_translator.qa.text_diff import ADDED_STYLE, REMOVED_STYLE
+
+    result = ChapterQaResult(
+        chapter_id="chapter-1",
+        risk_level=RiskLevel.LOW,
+        may_continue_translation=True,
+        coverage_mode="semantic_alignment",
+        language=LanguageQaResult(
+            chapter_id="chapter-1",
+            issues=(
+                LanguageIssue(
+                    issue_id="issue-1",
+                    category="calque",
+                    block_id="b-1",
+                    original_text="сделало его чувствовать себя одиноким",
+                    replacement_text="заставило его почувствовать себя одиноким",
+                    objective=True,
+                    confidence=0.93,
+                    explanation="Калька.",
+                ),
+            ),
+            applied=(
+                LanguageReplacement(
+                    "issue-1",
+                    "b-1",
+                    "сделало его чувствовать себя одиноким",
+                    "заставило его почувствовать себя одиноким",
+                ),
+            ),
+        ),
+    )
+
+    html = result.change_details_html()
+
+    assert REMOVED_STYLE in html
+    assert ADDED_STYLE in html
+    assert f'<span style="{REMOVED_STYLE}">сделало</span>' in html
+    assert f'<span style="{ADDED_STYLE}">заставило</span>' in html
+    # Unchanged words must stay unmarked, or the highlight means nothing.
+    assert "себя одиноким" in html
+    assert f'<span style="{REMOVED_STYLE}">себя</span>' not in html
+    assert "было" in html and "стало" in html
+
+
+def test_a_restored_omission_is_marked_entirely_as_added():
+    """A recovered fragment is new text; every word of it is an addition."""
+    from gemini_translator.qa.text_diff import ADDED_STYLE
+
+    result = ChapterQaResult(
+        chapter_id="chapter-1",
+        risk_level=RiskLevel.LOW,
+        may_continue_translation=True,
+        coverage_mode="semantic_alignment",
+        repairs=(_repair(source="", inserted="Комната была пуста."),),
+    )
+
+    html = result.change_details_html()
+
+    assert f'<span style="{ADDED_STYLE}">Комната была пуста.</span>' in html
+
+
+def test_details_html_escapes_the_book_text():
+    """Book text is data: a stray tag must never become markup in the log."""
+    result = ChapterQaResult(
+        chapter_id="chapter-1",
+        risk_level=RiskLevel.LOW,
+        may_continue_translation=True,
+        coverage_mode="semantic_alignment",
+        repairs=(
+            _repair(source="<b>жирный</b> текст", inserted="<i>курсив</i> текст"),
+        ),
+    )
+
+    html = result.change_details_html()
+
+    assert "&lt;" in html
+    assert "<b>жирный</b>" not in html
+    assert "<i>курсив</i>" not in html
