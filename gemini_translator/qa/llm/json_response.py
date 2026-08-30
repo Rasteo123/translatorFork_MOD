@@ -83,7 +83,13 @@ def parse_single_json_object(response: str) -> dict[str, object]:
     invalid = False
     try:
         return _parse_single_json_object_unsafe(response)
-    except (QaResponseSchemaError, TypeError, ValueError, OverflowError):
+    except (
+        QaResponseSchemaError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ):
         invalid = True
 
     # Raising outside the decoder exception context avoids retaining its raw

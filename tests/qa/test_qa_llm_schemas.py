@@ -91,6 +91,34 @@ def test_json_parser_rejects_overflowing_numbers_at_any_depth(payload):
         parse_single_json_object(payload)
 
 
+def test_deep_json_raises_sanitized_schema_error_without_retaining_raw_text():
+    """Deeply nested model output must not escape as RecursionError or leak raw text."""
+    marker = "deep-json-secret"
+    payload = '{"nested":' + "[" * 1100 + f'"{marker}"' + "]" * 1100 + "}"
+
+    with pytest.raises(QaResponseSchemaError) as raised:
+        parse_single_json_object(payload)
+
+    error = raised.value
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert marker not in str(error)
+    traceback = error.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_filename.endswith("json_response.py"):
+            assert marker not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
+
+
+def test_brackets_and_escaped_quotes_inside_json_string_do_not_count_as_depth():
+    """Any future depth guard must remain aware of JSON string and escape syntax."""
+    text = 'literal [[[ {{{ "quoted" }}} ]]]'
+
+    assert parse_single_json_object(
+        '{"text":"literal [[[ {{{ \\\"quoted\\\" }}} ]]]"}'
+    ) == {"text": text}
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -12,6 +12,9 @@ from uuid import uuid4
 from .json_response import QaResponseSchemaError, parse_single_json_object
 
 
+_CALLBACK_POLL_INTERVAL_SECONDS = 0.05
+
+
 @dataclass(frozen=True, slots=True)
 class QaModelSelection:
     """Qt-free routing identity sufficient for a handler factory."""
@@ -71,8 +74,13 @@ class CancellationToken:
             future.set_result(None)
 
     async def wait_cancelled(self) -> None:
-        """Wait for local ``cancel()`` without polling or a Qt event loop."""
-        if self._cancelled.is_set():
+        """Wait for cancellation without executors or unbounded busy polling.
+
+        Local ``cancel()`` wakes the registered future immediately. A legacy
+        worker callback has no push subscription, so it is checked at a bounded
+        50 ms interval while an async factory, sink, or handler is in flight.
+        """
+        if self.is_cancelled:
             return
         loop = asyncio.get_running_loop()
         future = loop.create_future()
@@ -83,10 +91,21 @@ class CancellationToken:
         if cancelled:
             self._resolve_waiter(future)
         try:
-            await future
+            if self._is_cancelled_callback is None:
+                await future
+                return
+            while not self.is_cancelled:
+                done, _ = await asyncio.wait(
+                    {future},
+                    timeout=_CALLBACK_POLL_INTERVAL_SECONDS,
+                )
+                if future in done:
+                    return
         finally:
             with self._waiters_lock:
                 self._waiters.discard(waiter)
+            if not future.done():
+                future.cancel()
 
     def raise_if_cancelled(self) -> None:
         if self.is_cancelled:
@@ -163,13 +182,22 @@ class ExistingHandlerCompletionClient:
             await self._drain_cancelled_task(cancellation_task)
             raise
 
+    @staticmethod
+    def _raise_if_cancelling(cancellation: CancellationToken) -> None:
+        cancellation.raise_if_cancelled()
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            raise asyncio.CancelledError
+
     async def _emit(
         self,
         *,
         qa_request_id: str,
         model: QaModelSelection,
         status: str,
+        cancellation: CancellationToken,
     ) -> None:
+        self._raise_if_cancelling(cancellation)
         if self._event_sink is None:
             return
         event = {
@@ -181,9 +209,13 @@ class ExistingHandlerCompletionClient:
         try:
             result = self._event_sink(event)
             if inspect.isawaitable(result):
-                await result
+                await self._await_with_cancellation(result, cancellation)
+            self._raise_if_cancelling(cancellation)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             # Observability is best-effort and must not mask typed API failures.
+            self._raise_if_cancelling(cancellation)
             return
 
     async def complete_json(
@@ -214,6 +246,7 @@ class ExistingHandlerCompletionClient:
                 qa_request_id=qa_request_id,
                 model=model,
                 status="creating_handler",
+                cancellation=cancellation,
             )
             cancellation.raise_if_cancelled()
 
@@ -226,6 +259,7 @@ class ExistingHandlerCompletionClient:
                 qa_request_id=qa_request_id,
                 model=model,
                 status="request_started",
+                cancellation=cancellation,
             )
             cancellation.raise_if_cancelled()
 
@@ -245,6 +279,7 @@ class ExistingHandlerCompletionClient:
                 )
             cancellation.raise_if_cancelled()
             if not isinstance(raw_response, str):
+                raw_response = None
                 raise QaResponseSchemaError("QA handler result must be text")
 
             parse_failed = False
@@ -262,6 +297,7 @@ class ExistingHandlerCompletionClient:
                 qa_request_id=qa_request_id,
                 model=model,
                 status="completed",
+                cancellation=cancellation,
             )
             cancellation.raise_if_cancelled()
             return parsed
@@ -270,6 +306,7 @@ class ExistingHandlerCompletionClient:
                 qa_request_id=qa_request_id,
                 model=model,
                 status="cancelled",
+                cancellation=cancellation,
             )
             raise
         except Exception:
@@ -277,5 +314,6 @@ class ExistingHandlerCompletionClient:
                 qa_request_id=qa_request_id,
                 model=model,
                 status="failed",
+                cancellation=cancellation,
             )
             raise

@@ -33,6 +33,15 @@ class _Handler:
         return self._outcome
 
 
+def _pending_background_tasks() -> list[asyncio.Task]:
+    current = asyncio.current_task()
+    return [
+        task
+        for task in asyncio.all_tasks()
+        if task is not current and not task.done()
+    ]
+
+
 def test_adapter_uses_selected_handler_and_existing_execution_lifecycle():
     """Bypassing execute_api_call would duplicate or omit handler retry behavior."""
     factory_calls: list[QaModelSelection] = []
@@ -161,6 +170,36 @@ def test_invalid_handler_json_is_removed_from_adapter_error_traceback():
         traceback = traceback.tb_next
 
 
+def test_non_string_handler_payload_is_removed_from_adapter_error_traceback():
+    """Rejected objects must not survive in completion traceback locals or events."""
+    marker = "non-string-handler-secret"
+    events: list[dict[str, object]] = []
+    client = ExistingHandlerCompletionClient(
+        lambda selection: _Handler({"secret": marker}, []),
+        event_sink=events.append,
+    )
+
+    with pytest.raises(QaResponseSchemaError) as raised:
+        asyncio.run(
+            client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=CancellationToken(),
+            )
+        )
+
+    error = raised.value
+    assert error.__cause__ is None
+    assert marker not in str(error)
+    assert marker not in repr(events)
+    traceback = error.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_filename.endswith("completion.py"):
+            assert marker not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
+
+
 def test_precancelled_request_never_creates_handler():
     """Creating a handler after cancellation could allocate network resources."""
     factory_calls = 0
@@ -209,6 +248,44 @@ def test_callback_backed_cancellation_never_creates_handler():
         )
 
     assert factory_calls == 0
+
+
+def test_callback_cancellation_interrupts_blocked_async_factory_without_task_leaks():
+    """Callback cancellation must wake the race before a handler exists."""
+    async def scenario():
+        callback_state = {"cancelled": False}
+        factory_started = asyncio.Event()
+        factory_cancelled = asyncio.Event()
+
+        async def factory(selection):
+            factory_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                factory_cancelled.set()
+
+        token = CancellationToken(
+            is_cancelled=lambda: callback_state["cancelled"]
+        )
+        client = ExistingHandlerCompletionClient(factory, event_sink=None)
+        request = asyncio.create_task(
+            client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        )
+        await factory_started.wait()
+        callback_state["cancelled"] = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=0.5)
+        await asyncio.sleep(0)
+        assert factory_cancelled.is_set()
+        assert _pending_background_tasks() == []
+
+    asyncio.run(scenario())
 
 
 def test_cancellation_is_rechecked_immediately_before_network_call():
@@ -323,6 +400,146 @@ def test_local_cancel_interrupts_inflight_async_handler():
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(request, timeout=0.2)
         assert handler_cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_callback_cancellation_interrupts_blocked_async_handler_without_task_leaks():
+    """Callback cancellation must wake an in-flight handler without local cancel()."""
+    async def scenario():
+        callback_state = {"cancelled": False}
+        handler_started = asyncio.Event()
+        handler_cancelled = asyncio.Event()
+
+        async def blocked_result():
+            handler_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                handler_cancelled.set()
+
+        token = CancellationToken(
+            is_cancelled=lambda: callback_state["cancelled"]
+        )
+        client = ExistingHandlerCompletionClient(
+            lambda selection: _Handler(blocked_result, []),
+            event_sink=None,
+        )
+        request = asyncio.create_task(
+            client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        )
+        await handler_started.wait()
+        callback_state["cancelled"] = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=0.5)
+        await asyncio.sleep(0)
+        assert handler_cancelled.is_set()
+        assert _pending_background_tasks() == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "blocked_status",
+    ["creating_handler", "request_started", "completed", "failed"],
+)
+def test_local_cancel_interrupts_blocked_async_event_sink_without_task_leaks(
+    blocked_status,
+):
+    """No lifecycle sink may delay local cancellation or allow later work."""
+    async def scenario():
+        sink_started = asyncio.Event()
+        sink_cancelled = asyncio.Event()
+        factory_calls = 0
+        execute_calls: list[dict[str, object]] = []
+        token = CancellationToken()
+
+        async def event_sink(event):
+            if event["status"] == blocked_status:
+                sink_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    sink_cancelled.set()
+
+        def factory(selection):
+            nonlocal factory_calls
+            factory_calls += 1
+            outcome: object = '{"ok":true}'
+            if blocked_status == "failed":
+                outcome = TypedApiError("provider failed")
+            return _Handler(outcome, execute_calls)
+
+        client = ExistingHandlerCompletionClient(factory, event_sink=event_sink)
+        request = asyncio.create_task(
+            client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=token,
+            )
+        )
+        await asyncio.wait_for(sink_started.wait(), timeout=0.5)
+        token.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=0.5)
+        await asyncio.sleep(0)
+        assert sink_cancelled.is_set()
+        if blocked_status == "creating_handler":
+            assert factory_calls == 0
+        if blocked_status == "request_started":
+            assert execute_calls == []
+        if blocked_status in {"completed", "failed"}:
+            assert len(execute_calls) == 1
+        assert _pending_background_tasks() == []
+
+    asyncio.run(scenario())
+
+
+def test_external_task_cancellation_survives_event_sink_cleanup_runtime_error():
+    """A sink cleanup error must not consume external asyncio cancellation."""
+    async def scenario():
+        sink_started = asyncio.Event()
+        factory_calls = 0
+
+        async def event_sink(event):
+            if event["status"] != "creating_handler":
+                return
+            sink_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise RuntimeError("sink cleanup failed") from None
+
+        def factory(selection):
+            nonlocal factory_calls
+            factory_calls += 1
+            return _Handler('{"ok":true}', [])
+
+        client = ExistingHandlerCompletionClient(factory, event_sink=event_sink)
+        request = asyncio.create_task(
+            client.complete_json(
+                "prompt",
+                model=QaModelSelection(provider="google", model="model-1"),
+                max_output_tokens=100,
+                cancellation=CancellationToken(),
+            )
+        )
+        await sink_started.wait()
+        request.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        await asyncio.sleep(0)
+        assert factory_calls == 0
+        assert _pending_background_tasks() == []
 
     asyncio.run(scenario())
 
