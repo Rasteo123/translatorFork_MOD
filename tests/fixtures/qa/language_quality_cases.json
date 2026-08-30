@@ -1,0 +1,246 @@
+[
+  {
+    "name": "typo",
+    "block_text": "Он шагнул в тёмный преход и замер.",
+    "issue": {
+      "category": "typo",
+      "original_text": "преход",
+      "replacement_text": "проход",
+      "objective": true,
+      "confidence": 0.96
+    },
+    "expected": {
+      "auto_fixable": true,
+      "reason": ""
+    }
+  },
+  {
+    "name": "objective_grammar",
+    "block_text": "Она вернулась к дому, который построил её отца.",
+    "issue": {
+      "category": "grammar",
+      "original_text": "её отца",
+      "replacement_text": "её отец",
+      "objective": true,
+      "confidence": 0.93
+    },
+    "expected": {
+      "auto_fixable": true,
+      "reason": ""
+    }
+  },
+  {
+    "name": "punctuation",
+    "block_text": "Он сказал что придёт завтра.",
+    "issue": {
+      "category": "punctuation",
+      "original_text": "сказал что",
+      "replacement_text": "сказал, что",
+      "objective": true,
+      "confidence": 0.95
+    },
+    "expected": {
+      "auto_fixable": true,
+      "reason": ""
+    }
+  },
+  {
+    "name": "word_repetition",
+    "block_text": "Он открыл дверь и дверь заскрипела.",
+    "issue": {
+      "category": "repetition",
+      "original_text": "дверь и дверь",
+      "replacement_text": "дверь, и она",
+      "objective": true,
+      "confidence": 0.9
+    },
+    "expected": {
+      "auto_fixable": true,
+      "reason": ""
+    }
+  },
+  {
+    "name": "literal_calque",
+    "block_text": "Это сделало его чувствовать себя одиноким.",
+    "issue": {
+      "category": "calque",
+      "original_text": "сделало его чувствовать себя одиноким",
+      "replacement_text": "заставило его почувствовать себя одиноким",
+      "objective": true,
+      "confidence": 0.91
+    },
+    "expected": {
+      "auto_fixable": true,
+      "reason": ""
+    }
+  },
+  {
+    "name": "authorial_inversion_is_not_a_defect",
+    "block_text": "Долго стоял он у окна, не двигаясь.",
+    "issue": {
+      "category": "style_suggestion",
+      "original_text": "Долго стоял он у окна",
+      "replacement_text": "Он долго стоял у окна",
+      "objective": false,
+      "confidence": 0.72
+    },
+    "expected": {
+      "auto_fixable": false,
+      "reason": "style_suggestion"
+    }
+  },
+  {
+    "name": "meta_comment",
+    "block_text": "Вот перевод главы: Он вышел на балкон.",
+    "issue": {
+      "category": "meta_comment",
+      "original_text": "Вот перевод главы: ",
+      "replacement_text": "",
+      "objective": true,
+      "confidence": 0.98
+    },
+    "expected": {
+      "auto_fixable": false,
+      "reason": "no_replacement"
+    }
+  },
+  {
+    "name": "glossary_term_must_not_be_rewritten",
+    "block_text": "Старейшина Зала Духов молчал.",
+    "issue": {
+      "category": "grammar",
+      "original_text": "Зала Духов",
+      "replacement_text": "Храма Духов",
+      "objective": true,
+      "confidence": 0.94
+    },
+    "glossary": [
+      {
+        "original_term": "武魂殿",
+        "canonical_translation": "Зал Духов",
+        "policy": "must_translate"
+      }
+    ],
+    "expected": {
+      "auto_fixable": false,
+      "reason": "glossary_term_dropped"
+    }
+  },
+  {
+    "name": "named_entity_must_survive",
+    "block_text": "Тан Сань поднял голову.",
+    "issue": {
+      "category": "grammar",
+      "original_text": "Тан Сань поднял",
+      "replacement_text": "Тан Сан поднял",
+      "objective": true,
+      "confidence": 0.92
+    },
+    "entities": [
+      {
+        "text": "Тан Сань",
+        "category": "PER"
+      }
+    ],
+    "expected": {
+      "auto_fixable": false,
+      "reason": "protected_entity"
+    }
+  },
+  {
+    "name": "named_entity_preserved_by_the_fix",
+    "block_text": "Тан Сань поднял голова.",
+    "issue": {
+      "category": "grammar",
+      "original_text": "Тан Сань поднял голова",
+      "replacement_text": "Тан Сань поднял голову",
+      "objective": true,
+      "confidence": 0.94
+    },
+    "entities": [
+      {
+        "text": "Тан Сань",
+        "category": "PER"
+      }
+    ],
+    "expected": {
+      "auto_fixable": true,
+      "reason": ""
+    }
+  },
+  {
+    "name": "plot_foreign_dialogue_is_not_a_defect",
+    "block_text": "— Hello, — сказал он по-английски.",
+    "issue": {
+      "category": "calque",
+      "original_text": "Hello",
+      "replacement_text": "Привет",
+      "objective": false,
+      "confidence": 0.6
+    },
+    "expected": {
+      "auto_fixable": false,
+      "reason": "subjective"
+    }
+  },
+  {
+    "name": "ambiguous_span_occurs_twice",
+    "block_text": "Он ждал. Он ждал.",
+    "issue": {
+      "category": "repetition",
+      "original_text": "Он ждал.",
+      "replacement_text": "Он ждал и ждал.",
+      "objective": true,
+      "confidence": 0.9
+    },
+    "expected": {
+      "auto_fixable": false,
+      "reason": "ambiguous_span"
+    }
+  },
+  {
+    "name": "low_confidence_stays_a_suggestion",
+    "block_text": "Он покинул комнату тихо.",
+    "issue": {
+      "category": "grammar",
+      "original_text": "комнату тихо",
+      "replacement_text": "комнату бесшумно",
+      "objective": true,
+      "confidence": 0.42
+    },
+    "expected": {
+      "auto_fixable": false,
+      "reason": "low_confidence"
+    }
+  },
+  {
+    "name": "unchanged_replacement_is_not_a_fix",
+    "block_text": "Он молчал.",
+    "issue": {
+      "category": "grammar",
+      "original_text": "Он молчал.",
+      "replacement_text": "Он молчал.",
+      "objective": true,
+      "confidence": 0.99
+    },
+    "expected": {
+      "auto_fixable": false,
+      "reason": "no_change"
+    }
+  },
+  {
+    "name": "span_missing_from_the_block",
+    "block_text": "Он молчал.",
+    "issue": {
+      "category": "typo",
+      "original_text": "которого здесь нет",
+      "replacement_text": "которого тут нет",
+      "objective": true,
+      "confidence": 0.97
+    },
+    "expected": {
+      "auto_fixable": false,
+      "reason": "ambiguous_span"
+    }
+  }
+]

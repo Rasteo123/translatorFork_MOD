@@ -120,8 +120,13 @@ class QaCompletionClient(Protocol):
         model: QaModelSelection,
         max_output_tokens: int,
         cancellation: CancellationToken,
+        purpose: str = "",
     ) -> dict[str, object]:
-        """Return exactly one parsed JSON object from a QA request."""
+        """Return exactly one parsed JSON object from a QA request.
+
+        ``purpose`` is a short stable stage name used only for log correlation;
+        it never reaches the model.
+        """
 
 
 HandlerFactory = Callable[[QaModelSelection], object | Awaitable[object]]
@@ -255,6 +260,7 @@ class ExistingHandlerCompletionClient:
         model: QaModelSelection,
         max_output_tokens: int,
         cancellation: CancellationToken,
+        purpose: str = "",
     ) -> dict[str, object]:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be nonempty text")
@@ -269,7 +275,10 @@ class ExistingHandlerCompletionClient:
         if not hasattr(cancellation, "raise_if_cancelled"):
             raise TypeError("cancellation must implement raise_if_cancelled")
 
+        if not isinstance(purpose, str):
+            raise TypeError("purpose must be a string")
         qa_request_id = f"qa-{uuid4().hex}"
+        log_prefix = f"[QA:{qa_request_id}:{purpose.strip()}]" if purpose.strip() else f"[QA:{qa_request_id}]"
         try:
             cancellation.raise_if_cancelled()
             await self._emit(
@@ -298,7 +307,7 @@ class ExistingHandlerCompletionClient:
                 raise TypeError("handler must provide execute_api_call")
             raw_response = execute_api_call(
                 prompt,
-                f"[QA:{qa_request_id}]",
+                log_prefix,
                 allow_incomplete=False,
                 use_stream=False,
                 max_output_tokens=max_output_tokens,

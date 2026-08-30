@@ -1,0 +1,189 @@
+"""One diagnosis request per chunk, with external hints as evidence only."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Mapping, Sequence
+
+from ..language_validation import (
+    LanguageBlock,
+    LanguageQaRequest,
+    LanguageReviewError,
+    LanguageRuleIssue,
+    RussianNlpAnalysis,
+)
+from ..models import OmissionRepairerConfig
+from .completion import QaCompletionClient
+from .json_response import QaResponseSchemaError
+from .prompts import (
+    PromptConfigurationError,
+    escaped,
+    load_prompt_template,
+    render_prompt,
+)
+from .schemas import LanguageIssue
+
+
+DIAGNOSIS_PURPOSE = "language_diagnosis"
+
+
+class LanguageQualityReviewer:
+    """Diagnose the local language defects of one chunk in a single request.
+
+    LanguageTool rules and Russian NLP evidence enter this one request as
+    explicitly unconfirmed hints. They never trigger requests of their own and
+    never authorize an edit the model did not itself diagnose.
+    """
+
+    def __init__(
+        self,
+        client: QaCompletionClient,
+        config: OmissionRepairerConfig | None = None,
+    ) -> None:
+        if not callable(getattr(client, "complete_json", None)):
+            raise TypeError("client must implement complete_json")
+        self._client = client
+        self._config = config or OmissionRepairerConfig(
+            max_output_tokens=2048, prompt_version="language_diagnosis_v1"
+        )
+
+    async def diagnose_chapter(
+        self,
+        request: LanguageQaRequest,
+        blocks: Sequence[LanguageBlock],
+        rule_candidates: Sequence[LanguageRuleIssue] = (),
+        nlp_analysis: RussianNlpAnalysis | None = None,
+    ) -> tuple[LanguageIssue, ...]:
+        """Return every diagnosed issue of one chunk, or raise a typed refusal."""
+        if not isinstance(request, LanguageQaRequest):
+            raise TypeError("request must be a LanguageQaRequest")
+        request.cancellation.raise_if_cancelled()
+        try:
+            template = load_prompt_template(
+                self._config.prompt_path, self._config.prompt_version
+            )
+        except PromptConfigurationError:
+            raise LanguageReviewError("prompt_configuration_unavailable") from None
+
+        prompt = render_prompt(
+            template, _diagnosis_lines(request, blocks, rule_candidates, nlp_analysis)
+        )
+        payload = await request_qa_json(
+            self._client,
+            prompt,
+            request,
+            self._config.max_output_tokens,
+            DIAGNOSIS_PURPOSE,
+        )
+        try:
+            if not isinstance(payload, Mapping):
+                raise QaResponseSchemaError("diagnosis result must be an object")
+            unknown = set(payload) - {"issues", "metadata"}
+            if unknown or "issues" not in payload:
+                raise QaResponseSchemaError("diagnosis result must contain issues")
+            raw_issues = payload["issues"]
+            if not isinstance(raw_issues, (list, tuple)):
+                raise QaResponseSchemaError("issues must be an array")
+            issues = tuple(LanguageIssue.from_dict(item) for item in raw_issues)
+        except (QaResponseSchemaError, TypeError, ValueError):
+            raise LanguageReviewError("diagnosis_invalid_response") from None
+
+        known_blocks = {block.block_id for block in blocks}
+        if any(issue.block_id not in known_blocks for issue in issues):
+            raise LanguageReviewError("diagnosis_block_mismatch")
+        if len({issue.issue_id for issue in issues}) != len(issues):
+            raise LanguageReviewError("diagnosis_duplicate_issue_ids")
+        return issues
+
+
+async def request_qa_json(
+    client: QaCompletionClient,
+    prompt: str,
+    request: LanguageQaRequest,
+    max_output_tokens: int,
+    purpose: str,
+) -> object:
+    """Send one QA request, mapping every failure onto a typed refusal."""
+    try:
+        return await client.complete_json(
+            prompt,
+            model=request.model,
+            max_output_tokens=max_output_tokens,
+            cancellation=request.cancellation,
+            purpose=purpose,
+        )
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError:
+        raise LanguageReviewError(f"{purpose}_timeout") from None
+    except QaResponseSchemaError:
+        raise LanguageReviewError(f"{purpose}_invalid_response") from None
+    except Exception:  # noqa: BLE001 - any transport failure stays a refusal
+        raise LanguageReviewError(f"{purpose}_failed") from None
+
+
+def _diagnosis_lines(
+    request: LanguageQaRequest,
+    blocks: Sequence[LanguageBlock],
+    rule_candidates: Sequence[LanguageRuleIssue],
+    nlp_analysis: RussianNlpAnalysis | None,
+) -> list[str]:
+    lines = [
+        f"chapter_id: {escaped(request.chapter_id)}",
+        f"source_language: {escaped(request.source_language)}",
+        f"target_language: {escaped(request.target_language)}",
+        "translated_blocks:",
+    ]
+    for block in blocks:
+        lines.append(f"- block_id: {escaped(block.block_id)}")
+        lines.append(f"  text: {escaped(block.text)}")
+        source_text = request.source_text_by_block.get(block.block_id, "")
+        if source_text:
+            lines.append(f"  source_text: {escaped(source_text)}")
+    _section(
+        lines,
+        "unconfirmed_rule_hints",
+        [
+            f"- block_id: {escaped(rule.block_id)} | rule: {escaped(rule.rule_id)}"
+            f" | message: {escaped(rule.message)} | span: {escaped(rule.original_text)}"
+            f" | suggestions: {escaped(', '.join(rule.replacements))}"
+            for rule in rule_candidates
+        ],
+    )
+    entities = nlp_analysis.entities if nlp_analysis else ()
+    _section(
+        lines,
+        "protected_entities",
+        [
+            f"- block_id: {escaped(entity.block_id)} | {escaped(entity.category)}:"
+            f" {escaped(entity.text)}"
+            for entity in entities
+        ],
+    )
+    candidates = nlp_analysis.syntax_candidates if nlp_analysis else ()
+    _section(
+        lines,
+        "unconfirmed_syntax_hints",
+        [
+            f"- block_id: {escaped(candidate.block_id)} |"
+            f" span: {escaped(candidate.original_text)} |"
+            f" reason: {escaped(candidate.reason)}"
+            for candidate in candidates
+        ],
+    )
+    _section(
+        lines,
+        "glossary",
+        [
+            f"- {escaped(term.original_term)} → {escaped(term.canonical_translation)}"
+            f" | policy={term.policy.value}"
+            for term in request.glossary
+        ],
+    )
+    return lines
+
+
+def _section(lines: list[str], header: str, items: Sequence[str]) -> None:
+    """Append one named evidence section, explicit about being empty."""
+    lines.append(f"{header}:")
+    lines.extend(items or ("- none supplied",))
