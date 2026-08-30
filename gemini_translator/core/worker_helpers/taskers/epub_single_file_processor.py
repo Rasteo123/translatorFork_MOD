@@ -3,7 +3,7 @@
 import os
 import zipfile
 
-from .base_processor import BaseTaskProcessor
+from .base_processor import BaseTaskProcessor, _notify_translation_ready
 from gemini_translator.api.errors import ValidationFailedError, PartialGenerationError
 from gemini_translator.utils.epub_json import (
     build_html_document_model,
@@ -123,7 +123,7 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
                     return_parts=False,
                     body_content_only=False
                 )
-                self.worker.response_parser.process_and_save_single_file(
+                saved_record = self.worker.response_parser.process_and_save_single_file(
                     translated_body_content=translated_body,
                     original_full_content=original_content,
                     prefix_html=prefix_html,
@@ -132,6 +132,7 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
                     original_internal_path=internal_chapter_path,
                     version_suffix=version_suffix
                 )
+                _notify_translation_ready(self.worker, task_info, [saved_record])
                 self.worker._post_event('log_message', {
                     'message': (
                         f"[JSON EPUB] '{os.path.basename(internal_chapter_path)}': "
@@ -225,7 +226,7 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
                 raw_response or cleaned_response
             )
 
-        self.worker.response_parser.process_and_save_single_file(
+        saved_record = self.worker.response_parser.process_and_save_single_file(
             translated_body_content=restored_body,
             original_full_content=original_content,
             prefix_html=prefix_html,
@@ -234,6 +235,7 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
             original_internal_path=internal_chapter_path,
             version_suffix=version_suffix
         )
+        _notify_translation_ready(self.worker, task_info, [saved_record])
 
         success_payload = self._build_success_payload(
             details_text=raw_response or cleaned_response,

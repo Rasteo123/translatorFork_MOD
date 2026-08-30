@@ -1,5 +1,6 @@
 import os
 import copy
+import hashlib
 import re
 
 from bs4 import BeautifulSoup, Comment, NavigableString
@@ -506,6 +507,16 @@ class ResponseParser:
                 version_suffix=version_suffix,
                 translated_relative_path=relative_path
             )
+
+        # 4. Возвращаем структурную запись о сохранённой главе: она нужна
+        # контролю качества, который не имеет права читать виджеты.
+        return {
+            'output_path': output_path,
+            'original_internal_path': original_internal_path,
+            'version_suffix': version_suffix,
+            'fingerprint': hashlib.sha256(final_html_to_write.encode('utf-8')).hexdigest(),
+            'translated_chars': len(final_html_to_write),
+        }
     
     def _find_boundary_markers(self, text, chapter_count=None):
         return find_boundary_markers(text, chapter_count=chapter_count)

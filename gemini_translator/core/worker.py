@@ -136,6 +136,40 @@ class UniversalWorker:
         except (TypeError, RuntimeError, ValueError):
             pass
 
+    def notify_translation_ready(self, task_info, saved_records):
+        """Hand saved chapters to translation QA without ever breaking translation.
+
+        The worker knows nothing about quality control beyond this call: it
+        reports what it wrote, and the coordinator decides whether the queue may
+        continue. Any failure here is logged and ignored.
+        """
+        coordinator = getattr(QtWidgets.QApplication.instance(), 'qa_coordinator', None)
+        if coordinator is None or not task_info or not saved_records:
+            return
+        try:
+            from .chapter_qa_coordinator import TranslationReadyEvent
+
+            task_id = str(task_info[0])
+            events = tuple(
+                TranslationReadyEvent(
+                    task_id=task_id,
+                    chapter_id=str(record['original_internal_path']),
+                    source_path=str(record['original_internal_path']),
+                    translated_path=str(record['output_path']),
+                    source_language='auto',
+                    target_language='ru',
+                    fingerprint=str(record.get('fingerprint', '')),
+                )
+                for record in saved_records
+                if isinstance(record, dict) and record.get('output_path')
+            )
+            if events:
+                coordinator.submit(task_id, events)
+        except Exception as exc:
+            self._post_event('log_message', {
+                'message': f"[QA WARN] Не удалось передать главу на проверку качества: {exc}"
+            })
+
     def notify(self):
         """Будит асинхронный цикл воркера без активного polling."""
         loop = getattr(self, '_worker_loop', None)

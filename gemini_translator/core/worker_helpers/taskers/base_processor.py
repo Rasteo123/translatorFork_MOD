@@ -14,6 +14,23 @@ from gemini_translator.core.worker_helpers.provider_orchestrator import (
 )
 
 
+def _notify_translation_ready(worker, task_info, saved_records):
+    """Report saved chapters to quality control when the worker supports it.
+
+    Translation must never depend on QA being present or healthy, so a worker
+    without the hook, an empty batch, or a failing coordinator all mean the same
+    thing here: nothing happens.
+    """
+
+    notify = getattr(worker, 'notify_translation_ready', None)
+    if not callable(notify) or not task_info or not saved_records:
+        return
+    try:
+        notify(task_info, saved_records)
+    except Exception:
+        return
+
+
 class BaseTaskProcessor:
     """
     Базовый класс для всех обработчиков задач.

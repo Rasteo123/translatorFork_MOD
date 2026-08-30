@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
+import hashlib
 import os
 import zipfile
 from collections import Counter
 
-from .base_processor import BaseTaskProcessor
+from .base_processor import BaseTaskProcessor, _notify_translation_ready
 from .epub_single_file_processor import EpubSingleFileProcessor
 from gemini_translator.api.errors import PartialGenerationError, SuccessSignal, ValidationFailedError
 from gemini_translator.utils.epub_json import (
@@ -110,10 +111,11 @@ class EpubBatchProcessor(BaseTaskProcessor):
         })
         return raw_response, report
 
-    def _save_successful_chapters(self, successful_chapters_data, file_suffix, log_prefix, save_chapter_set=None):
+    def _save_successful_chapters(self, successful_chapters_data, file_suffix, log_prefix, save_chapter_set=None, task_info=None):
         successful_paths = []
         save_failed_paths = []
         registrations_to_make = []
+        saved_records = []
 
         for success_data in successful_chapters_data:
             original_path = success_data.get("original_path")
@@ -137,6 +139,13 @@ class EpubBatchProcessor(BaseTaskProcessor):
                 relative_path = os.path.relpath(out_path, self.worker.output_folder)
                 registrations_to_make.append((original_path, file_suffix, relative_path))
                 successful_paths.append(original_path)
+                saved_records.append({
+                    'output_path': out_path,
+                    'original_internal_path': original_path,
+                    'version_suffix': file_suffix,
+                    'fingerprint': hashlib.sha256(final_html.encode('utf-8')).hexdigest(),
+                    'translated_chars': len(final_html),
+                })
             except Exception as exc:
                 self.worker._post_event("log_message", {
                     "message": f"[{log_prefix}] Save error for '{original_path}': {exc}"
@@ -152,6 +161,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
                     "message": f"[{log_prefix}] Batch registration error: {exc}"
                 })
 
+        _notify_translation_ready(self.worker, task_info, saved_records)
         return successful_paths, save_failed_paths
 
     def _replace_batch_results(self, task_id, epub_path, successful_paths, failed_paths, raw_response):
@@ -235,6 +245,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
                     self.worker.provider_config["file_suffix"],
                     "JSON EPUB BATCH",
                     save_chapter_set=save_chapter_set,
+                    task_info=task_info,
                 )
                 for path in save_failed_paths:
                     if path not in failed_chapters_paths:
@@ -313,6 +324,7 @@ class EpubBatchProcessor(BaseTaskProcessor):
             self.worker.provider_config["file_suffix"],
             "BATCH",
             save_chapter_set=save_chapter_set,
+            task_info=task_info,
         )
         for path in save_failed_paths:
             if path not in failed_chapters_paths:
