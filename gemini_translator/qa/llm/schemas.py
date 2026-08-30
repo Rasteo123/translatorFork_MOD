@@ -30,6 +30,12 @@ _OMISSION_DECISIONS = {
     "intentional_foreign",
     "ambiguous",
 }
+_ADDITION_DECISIONS = {
+    "hallucinated_addition",
+    "entailed",
+    "paraphrase",
+    "ambiguous",
+}
 _LANGUAGE_ISSUE_CATEGORIES = {
     "typo",
     "grammar",
@@ -265,6 +271,88 @@ class RepairProposal:
                 "repair proposal candidate_id does not match the request"
             )
         return proposal
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AdditionVerdict:
+    """Verdict about target-only content, stated in its own terms.
+
+    This is deliberately not an inverted omission verdict: the facts it names
+    exist only in the translation, and no field of it can authorize a removal.
+    """
+
+    candidate_id: str
+    decision: str
+    confidence: float
+    target_unit_ids: tuple[str, ...]
+    added_facts: tuple[str, ...]
+    explanation: str
+    metadata: Mapping[str, object] = field(default_factory=_empty_metadata)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "candidate_id", _identifier(self.candidate_id, "candidate_id")
+        )
+        if not isinstance(self.decision, str) or self.decision not in _ADDITION_DECISIONS:
+            raise QaResponseSchemaError("decision is not a supported addition verdict")
+        object.__setattr__(self, "confidence", _confidence(self.confidence))
+        object.__setattr__(
+            self,
+            "target_unit_ids",
+            _string_tuple(
+                self.target_unit_ids,
+                "target_unit_ids",
+                allow_empty=False,
+                identifiers=True,
+            ),
+        )
+        facts = _string_tuple(self.added_facts, "added_facts", allow_empty=True)
+        if self.decision == "hallucinated_addition" and not facts:
+            raise QaResponseSchemaError(
+                "a hallucinated addition requires at least one added fact"
+            )
+        if self.decision != "hallucinated_addition" and facts:
+            raise QaResponseSchemaError(
+                "only a hallucinated addition may list added facts"
+            )
+        object.__setattr__(self, "added_facts", facts)
+        object.__setattr__(
+            self, "explanation", _nonempty_string(self.explanation, "explanation")
+        )
+        object.__setattr__(self, "metadata", _metadata(self.metadata))
+
+    @classmethod
+    def from_dict(
+        cls, payload: object, *, expected_candidate_id: str
+    ) -> "AdditionVerdict":
+        data = _checked_payload(
+            payload,
+            required=frozenset(
+                {
+                    "candidate_id",
+                    "decision",
+                    "confidence",
+                    "target_unit_ids",
+                    "added_facts",
+                    "explanation",
+                }
+            ),
+        )
+        verdict = cls(
+            candidate_id=data["candidate_id"],
+            decision=data["decision"],
+            confidence=data["confidence"],
+            target_unit_ids=data["target_unit_ids"],
+            added_facts=data["added_facts"],
+            explanation=data["explanation"],
+            metadata=data.get("metadata", {}),
+        )
+        expected = _identifier(expected_candidate_id, "expected_candidate_id")
+        if verdict.candidate_id != expected:
+            raise QaResponseSchemaError(
+                "addition verdict candidate_id does not match the request"
+            )
+        return verdict
 
 
 @dataclass(frozen=True, slots=True, repr=False)

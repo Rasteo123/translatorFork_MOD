@@ -14,6 +14,7 @@ from .omission_repairer import (
 )
 from .omission_verifier import OmissionVerifier
 from .schemas import (
+    AdditionVerdict,
     LanguageIssue,
     OmissionVerdict,
     RepairPostCheck,
@@ -21,6 +22,7 @@ from .schemas import (
 )
 
 __all__ = (
+    "AdditionVerdict",
     "CancellationToken",
     "ExistingHandlerCompletionClient",
     "LanguageIssue",
