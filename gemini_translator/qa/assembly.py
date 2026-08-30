@@ -49,6 +49,19 @@ class QaAssemblyError(RuntimeError):
     """Raised when translation QA cannot be assembled from the current state."""
 
 
+class UnavailableEmbeddingProvider:
+    """Stand-in provider that puts coverage into its documented limited mode.
+
+    Without embeddings the cascade must still run its statistical and language
+    stages and say so in the report, rather than disappearing silently.
+    """
+
+    name = "unavailable"
+
+    async def embed(self, request):
+        raise EmbeddingUnavailableError(())
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectQaPaths:
     """The three durable locations one project reserves for quality control."""
@@ -282,10 +295,11 @@ def attach_chapter_qa_coordinator(
             _extractor(qa_settings.effective_capabilities()).preprocessing_identity,
         )
     except Exception as error:  # noqa: BLE001 - QA without embeddings is limited, not fatal
-        _report(log, f"[QA] Семантическая проверка недоступна: {error}")
-        embedding_provider = None
-    if embedding_provider is None:
-        return None
+        _report(
+            log,
+            f"[QA] Семантическая проверка недоступна, остаётся языковая: {error}",
+        )
+        embedding_provider = UnavailableEmbeddingProvider()
 
     provider, model_name = qa_settings.correction_model_for(
         translation_provider, translation_model
@@ -354,6 +368,39 @@ def _report(log, message: str) -> None:
             log(message)
         except Exception:  # noqa: BLE001 - logging must never raise
             return
+
+
+def detect_source_language(html: str) -> str:
+    """Name the source language of one chapter well enough for QA profiles."""
+    from ..utils.language_tools import LanguageDetector
+
+    sample = str(html or "")[:20000]
+    if LanguageDetector.contains_japanese(sample):
+        return "ja"
+    if LanguageDetector.contains_korean(sample):
+        return "ko"
+    if LanguageDetector.contains_chinese(sample):
+        return "zh"
+    return "en"
+
+
+def embedding_keys_for_session(provider: str, api_key: str) -> dict[str, str]:
+    """Map the session's own key onto the embedding providers that accept it."""
+    normalized = str(provider or "").strip().lower()
+    if normalized in {"gemini", "google"} and api_key:
+        return {"google": api_key}
+    return {}
+
+
+def aiohttp_session_factory():
+    """Return a callable producing one HTTP session per embedding request."""
+
+    def factory():
+        import aiohttp
+
+        return aiohttp.ClientSession(trust_env=True)
+
+    return factory
 
 
 def _read_source_chapter(event) -> str | None:

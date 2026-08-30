@@ -800,6 +800,7 @@ class TranslationEngine(QObject):
             self.chunk_assembler = ChunkAssembler(output_folder, self.project_manager, settings)
         else:
             self.chunk_assembler = None
+        self._attach_translation_qa(settings)
         total_tasks_for_session = len(self.task_manager.get_all_pending_tasks())
         model_id = settings.get('model_id')
         self._register_active_session()
@@ -829,6 +830,76 @@ class TranslationEngine(QObject):
         if num_to_start > 1:
             self._post_event('log_message', {'message': f"[RAMP-UP] Плавный запуск {num_to_start} воркеров…"})
         
+
+    def _attach_translation_qa(self, settings):
+        """Wire per-chapter quality control to this session.
+
+        Quality control is an addition to translation, never a precondition for
+        it: any problem here is logged and the session starts without QA.
+        """
+
+        try:
+            from ..qa.assembly import (
+                aiohttp_session_factory,
+                attach_chapter_qa_coordinator,
+                detect_source_language,
+                embedding_keys_for_session,
+            )
+            from ..qa.handler_factory import build_qa_handler_factory
+
+            app = QtWidgets.QApplication.instance()
+            if app is None or not self.project_manager or not self.settings_manager:
+                return
+            keys = [
+                key for key in (settings.get('api_keys') or [])
+                if isinstance(key, str) and key.strip()
+            ]
+            if not keys:
+                return
+            provider = str(settings.get('provider') or '')
+            model_name = str(
+                settings.get('model') or settings.get('model_id') or ''
+            )
+
+            def log(message):
+                self._post_event('log_message', {'message': message})
+
+            handler_factory = build_qa_handler_factory(
+                settings_manager=self.settings_manager,
+                api_key_for=lambda provider_id: keys[0],
+                session_settings=settings,
+                log=log,
+            )
+            coordinator = attach_chapter_qa_coordinator(
+                app,
+                project_manager=self.project_manager,
+                settings_manager=self.settings_manager,
+                handler_factory=handler_factory,
+                session_id=str(self.session_id),
+                api_keys_by_provider=embedding_keys_for_session(provider, keys[0]),
+                session_factory=aiohttp_session_factory(),
+                translation_provider=provider,
+                translation_model=model_name,
+                source_language_resolver=detect_source_language,
+                log=log,
+            )
+            if coordinator is not None:
+                log("[QA] Проверка качества перевода включена для этой сессии.")
+        except Exception as exc:
+            self._post_event('log_message', {
+                'message': f"[QA WARN] Проверка качества не запущена: {exc}"
+            })
+
+    def _detach_translation_qa(self):
+        """Stop the session's quality control without ever raising."""
+        try:
+            from ..qa.assembly import detach_chapter_qa_coordinator
+
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                detach_chapter_qa_coordinator(app)
+        except Exception:
+            return
 
     def is_managed_mode(self):
         if self.bus and hasattr(self.bus, '_data_store'):
@@ -881,6 +952,7 @@ class TranslationEngine(QObject):
         # 1. Сначала отправляем сигнал о завершении, пока ID еще валиден
         
         
+        self._detach_translation_qa()
         self.session_id = None
         self.is_starting = False # <-- Сбрасываем и этот флаг тоже
         
