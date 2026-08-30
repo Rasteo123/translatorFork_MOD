@@ -23,6 +23,8 @@ import sqlite3
 import hashlib
 from collections import Counter
 import contextlib
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QThread, QTimer, Qt
 from PyQt6 import QtWidgets
@@ -166,6 +168,57 @@ def _coerce_sort_number(value, default):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+QA_GATE_SCHEMA_VERSION = 1
+QA_ACTIVE_STATUSES = ('pending', 'in_progress', 'held', 'qa_pending', 'qa_blocked')
+QA_OUTCOME_KINDS = frozenset({'completed', 'high_unresolved', 'deferred', 'cancelled'})
+
+
+@dataclass(frozen=True)
+class QaQueueOutcome:
+    """What quality control decided about one finished translation task."""
+
+    kind: str
+    chapter_ids: tuple = ()
+    reason: str = ''
+
+    def __post_init__(self):
+        if self.kind not in QA_OUTCOME_KINDS:
+            raise ValueError(f"Unsupported QA queue outcome: {self.kind}")
+        object.__setattr__(
+            self,
+            'chapter_ids',
+            tuple(dict.fromkeys(str(item) for item in self.chapter_ids if str(item).strip())),
+        )
+        object.__setattr__(self, 'reason', str(self.reason or '')[:500])
+
+    @classmethod
+    def completed(cls, chapter_ids=(), reason=''):
+        return cls('completed', tuple(chapter_ids), reason)
+
+    @classmethod
+    def high_unresolved(cls, chapter_ids=(), reason=''):
+        return cls('high_unresolved', tuple(chapter_ids), reason)
+
+    @classmethod
+    def deferred(cls, chapter_ids=(), reason=''):
+        return cls('deferred', tuple(chapter_ids), reason)
+
+    @classmethod
+    def cancelled(cls, chapter_ids=(), reason=''):
+        return cls('cancelled', tuple(chapter_ids), reason)
+
+
+@dataclass(frozen=True)
+class QaGateRecord:
+    """One unresolved quality gate that currently blocks new dispatch."""
+
+    task_id: str
+    chapter_id: str
+    risk_level: str
+    reason: str
+    opened_at: str
 
 
 def _normalize_sort_key(priority, sequence):
@@ -414,6 +467,26 @@ class ChapterQueueManager(QObject):
                 );
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_glossary_original ON glossary_results (original);")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS qa_gates (
+                    task_id TEXT NOT NULL,
+                    chapter_id TEXT NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    resolution TEXT,
+                    PRIMARY KEY (task_id, chapter_id)
+                );
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_qa_gates_unresolved"
+                " ON qa_gates (resolved_at, risk_level);"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_qa_gates_task ON qa_gates (task_id);")
+            current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if current_version < QA_GATE_SCHEMA_VERSION:
+                conn.execute(f"PRAGMA user_version = {QA_GATE_SCHEMA_VERSION}")
     
     def clear_glossary_results(self):
         with self._get_write_conn() as conn:
@@ -587,8 +660,13 @@ class ChapterQueueManager(QObject):
                         FROM tasks AS prev
                         WHERE prev.chain_id = t.chain_id
                           AND prev.chain_index < t.chain_index
-                          AND prev.status IN ('pending', 'in_progress', 'held')
+                          AND prev.status IN ('pending', 'in_progress', 'held', 'qa_pending', 'qa_blocked')
                     )
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM qa_gates
+                    WHERE qa_gates.resolved_at IS NULL
+                      AND qa_gates.risk_level = 'high'
               )
             ORDER BY t.priority DESC, t.sequence ASC
             LIMIT 1
@@ -1544,6 +1622,109 @@ class ChapterQueueManager(QObject):
             conn.execute("DELETE FROM tasks")
         self._safe_request_ui_update()
     
+    def schema_has_table(self, table_name: str) -> bool:
+        """Report whether one table exists in the task database."""
+        rows = self._execute_light_read(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (str(table_name),),
+        )
+        return bool(rows)
+
+    @property
+    def schema_version(self) -> int:
+        """Return the migration version stamped on the task database."""
+        rows = self._execute_light_read("PRAGMA user_version")
+        return int(rows[0][0]) if rows else 0
+
+    def mark_task_qa_pending(self, task_id, chapter_ids=()) -> None:
+        """Hold a finished translation task until its quality check resolves."""
+        del chapter_ids  # Chapter identities travel with the outcome, not the hold.
+        info = self.update_task(task_id, new_status='qa_pending')
+        if info:
+            self.notify_task_dirty(task_id)
+
+    def resolve_task_qa(self, task_id, outcome) -> None:
+        """Apply one quality outcome to the queue, idempotently and atomically."""
+        if not isinstance(outcome, QaQueueOutcome):
+            raise TypeError("outcome must be a QaQueueOutcome")
+        if outcome.kind == 'high_unresolved':
+            for chapter_id in outcome.chapter_ids or ('unknown',):
+                self.open_qa_gate(task_id, chapter_id, outcome.reason, risk_level='high')
+            new_status = 'qa_blocked'
+        elif outcome.kind == 'cancelled':
+            new_status = 'qa_pending'
+        else:
+            for chapter_id in outcome.chapter_ids:
+                self.close_qa_gate(task_id, chapter_id, resolution=outcome.kind)
+            new_status = 'completed'
+        info = self.update_task(task_id, new_status=new_status)
+        if info:
+            self.notify_task_dirty(task_id)
+
+    def open_qa_gate(self, task_id, chapter_id: str, reason: str = '', risk_level: str = 'high') -> None:
+        """Open (or reopen) one unresolved quality gate for a chapter."""
+        with self._get_write_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO qa_gates (task_id, chapter_id, risk_level, reason, opened_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(task_id, chapter_id) DO UPDATE SET
+                    risk_level = excluded.risk_level,
+                    reason = excluded.reason,
+                    resolved_at = NULL,
+                    resolution = NULL
+                """,
+                (
+                    str(task_id),
+                    str(chapter_id),
+                    str(risk_level or 'high'),
+                    str(reason or '')[:500],
+                    datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                ),
+            )
+        self.notify_structural_change()
+
+    def close_qa_gate(self, task_id, chapter_id: str, resolution: str = 'resolved') -> None:
+        """Resolve one quality gate so the queue may dispatch again."""
+        with self._get_write_conn() as conn:
+            conn.execute(
+                "UPDATE qa_gates SET resolved_at = ?, resolution = ?"
+                " WHERE task_id = ? AND chapter_id = ? AND resolved_at IS NULL",
+                (
+                    datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                    str(resolution or 'resolved')[:120],
+                    str(task_id),
+                    str(chapter_id),
+                ),
+            )
+        self.notify_structural_change()
+
+    def get_open_qa_gates(self) -> list:
+        """Return every unresolved quality gate, oldest first."""
+        rows = self._execute_light_read(
+            "SELECT task_id, chapter_id, risk_level, reason, opened_at FROM qa_gates"
+            " WHERE resolved_at IS NULL ORDER BY opened_at ASC, chapter_id ASC"
+        )
+        return [
+            QaGateRecord(
+                task_id=row['task_id'],
+                chapter_id=row['chapter_id'],
+                risk_level=row['risk_level'],
+                reason=row['reason'],
+                opened_at=row['opened_at'],
+            )
+            for row in rows
+        ]
+
+    def has_blocking_qa_gate(self) -> bool:
+        """Report whether unresolved high risk currently blocks new dispatch."""
+        return bool(
+            self._execute_light_read(
+                "SELECT 1 FROM qa_gates WHERE resolved_at IS NULL"
+                " AND risk_level = 'high' LIMIT 1"
+            )
+        )
+
     def is_finished(self) -> bool:
         """
         Главный критерий завершения сессии.
@@ -1567,8 +1748,18 @@ class ChapterQueueManager(QObject):
         # 2. Проверка базы данных (только если флага нет)
         # Игнорируем 'held', так как в обычном режиме это остатки Dry Run,
         # а в управляемом мы бы вышли выше по флагу.
-        rows = self._execute_light_read("SELECT 1 FROM tasks WHERE status IN ('pending', 'in_progress') LIMIT 1")
-        return not rows
+        rows = self._execute_light_read(
+            "SELECT 1 FROM tasks WHERE status IN ('pending', 'in_progress', 'qa_pending') LIMIT 1"
+        )
+        if not rows:
+            return True
+
+        # Pending work that no worker may claim is not unfinished work: an
+        # unresolved high gate would otherwise deadlock the whole session.
+        active = self._execute_light_read(
+            "SELECT 1 FROM tasks WHERE status IN ('in_progress', 'qa_pending') LIMIT 1"
+        )
+        return not active and self.has_blocking_qa_gate()
 
     # --- НАЧАЛО ВОССТАНОВЛЕННОГО БЛОКА КЭШИРОВАНИЯ ---
     @pyqtSlot()

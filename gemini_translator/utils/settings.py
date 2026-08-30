@@ -709,6 +709,22 @@ class SettingsManager(QObject):
                             key_info['status_by_model'][model_id]["exhausted_level"] = 0
         return changed
     
+    def get_qa_settings(self):
+        """Return translation QA settings, migrating a missing section to defaults."""
+        from ..qa.settings import SETTINGS_KEY, QaSettings
+
+        with self.file_lock:
+            payload = deepcopy(self._cache.get(SETTINGS_KEY))
+        return QaSettings.from_dict(payload)
+
+    def save_qa_settings(self, qa_settings) -> bool:
+        """Persist translation QA settings after normalizing every value."""
+        from ..qa.settings import SETTINGS_KEY, QaSettings
+
+        if not isinstance(qa_settings, QaSettings):
+            qa_settings = QaSettings.from_dict(qa_settings)
+        return self._generic_saver(SETTINGS_KEY, qa_settings.to_dict())
+
     def get_custom_prompt(self): return self._generic_loader('custom_prompt', '')
     def save_custom_prompt(self, prompt): return self._generic_saver('custom_prompt', prompt)
     def get_custom_provider_models(self):
