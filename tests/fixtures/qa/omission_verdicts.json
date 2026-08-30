@@ -1,0 +1,120 @@
+{
+  "lost_negation": {
+    "source_text": "He did not agree.",
+    "target_text": "Он согласился.",
+    "verdict": {
+      "decision": "missing_content",
+      "confidence": 0.99,
+      "source_unit_ids": ["lost_negation-s1"],
+      "missing_facts": ["Герой не согласился."],
+      "explanation": "В переводе потеряно отрицание."
+    },
+    "eligible": true
+  },
+  "meaning_changing_word": {
+    "source_text": "She barely escaped.",
+    "target_text": "Она сбежала.",
+    "verdict": {
+      "decision": "missing_content",
+      "confidence": 0.97,
+      "source_unit_ids": ["meaning_changing_word-s1"],
+      "missing_facts": ["Побег удался с трудом."],
+      "explanation": "Наречие barely меняет смысл действия."
+    },
+    "eligible": true
+  },
+  "missing_dialogue": {
+    "source_text": "\"Wait for me,\" she said.",
+    "target_text": "",
+    "verdict": {
+      "decision": "missing_content",
+      "confidence": 0.98,
+      "source_unit_ids": ["missing_dialogue-s1"],
+      "missing_facts": ["Она попросила подождать её."],
+      "explanation": "Реплика отсутствует в переводе."
+    },
+    "eligible": true
+  },
+  "missing_sentence": {
+    "source_text": "The gate closed behind them.",
+    "target_text": "",
+    "verdict": {
+      "decision": "missing_content",
+      "confidence": 0.96,
+      "source_unit_ids": ["missing_sentence-s1"],
+      "missing_facts": ["Ворота закрылись позади героев."],
+      "explanation": "Предложение не представлено в переводе."
+    },
+    "eligible": true
+  },
+  "missing_paragraph": {
+    "source_text": "The storm lasted all night. By dawn the bridge was gone.",
+    "target_text": "",
+    "verdict": {
+      "decision": "missing_content",
+      "confidence": 0.99,
+      "source_unit_ids": ["missing_paragraph-s1"],
+      "missing_facts": ["Буря длилась всю ночь.", "К рассвету мост исчез."],
+      "explanation": "Абзац с двумя событиями отсутствует."
+    },
+    "eligible": true
+  },
+  "missing_scene": {
+    "source_text": "They entered the hall, met the envoy, and signed the treaty.",
+    "target_text": "",
+    "verdict": {
+      "decision": "missing_content",
+      "confidence": 0.995,
+      "source_unit_ids": ["missing_scene-s1"],
+      "missing_facts": ["Герои вошли в зал.", "Они встретили посла.", "Они подписали договор."],
+      "explanation": "Последовательность событий сцены отсутствует."
+    },
+    "eligible": true
+  },
+  "literary_paraphrase": {
+    "source_text": "Night wrapped the town in a velvet cloak.",
+    "target_text": "Город утонул в бархатной ночи.",
+    "verdict": {
+      "decision": "covered",
+      "confidence": 0.99,
+      "source_unit_ids": ["literary_paraphrase-s1"],
+      "missing_facts": [],
+      "explanation": "Образ передан литературным перефразированием."
+    },
+    "eligible": false
+  },
+  "merged_paragraphs": {
+    "source_text": "He opened the letter. He read it twice.",
+    "target_text": "Он открыл письмо и дважды его прочитал.",
+    "verdict": {
+      "decision": "covered",
+      "confidence": 0.98,
+      "source_unit_ids": ["merged_paragraphs-s1"],
+      "missing_facts": [],
+      "explanation": "Оба действия переданы в объединённом предложении."
+    },
+    "eligible": false
+  },
+  "brand": {
+    "source_text": "Apple",
+    "target_text": "Apple",
+    "protected_entity": {"text": "Apple", "category": "brand"},
+    "eligible": false,
+    "client_calls": 0
+  },
+  "sign": {
+    "source_text": "EXIT",
+    "target_text": "EXIT",
+    "protected_context": "sign",
+    "eligible": false,
+    "client_calls": 0
+  },
+  "foreign_dialogue": {
+    "source_text": "Bonjour, monsieur.",
+    "target_text": "Bonjour, monsieur.",
+    "candidate_language": "fr",
+    "protected_context": "foreign_dialogue",
+    "eligible": false,
+    "client_calls": 0
+  }
+}

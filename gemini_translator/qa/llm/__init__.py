@@ -7,6 +7,7 @@ from .completion import (
     QaModelSelection,
 )
 from .json_response import QaResponseSchemaError, parse_single_json_object
+from .omission_verifier import OmissionVerifier
 from .schemas import LanguageIssue, OmissionVerdict, RepairProposal
 
 __all__ = (
@@ -14,6 +15,7 @@ __all__ = (
     "ExistingHandlerCompletionClient",
     "LanguageIssue",
     "OmissionVerdict",
+    "OmissionVerifier",
     "QaCompletionClient",
     "QaModelSelection",
     "QaResponseSchemaError",

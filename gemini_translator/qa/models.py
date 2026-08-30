@@ -1,15 +1,22 @@
 """Immutable, Qt-free data contracts for translation quality assurance."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import StrEnum
 import math
+import os
+from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any, ClassVar, Literal, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Mapping
 
 import numpy as np
 
 from .capabilities import QaCapabilityKey
+
+if TYPE_CHECKING:
+    from .llm.schemas import OmissionVerdict
 
 
 class QaModelValidationError(ValueError):
@@ -92,6 +99,31 @@ class GlossaryPolicy(StrEnum):
     MUST_TRANSLATE = "must_translate"
     KEEP_ORIGINAL = "keep_original"
     EITHER = "either"
+
+
+_MAX_VERIFIER_OUTPUT_TOKENS = 4096
+
+_OMISSION_VERIFIER_STATUSES = frozenset(
+    {
+        "verified",
+        "filtered",
+        "configuration_failed",
+        "invalid_response",
+        "completion_timeout",
+        "completion_failed",
+        "identity_mismatch",
+    }
+)
+_OMISSION_VERIFIER_WARNINGS = frozenset(
+    {
+        "foreign_text_filtered",
+        "prompt_configuration_unavailable",
+        "invalid_response",
+        "completion_timeout",
+        "completion_failed",
+        "verdict_source_unit_ids_mismatch",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -843,6 +875,68 @@ class GlossaryRule:
             raise QaModelValidationError("unsupported glossary policy") from exc
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class RelevantGlossaryTerm:
+    """One candidate-local glossary instruction safe to include in an LLM prompt."""
+
+    original_term: str
+    canonical_translation: str
+    policy: GlossaryPolicy
+    occurrences: int
+    priority: int
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.original_term, "original_term")
+        _require_nonempty_string(self.canonical_translation, "canonical_translation")
+        try:
+            object.__setattr__(self, "policy", GlossaryPolicy(self.policy))
+        except (TypeError, ValueError) as exc:
+            raise QaModelValidationError("unsupported glossary policy") from exc
+        _require_integer(self.occurrences, "occurrences")
+        _require_integer(self.priority, "priority")
+        if self.occurrences < 1:
+            raise QaModelValidationError("occurrences must be positive")
+        if self.priority < 0:
+            raise QaModelValidationError("priority must be non-negative")
+        if (
+            self.policy is GlossaryPolicy.KEEP_ORIGINAL
+            and self.canonical_translation != self.original_term
+        ):
+            raise QaModelValidationError(
+                "KEEP_ORIGINAL canonical translation must retain the original term"
+            )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class OmissionVerifierConfig:
+    """Fail-closed policy and resource selection for omission verification."""
+
+    high_confidence: float = 0.95
+    max_output_tokens: int = 700
+    prompt_version: str = "omission_verifier_v1"
+    prompt_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        _require_finite_number(self.high_confidence, "high_confidence")
+        if not 0.0 <= self.high_confidence <= 1.0:
+            raise QaModelValidationError("high_confidence must be between 0 and 1")
+        _require_integer(self.max_output_tokens, "max_output_tokens")
+        if not 1 <= self.max_output_tokens <= _MAX_VERIFIER_OUTPUT_TOKENS:
+            raise QaModelValidationError(
+                "max_output_tokens must be between 1 and "
+                f"{_MAX_VERIFIER_OUTPUT_TOKENS}"
+            )
+        _require_nonempty_string(self.prompt_version, "prompt_version")
+        if re.fullmatch(r"[a-z][a-z0-9_]*_v[1-9][0-9]*", self.prompt_version) is None:
+            raise QaModelValidationError("prompt_version must be a stable versioned key")
+        if self.prompt_path is not None:
+            if not isinstance(self.prompt_path, (str, os.PathLike)):
+                raise QaModelValidationError("prompt_path must be a filesystem path")
+            if not str(self.prompt_path).strip():
+                raise QaModelValidationError("prompt_path must not be empty")
+            object.__setattr__(self, "prompt_path", Path(self.prompt_path))
+
+
 @dataclass(frozen=True, slots=True)
 class GlossaryPolicyMatch:
     """An exact normalized glossary match; offsets refer to normalized candidate text."""
@@ -947,6 +1041,79 @@ class ForeignTextDecision:
             _require_nonempty_string(reason, "foreign-text reason")
         if len(set(self.reasons)) != len(self.reasons):
             raise QaModelValidationError("foreign-text reasons must be unique")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class VerifiedCandidate:
+    """Auditable, fail-closed result of one omission-verification attempt."""
+
+    candidate: GapCandidate
+    context: CandidateContext
+    verdict: OmissionVerdict | None
+    foreign_text_decision: ForeignTextDecision
+    eligible_for_repair: bool
+    status: str
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate, GapCandidate):
+            raise QaModelValidationError("candidate must be a GapCandidate")
+        if not isinstance(self.context, CandidateContext):
+            raise QaModelValidationError("context must be a CandidateContext")
+        if self.context.candidate_id != self.candidate.candidate_id:
+            raise QaModelValidationError("verified candidate context identity must match")
+        if not isinstance(self.foreign_text_decision, ForeignTextDecision):
+            raise QaModelValidationError(
+                "foreign_text_decision must be a ForeignTextDecision"
+            )
+
+        from .llm.schemas import OmissionVerdict
+
+        if self.verdict is not None and not isinstance(self.verdict, OmissionVerdict):
+            raise QaModelValidationError("verdict must be an OmissionVerdict or None")
+        if not isinstance(self.eligible_for_repair, bool):
+            raise QaModelValidationError("eligible_for_repair must be a bool")
+        _require_nonempty_string(self.status, "status")
+        if self.status not in _OMISSION_VERIFIER_STATUSES:
+            raise QaModelValidationError("unsupported omission verifier status")
+        if not isinstance(self.warnings, tuple):
+            raise QaModelValidationError("warnings must be a tuple")
+        for warning in self.warnings:
+            _require_nonempty_string(warning, "warning")
+            if warning not in _OMISSION_VERIFIER_WARNINGS:
+                raise QaModelValidationError("unsupported omission verifier warning")
+        if len(set(self.warnings)) != len(self.warnings):
+            raise QaModelValidationError("warnings must be unique")
+        if self.status != "verified" and not self.warnings:
+            raise QaModelValidationError(
+                "non-verified omission statuses must record a warning"
+            )
+
+        if self.status == "verified" and self.verdict is None:
+            raise QaModelValidationError("verified status requires a verdict")
+        if self.status == "identity_mismatch" and self.verdict is None:
+            raise QaModelValidationError("identity mismatch status requires a verdict")
+        if self.status not in {"verified", "identity_mismatch"} and self.verdict is not None:
+            raise QaModelValidationError("failure and filter statuses cannot carry a verdict")
+        if self.eligible_for_repair:
+            if (
+                self.status != "verified"
+                or self.verdict is None
+                or self.verdict.decision != "missing_content"
+                or not self.verdict.missing_facts
+                or not set(self.verdict.source_unit_ids).issubset(
+                    self.candidate.source_unit_ids
+                )
+                or not self.candidate.repairable
+                or self.candidate.side != "source"
+                or self.candidate.left_anchor is None
+                or self.candidate.right_anchor is None
+                or self.candidate.signals != ("missing_in_target",)
+                or self.foreign_text_decision.action != "send_to_llm_verifier"
+            ):
+                raise QaModelValidationError(
+                    "repair eligibility lacks required independent evidence"
+                )
 
 
 @dataclass(frozen=True, slots=True)
