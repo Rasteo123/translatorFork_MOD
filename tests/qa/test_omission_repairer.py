@@ -210,7 +210,7 @@ def test_missing_prompt_configuration_fails_closed():
         ("Она посмотрела на ворота. " + _FRAGMENT, "anchor_echo"),
         (_FRAGMENT + " Потом начался дождь.", "anchor_echo"),
         (_SOURCE_GAP, "untranslated_source"),
-        ("Он так и не сказал ей, что the tower уже пала.", "glossary_violation"),
+        ("Он так и не сказал ей, что the tower уже пала.", "original_term_kept"),
     ],
 )
 def test_unusable_fragments_are_rejected_after_exactly_one_attempt(fragment, detail):
@@ -243,7 +243,7 @@ def test_keep_original_term_must_survive_in_the_repaired_fragment():
     with pytest.raises(OmissionRepairError) as excinfo:
         _propose(client, verified, glossary=glossary)
 
-    assert excinfo.value.detail == "glossary_violation"
+    assert excinfo.value.detail == "original_term_dropped"
 
 
 def test_candidate_mismatch_and_invalid_payloads_are_rejected():

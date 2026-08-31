@@ -207,7 +207,7 @@ def test_broken_glossary_policy_is_rejected_before_the_post_check():
     )
 
     assert validation.accepted is False
-    assert "glossary_violation" in validation.reasons
+    assert "original_term_kept" in validation.reasons
     assert client.calls == 0
 
 

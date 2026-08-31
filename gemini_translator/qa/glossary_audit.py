@@ -14,6 +14,7 @@ from .models import (
     GlossaryPolicy,
     GlossaryPolicyMatch,
     GlossaryRule,
+    RelevantGlossaryTerm,
 )
 
 
@@ -540,3 +541,122 @@ def _intersect_signatures(
         "|".join(sorted(set(left_forms.split("|")) & set(right_forms.split("|"))))
         for left_forms, right_forms in zip(left, right, strict=True)
     )
+
+
+def contains_term_forms(text: str, term: str) -> bool:
+    """Report whether ``term`` occurs in ``text`` in any inflected form.
+
+    Literal matching is not enough here: a Russian glossary term almost always
+    appears declined, and «предельных атрибутах» is the same term as «предельный
+    атрибут».  Lemmas answer that exactly, so pymorphy is used when the
+    application already has it loaded; the prefix rule below is the fallback for
+    a build without it, and it is deliberately the weaker of the two.
+    """
+
+    if match_glossary_policies(text, (GlossaryRule(term, GlossaryPolicy.EITHER),)):
+        return True
+    term_words = _words(term)
+    text_words = _words(text)
+    if not term_words or len(text_words) < len(term_words):
+        return False
+    lemmatize = _lemmatizer()
+    if lemmatize is not None:
+        term_lemmas = tuple(lemmatize(word) for word in term_words)
+        text_lemmas = tuple(lemmatize(word) for word in text_words)
+        for start in range(len(text_lemmas) - len(term_lemmas) + 1):
+            if text_lemmas[start : start + len(term_lemmas)] == term_lemmas:
+                return True
+    for start in range(len(text_words) - len(term_words) + 1):
+        window = text_words[start : start + len(term_words)]
+        if all(
+            _same_word_form(expected, actual)
+            for expected, actual in zip(term_words, window, strict=True)
+        ):
+            return True
+    return False
+
+
+_LEMMA_CACHE: dict[str, str] = {}
+# Beyond this the cache stops being a cache and starts being a leak: one book's
+# vocabulary fits comfortably, a runaway caller does not.
+_LEMMA_CACHE_LIMIT = 20000
+
+
+def _lemmatizer():
+    """Return a cached word->lemma function, or None without pymorphy.
+
+    The analyzer is the application's single shared instance, built lazily: a
+    session that never checks a glossary term never pays for the dictionaries.
+    """
+    try:
+        from gemini_translator.utils.morphology import get_morph_analyzer
+
+        analyzer = get_morph_analyzer()
+    except Exception:  # noqa: BLE001 - morphology is an optional accelerator
+        return None
+    if analyzer is None:
+        return None
+
+    def lemma(word: str) -> str:
+        cached = _LEMMA_CACHE.get(word)
+        if cached is not None:
+            return cached
+        try:
+            parsed = analyzer.parse(word)
+        except Exception:  # noqa: BLE001 - an unparsable word is its own lemma
+            parsed = ()
+        value = parsed[0].normal_form if parsed else word
+        if len(_LEMMA_CACHE) < _LEMMA_CACHE_LIMIT:
+            _LEMMA_CACHE[word] = value
+        return value
+
+    return lemma
+
+
+def _same_word_form(expected: str, actual: str) -> bool:
+    shorter, longer = sorted((expected, actual), key=len)
+    if len(shorter) < 3:
+        return shorter == longer
+    return longer.startswith(shorter)
+
+
+def _words(value: str) -> tuple[str, ...]:
+    normalized = unicodedata.normalize("NFKC", value).casefold().replace("ё", "е")
+    return tuple(re.findall(r"[^\W_]+", normalized, flags=re.UNICODE))
+
+
+def glossary_violation_reason(
+    fragment: str, source_text: str, glossary: Iterable[RelevantGlossaryTerm]
+) -> str:
+    """Name how a repaired fragment breaks a glossary policy, or return "".
+
+    Three ways, and the third is the one that mattered in practice: for a
+    Chinese source the model almost never leaves the original characters in a
+    Russian fragment, so checking only for the original term passed everything —
+    including a fragment that translated a glossary term by some synonym of its
+    own while every other chapter used the canonical wording.
+    """
+    relevant = tuple(
+        term
+        for term in glossary
+        if term.policy in {GlossaryPolicy.MUST_TRANSLATE, GlossaryPolicy.KEEP_ORIGINAL}
+    )
+    if not relevant or not source_text.strip():
+        return ""
+    rules = tuple(GlossaryRule(term.original_term, term.policy) for term in relevant)
+    in_source = {match.term for match in match_glossary_policies(source_text, rules)}
+    in_fragment = {match.term for match in match_glossary_policies(fragment, rules)}
+    for term in relevant:
+        if term.original_term not in in_source:
+            continue
+        present = term.original_term in in_fragment
+        if term.policy is GlossaryPolicy.KEEP_ORIGINAL:
+            if not present:
+                return "original_term_dropped"
+            continue
+        if present:
+            return "original_term_kept"
+        canonical = term.canonical_translation.strip()
+        if canonical and not contains_term_forms(fragment, canonical):
+            return "canonical_term_missing"
+    return ""

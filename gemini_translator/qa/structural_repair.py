@@ -18,10 +18,8 @@ from ..utils.epub_json import (
 )
 from ..utils.text import validate_html_structure
 from .capabilities import QaCapabilitySettings
-from .glossary_audit import match_glossary_policies
+from .glossary_audit import glossary_violation_reason
 from .models import (
-    GlossaryPolicy,
-    GlossaryRule,
     QaModelValidationError,
     RelevantGlossaryTerm,
     SemanticUnit,
@@ -297,10 +295,11 @@ class StructuralRepairEngine:
         if not is_valid:
             reasons.append("invalid_html")
 
-        if _violates_glossary(
+        glossary_reason = glossary_violation_reason(
             patch.translated_fragment, context.source_text, context.glossary
-        ):
-            reasons.append("glossary_violation")
+        )
+        if glossary_reason:
+            reasons.append(glossary_reason)
 
         return RepairValidation(not reasons, tuple(reasons))
 
@@ -479,30 +478,6 @@ def _visible_occurrences(payload: dict, fragment: str) -> int:
             normalized_fragment
         )
     return total
-
-
-def _violates_glossary(
-    fragment: str, source_text: str, glossary: tuple[RelevantGlossaryTerm, ...]
-) -> bool:
-    relevant = tuple(
-        term
-        for term in glossary
-        if term.policy in {GlossaryPolicy.MUST_TRANSLATE, GlossaryPolicy.KEEP_ORIGINAL}
-    )
-    if not relevant or not source_text.strip():
-        return False
-    rules = tuple(GlossaryRule(term.original_term, term.policy) for term in relevant)
-    in_source = {match.term for match in match_glossary_policies(source_text, rules)}
-    in_fragment = {match.term for match in match_glossary_policies(fragment, rules)}
-    for term in relevant:
-        if term.original_term not in in_source:
-            continue
-        present = term.original_term in in_fragment
-        if term.policy is GlossaryPolicy.MUST_TRANSLATE and present:
-            return True
-        if term.policy is GlossaryPolicy.KEEP_ORIGINAL and not present:
-            return True
-    return False
 
 
 def _normalize(value: str) -> str:

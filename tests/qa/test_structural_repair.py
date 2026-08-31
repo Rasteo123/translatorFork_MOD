@@ -226,7 +226,7 @@ def test_validation_collects_every_reason_without_short_circuiting():
     validation = engine.validate(preview, context)
 
     assert validation.accepted is False
-    assert "glossary_violation" in validation.reasons
+    assert "original_term_kept" in validation.reasons
 
 
 def test_validation_accepts_a_clean_local_insertion():

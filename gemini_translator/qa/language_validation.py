@@ -5,14 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-import re
-import unicodedata
 
 from ..utils.epub_json import build_translation_payload
-from .glossary_audit import match_glossary_policies
+from .glossary_audit import contains_term_forms
 from .llm.completion import CancellationToken, QaCompletionClient, QaModelSelection
 from .llm.schemas import LanguageIssue
-from .models import GlossaryPolicy, GlossaryRule, QaModelValidationError, RelevantGlossaryTerm
+from .models import GlossaryPolicy, QaModelValidationError, RelevantGlossaryTerm
 from .semantic_units import flatten_visible_text
 
 
@@ -325,8 +323,8 @@ def auto_fix_refusal(
         if term.policy is not GlossaryPolicy.MUST_TRANSLATE:
             continue
         canonical = term.canonical_translation
-        if _contains_term_forms(issue.original_text, canonical) and not (
-            _contains_term_forms(issue.replacement_text, canonical)
+        if contains_term_forms(issue.original_text, canonical) and not (
+            contains_term_forms(issue.replacement_text, canonical)
         ):
             return "glossary_term_dropped"
     # The policy check comes last: an issue that could never be applied anyway
@@ -334,42 +332,6 @@ def auto_fix_refusal(
     if auto_fix_categories and issue.category not in auto_fix_categories:
         return "category_not_auto_fixable"
     return ""
-
-
-def _contains_term_forms(text: str, term: str) -> bool:
-    """Report whether ``term`` occurs in ``text`` in any inflected form.
-
-    Literal matching is not enough here: a glossary term almost always appears
-    declined in Russian prose, and a repair that silently replaces a declined
-    form is exactly what must be refused.
-    """
-
-    if match_glossary_policies(text, (GlossaryRule(term, GlossaryPolicy.EITHER),)):
-        return True
-    term_words = _words(term)
-    text_words = _words(text)
-    if not term_words or len(text_words) < len(term_words):
-        return False
-    for start in range(len(text_words) - len(term_words) + 1):
-        window = text_words[start : start + len(term_words)]
-        if all(
-            _same_word_form(expected, actual)
-            for expected, actual in zip(term_words, window, strict=True)
-        ):
-            return True
-    return False
-
-
-def _same_word_form(expected: str, actual: str) -> bool:
-    shorter, longer = sorted((expected, actual), key=len)
-    if len(shorter) < 3:
-        return shorter == longer
-    return longer.startswith(shorter)
-
-
-def _words(value: str) -> tuple[str, ...]:
-    normalized = unicodedata.normalize("NFKC", value).casefold().replace("ё", "е")
-    return tuple(re.findall(r"[^\W_]+", normalized, flags=re.UNICODE))
 
 
 def apply_language_replacements(

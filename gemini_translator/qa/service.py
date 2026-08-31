@@ -644,7 +644,7 @@ class TranslationQualityService:
                 )
                 continue
             outcome, model = await self._repair_one(
-                item, units, model, request, cancellation
+                item, units, model, request, cancellation, coverage.target_units
             )
             outcomes.append(outcome)
         return tuple(outcomes)
@@ -656,8 +656,10 @@ class TranslationQualityService:
         model: dict,
         request: ChapterQaRequest,
         cancellation: CancellationToken,
+        ordered_units: Sequence[SemanticUnit] = (),
     ) -> tuple[OmissionRepairOutcome, dict]:
         candidate_id = item.candidate.candidate_id
+        before_window, after_window = _style_windows(item, ordered_units)
         glossary = self._glossary_selector.select_for_candidate(
             request.glossary,
             item.context.source_text,
@@ -673,6 +675,8 @@ class TranslationQualityService:
                     cancellation=cancellation,
                     glossary=glossary,
                     style_guide=request.style_guide,
+                    target_window_before=before_window,
+                    target_window_after=after_window,
                 ),
             )
         except asyncio.CancelledError:
@@ -993,6 +997,55 @@ def _chapter_status(result: ChapterQaResult) -> str:
     if any(warning in DEFERRED_WARNINGS for warning in result.warnings):
         return "deferred"
     return "checked"
+
+
+# How much already-translated prose the repairer may see on each side of a gap.
+# Three sentences is enough to carry the scene's terminology and tone, and the
+# character cap keeps a chapter of long paragraphs from crowding out the gap
+# itself in the prompt.
+_STYLE_WINDOW_UNITS = 3
+_STYLE_WINDOW_CHARS = 600
+
+
+def _style_windows(
+    item: VerifiedCandidate, ordered_units: Sequence[SemanticUnit]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return the translated sentences around the gap, for style and terms only.
+
+    The anchors alone are two sentences; a model given only those invents its
+    own wording for a scene the book already has words for.
+    """
+    left_anchor = item.candidate.left_anchor
+    right_anchor = item.candidate.right_anchor
+    if not ordered_units or left_anchor is None or right_anchor is None:
+        return ((), ())
+    positions = {unit.unit_id: index for index, unit in enumerate(ordered_units)}
+    left_id = left_anchor.target_unit_ids[-1] if left_anchor.target_unit_ids else ""
+    right_id = right_anchor.target_unit_ids[0] if right_anchor.target_unit_ids else ""
+    left_index = positions.get(left_id)
+    right_index = positions.get(right_id)
+    if left_index is None or right_index is None:
+        return ((), ())
+    before = _window_texts(ordered_units, left_index - _STYLE_WINDOW_UNITS, left_index)
+    after = _window_texts(
+        ordered_units, right_index + 1, right_index + 1 + _STYLE_WINDOW_UNITS
+    )
+    return before, after
+
+
+def _window_texts(
+    ordered_units: Sequence[SemanticUnit], start: int, stop: int
+) -> tuple[str, ...]:
+    """Collect unit texts in reading order, within the character budget."""
+    texts: list[str] = []
+    budget = _STYLE_WINDOW_CHARS
+    for index in range(max(0, start), min(len(ordered_units), stop)):
+        text = ordered_units[index].text.strip()
+        if not text or len(text) > budget:
+            continue
+        texts.append(text)
+        budget -= len(text)
+    return tuple(texts)
 
 
 def _patch_for(

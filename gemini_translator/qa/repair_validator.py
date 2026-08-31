@@ -21,14 +21,12 @@ from .llm.prompts import (
 )
 from .llm.schemas import RepairPostCheck, RepairProposal
 from .models import (
-    GlossaryPolicy,
-    GlossaryRule,
     OmissionRepairerConfig,
     QaModelValidationError,
     RelevantGlossaryTerm,
     VerifiedCandidate,
 )
-from .glossary_audit import match_glossary_policies
+from .glossary_audit import glossary_violation_reason
 from .semantic_units import flatten_visible_text
 from .structural_repair import REPAIR_MARKER_ATTRIBUTE, RepairValidation
 
@@ -214,8 +212,11 @@ def _local_reasons(
         reasons.append("duplicate_fragment")
     if not _anchors_surround_fragment(preview_payload, candidate, fragment):
         reasons.append("anchor_missing")
-    if _violates_glossary(fragment, candidate.context.source_text, glossary):
-        reasons.append("glossary_violation")
+    glossary_reason = glossary_violation_reason(
+        fragment, candidate.context.source_text, glossary
+    )
+    if glossary_reason:
+        reasons.append(glossary_reason)
     return tuple(dict.fromkeys(reasons))
 
 
@@ -324,30 +325,6 @@ def _tag_counts(html: str) -> Counter:
     return Counter(
         match.group(1).lower() for match in re.finditer(r"<\s*([a-zA-Z][\w:-]*)", html)
     )
-
-
-def _violates_glossary(
-    fragment: str, source_text: str, glossary: Sequence[RelevantGlossaryTerm]
-) -> bool:
-    relevant = tuple(
-        term
-        for term in glossary
-        if term.policy in {GlossaryPolicy.MUST_TRANSLATE, GlossaryPolicy.KEEP_ORIGINAL}
-    )
-    if not relevant or not source_text.strip():
-        return False
-    rules = tuple(GlossaryRule(term.original_term, term.policy) for term in relevant)
-    in_source = {match.term for match in match_glossary_policies(source_text, rules)}
-    in_fragment = {match.term for match in match_glossary_policies(fragment, rules)}
-    for term in relevant:
-        if term.original_term not in in_source:
-            continue
-        present = term.original_term in in_fragment
-        if term.policy is GlossaryPolicy.MUST_TRANSLATE and present:
-            return True
-        if term.policy is GlossaryPolicy.KEEP_ORIGINAL and not present:
-            return True
-    return False
 
 
 def _local_window(payload: dict, fragment: str, marker: str) -> str:

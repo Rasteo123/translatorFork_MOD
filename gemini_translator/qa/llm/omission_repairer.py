@@ -8,10 +8,8 @@ from dataclasses import dataclass, field
 import re
 import unicodedata
 
-from ..glossary_audit import match_glossary_policies
+from ..glossary_audit import glossary_violation_reason
 from ..models import (
-    GlossaryPolicy,
-    GlossaryRule,
     OmissionRepairerConfig,
     QaModelValidationError,
     RelevantGlossaryTerm,
@@ -25,6 +23,10 @@ from .schemas import RepairProposal
 
 _MIN_ANCHOR_ECHO_CHARS = 12
 _MIN_SOURCE_ECHO_CHARS = 8
+# A window is longer than an anchor and holds ordinary prose, so a short
+# coincidence is a real possibility: only a substantial verbatim run counts as
+# copying the neighbourhood instead of translating the gap.
+_MIN_WINDOW_ECHO_CHARS = 40
 _HTML_DOCUMENT_RE = re.compile(r"<!doctype\s|</?html[\s>]|</?body[\s>]", re.IGNORECASE)
 _FENCE_RE = re.compile(r"```|~~~")
 
@@ -47,6 +49,13 @@ class RepairContext:
     cancellation: CancellationToken
     glossary: tuple[RelevantGlossaryTerm, ...] = field(default_factory=tuple)
     style_guide: str = ""
+    # A few already-translated sentences on each side of the gap.  Two anchor
+    # sentences are not enough of a sample for the model to reuse the book's own
+    # wording, and it then invents its own terms for the scene — the observed
+    # failure was a restored paragraph calling the same concept by another name
+    # than every chapter around it.  Shown for style and terminology only.
+    target_window_before: tuple[str, ...] = field(default_factory=tuple)
+    target_window_after: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not isinstance(self.chapter_id, str) or not self.chapter_id.strip():
@@ -65,6 +74,12 @@ class RepairContext:
             )
         if not isinstance(self.style_guide, str):
             raise QaModelValidationError("style_guide must be a string")
+        for field_name in ("target_window_before", "target_window_after"):
+            value = getattr(self, field_name)
+            if not isinstance(value, tuple) or not all(
+                isinstance(item, str) for item in value
+            ):
+                raise QaModelValidationError(f"{field_name} must be a tuple of strings")
 
 
 class OmissionRepairer:
@@ -134,7 +149,7 @@ class OmissionRepairer:
         except (QaResponseSchemaError, TypeError, ValueError):
             raise OmissionRepairError("invalid_response") from None
 
-        detail = _rejection_detail(proposal, verified, glossary)
+        detail = _rejection_detail(proposal, verified, glossary, request)
         if detail:
             raise OmissionRepairError("fragment_rejected", detail)
         return proposal
@@ -144,6 +159,7 @@ def _rejection_detail(
     proposal: RepairProposal,
     verified: VerifiedCandidate,
     glossary: tuple[RelevantGlossaryTerm, ...],
+    request: RepairContext | None = None,
 ) -> str:
     """Return the first stable reason the fragment cannot be a local repair."""
     fragment = proposal.translated_fragment
@@ -160,40 +176,26 @@ def _rejection_detail(
             and normalized_anchor in normalized_fragment
         ):
             return "anchor_echo"
+    for sentence in (
+        *(request.target_window_before if request else ()),
+        *(request.target_window_after if request else ()),
+    ):
+        normalized_sentence = _normalize(sentence)
+        if (
+            len(normalized_sentence) >= _MIN_WINDOW_ECHO_CHARS
+            and normalized_sentence in normalized_fragment
+        ):
+            return "window_echo"
     normalized_source = _normalize(context.source_text)
     if (
         len(normalized_source) >= _MIN_SOURCE_ECHO_CHARS
         and normalized_source in normalized_fragment
     ):
         return "untranslated_source"
-    if _violates_glossary(fragment, context.source_text, glossary):
-        return "glossary_violation"
+    glossary_reason = glossary_violation_reason(fragment, context.source_text, glossary)
+    if glossary_reason:
+        return glossary_reason
     return ""
-
-
-def _violates_glossary(
-    fragment: str, source_text: str, glossary: tuple[RelevantGlossaryTerm, ...]
-) -> bool:
-    """Report whether the fragment breaks a policy for a term present in the gap."""
-    relevant = tuple(
-        term
-        for term in glossary
-        if term.policy in {GlossaryPolicy.MUST_TRANSLATE, GlossaryPolicy.KEEP_ORIGINAL}
-    )
-    if not relevant:
-        return False
-    rules = tuple(GlossaryRule(term.original_term, term.policy) for term in relevant)
-    in_source = {match.term for match in match_glossary_policies(source_text, rules)}
-    in_fragment = {match.term for match in match_glossary_policies(fragment, rules)}
-    for term in relevant:
-        if term.original_term not in in_source:
-            continue
-        present = term.original_term in in_fragment
-        if term.policy is GlossaryPolicy.MUST_TRANSLATE and present:
-            return True
-        if term.policy is GlossaryPolicy.KEEP_ORIGINAL and not present:
-            return True
-    return False
 
 
 def _normalize(value: str) -> str:
@@ -219,8 +221,13 @@ def _build_prompt(
         f"right_source_context: {escaped(context.source_after)}",
         f"left_target_anchor: {escaped(context.target_before)}",
         f"right_target_anchor: {escaped(context.target_after)}",
-        "missing_facts:",
     ]
+    if request.target_window_before or request.target_window_after:
+        lines.append("target_style_window_before:")
+        lines.extend(f"- {escaped(item)}" for item in request.target_window_before)
+        lines.append("target_style_window_after:")
+        lines.extend(f"- {escaped(item)}" for item in request.target_window_after)
+    lines.append("missing_facts:")
     lines.extend(
         f"- {escaped(fact)}" for fact in (verdict.missing_facts if verdict else ())
     )
