@@ -253,24 +253,6 @@ class TranslationQualityDialog(QDialog):
         ):
             widget.toggled.connect(self._on_settings_edited)
             layout.addWidget(widget)
-
-        # A chapter is diagnosed piece by piece, and the piece size is what the
-        # check costs: a larger piece is fewer requests over the same text.
-        chunk_row = QHBoxLayout()
-        self.language_chunk_spin = QSpinBox(group)
-        self.language_chunk_spin.setRange(1000, 32000)
-        self.language_chunk_spin.setSingleStep(1000)
-        self.language_chunk_spin.setSuffix(" символов")
-        self.language_chunk_spin.setToolTip(
-            "Сколько текста главы уходит в один запрос языковой проверки.\n"
-            "Больше — меньше запросов на главу и дешевле проверка;\n"
-            "меньше — модель разбирает каждый кусок внимательнее."
-        )
-        self.language_chunk_spin.valueChanged.connect(self._on_settings_edited)
-        chunk_row.addWidget(QLabel("Размер куска языковой проверки:", group))
-        chunk_row.addWidget(self.language_chunk_spin)
-        chunk_row.addStretch(1)
-        layout.addLayout(chunk_row)
         return group
 
     def _build_embedding_group(self, parent) -> QGroupBox:
@@ -481,7 +463,6 @@ class TranslationQualityDialog(QDialog):
             check_completeness_after_chapter=self.completeness_check.isChecked(),
             auto_repair_confirmed_omissions=self.repair_omissions_check.isChecked(),
             check_language_after_chapter=self.language_check.isChecked(),
-            language_chunk_chars=self.language_chunk_spin.value(),
             auto_repair_objective_language_issues=self.repair_language_check.isChecked(),
             embedding_provider=str(provider),
             embedding_model=self.embedding_model_combo.currentText().strip(),
@@ -522,7 +503,6 @@ class TranslationQualityDialog(QDialog):
         self.completeness_check.setChecked(settings.check_completeness_after_chapter)
         self.repair_omissions_check.setChecked(settings.auto_repair_confirmed_omissions)
         self.language_check.setChecked(settings.check_language_after_chapter)
-        self.language_chunk_spin.setValue(settings.language_chunk_chars)
         self.repair_language_check.setChecked(
             settings.auto_repair_objective_language_issues
         )
