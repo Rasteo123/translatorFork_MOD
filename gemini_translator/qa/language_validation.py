@@ -217,6 +217,16 @@ class LanguageQaResult:
     # see teaches the user nothing; this is what the log renders next to the
     # suggestion.  Codes are stable; a parenthesized tail may add specifics.
     refusals: Mapping[str, str] = field(default_factory=dict)
+    # How much of the chapter the diagnosis never saw.  A chapter whose request
+    # failed reports no issues, which reads exactly like a chapter with nothing
+    # wrong; these two numbers are what tells them apart.
+    blocks_total: int = 0
+    unchecked_blocks: int = 0
+
+    @property
+    def fully_checked(self) -> bool:
+        """Report whether every block of the chapter was actually diagnosed."""
+        return not self.unchecked_blocks
 
 
 # One honest sentence per refusal code.  The keys are contracts: tests and the
@@ -518,7 +528,10 @@ class LanguageQualityPipeline:
         changed = False
         seen_issue_ids: set[str] = set()
 
-        for chunk in chunk_blocks(blocks_from_model(current_model), request.max_chunk_chars):
+        chapter_blocks = blocks_from_model(current_model)
+        unchecked_blocks = 0
+
+        for chunk in chunk_blocks(chapter_blocks, request.max_chunk_chars):
             request.cancellation.raise_if_cancelled()
             block_ids = {block.block_id for block in chunk}
             chunk_rules = tuple(
@@ -531,6 +544,7 @@ class LanguageQualityPipeline:
                 )
             except LanguageReviewError as error:
                 warnings.append(error.reason)
+                unchecked_blocks += len(chunk)
                 continue
 
             chunk_issues = _with_unique_ids(chunk_issues, seen_issue_ids)
@@ -621,6 +635,8 @@ class LanguageQualityPipeline:
             preview_model=current_model if changed else None,
             warnings=tuple(dict.fromkeys(warnings)),
             refusals=refusals,
+            blocks_total=len(chapter_blocks),
+            unchecked_blocks=unchecked_blocks,
         )
 
 

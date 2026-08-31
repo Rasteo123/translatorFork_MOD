@@ -73,6 +73,7 @@ DEFERRED_WARNINGS = frozenset(
         "alignment_capacity_exceeded",
         "verification_failed",
         "language_check_failed",
+        "language_check_incomplete",
         "addition_detection_failed",
         "chapter_not_readable",
         "language_tool_unavailable",
@@ -298,6 +299,14 @@ class ChapterQaResult:
                     )
                 else:
                     parts.append(f"{before_label}: {_escape(change.before)}</p>")
+        unchecked = int(getattr(self.language, "unchecked_blocks", 0) or 0)
+        if unchecked:
+            total = int(getattr(self.language, "blocks_total", 0) or 0)
+            parts.append(
+                f"<p><b>НЕ ПРОВЕРЕНО абзацев: {unchecked} из {total}</b><br>"
+                "запросы не прошли, глава вернётся на проверку</p>"
+            )
+
         language_warnings = tuple(
             getattr(self.language, "warnings", ()) if self.language else ()
         )
@@ -389,6 +398,15 @@ class ChapterQaResult:
                 reason = refusals.get(issue.issue_id)
                 if reason:
                     lines.append(f"  причина: {describe_refusal(reason)}")
+
+        unchecked = int(getattr(self.language, "unchecked_blocks", 0) or 0)
+        if unchecked:
+            total = int(getattr(self.language, "blocks_total", 0) or 0)
+            lines.append("")
+            lines.append(
+                f"НЕ ПРОВЕРЕНО абзацев: {unchecked} из {total} — "
+                "запросы не прошли, глава вернётся на проверку"
+            )
 
         language_warnings = tuple(
             getattr(self.language, "warnings", ()) if self.language else ()
@@ -911,6 +929,11 @@ class TranslationQualityService:
         except Exception:  # noqa: BLE001 - language QA never breaks a chapter
             warnings.append("language_check_failed")
             return None
+        if result.unchecked_blocks:
+            # Part of the chapter never reached the model.  Saying nothing here
+            # would report it as checked and clean; instead the chapter is
+            # deferred, and the queue comes back to it.
+            warnings.append("language_check_incomplete")
         if result.preview_model is not None and options.auto_repair_language:
             self._write_language_repairs(request, result, warnings)
         return result

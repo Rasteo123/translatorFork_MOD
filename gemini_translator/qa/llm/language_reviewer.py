@@ -140,30 +140,69 @@ class LanguageQualityReviewer:
             return
 
 
+# Retrying is part of the contract, not a nicety.  Measured on a live book: one
+# 429 on the diagnosis request left 33 of 40 chapters unchecked, and a chapter
+# nobody could check reports no defects — exactly what a clean chapter reports.
+RETRY_ATTEMPTS = 4
+RETRY_BASE_DELAY_SECONDS = 1.5
+RETRY_MAX_DELAY_SECONDS = 20.0
+
+
+def retry_delay(attempt: int) -> float:
+    """Grow the pause with each attempt, up to a fixed ceiling."""
+    return min(RETRY_BASE_DELAY_SECONDS * (2**attempt), RETRY_MAX_DELAY_SECONDS)
+
+
+def is_transient(error: BaseException) -> bool:
+    """Report whether the service itself asked to be tried again later.
+
+    Handlers state this by carrying the delay they want: a busy service and a
+    dropped connection say ``delay_seconds``, an exhausted quota, a refused
+    prompt and an unknown model do not.  Reading that attribute keeps this layer
+    free of the handler exception hierarchy while still following its rules.
+    """
+    if isinstance(error, TimeoutError):
+        return True
+    delay = getattr(error, "delay_seconds", None)
+    if isinstance(delay, bool) or not isinstance(delay, (int, float)):
+        return False
+    return delay > 0
+
+
 async def request_qa_json(
     client: QaCompletionClient,
     prompt: str,
     request: LanguageQaRequest,
     max_output_tokens: int,
     purpose: str,
+    *,
+    sleep=asyncio.sleep,
 ) -> object:
-    """Send one QA request, mapping every failure onto a typed refusal."""
-    try:
-        return await client.complete_json(
-            prompt,
-            model=request.model,
-            max_output_tokens=max_output_tokens,
-            cancellation=request.cancellation,
-            purpose=purpose,
-        )
-    except asyncio.CancelledError:
-        raise
-    except TimeoutError:
+    """Send one QA request, retrying what is transient, refusing what is not."""
+    failure: BaseException | None = None
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            return await client.complete_json(
+                prompt,
+                model=request.model,
+                max_output_tokens=max_output_tokens,
+                cancellation=request.cancellation,
+                purpose=purpose,
+            )
+        except asyncio.CancelledError:
+            raise
+        except QaResponseSchemaError:
+            raise LanguageReviewError(f"{purpose}_invalid_response") from None
+        except Exception as error:  # noqa: BLE001 - classified just below
+            failure = error
+            if not is_transient(error) or attempt == RETRY_ATTEMPTS - 1:
+                break
+        # A cancelled check must not spend its last seconds sleeping.
+        request.cancellation.raise_if_cancelled()
+        await sleep(retry_delay(attempt))
+    if isinstance(failure, TimeoutError):
         raise LanguageReviewError(f"{purpose}_timeout") from None
-    except QaResponseSchemaError:
-        raise LanguageReviewError(f"{purpose}_invalid_response") from None
-    except Exception:  # noqa: BLE001 - any transport failure stays a refusal
-        raise LanguageReviewError(f"{purpose}_failed") from None
+    raise LanguageReviewError(f"{purpose}_failed") from None
 
 
 def _diagnosis_lines(
