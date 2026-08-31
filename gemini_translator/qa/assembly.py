@@ -33,6 +33,7 @@ from .language_rules import (
     LanguageToolHttpProvider,
 )
 from .language_validation import LanguageQualityPipeline
+from .llm.answer_cache import QaAnswerCache
 from .llm.completion import ExistingHandlerCompletionClient, QaModelSelection
 from .russian_nlp import RussianNlpService, SlovnetProvider, load_runtime
 from .llm.omission_repairer import OmissionRepairer
@@ -77,6 +78,7 @@ class ProjectQaPaths:
     backups: Path
     embedding_cache: Path
     rule_cache: Path
+    answer_cache: Path
     cometkiwi_models: Path
 
     @classmethod
@@ -89,6 +91,9 @@ class ProjectQaPaths:
             # The rule cache lives beside the embedding cache: both are
             # disposable and neither holds anything the user would miss.
             rule_cache=cache_dir.with_name(cache_dir.name + "_rules"),
+            # Model answers about text nobody changed, beside the other two
+            # disposable caches.
+            answer_cache=cache_dir.with_name(cache_dir.name + "_answers"),
             # Estimator weights are large and shared between projects only by
             # accident, so they live under the project like everything else.
             cometkiwi_models=cache_dir.with_name("translation_qa_cometkiwi"),
@@ -277,7 +282,9 @@ def build_translation_quality_service(
         journal=journal,
         journal_path=paths.journal,
         additions=AdditionDetector(client),
-        language=LanguageQualityPipeline(client),
+        language=LanguageQualityPipeline(
+            client, diagnosis_cache=QaAnswerCache(paths.answer_cache)
+        ),
     )
 
 

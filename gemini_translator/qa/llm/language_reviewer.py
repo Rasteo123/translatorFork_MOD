@@ -39,6 +39,7 @@ class LanguageQualityReviewer:
         self,
         client: QaCompletionClient,
         config: OmissionRepairerConfig | None = None,
+        cache=None,
     ) -> None:
         if not callable(getattr(client, "complete_json", None)):
             raise TypeError("client must implement complete_json")
@@ -46,6 +47,10 @@ class LanguageQualityReviewer:
         self._config = config or OmissionRepairerConfig(
             max_output_tokens=2048, prompt_version="language_diagnosis_v1"
         )
+        # Diagnosis is the one QA request that is asked again about text nobody
+        # touched: a deferred chapter retried, a manual re-check, a resumed
+        # session.  The cache is optional and never required to be correct.
+        self._cache = cache
 
     async def diagnose_chapter(
         self,
@@ -65,16 +70,18 @@ class LanguageQualityReviewer:
         except PromptConfigurationError:
             raise LanguageReviewError("prompt_configuration_unavailable") from None
 
-        prompt = render_prompt(
-            template, _diagnosis_lines(request, blocks, rule_candidates, nlp_analysis)
-        )
-        payload = await request_qa_json(
-            self._client,
-            prompt,
-            request,
-            self._config.max_output_tokens,
-            DIAGNOSIS_PURPOSE,
-        )
+        lines = _diagnosis_lines(request, blocks, rule_candidates, nlp_analysis)
+        digest = self._digest(lines, request)
+        payload = self._cached_answer(digest)
+        from_cache = payload is not None
+        if not from_cache:
+            payload = await request_qa_json(
+                self._client,
+                render_prompt(template, lines),
+                request,
+                self._config.max_output_tokens,
+                DIAGNOSIS_PURPOSE,
+            )
         try:
             if not isinstance(payload, Mapping):
                 raise QaResponseSchemaError("diagnosis result must be an object")
@@ -93,7 +100,44 @@ class LanguageQualityReviewer:
             raise LanguageReviewError("diagnosis_block_mismatch")
         if len({issue.issue_id for issue in issues}) != len(issues):
             raise LanguageReviewError("diagnosis_duplicate_issue_ids")
+        if not from_cache:
+            # Stored only after it passed every check a fresh answer passes.
+            self._store_answer(digest, payload)
         return issues
+
+    def _digest(self, lines: Sequence[str], request: LanguageQaRequest) -> str:
+        """Key on the data and the instruction version, never on the rendered prompt.
+
+        The prompt carries a per-call random boundary tag, so two identical
+        questions render to two different strings by design.
+        """
+        if self._cache is None:
+            return ""
+        from .answer_cache import answer_digest
+
+        model = request.model
+        return answer_digest(
+            "\n".join(lines),
+            self._config.prompt_version,
+            model.provider,
+            model.model,
+        )
+
+    def _cached_answer(self, digest: str) -> object | None:
+        if self._cache is None or not digest:
+            return None
+        try:
+            return self._cache.get(digest)
+        except Exception:  # noqa: BLE001 - a broken cache is simply a miss
+            return None
+
+    def _store_answer(self, digest: str, payload: object) -> None:
+        if self._cache is None or not digest:
+            return
+        try:
+            self._cache.put(digest, payload)
+        except Exception:  # noqa: BLE001 - storing never fails a check
+            return
 
 
 async def request_qa_json(

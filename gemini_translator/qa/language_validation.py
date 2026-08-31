@@ -416,6 +416,7 @@ class LanguageQualityPipeline:
         reviewer: object | None = None,
         repairer: object | None = None,
         validator: object | None = None,
+        diagnosis_cache=None,
     ) -> None:
         if not callable(getattr(client, "complete_json", None)):
             raise TypeError("client must implement complete_json")
@@ -423,7 +424,9 @@ class LanguageQualityPipeline:
         from .llm.language_repairer import LanguageBatchRepairer, LanguageRepairValidator
         from .llm.language_reviewer import LanguageQualityReviewer
 
-        self._reviewer = reviewer or LanguageQualityReviewer(client)
+        self._reviewer = reviewer or LanguageQualityReviewer(
+            client, cache=diagnosis_cache
+        )
         self._repairer = repairer or LanguageBatchRepairer(client)
         self._validator = validator or LanguageRepairValidator(client)
 
