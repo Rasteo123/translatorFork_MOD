@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+import re
 
 from ..utils.epub_json import build_translation_payload
 from .glossary_audit import contains_term_forms
@@ -230,6 +231,8 @@ REFUSAL_DESCRIPTIONS: Mapping[str, str] = {
     "protected_entity": "правка затрагивает защищённое имя",
     "glossary_term_dropped": "правка теряет термин глоссария",
     "category_not_auto_fixable": "категория не входит в список автоправки",
+    "punctuation_rewrite": "замена одного знака препинания другим — это выбор автора",
+    "paragraph_break": "правка просит разбить абзац — это делает человек",
     "validation_declined": "модель-проверщик не подтвердила правку",
     "apply_conflict": "не удалось применить однозначно: конфликт с текстом главы",
     "language_diagnosis_failed": "диагностика не удалась (сбой запроса)",
@@ -286,6 +289,61 @@ def chunk_blocks(
     return tuple(chunks)
 
 
+# Dashes are one mark spelled several ways; turning any of them into an em dash
+# is typography, not a change of the author's punctuation.
+_DASHES = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+_MARK = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _marks(text: str) -> tuple[str, ...]:
+    return tuple(
+        "\u2014" if character in _DASHES else character
+        for character in _MARK.findall(str(text or ""))
+    )
+
+
+def _is_subsequence(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
+    position = 0
+    for mark in longer:
+        if position < len(shorter) and shorter[position] == mark:
+            position += 1
+    return position == len(shorter)
+
+
+def _rewrites_punctuation(original: str, replacement: str) -> bool:
+    """Report whether a "punctuation fix" swaps one valid mark for another.
+
+    Measured on a real book: with punctuation in the auto-fix list the check
+    replaced semicolons with commas and a colon with a full stop — legitimate
+    choices of whoever wrote the sentence, rewritten without being asked.  A
+    mark that is only added, only dropped, or merely spelled differently (any
+    dash becomes an em dash) is a defect; a mark exchanged for a different one
+    is an opinion, and opinions stay suggestions.
+    """
+    before = _marks(original)
+    after = _marks(replacement)
+    if before == after:
+        return False
+    return not (
+        _is_subsequence(before, after) or _is_subsequence(after, before)
+    )
+
+
+_BREAK = re.compile(r"[\n\r\u2028\u2029]")
+
+
+def _asks_for_a_new_paragraph(original: str, replacement: str) -> bool:
+    """Report whether the replacement wants a break the block cannot hold.
+
+    Measured on a real book: twice the model answered a run-on replica with a
+    line break, and a replacement lives inside one paragraph, where a break is
+    just whitespace.  Once that turned a vocative in the middle of a single
+    speech into what reads as an attribution dash; once it changed nothing at
+    all.  Splitting a paragraph is an edit a person makes.
+    """
+    return bool(_BREAK.search(replacement)) and not _BREAK.search(original)
+
+
 def auto_fix_refusal(
     issue: LanguageIssue,
     block_text: str,
@@ -314,6 +372,12 @@ def auto_fix_refusal(
         return "ambiguous_span"
     if issue.replacement_text == issue.original_text:
         return "no_change"
+    if _asks_for_a_new_paragraph(issue.original_text, issue.replacement_text):
+        return "paragraph_break"
+    if issue.category == "punctuation" and _rewrites_punctuation(
+        issue.original_text, issue.replacement_text
+    ):
+        return "punctuation_rewrite"
     for entity in entities:
         if entity.category.upper() not in PROTECTED_ENTITY_CATEGORIES:
             continue

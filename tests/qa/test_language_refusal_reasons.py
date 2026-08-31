@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 
+import pytest
+
 from gemini_translator.qa.language_validation import (
     REFUSAL_DESCRIPTIONS,
     LanguageQaRequest,
     LanguageQaResult,
     LanguageQualityPipeline,
+    auto_fix_refusal,
     describe_refusal,
 )
 from gemini_translator.qa.llm import CancellationToken, QaModelSelection
@@ -224,3 +227,121 @@ def test_details_stay_intact_for_results_without_the_new_field():
 
     assert "Предложения без применения: 1" in text
     assert "причина:" not in text
+
+
+# --- punctuation the author chose -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        # Measured on a real book: every one of these was applied automatically.
+        ("Тан Юаню; слёзы", "Тан Юаню, слёзы"),
+        ("глаз; в сердце", "глаз, в сердце"),
+        ("бумаги: одна", "бумаги. Одна"),
+        ("здание, они", "здание. Они"),
+        # Not observed, but the same shape: straight quotes are left to the
+        # person, because getting the direction of a guillemet wrong is worse
+        # than leaving the quote alone.
+        ('"реплика"', "«реплика»"),
+    ],
+)
+def test_swapping_one_valid_mark_for_another_is_never_applied(original, replacement):
+    """Точка с запятой вместо запятой — выбор того, кто писал фразу."""
+    issue = LanguageIssue(
+        issue_id="issue-1",
+        category="punctuation",
+        block_id="b-1",
+        original_text=original,
+        replacement_text=replacement,
+        objective=True,
+        confidence=1.0,
+        explanation="Пунктуация.",
+    )
+
+    assert auto_fix_refusal(issue, f"Текст {original} дальше.") == "punctuation_rewrite"
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        # A mark that was missing, one that was extra, a case fix after a dash,
+        # and a dash spelled the wrong way: all defects, all still applied.
+        ("Благодаря тому что", "Благодаря тому, что"),
+        ("слово ,и", "слово и"),
+        ("— Спросил", "— спросил"),
+        ("жизнь – будет", "жизнь — будет"),
+        ("«Мама… – позвал", "«Мама… — позвал"),
+    ],
+)
+def test_a_missing_extra_or_misspelled_mark_is_still_a_defect(original, replacement):
+    """Забытая запятая и не то тире — это ошибки, а не стиль."""
+    issue = LanguageIssue(
+        issue_id="issue-1",
+        category="punctuation",
+        block_id="b-1",
+        original_text=original,
+        replacement_text=replacement,
+        objective=True,
+        confidence=1.0,
+        explanation="Пунктуация.",
+    )
+
+    assert auto_fix_refusal(issue, f"Текст {original} дальше.") == ""
+
+
+def test_the_rule_applies_only_to_punctuation():
+    """Опечатка вправе поменять что угодно внутри слова."""
+    issue = LanguageIssue(
+        issue_id="issue-1",
+        category="typo",
+        block_id="b-1",
+        original_text="скзал: он",
+        replacement_text="сказал. Он",
+        objective=True,
+        confidence=1.0,
+        explanation="Опечатка.",
+    )
+
+    assert auto_fix_refusal(issue, "Он скзал: он ушёл.") == ""
+
+
+def test_the_refusal_explains_itself_in_the_log():
+    assert describe_refusal("punctuation_rewrite") == (
+        "замена одного знака препинания другим — это выбор автора"
+    )
+
+
+# --- a break the paragraph cannot hold ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        # Measured on a real book: both were applied, both inside one <p>, where
+        # the break is only whitespace.  The first put an attribution dash in the
+        # middle of one character's speech; the second changed nothing.
+        ("возвращаться? Цянь Даолю", "возвращаться?\n— Цянь Даолю"),
+        (
+            "Прекрасная женщина сказала: — Этого я не знаю.",
+            "Прекрасная женщина сказала:\n— Этого я не знаю.",
+        ),
+    ],
+)
+def test_a_replacement_may_not_ask_for_a_new_paragraph(original, replacement):
+    """Разбить абзац замена внутри абзаца не может — только сделать вид."""
+    issue = LanguageIssue(
+        issue_id="issue-1",
+        category="punctuation",
+        block_id="b-1",
+        original_text=original,
+        replacement_text=replacement,
+        objective=True,
+        confidence=1.0,
+        explanation="Пунктуация.",
+    )
+
+    assert auto_fix_refusal(issue, f"Текст {original} дальше.") == "paragraph_break"
+    assert describe_refusal("paragraph_break") == (
+        "правка просит разбить абзац — это делает человек"
+    )
