@@ -365,6 +365,21 @@ def test_the_progress_bar_names_the_chapter_and_estimates_the_rest(qt_app):
     assert "осталось" in updates[2][2]
 
 
+def test_the_estimate_survives_a_coarse_monotonic_clock(qt_app, monkeypatch):
+    """Та же грубость часов молча отменяла оценку остатка на Windows."""
+    import time
+
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
+    coordinator = _Coordinator()
+    controller = _controller(coordinator, events=("chapter-1", "chapter-2", "chapter-3"))
+    updates = []
+    controller.progress_changed.connect(lambda *args: updates.append(args))
+
+    controller.check_all()
+
+    assert "осталось" in updates[2][2]
+
+
 def test_a_duration_is_spelled_the_way_a_waiting_person_reads_it():
     from gemini_translator.ui.dialogs.validation_dialogs.translation_quality_controller import (
         _humanize_seconds,

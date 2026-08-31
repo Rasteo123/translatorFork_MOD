@@ -108,7 +108,7 @@ class TranslationQualityController(QObject):
         coordinator.reset_cancellation()
         self._set_busy(True)
         self.progress_changed.emit(0, len(events), "")
-        self._pass_started = time.monotonic()
+        self._pass_started = time.perf_counter()
         coordinator.run_background(
             lambda: coordinator.check_all_now(events, on_progress=self._on_chapter_done),
             lambda result, error: self._finish_book_pass(result, error, len(events)),
@@ -211,7 +211,7 @@ class TranslationQualityController(QObject):
         have finished.
         """
         label = str(chapter_id or "")
-        elapsed = time.monotonic() - getattr(self, "_pass_started", time.monotonic())
+        elapsed = time.perf_counter() - getattr(self, "_pass_started", time.perf_counter())
         remaining = total - done
         if done >= 2 and remaining > 0 and elapsed > 0:
             seconds = int(remaining * elapsed / done)
