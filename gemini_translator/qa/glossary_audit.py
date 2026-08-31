@@ -625,6 +625,13 @@ def _words(value: str) -> tuple[str, ...]:
     return tuple(re.findall(r"[^\W_]+", normalized, flags=re.UNICODE))
 
 
+# A single character is a stroke of some other word, not a term: in a Chinese
+# glossary 9% of the entries are one character long, and each of them matches
+# inside unrelated compounds.  Demanding their canonical translation in a
+# fragment rejects perfectly good repairs — measured live on a real chapter.
+MIN_CANONICAL_TERM_CHARS = 2
+
+
 def glossary_violation_reason(
     fragment: str, source_text: str, glossary: Iterable[RelevantGlossaryTerm]
 ) -> str:
@@ -656,7 +663,25 @@ def glossary_violation_reason(
             continue
         if present:
             return "original_term_kept"
+        if not _carries_its_own_canon(term, in_source):
+            continue
         canonical = term.canonical_translation.strip()
         if canonical and not contains_term_forms(fragment, canonical):
             return "canonical_term_missing"
     return ""
+
+
+def _carries_its_own_canon(term: RelevantGlossaryTerm, matched: set[str]) -> bool:
+    """Report whether this term's presence in the source is a term, not an artefact.
+
+    Two ways it is not.  A one-character entry matches inside any compound that
+    happens to use that character.  And a term wholly contained in another
+    matched term is that longer term's substring — «Тан» inside «Тан Юань» is
+    not a second concept the fragment must name separately.
+    """
+    original = term.original_term
+    if len(original) < MIN_CANONICAL_TERM_CHARS:
+        return False
+    return not any(
+        other != original and original in other for other in matched
+    )

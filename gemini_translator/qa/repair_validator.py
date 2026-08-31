@@ -295,18 +295,28 @@ def _anchors_surround_fragment(
     whether the fragment landed where the alignment put it.
     """
     context = candidate.context
-    text = "\n".join(
-        flatten_visible_text(block["inlines"])[0] for block in payload["blocks"]
+    # Anchor text is a reconstruction — the alignment joins its units with a
+    # single space, while the chapter has whatever spacing the book had, and a
+    # newline wherever an anchor crosses a paragraph.  Comparing the two
+    # literally fails on anchors that span two blocks, which is precisely the
+    # shape of a restored paragraph's anchors.  Order is the question, so both
+    # sides are read with their whitespace collapsed.
+    text = _normalize(
+        " ".join(
+            flatten_visible_text(block["inlines"])[0] for block in payload["blocks"]
+        )
     )
-    position = text.find(fragment)
+    position = text.find(_normalize(fragment))
     if position < 0:
         return False
-    if context.target_before:
-        left = text.find(context.target_before)
+    before = _normalize(context.target_before)
+    after = _normalize(context.target_after)
+    if before:
+        left = text.find(before)
         if left < 0 or left >= position:
             return False
-    if context.target_after:
-        if text.find(context.target_after, position + len(fragment)) < 0:
+    if after:
+        if text.find(after, position + len(_normalize(fragment))) < 0:
             return False
     return True
 

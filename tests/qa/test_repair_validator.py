@@ -387,3 +387,36 @@ def test_two_new_paragraphs_are_rejected_even_if_one_is_the_fragment():
 
     assert result.accepted is False
     assert "block_identity_changed" in result.reasons
+
+
+def test_an_anchor_spanning_two_paragraphs_still_surrounds_the_fragment():
+    """Текст якоря — склейка единиц через пробел, а в главе там перевод строки."""
+    client = RecordingClient(_post_check(_candidate()))
+    before_html = (
+        f"<p>{_LEFT_ANCHOR}</p><p>{_RIGHT_ANCHOR}</p><p>Башня стояла у самой реки.</p>"
+    )
+    after_html = (
+        f"<p>{_LEFT_ANCHOR}</p>"
+        f"<p data-qa-repair=\"patch-1\">{_FRAGMENT}</p>"
+        f"<p>{_RIGHT_ANCHOR}</p><p>Башня стояла у самой реки.</p>"
+    )
+
+    result = _validate(client, before_html=before_html, after_html=after_html)
+
+    assert result.reasons == ()
+    assert result.accepted is True
+
+
+def test_a_fragment_placed_before_its_left_anchor_is_still_refused():
+    """Нормализация пробелов не должна ослабить сам порядок."""
+    client = RecordingClient(_post_check(_candidate()))
+    before_html = f"<p>{_LEFT_ANCHOR}</p><p>{_RIGHT_ANCHOR}</p>"
+    misplaced = (
+        f"<p data-qa-repair=\"patch-1\">{_FRAGMENT}</p>"
+        f"<p>{_LEFT_ANCHOR}</p><p>{_RIGHT_ANCHOR}</p>"
+    )
+
+    result = _validate(client, before_html=before_html, after_html=misplaced)
+
+    assert result.accepted is False
+    assert "anchor_missing" in result.reasons

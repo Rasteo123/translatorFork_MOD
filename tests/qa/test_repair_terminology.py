@@ -242,3 +242,44 @@ def test_copying_a_window_sentence_is_rejected_as_an_echo():
 
     assert _rejection_detail(echoed, item, (), request) == "window_echo"
     assert _rejection_detail(fresh, item, (), request) == ""
+
+
+def test_a_one_character_entry_never_demands_its_canon():
+    """9 % глоссария книги — одиночные иероглифы, попадающие внутрь чужих слов."""
+    glossary = (_term("修", "совершенствоваться"),)
+
+    # 修 стоит внутри 修煉, и перевод абзаца не обязан содержать это слово.
+    reason = glossary_violation_reason(
+        "Одни считают, что мастер должен довести атрибут до предела.",
+        "有的人提倡魂師應該選擇一個屬性修煉到極致",
+        glossary,
+    )
+
+    assert reason == ""
+
+
+def test_a_term_inside_a_longer_matched_term_is_that_term():
+    """«Тан» внутри «Тан Юань» — не второе понятие, которое нужно назвать отдельно."""
+    glossary = (_term("唐", "Тан"), _term("唐元", "Тан Юань"))
+
+    satisfied = glossary_violation_reason("Тан Юань открыл книгу.", "唐元看到過這本書", glossary)
+    missing = glossary_violation_reason("Он открыл книгу.", "唐元看到過這本書", glossary)
+
+    assert satisfied == ""
+    assert missing == "canonical_term_missing"
+
+
+def test_a_real_multi_character_term_still_has_to_appear():
+    """Ради этого проверка и существует: канон книги важнее выдумки модели."""
+    glossary = (_term("魂師", "духовный мастер"),)
+
+    assert glossary_violation_reason(
+        "Одни считают, что мастер души должен выбрать один атрибут.",
+        "有的人提倡魂師應該選擇一個屬性",
+        glossary,
+    ) == "canonical_term_missing"
+    assert glossary_violation_reason(
+        "Одни считают, что духовный мастер должен выбрать один атрибут.",
+        "有的人提倡魂師應該選擇一個屬性",
+        glossary,
+    ) == ""
