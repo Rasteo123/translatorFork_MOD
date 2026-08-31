@@ -281,6 +281,7 @@ def build_translation_quality_service(
         store=RepairStore(paths.backups, session_id=session_id),
         journal=journal,
         journal_path=paths.journal,
+        request_counter=client,
         additions=AdditionDetector(client),
         language=LanguageQualityPipeline(
             client, diagnosis_cache=QaAnswerCache(paths.answer_cache)

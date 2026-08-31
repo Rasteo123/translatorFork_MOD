@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import threading
 
-from ..qa.book_metrics import MIN_BASELINE_SAMPLE_SIZE
+from ..qa.book_metrics import MIN_BASELINE_SAMPLE_SIZE, eligible_baseline_size
 from ..qa.coverage_service import SEMANTIC_ALIGNMENT_MODE
 from ..qa.estimators.base import (
     QualityEstimateRequest,
@@ -286,7 +286,9 @@ class ChapterQaCoordinator:
             events,
             states,
             analysis_identity=self._analysis_identity(),
-            book_sample_size=len(getattr(journal, "metrics", {}) or {}),
+            book_sample_size=eligible_baseline_size(
+                (getattr(journal, "metrics", {}) or {}).values()
+            ),
             fingerprint_for=lambda item: chapter_fingerprint(item.translated_path),
         )
         if not selected:

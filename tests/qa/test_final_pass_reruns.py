@@ -349,3 +349,63 @@ def test_a_broken_progress_callback_never_fails_the_pass():
     )
 
     assert [item.chapter_id for item in outcome.results] == ["chapter-0"]
+
+
+# --- what counts as "the book has a norm now" -------------------------------
+
+
+def _metrics(chapter_id: str, **overrides):
+    from gemini_translator.qa.models import ChapterMetrics
+
+    values: dict[str, object] = {
+        "chapter_id": chapter_id,
+        "source_language": "zh",
+        "target_language": "ru",
+        "content_kind": "narrative",
+        "source_chars": 3000,
+        "translated_chars": 9000,
+    }
+    values.update(overrides)
+    return ChapterMetrics(**values)  # type: ignore[arg-type]
+
+
+def test_only_usable_chapters_count_toward_the_book_norm():
+    """Число всех глав — не то же самое, что число пригодных для нормы."""
+    from gemini_translator.qa.book_metrics import eligible_baseline_size
+
+    chapters = [
+        _metrics("narrative-1"),
+        _metrics("narrative-2"),
+        _metrics("front-matter", content_kind="heading"),
+        _metrics("interlude", source_chars=120),
+        _metrics("failed", risk_level="failed"),
+    ]
+
+    assert len(chapters) == 5
+    assert eligible_baseline_size(chapters) == 2
+
+
+def test_a_chapter_is_measured_against_its_own_language_pair():
+    """Английские главы не образуют норму для китайских."""
+    from gemini_translator.qa.book_metrics import eligible_baseline_size
+
+    chapters = [
+        *(_metrics(f"zh-{index}") for index in range(3)),
+        *(
+            _metrics(f"en-{index}", source_language="en")
+            for index in range(5)
+        ),
+    ]
+
+    assert eligible_baseline_size(chapters, "zh", "ru") == 3
+    assert eligible_baseline_size(chapters, "en", "ru") == 5
+    # Without a pair the book's largest one answers.
+    assert eligible_baseline_size(chapters) == 5
+
+
+def test_an_empty_or_unusable_book_has_no_norm():
+    from gemini_translator.qa.book_metrics import eligible_baseline_size
+
+    assert eligible_baseline_size(()) == 0
+    assert eligible_baseline_size([_metrics("only", content_kind="toc")]) == 0
+    assert eligible_baseline_size([_metrics("a"), _metrics("a")]) == 0

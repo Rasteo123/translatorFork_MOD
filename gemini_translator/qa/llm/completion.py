@@ -150,6 +150,10 @@ class ExistingHandlerCompletionClient:
             raise TypeError("event_sink must be callable")
         self._handler_factory = handler_factory
         self._event_sink = event_sink
+        # What a check cost in requests.  Tokens would be the better number and
+        # this layer cannot see them: the handler returns text, and reading
+        # usage would mean changing the call the translation path shares.
+        self.requests_made = 0
 
     @staticmethod
     async def _drain_cancelled_task(task: asyncio.Future) -> None:
@@ -305,6 +309,7 @@ class ExistingHandlerCompletionClient:
             execute_api_call = getattr(handler, "execute_api_call", None)
             if not callable(execute_api_call):
                 raise TypeError("handler must provide execute_api_call")
+            self.requests_made += 1
             raw_response = execute_api_call(
                 prompt,
                 log_prefix,

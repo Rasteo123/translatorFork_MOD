@@ -165,6 +165,41 @@ def _chapter_row(frame: pd.DataFrame, chapter_id: str) -> pd.Series:
     return matches.iloc[0]
 
 
+def eligible_baseline_size(
+    metrics: Iterable[ChapterMetrics],
+    source_language: str = "",
+    target_language: str = "",
+) -> int:
+    """Count the chapters that could actually serve as a book's norm.
+
+    A plain chapter count is not that number, and using one makes the final
+    pass re-check a chapter to consult statistics that do not exist: a baseline
+    needs narrative chapters of a workable length in the same language pair, and
+    a book of front matter and short interludes has none of them.  Without a
+    pair, the largest pair in the book is answered for — that is the one a
+    reader means by "the book".
+    """
+    try:
+        frame = BookMetricsAnalyzer().analyze(metrics)
+    except (ValueError, TypeError):
+        return 0
+    if frame.empty:
+        return 0
+    eligible = frame.loc[_eligible_baseline_mask(frame)]
+    if eligible.empty:
+        return 0
+    source = _base_language(source_language)
+    target = _base_language(target_language)
+    if source and target:
+        return int(_same_pair_mask(eligible, source, target).sum())
+    pairs = (
+        _base_language_series(eligible["source_language"])
+        + "\x1f"
+        + _base_language_series(eligible["target_language"])
+    )
+    return int(pairs.value_counts().iloc[0]) if not pairs.empty else 0
+
+
 def _eligible_baseline_mask(frame: pd.DataFrame) -> pd.Series:
     content_kind = frame["content_kind"].astype("string")
     source_chars = pd.to_numeric(frame["source_chars"], errors="coerce")

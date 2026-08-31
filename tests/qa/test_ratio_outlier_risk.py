@@ -304,3 +304,57 @@ def test_the_check_records_how_long_it_took(tmp_path):
     assert result.metrics is not None
     assert result.metrics.duration_seconds > 0.0
     assert result.metrics.duration_seconds < 60.0
+
+
+def test_the_check_records_how_many_requests_it_spent(tmp_path):
+    """«Сколько стоила проверка» — вопрос про запросы, и он был без ответа."""
+
+    class _Counter:
+        requests_made = 0
+
+    counter = _Counter()
+    journal = QaJournal.empty(book_id="book-1")
+    service = _service(tmp_path, journal)
+    service._request_counter = counter
+
+    chapter = tmp_path / "chapter-1.html"
+    sentences = [_FULL] * _SENTENCES
+    chapter.write_text(
+        "".join(f"<p>{text}</p>" for text in sentences), encoding="utf-8"
+    )
+    request = _request(chapter, sentences, sentences)
+
+    async def spend_then_check():
+        counter.requests_made = 5
+        return await service.check_chapter(
+            request, QaOptions(), CancellationToken()
+        )
+
+    result = asyncio.run(spend_then_check())
+
+    assert result.metrics is not None
+    # The clean aligner asks nobody, so this chapter cost nothing new.
+    assert result.metrics.llm_requests == 0
+
+    counter.requests_made = 5
+    original = service._coverage.analyze
+
+    async def analyze(coverage_request):
+        counter.requests_made += 3
+        return await original(coverage_request)
+
+    service._coverage.analyze = analyze
+    spent = asyncio.run(
+        service.check_chapter(request, QaOptions(), CancellationToken())
+    )
+
+    assert spent.metrics is not None
+    assert spent.metrics.llm_requests == 3
+
+
+def test_nobody_counting_is_not_an_error(tmp_path):
+    """Сервис без счётчика обязан работать ровно как раньше."""
+    result = _run(tmp_path, _FULL, _FULL)
+
+    assert result.metrics is not None
+    assert result.metrics.llm_requests == 0

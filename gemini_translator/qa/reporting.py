@@ -46,6 +46,7 @@ CHAPTER_COLUMNS = (
     "quality_score_status",
     *DURATION_COLUMNS.values(),
     "retries",
+    "llm_requests",
     "input_tokens",
     "output_tokens",
     "duration",
@@ -84,6 +85,7 @@ class QaReportBuilder:
             "protected_entities",
             "syntax_candidates",
             "retries",
+            "llm_requests",
             "input_tokens",
             "output_tokens",
         ):
@@ -192,6 +194,7 @@ def _chapter_record(metrics: ChapterMetrics) -> dict[str, object]:
         "quality_score": metrics.quality_score,
         "quality_score_status": metrics.quality_score_status,
         "retries": metrics.retries,
+        "llm_requests": metrics.llm_requests,
         "input_tokens": metrics.input_tokens,
         "output_tokens": metrics.output_tokens,
         "duration": metrics.duration_seconds,

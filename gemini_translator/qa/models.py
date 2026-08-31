@@ -285,6 +285,7 @@ class ChapterMetrics:
     quality_score_status: str = "not_run"
     capability_durations: Mapping[QaCapabilityKey, float] | None = None
     retries: int = 0
+    llm_requests: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     duration_seconds: float = 0.0
@@ -315,6 +316,7 @@ class ChapterMetrics:
         "quality_score_status",
         "capability_durations",
         "retries",
+        "llm_requests",
         "input_tokens",
         "output_tokens",
         "duration_seconds",
@@ -336,6 +338,7 @@ class ChapterMetrics:
         "protected_entities",
         "syntax_candidates",
         "retries",
+        "llm_requests",
         "input_tokens",
         "output_tokens",
     )
@@ -433,6 +436,7 @@ class ChapterMetrics:
                 key.value: value for key, value in self.capability_durations.items()
             },
             "retries": self.retries,
+            "llm_requests": self.llm_requests,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "duration_seconds": self.duration_seconds,

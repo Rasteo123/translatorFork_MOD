@@ -26,7 +26,11 @@ from .language_validation import (
 )
 from .llm.completion import CancellationToken, QaModelSelection
 from .llm.omission_repairer import OmissionRepairError, RepairContext
-from .book_metrics import MIN_BASELINE_SOURCE_CHARS, BookMetricsAnalyzer
+from .book_metrics import (
+    MIN_BASELINE_SOURCE_CHARS,
+    BookMetricsAnalyzer,
+    eligible_baseline_size,
+)
 from .models import (
     ChapterMetrics,
     Decision,
@@ -435,6 +439,7 @@ class TranslationQualityService:
         store: RepairStore,
         journal: QaJournal,
         journal_path: Path | str,
+        request_counter=None,
         additions=None,
         language=None,
         language_rules=None,
@@ -459,6 +464,9 @@ class TranslationQualityService:
         self._store = store
         self._journal = journal
         self._journal_path = Path(journal_path)
+        # Whoever owns the completion client can say how many requests it has
+        # made; the difference across one chapter is what that chapter cost.
+        self._request_counter = request_counter
         self._additions = additions
         self._language = language
         self._language_rules = language_rules
@@ -480,6 +488,7 @@ class TranslationQualityService:
         cancellation.raise_if_cancelled()
 
         started = time.monotonic()
+        requests_before = self._requests_made()
         warnings: list[str] = []
         coverage: CoverageAnalysis | None = None
         if options.check_completeness:
@@ -519,7 +528,9 @@ class TranslationQualityService:
             # The report has always had a column for this and always shown a
             # zero: nobody measured what a check actually costs in time.
             metrics = replace(
-                metrics, duration_seconds=round(time.monotonic() - started, 3)
+                metrics,
+                duration_seconds=round(time.monotonic() - started, 3),
+                llm_requests=max(0, self._requests_made() - requests_before),
             )
         if metrics is not None and self._ratio_outlier(metrics):
             warnings.append(RATIO_OUTLIER_WARNING)
@@ -538,6 +549,17 @@ class TranslationQualityService:
         )
         self._record(result, chapter_fingerprint(request.translated_path))
         return result
+
+    def _requests_made(self) -> int:
+        """Read the running request count, or zero when nobody is counting."""
+        counter = self._request_counter
+        if counter is None:
+            return 0
+        try:
+            value = counter() if callable(counter) else getattr(counter, "requests_made", 0)
+            return int(value)
+        except Exception:  # noqa: BLE001 - accounting never fails a check
+            return 0
 
     def _ratio_outlier(self, metrics: ChapterMetrics) -> bool:
         """Report whether this chapter's volume is unusual enough to look closer.
@@ -1019,7 +1041,11 @@ class TranslationQualityService:
                 status=_chapter_status(result),
                 analysis_identity=self._analysis_identity,
                 risk_level=result.risk_level,
-                book_sample_size=len(self._journal.metrics),
+                book_sample_size=eligible_baseline_size(
+                    self._journal.metrics.values(),
+                    getattr(result.metrics, "source_language", ""),
+                    getattr(result.metrics, "target_language", ""),
+                ),
                 fingerprint=fingerprint,
                 updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             ),
