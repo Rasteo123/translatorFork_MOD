@@ -12,6 +12,18 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from .translation_quality_models import BookQaReportSnapshot
 
 
+# How often a running pass may reread the journal to refresh the table.  Often
+# enough that the report grows while the user watches, rarely enough that a
+# six-hundred-chapter book does not spend its time reading its own journal.
+REPORT_REFRESH_SECONDS = 4.0
+
+
+def _escape(value: str) -> str:
+    from html import escape
+
+    return escape(str(value or ""))
+
+
 class TranslationQualityController(QObject):
     """Connect one dialog to one QA coordinator, in both directions.
 
@@ -23,6 +35,10 @@ class TranslationQualityController(QObject):
     status_changed = pyqtSignal(str)
     busy_changed = pyqtSignal(bool)
     progress_changed = pyqtSignal(int, int, str)
+    # One finished chapter, already rendered: what was found, what was changed,
+    # and what was only suggested.  A pass over a book runs for hours, and the
+    # report used to appear only when it ended.
+    chapter_logged = pyqtSignal(str)
 
     def __init__(
         self,
@@ -43,6 +59,7 @@ class TranslationQualityController(QObject):
         self._gates_provider = gates_provider
         self._event_builder = event_builder
         self._busy = False
+        self._last_report_refresh = 0.0
 
     # -- wiring ------------------------------------------------------------
 
@@ -59,6 +76,8 @@ class TranslationQualityController(QObject):
         self.status_changed.connect(dialog.set_status)
         self.busy_changed.connect(dialog.set_busy)
         self.progress_changed.connect(dialog.set_progress)
+        if hasattr(dialog, "append_log"):
+            self.chapter_logged.connect(dialog.append_log)
         self.refresh_report()
 
     # -- actions -----------------------------------------------------------
@@ -93,7 +112,7 @@ class TranslationQualityController(QObject):
         self.progress_changed.emit(0, 1, chapter_id)
         coordinator.run_background(
             lambda: coordinator.check_chapter_now(events[0]),
-            lambda result, error: self._finish_check(error, 1, 1, chapter_id),
+            lambda result, error: self._finish_check(result, error, 1, 1, chapter_id),
         )
 
     def check_all(self) -> None:
@@ -109,8 +128,16 @@ class TranslationQualityController(QObject):
         self._set_busy(True)
         self.progress_changed.emit(0, len(events), "")
         self._pass_started = time.perf_counter()
+        self._last_report_refresh = 0.0
+        self.chapter_logged.emit(
+            f"<p><b>Проверка книги: {len(events)} глав(ы).</b></p>"
+        )
         coordinator.run_background(
-            lambda: coordinator.check_all_now(events, on_progress=self._on_chapter_done),
+            lambda: coordinator.check_all_now(
+                events,
+                on_progress=self._on_chapter_done,
+                on_chapter=self._log_chapter,
+            ),
             lambda result, error: self._finish_book_pass(result, error, len(events)),
         )
 
@@ -203,6 +230,38 @@ class TranslationQualityController(QObject):
             self.status_changed.emit(f"Не удалось собрать список глав: {error}")
             return ()
 
+    def _log_chapter(self, result) -> None:
+        """Render one finished chapter into the running log.
+
+        A chapter that changed nothing still gets a line: over six hundred
+        chapters, silence is indistinguishable from a check that died.
+        """
+        if result is None:
+            return
+        chapter_id = str(getattr(result, "chapter_id", "") or "")
+        try:
+            interesting = bool(getattr(result, "changed_anything", False))
+            language = getattr(result, "language", None)
+            unchecked = int(getattr(language, "unchecked_blocks", 0) or 0)
+            suggestions = len(getattr(language, "suggestions", ()) or ())
+            blocked = not getattr(result, "may_continue_translation", True)
+            if interesting or unchecked or blocked or suggestions:
+                self.chapter_logged.emit(result.change_details_html())
+            else:
+                self.chapter_logged.emit(
+                    f"<p><b>{_escape(chapter_id)}</b> — без изменений.</p>"
+                )
+        except Exception:  # noqa: BLE001 - the log never fails a check
+            self.chapter_logged.emit(f"<p><b>{_escape(chapter_id)}</b></p>")
+
+    def _refresh_report_throttled(self) -> None:
+        """Fill the table while the pass runs, without rereading the journal per chapter."""
+        now = time.perf_counter()
+        if now - self._last_report_refresh < REPORT_REFRESH_SECONDS:
+            return
+        self._last_report_refresh = now
+        self.refresh_report()
+
     def _on_chapter_done(self, done: int, total: int, chapter_id: str) -> None:
         """Show which chapter just finished and what the rest is likely to cost.
 
@@ -219,11 +278,15 @@ class TranslationQualityController(QObject):
                 f"осталось ~{_humanize_seconds(seconds)}"
             )
         self.progress_changed.emit(done, total, label)
+        self._refresh_report_throttled()
 
-    def _finish_check(self, error, checked: int, total: int, chapter_id: str) -> None:
+    def _finish_check(
+        self, result, error, checked: int, total: int, chapter_id: str
+    ) -> None:
         if error is not None:
             self.status_changed.emit(f"Проверка не удалась: {error}")
         else:
+            self._log_chapter(result)
             self.progress_changed.emit(checked, total, chapter_id)
             self.status_changed.emit(f"Глава «{chapter_id}» проверена.")
         self._set_busy(False)

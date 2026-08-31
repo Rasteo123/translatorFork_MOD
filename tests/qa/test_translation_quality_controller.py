@@ -65,7 +65,7 @@ class _Coordinator:
             coverage_mode="semantic_alignment",
         )
 
-    async def check_all_now(self, events, options=None, on_progress=None):
+    async def check_all_now(self, events, options=None, on_progress=None, on_chapter=None):
         if self.error is not None:
             raise self.error
         self.checked.extend(event.chapter_id for event in events)
