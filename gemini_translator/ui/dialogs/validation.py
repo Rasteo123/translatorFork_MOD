@@ -3016,7 +3016,15 @@ class TranslationValidatorPage(ShellPage):
             parent=dialog,
         )
         controller.attach(dialog)
-        dialog.exec()
+        # Build the runtime now, so the window can say at once whether a pass
+        # is possible instead of letting a button do nothing.
+        self._quality_setup_problem = ""
+        if self._quality_coordinator() is None:
+            dialog.set_status(
+                self._quality_setup_problem
+                or "Проверка сейчас недоступна."
+            )
+        exec_dialog(self, dialog)
 
     def _quality_settings_manager(self):
         app = QApplication.instance()
@@ -3032,9 +3040,80 @@ class TranslationValidatorPage(ShellPage):
         except Exception:
             return ()
 
-    @staticmethod
-    def _quality_coordinator():
-        return getattr(QApplication.instance(), "qa_coordinator", None)
+    def _quality_coordinator(self):
+        """Return the session's QA runtime, or build one for this project.
+
+        Checking a book translated yesterday is the ordinary case for a quality
+        report, and there is no session to borrow a runtime from.  A session's
+        own coordinator is never replaced: it knows the model and keys that
+        session is running on.
+        """
+        app = QApplication.instance()
+        existing = getattr(app, "qa_coordinator", None)
+        if existing is not None:
+            return existing
+        return self._build_manual_quality_coordinator(app)
+
+    def _build_manual_quality_coordinator(self, app):
+        from ...qa.assembly import (
+            aiohttp_session_factory,
+            attach_chapter_qa_coordinator,
+            detect_source_language,
+            embedding_keys_for_session,
+            first_green_key,
+            resolve_manual_qa_model,
+        )
+        from ...qa.handler_factory import build_qa_handler_factory
+
+        settings_manager = self._quality_settings_manager()
+        project_manager = getattr(self, "project_manager", None)
+        if app is None or settings_manager is None or project_manager is None:
+            self._quality_setup_problem = (
+                "Проект не открыт, проверять нечего."
+            )
+            return None
+        qa_settings = settings_manager.get_qa_settings()
+        provider, model_name = resolve_manual_qa_model(settings_manager, qa_settings)
+        if not provider or not model_name:
+            self._quality_setup_problem = (
+                "Не удалось определить модель проверки. Выберите её во вкладке "
+                "«Настройки проверки» → «Модель для исправлений»."
+            )
+            return None
+        api_key = first_green_key(settings_manager, provider, model_name)
+        if not api_key:
+            self._quality_setup_problem = (
+                f"У провайдера «{provider}» нет свободных ключей для модели "
+                f"«{model_name}»."
+            )
+            return None
+        proxy_settings = settings_manager.load_proxy_settings()
+        try:
+            coordinator = attach_chapter_qa_coordinator(
+                app,
+                project_manager=project_manager,
+                settings_manager=settings_manager,
+                handler_factory=build_qa_handler_factory(
+                    settings_manager=settings_manager,
+                    api_key_for=lambda _provider: api_key,
+                    session_settings={"proxy_settings": proxy_settings},
+                ),
+                session_id="manual",
+                api_keys_by_provider=embedding_keys_for_session(provider, api_key),
+                session_factory=aiohttp_session_factory(proxy_settings),
+                translation_provider=provider,
+                translation_model=model_name,
+                epub_path=str(getattr(self, "original_epub_path", "") or ""),
+                source_language_resolver=detect_source_language,
+            )
+        except Exception as error:  # noqa: BLE001 - a report never crashes the window
+            self._quality_setup_problem = f"Проверку не удалось собрать: {error}"
+            return None
+        if coordinator is None:
+            self._quality_setup_problem = (
+                "Проверка выключена целиком в настройках проверки."
+            )
+        return coordinator
 
     def _quality_journal(self):
         from ...qa.journal import QaJournal

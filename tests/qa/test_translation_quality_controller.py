@@ -262,7 +262,8 @@ def test_missing_setup_is_explained_instead_of_failing_silently(qt_app):
 
     controller.check_all()
 
-    assert "не настроена" in statuses[-1]
+    assert "Проверка недоступна" in statuses[-1]
+    assert "модель проверки" in statuses[-1]
 
 
 def test_attaching_a_dialog_connects_both_directions(qt_app):

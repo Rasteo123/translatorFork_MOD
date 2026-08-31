@@ -187,8 +187,10 @@ class TranslationQualityController(QObject):
                 self.status_changed.emit(f"Проверка недоступна: {error}")
             return None
         if coordinator is None and not quiet:
+            # Not necessarily the embeddings: outside a translation session
+            # there is no runtime at all until one is built for the project.
             self.status_changed.emit(
-                "Проверка качества не настроена: укажите ключ и модель для эмбеддингов."
+                "Проверка недоступна: не настроена модель проверки или ключ к ней."
             )
         return coordinator
 

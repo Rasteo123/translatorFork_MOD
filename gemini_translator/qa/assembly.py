@@ -539,6 +539,93 @@ def attach_chapter_qa_coordinator(
     return coordinator
 
 
+def resolve_manual_qa_model(settings_manager, qa_settings: QaSettings) -> tuple[str, str]:
+    """Choose the provider and model a manual check should use outside a session.
+
+    A session hands QA the model it is translating with.  A book translated
+    yesterday has no session, and the check still needs somewhere to ask: the
+    explicit QA model wins, and otherwise the last model the user actually
+    translated with is the closest honest guess.  An empty answer means the
+    caller must say so rather than start a pass that cannot run.
+    """
+    provider = str(qa_settings.correction_provider or "").strip()
+    model = str(qa_settings.correction_model or "").strip()
+    if qa_settings.correction_model_mode == "custom" and provider and model:
+        return provider, model
+    try:
+        from ..api import config as api_config
+
+        providers = api_config.api_providers_view()
+        saved = str(
+            (settings_manager.get_last_settings() or {}).get("model") or ""
+        ).strip()
+        if saved:
+            for provider_id, provider_config in providers.items():
+                models = (provider_config or {}).get("models") or {}
+                entry = models.get(saved)
+                if entry is not None:
+                    return str(provider_id), str(entry.get("id") or saved)
+                for name, config in models.items():
+                    if str((config or {}).get("id") or name) == saved:
+                        return str(provider_id), saved
+        # The saved model can simply have been retired — providers rename and
+        # drop models, and a book translated a year ago names one that no longer
+        # exists.  A provider the user has a working key for is a better answer
+        # than refusing to check the book at all.
+        return _provider_with_a_key(settings_manager, providers)
+    except Exception:  # noqa: BLE001 - an unreadable registry is simply no answer
+        return "", ""
+
+
+def _provider_with_a_key(settings_manager, providers) -> tuple[str, str]:
+    """The provider the user most evidently works with, and its first model.
+
+    Most keys is a better guess than first key: a list that opens with one
+    leftover key for a service tried once should not decide what checks the
+    book.  Ties keep the registry's own order, so the answer is stable.
+    """
+    try:
+        statuses = settings_manager.load_key_statuses() or ()
+    except Exception:  # noqa: BLE001 - unreadable statuses mean no answer
+        return "", ""
+    counts: dict[str, int] = {}
+    for key_info in statuses:
+        provider_id = str(key_info.get("provider") or "").strip()
+        if provider_id and (providers.get(provider_id) or {}).get("models"):
+            counts[provider_id] = counts.get(provider_id, 0) + 1
+    if not counts:
+        return "", ""
+    order = list(providers)
+    best = max(counts, key=lambda item: (counts[item], -order.index(item)))
+    models = (providers.get(best) or {}).get("models") or {}
+    for name, config in models.items():
+        return best, str((config or {}).get("id") or name)
+    return "", ""
+
+
+def first_green_key(settings_manager, provider_id: str, model_id: str) -> str:
+    """One healthy key of a provider, or an empty string when it has none."""
+    if settings_manager is None or not provider_id:
+        return ""
+    try:
+        statuses = settings_manager.load_key_statuses() or ()
+    except Exception:  # noqa: BLE001 - unreadable statuses mean no key
+        return ""
+    for key_info in statuses:
+        if str(key_info.get("provider") or "") != str(provider_id):
+            continue
+        key = str(key_info.get("key") or "").strip()
+        if not key:
+            continue
+        try:
+            if settings_manager.is_key_limit_active(key_info, model_id):
+                continue
+        except Exception:  # noqa: BLE001 - an unreadable status is not a red key
+            pass
+        return key
+    return ""
+
+
 def build_quality_estimator(qa_settings: QaSettings, paths: "ProjectQaPaths"):
     """Build the optional quality estimator, or return None when it is off.
 
