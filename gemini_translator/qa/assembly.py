@@ -77,6 +77,7 @@ class ProjectQaPaths:
     backups: Path
     embedding_cache: Path
     rule_cache: Path
+    cometkiwi_models: Path
 
     @classmethod
     def for_project(cls, project_manager) -> "ProjectQaPaths":
@@ -88,6 +89,9 @@ class ProjectQaPaths:
             # The rule cache lives beside the embedding cache: both are
             # disposable and neither holds anything the user would miss.
             rule_cache=cache_dir.with_name(cache_dir.name + "_rules"),
+            # Estimator weights are large and shared between projects only by
+            # accident, so they live under the project like everything else.
+            cometkiwi_models=cache_dir.with_name("translation_qa_cometkiwi"),
         )
 
 
@@ -498,10 +502,43 @@ def attach_chapter_qa_coordinator(
         analysis_identity=_extractor(
             qa_settings.effective_capabilities()
         ).preprocessing_identity,
+        quality_estimator=build_quality_estimator(qa_settings, paths),
         log=log,
     )
     app.qa_coordinator = coordinator
     return coordinator
+
+
+def build_quality_estimator(qa_settings: QaSettings, paths: "ProjectQaPaths"):
+    """Build the optional quality estimator, or return None when it is off.
+
+    ``None`` is the normal case: the estimator is an opt-in extra that needs a
+    runner, weights, and an accepted licence before it may run at all.
+    """
+    capabilities = qa_settings.effective_capabilities()
+    if not capabilities.cometkiwi_enabled:
+        return None
+    try:
+        from .estimators.cometkiwi_client import (
+            CometKiwiEstimator,
+            CometKiwiRunnerConfig,
+        )
+
+        config = CometKiwiRunnerConfig(
+            runner_path=qa_settings.cometkiwi_runner_path,
+            model_dir=str(paths.cometkiwi_models / qa_settings.cometkiwi_model)
+            if qa_settings.cometkiwi_model
+            else "",
+            model=qa_settings.cometkiwi_model,
+            device=qa_settings.cometkiwi_device,
+        )
+        return CometKiwiEstimator(
+            config,
+            enabled=True,
+            license_accepted=qa_settings.cometkiwi_license_accepted,
+        )
+    except Exception:  # noqa: BLE001 - an optional extra never stops a session
+        return None
 
 
 def detach_chapter_qa_coordinator(app) -> None:

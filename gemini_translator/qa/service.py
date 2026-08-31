@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 import hashlib
@@ -484,6 +484,36 @@ class TranslationQualityService:
         )
         self._record(result)
         return result
+
+    def attach_quality_estimate(self, result: ChapterQaResult, estimate):
+        """Record a quality estimate as evidence, without letting it change risk.
+
+        The estimator is advisory by design: the returned result carries the
+        score in its metrics and the journal keeps it, but ``risk_level`` and
+        ``may_continue_translation`` are whatever the alignment and the model
+        already decided.
+        """
+        metrics = result.metrics
+        if metrics is None or getattr(estimate, "status", "") != "completed":
+            status = getattr(estimate, "status", "unavailable")
+            if metrics is None:
+                return result
+            updated = replace(
+                metrics,
+                quality_estimator=getattr(estimate, "estimator", None),
+                quality_score=None,
+                quality_score_status=status,
+            )
+        else:
+            updated = replace(
+                metrics,
+                quality_estimator=estimate.estimator,
+                quality_score=estimate.chapter_score,
+                quality_score_status="completed",
+            )
+        self._journal.upsert_metrics(updated)
+        self._save_journal()
+        return replace(result, metrics=updated)
 
     @property
     def session_id(self) -> str:

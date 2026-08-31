@@ -8,8 +8,12 @@ from dataclasses import dataclass, field
 import threading
 
 from ..qa.book_metrics import MIN_BASELINE_SAMPLE_SIZE
+from ..qa.estimators.base import (
+    QualityEstimateRequest,
+    SourceTranslationWindow,
+)
 from ..qa.llm.completion import CancellationToken
-from ..qa.models import QaChapterState, RiskLevel
+from ..qa.models import Decision, QaChapterState, RiskLevel
 from ..qa.service import (
     DEFERRED_WARNINGS,
     ChapterQaResult,
@@ -114,6 +118,7 @@ class ChapterQaCoordinator:
         analysis_identity="",
         log=None,
         max_concurrency: int = 1,
+        quality_estimator=None,
     ) -> None:
         if not callable(getattr(service, "check_chapter", None)):
             raise TypeError("service must provide check_chapter")
@@ -129,6 +134,7 @@ class ChapterQaCoordinator:
         self._journal_provider = journal_provider
         self._pending_tasks_provider = pending_tasks_provider
         self._analysis_identity_value = analysis_identity
+        self._quality_estimator = quality_estimator
         self._log = log
         self._max_concurrency = max(1, max_concurrency)
         self._cancellation = CancellationToken()
@@ -373,8 +379,49 @@ class ChapterQaCoordinator:
         except Exception as error:  # noqa: BLE001 - QA never breaks translation
             self._report(f"[QA] Проверка главы '{event.chapter_id}' не удалась: {error}")
             return None
+        result = await self._estimate_quality(event, result)
         self._report_chapter(event, result)
         return result
+
+    async def _estimate_quality(
+        self, event: TranslationReadyEvent, result: ChapterQaResult
+    ) -> ChapterQaResult:
+        """Score the windows still in dispute, and only those.
+
+        A chapter the checks agreed on is never worth a heavy model: the
+        estimator process is not started at all unless something is unresolved,
+        and whatever it answers is evidence only — risk and repairs are already
+        decided by the alignment and the model that read the text.
+        """
+        estimator = self._quality_estimator
+        if estimator is None:
+            return result
+        windows = _disputed_windows(result)
+        if not windows:
+            return result
+        attach = getattr(self._service, "attach_quality_estimate", None)
+        if not callable(attach):
+            return result
+        request = QualityEstimateRequest(
+            chapter_id=result.chapter_id,
+            windows=windows,
+            source_language=event.source_language or "auto",
+            target_language=event.target_language or "ru",
+        )
+        try:
+            estimate = await estimator.estimate(request, self._cancellation)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - an estimate never breaks QA
+            self._report(
+                f"[QA] Оценка качества главы '{event.chapter_id}' недоступна: {error}"
+            )
+            return result
+        try:
+            return attach(result, estimate)
+        except Exception as error:  # noqa: BLE001 - nor does recording one
+            self._report(f"[QA] Оценку качества не удалось записать: {error}")
+            return result
 
     def _report_chapter(self, event: TranslationReadyEvent, result) -> None:
         """Log what the check changed, with the text before and after each edit."""
@@ -506,6 +553,51 @@ class ChapterQaCoordinator:
     def _discard_future(self, future: asyncio.Future) -> None:
         with self._pending_lock:
             self._pending.discard(future)
+
+
+def _disputed_windows(
+    result: ChapterQaResult,
+) -> tuple[SourceTranslationWindow, ...]:
+    """Build one window per candidate the checks could not settle.
+
+    A settled candidate — covered by the model, or fixed and confirmed by the
+    post-check — is not in dispute and costs nothing to skip.
+    """
+    fixed = {
+        repair.candidate_id
+        for repair in result.repairs
+        if repair.decision is Decision.FIXED
+    }
+    windows: list[SourceTranslationWindow] = []
+    for item in result.verified:
+        verdict = item.verdict
+        if verdict is None or verdict.decision == "covered":
+            continue
+        if item.candidate.candidate_id in fixed:
+            continue
+        context = item.context
+        source = " ".join(
+            part.strip()
+            for part in (context.source_before, context.source_text, context.source_after)
+            if part.strip()
+        )
+        translation = " ".join(
+            part.strip()
+            for part in (context.target_before, context.target_text, context.target_after)
+            if part.strip()
+        )
+        visible = sum(1 for character in translation if not character.isspace())
+        if not source or not translation or visible <= 0:
+            continue
+        windows.append(
+            SourceTranslationWindow(
+                window_id=item.candidate.candidate_id,
+                source=source,
+                translation=translation,
+                visible_chars=visible,
+            )
+        )
+    return tuple(windows)
 
 
 def _outcome_for(

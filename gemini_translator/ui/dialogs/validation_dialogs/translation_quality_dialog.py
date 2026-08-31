@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ....qa.capabilities import CAPABILITY_DESCRIPTIONS, QaCapabilityKey, QaCapabilitySettings
+from ....qa.estimators.cometkiwi_model_manager import describe_cometkiwi_setup
 from ....qa.settings import QaSettings
 from .translation_quality_models import (
     BookQaReportSnapshot,
@@ -88,6 +89,8 @@ class TranslationQualityDialog(QDialog):
         self.setMinimumSize(1040, 640)
         self._settings = settings or QaSettings()
         self._api_keys = tuple(api_keys or ())
+        self._cometkiwi_model_status = None
+        self._cometkiwi_last_seconds: float | None = None
         self._loading = True
 
         self.table_model = ChapterQaTableModel(self)
@@ -303,6 +306,10 @@ class TranslationQualityDialog(QDialog):
         self.language_tool_endpoint_edit.setEnabled(
             self.capability_checks[QaCapabilityKey.LANGUAGE_TOOL].isChecked()
         )
+
+        self.cometkiwi_status_label = QLabel("", group)
+        self.cometkiwi_status_label.setWordWrap(True)
+        layout.addWidget(self.cometkiwi_status_label)
 
         self.capability_status_label = QLabel("", group)
         self.capability_status_label.setWordWrap(True)
@@ -533,6 +540,24 @@ class TranslationQualityDialog(QDialog):
             if missing
             else ""
         )
+        self.cometkiwi_status_label.setText(
+            describe_cometkiwi_setup(
+                self._settings,
+                self._cometkiwi_model_status,
+                self._cometkiwi_last_seconds,
+            )
+        )
+
+    def set_cometkiwi_status(self, model_status=None, last_duration_seconds=None) -> None:
+        """Show what is installed and how long the last run actually took.
+
+        The card never installs anything by itself: a checkbox with no runner,
+        no weights, or an unread licence says so and leaves the setting alone.
+        """
+        self._cometkiwi_model_status = model_status
+        if last_duration_seconds is not None:
+            self._cometkiwi_last_seconds = last_duration_seconds
+        self._refresh_setup_warnings()
 
     def _on_selection_changed(self, *_args) -> None:
         chapter_id = self.selected_chapter_id()
