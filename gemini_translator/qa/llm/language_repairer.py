@@ -119,7 +119,7 @@ class LanguageRepairValidator:
             raise TypeError("client must implement complete_json")
         self._client = client
         self._config = config or OmissionRepairerConfig(
-            max_output_tokens=1024, prompt_version="language_batch_validation_v2"
+            max_output_tokens=1024, prompt_version="language_batch_validation_v3"
         )
 
     async def validate_batch(
