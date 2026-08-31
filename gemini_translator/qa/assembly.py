@@ -539,6 +539,38 @@ def attach_chapter_qa_coordinator(
     return coordinator
 
 
+# What a check must be told about the model besides which one it is.  Only
+# these: a manual check keeps its own low temperature on purpose.
+_SESSION_FIELDS = ("thinking_enabled", "thinking_level", "thinking_budget")
+
+
+def manual_session_settings(settings_manager, proxy_settings=None) -> dict:
+    """Ask the model the same way a session would, from outside a session.
+
+    Inside a session QA is handed the session's own settings; started from the
+    quality window it used to be handed the proxy and nothing else, so the
+    handler fell back to the minimum thinking level named in the model config.
+    Reported from a live book: the service answered «Thinking level MINIMAL is
+    not supported for this model» and all 634 chapters went unchecked, while the
+    same model checked chapters happily during translation.  The same check must
+    not depend on where it was started from.
+    """
+    settings: dict[str, object] = {"proxy_settings": proxy_settings}
+    try:
+        saved = settings_manager.load_settings() or {}
+    except Exception:  # noqa: BLE001 - a check without them still runs
+        return settings
+    if not isinstance(saved, Mapping):
+        return settings
+    for field in _SESSION_FIELDS:
+        value = saved.get(field)
+        # A missing budget is not a budget of None: the handler would try to
+        # compare it with the model's minimum and raise.
+        if value is not None:
+            settings[field] = value
+    return settings
+
+
 def resolve_manual_qa_model(settings_manager, qa_settings: QaSettings) -> tuple[str, str]:
     """Choose the provider and model a manual check should use outside a session.
 

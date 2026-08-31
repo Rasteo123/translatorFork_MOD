@@ -3061,6 +3061,7 @@ class TranslationValidatorPage(ShellPage):
             detect_source_language,
             embedding_keys_for_session,
             first_green_key,
+            manual_session_settings,
             resolve_manual_qa_model,
         )
         from ...qa.handler_factory import build_qa_handler_factory
@@ -3096,7 +3097,9 @@ class TranslationValidatorPage(ShellPage):
                 handler_factory=build_qa_handler_factory(
                     settings_manager=settings_manager,
                     api_key_for=lambda _provider: api_key,
-                    session_settings={"proxy_settings": proxy_settings},
+                    session_settings=manual_session_settings(
+                        settings_manager, proxy_settings
+                    ),
                 ),
                 session_id="manual",
                 api_keys_by_provider=embedding_keys_for_session(provider, api_key),
