@@ -819,20 +819,53 @@ def embedding_key_pool(
     return merged
 
 
-def aiohttp_session_factory():
+def proxy_url_from_settings(proxy_settings) -> str:
+    """Build the proxy URL the translation workers would use, or nothing.
+
+    The empty string is the honest default: settings that are absent, disabled,
+    or incomplete mean a direct connection, exactly as the workers treat them.
+    """
+    if not isinstance(proxy_settings, Mapping) or not proxy_settings.get("enabled"):
+        return ""
+    host = str(proxy_settings.get("host") or "").strip()
+    port = str(proxy_settings.get("port") or "").strip()
+    if not host or not port:
+        return ""
+    kind = str(proxy_settings.get("type") or "SOCKS5").strip().lower()
+    user = str(proxy_settings.get("user") or "").strip()
+    password = str(proxy_settings.get("pass") or "").strip()
+    auth = f"{user}:{password}@" if user and password else ""
+    return f"{kind}://{auth}{host}:{port}"
+
+
+def aiohttp_session_factory(proxy_settings=None):
     """Return a callable producing one HTTP session per outbound QA request.
 
-    The session trusts the same certificate bundle as the translation handlers:
-    a Python without the system roots would otherwise fail every QA request
-    with a transport error and silently drop the check into limited mode.
+    The session trusts the same certificate bundle as the translation handlers,
+    and — this is the part that broke in the field — the same proxy: a session
+    translating through the application's SOCKS tunnel used to run its QA
+    embeddings directly, so a geo-blocked network silently degraded every
+    chapter to limited mode while the translation itself kept working.
     """
+    proxy_url = proxy_url_from_settings(proxy_settings)
 
     def factory():
         import aiohttp
 
         from ..api.base import create_ssl_context
 
-        connector = aiohttp.TCPConnector(ssl=create_ssl_context())
+        connector = None
+        if proxy_url:
+            try:
+                from aiohttp_socks import ProxyConnector
+
+                connector = ProxyConnector.from_url(
+                    proxy_url, rdns=True, ssl=create_ssl_context()
+                )
+            except Exception:  # noqa: BLE001 - a broken proxy stack falls back to direct
+                connector = None
+        if connector is None:
+            connector = aiohttp.TCPConnector(ssl=create_ssl_context())
         return aiohttp.ClientSession(trust_env=True, connector=connector)
 
     return factory

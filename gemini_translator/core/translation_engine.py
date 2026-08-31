@@ -895,7 +895,10 @@ class TranslationEngine(QObject):
                 handler_factory=handler_factory,
                 session_id=str(self.session_id),
                 api_keys_by_provider=embedding_keys_for_session(provider, keys),
-                session_factory=aiohttp_session_factory(),
+                session_factory=aiohttp_session_factory(
+                    settings.get('proxy_settings')
+                    or self.settings_manager.load_proxy_settings()
+                ),
                 translation_provider=provider,
                 translation_model=model_name,
                 epub_path=str(getattr(self, '_qa_epub_path', '') or ''),
