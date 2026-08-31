@@ -18,6 +18,16 @@ from .translation_quality_models import BookQaReportSnapshot
 REPORT_REFRESH_SECONDS = 4.0
 
 
+# Why a chapter is being checked again, in the words of the person reading it.
+RECHECK_REASONS = {
+    "never_checked": "ещё не проверялась",
+    "deferred": "проверка не завершилась",
+    "unresolved_risk": "остался неустранённый риск",
+    "analysis_version_changed": "правила проверки изменились",
+    "baseline_now_available": "появилась норма книги",
+}
+
+
 def _escape(value: str) -> str:
     from html import escape
 
@@ -67,6 +77,8 @@ class TranslationQualityController(QObject):
         """Bind one dialog's four actions and keep its report up to date."""
         dialog.check_chapter_requested.connect(self.check_chapter)
         dialog.check_all_requested.connect(self.check_all)
+        if hasattr(dialog, "resume_requested"):
+            dialog.resume_requested.connect(self.resume)
         dialog.undo_chapter_requested.connect(self.undo_chapter)
         dialog.undo_all_requested.connect(self.undo_all)
         dialog.cancel_requested.connect(self.cancel)
@@ -139,6 +151,63 @@ class TranslationQualityController(QObject):
                 on_chapter=self._log_chapter,
             ),
             lambda result, error: self._finish_book_pass(result, error, len(events)),
+        )
+
+    def resume(self) -> None:
+        """Check only the chapters whose last check no longer answers for them.
+
+        A pass over a book runs for hours, and closing the window in the middle
+        of one loses nothing: every finished chapter is already in the journal.
+        Starting over would pay for those chapters a second time, so this asks
+        the journal what is actually left.
+        """
+        events = self._events_for(None)
+        if not events:
+            self.status_changed.emit("Нет сохранённых переводов для проверки.")
+            return
+        coordinator = self._coordinator()
+        if coordinator is None:
+            return
+        try:
+            selected = coordinator.select_unsettled_chapters(events)
+        except Exception as error:  # noqa: BLE001 - a broken journal is reportable
+            self.status_changed.emit(f"Не удалось прочитать журнал проверок: {error}")
+            return
+        if not selected:
+            self.status_changed.emit(
+                f"Перепроверять нечего: все {len(events)} глав(ы) уже улажены."
+            )
+            return
+        pending = tuple(item.event for item in selected)
+        coordinator.reset_cancellation()
+        self._set_busy(True)
+        self.progress_changed.emit(0, len(pending), "")
+        self._pass_started = time.perf_counter()
+        self._last_report_refresh = 0.0
+        self.chapter_logged.emit(self._resume_header(selected, len(events)))
+        coordinator.run_background(
+            lambda: coordinator.check_all_now(
+                pending,
+                on_progress=self._on_chapter_done,
+                on_chapter=self._log_chapter,
+            ),
+            lambda result, error: self._finish_book_pass(result, error, len(pending)),
+        )
+
+    @staticmethod
+    def _resume_header(selected, total: int) -> str:
+        """Say how much of the book is being re-checked, and why."""
+        counts: dict[str, int] = {}
+        for item in selected:
+            reason = str(getattr(item, "reason", "") or "")
+            counts[reason] = counts.get(reason, 0) + 1
+        parts = ", ".join(
+            f"{RECHECK_REASONS.get(reason, reason)} — {count}"
+            for reason, count in sorted(counts.items(), key=lambda pair: -pair[1])
+        )
+        return (
+            f"<p><b>Продолжаем проверку: {len(selected)} глав(ы) из {total}.</b>"
+            f"<br>{_escape(parts)}</p>"
         )
 
     def undo_chapter(self, chapter_id: str) -> None:

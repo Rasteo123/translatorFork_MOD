@@ -273,16 +273,18 @@ class ChapterQaCoordinator:
             task_id, _outcome_for(chapter_ids, results), tuple(results)
         )
 
-    async def run_final_book_pass(
-        self, session_id: str, on_progress=None
-    ) -> BookQaResult:
-        """Re-check only the chapters the book's own history says are unsettled."""
-        events = self._book_events()
-        if not events:
-            return BookQaResult()
+    def select_unsettled_chapters(
+        self, events: Sequence[TranslationReadyEvent]
+    ) -> tuple[SelectedChapter, ...]:
+        """Return the chapters whose last check no longer answers for them.
+
+        A chapter checked under the current rules, carrying no unresolved risk
+        and with its text unchanged, is left alone.  This is what lets a pass
+        that was closed halfway be continued instead of paid for twice.
+        """
         journal = self._journal()
         states = dict(getattr(journal, "chapter_states", {}) or {})
-        selected = select_final_pass_chapters(
+        return select_final_pass_chapters(
             events,
             states,
             analysis_identity=self._analysis_identity(),
@@ -291,6 +293,15 @@ class ChapterQaCoordinator:
             ),
             fingerprint_for=lambda item: chapter_fingerprint(item.translated_path),
         )
+
+    async def run_final_book_pass(
+        self, session_id: str, on_progress=None
+    ) -> BookQaResult:
+        """Re-check only the chapters the book's own history says are unsettled."""
+        events = self._book_events()
+        if not events:
+            return BookQaResult()
+        selected = self.select_unsettled_chapters(events)
         if not selected:
             self._report(
                 f"[QA] Итоговый проход: перепроверять нечего (сессия {session_id})."

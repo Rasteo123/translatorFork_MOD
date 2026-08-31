@@ -84,6 +84,7 @@ class TranslationQualityDialog(QDialog):
 
     check_chapter_requested = pyqtSignal(str)
     check_all_requested = pyqtSignal()
+    resume_requested = pyqtSignal()
     undo_chapter_requested = pyqtSignal(str)
     undo_all_requested = pyqtSignal()
     cancel_requested = pyqtSignal()
@@ -174,6 +175,12 @@ class TranslationQualityDialog(QDialog):
         row = QHBoxLayout()
         self.check_chapter_button = QPushButton("Проверить и исправить главу", self)
         self.check_all_button = QPushButton("Проверить и исправить все главы", self)
+        self.resume_button = QPushButton("Продолжить проверку", self)
+        self.resume_button.setToolTip(
+            "Проверить только те главы, которые ещё не проверялись, были "
+            "отложены, остались с неустранённым риском или изменились после "
+            "проверки. Уже улаженные главы не перепроверяются."
+        )
         self.undo_chapter_button = QPushButton("Отменить исправления главы", self)
         self.undo_all_button = QPushButton("Отменить все автоматические исправления", self)
         self.cancel_button = QPushButton("Остановить проверку", self)
@@ -182,6 +189,7 @@ class TranslationQualityDialog(QDialog):
 
         self.check_chapter_button.clicked.connect(self._request_check_chapter)
         self.check_all_button.clicked.connect(self.check_all_requested.emit)
+        self.resume_button.clicked.connect(self.resume_requested.emit)
         self.undo_chapter_button.clicked.connect(self._request_undo_chapter)
         self.undo_all_button.clicked.connect(self._request_undo_all)
         self.cancel_button.clicked.connect(self.cancel_requested.emit)
@@ -190,6 +198,7 @@ class TranslationQualityDialog(QDialog):
         for button in (
             self.check_chapter_button,
             self.check_all_button,
+            self.resume_button,
             self.undo_chapter_button,
             self.undo_all_button,
             self.cancel_button,
@@ -699,6 +708,7 @@ class TranslationQualityDialog(QDialog):
         self.export_button.setEnabled(has_rows and not busy)
         self.check_chapter_button.setEnabled(bool(chapter_id) and not busy)
         self.check_all_button.setEnabled(not busy)
+        self.resume_button.setEnabled(not busy)
         self.undo_chapter_button.setEnabled(
             bool(chapter_id) and chapter_id in repaired and not busy
         )

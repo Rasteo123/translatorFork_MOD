@@ -252,3 +252,144 @@ def test_an_empty_entry_never_pushes_a_blank_line_into_the_log(qt_app):
         assert dialog.log_view.toPlainText().strip() == ""
     finally:
         dialog.deleteLater()
+
+
+# --- continuing a pass that was closed halfway -------------------------------
+
+
+class _ResumingCoordinator(_Coordinator):
+    """Knows, like the real one, which chapters the journal still owes."""
+
+    def __init__(self, results, unsettled=None, error=None) -> None:
+        super().__init__(results)
+        self._unsettled = unsettled
+        self._error = error
+        self.asked_with: list[tuple[str, ...]] = []
+        self.ran_with: list[tuple[str, ...]] = []
+
+    def select_unsettled_chapters(self, events):
+        if self._error is not None:
+            raise self._error
+        self.asked_with.append(tuple(event.chapter_id for event in events))
+        if self._unsettled is None:
+            return tuple(_Selected(event, "never_checked") for event in events)
+        return tuple(
+            _Selected(event, reason)
+            for event, reason in zip(events, self._unsettled)
+            if reason
+        )
+
+    async def check_all_now(self, events, options=None, on_progress=None, on_chapter=None):
+        self.ran_with.append(tuple(event.chapter_id for event in events))
+        return await super().check_all_now(
+            events, options=options, on_progress=on_progress, on_chapter=on_chapter
+        )
+
+
+class _Selected:
+    def __init__(self, event, reason: str) -> None:
+        self.event = event
+        self.reason = reason
+
+
+def _resuming(results, unsettled=None, error=None):
+    coordinator = _ResumingCoordinator(results, unsettled, error)
+    controller = TranslationQualityController(
+        coordinator_provider=lambda: coordinator,
+        journal_loader=lambda: QaJournal(
+            book_id="book", updated_at="2026-08-31T00:00:00Z"
+        ),
+        event_builder=lambda chapter_ids: tuple(
+            TranslationReadyEvent(
+                task_id="t",
+                chapter_id=result.chapter_id,
+                source_path=result.chapter_id,
+                translated_path=result.chapter_id,
+                source_language="zh",
+                target_language="ru",
+                epub_path="book.epub",
+            )
+            for result in results
+        ),
+    )
+    return controller, coordinator
+
+
+def test_continuing_skips_the_chapters_already_settled(qt_app):
+    """Ради этого всё и делалось: закрытую на середине проверку не платить дважды."""
+    results = [_clean(f"chapter-{n}") for n in range(1, 5)]
+    controller, coordinator = _resuming(
+        results, unsettled=["", "", "never_checked", "deferred"]
+    )
+
+    controller.resume()
+
+    assert coordinator.ran_with == [("chapter-3", "chapter-4")]
+    assert coordinator.asked_with == [
+        ("chapter-1", "chapter-2", "chapter-3", "chapter-4")
+    ]
+
+
+def test_continuing_says_how_much_is_left_and_why(qt_app):
+    results = [_clean(f"chapter-{n}") for n in range(1, 4)]
+    controller, _ = _resuming(results, unsettled=["", "deferred", "never_checked"])
+    entries = _collect(controller)
+
+    controller.resume()
+
+    assert "Продолжаем проверку: 2 глав(ы) из 3" in entries[0]
+    assert "проверка не завершилась" in entries[0]
+    assert "ещё не проверялась" in entries[0]
+
+
+def test_a_book_with_nothing_left_is_not_checked_again(qt_app):
+    results = [_clean("chapter-1"), _clean("chapter-2")]
+    controller, coordinator = _resuming(results, unsettled=["", ""])
+    statuses: list[str] = []
+    controller.status_changed.connect(statuses.append)
+
+    controller.resume()
+
+    assert coordinator.ran_with == []
+    assert "Перепроверять нечего" in statuses[-1]
+
+
+def test_an_unreadable_journal_stops_the_resume_instead_of_rechecking_everything(qt_app):
+    """Сомнение — не повод прогнать книгу заново за те же запросы."""
+    results = [_clean("chapter-1")]
+    controller, coordinator = _resuming(results, error=OSError("журнал занят"))
+    statuses: list[str] = []
+    controller.status_changed.connect(statuses.append)
+
+    controller.resume()
+
+    assert coordinator.ran_with == []
+    assert "журнал" in statuses[-1].lower()
+
+
+def test_the_old_button_still_checks_the_whole_book(qt_app):
+    """«Проверить все главы» значит все — журнал ему не указ."""
+    results = [_clean(f"chapter-{n}") for n in range(1, 4)]
+    controller, coordinator = _resuming(results, unsettled=["", "", "deferred"])
+
+    controller.check_all()
+
+    assert coordinator.ran_with == [("chapter-1", "chapter-2", "chapter-3")]
+    assert coordinator.asked_with == []
+
+
+def test_the_dialog_offers_continuing_next_to_checking_everything(qt_app):
+    from gemini_translator.ui.dialogs.validation_dialogs import TranslationQualityDialog
+
+    dialog = TranslationQualityDialog()
+    try:
+        assert dialog.resume_button.text() == "Продолжить проверку"
+        assert dialog.resume_button.isEnabled()
+
+        dialog.set_busy(True)
+        assert not dialog.resume_button.isEnabled()
+
+        dialog.set_busy(False)
+        assert dialog.resume_button.isEnabled()
+    finally:
+        dialog.deleteLater()
