@@ -524,6 +524,7 @@ def attach_chapter_qa_coordinator(
             qa_settings.effective_capabilities()
         ).preprocessing_identity,
         quality_estimator=build_quality_estimator(qa_settings, paths),
+        max_concurrency=qa_settings.batch_concurrency,
         log=log,
     )
     app.qa_coordinator = coordinator

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 import hashlib
+import time
 from pathlib import Path
 
 from ..utils.epub_json import build_html_document_model, render_document_html
@@ -478,6 +479,7 @@ class TranslationQualityService:
             raise TypeError("options must be a QaOptions")
         cancellation.raise_if_cancelled()
 
+        started = time.monotonic()
         warnings: list[str] = []
         coverage: CoverageAnalysis | None = None
         if options.check_completeness:
@@ -513,6 +515,12 @@ class TranslationQualityService:
             coverage.target_units if coverage is not None else (),
         )
         metrics = coverage.metrics if coverage is not None else None
+        if metrics is not None:
+            # The report has always had a column for this and always shown a
+            # zero: nobody measured what a check actually costs in time.
+            metrics = replace(
+                metrics, duration_seconds=round(time.monotonic() - started, 3)
+            )
         if metrics is not None and self._ratio_outlier(metrics):
             warnings.append(RATIO_OUTLIER_WARNING)
         risk, may_continue = _risk(verified, repairs, additions, coverage, warnings)
@@ -528,7 +536,7 @@ class TranslationQualityService:
             metrics=metrics,
             warnings=tuple(dict.fromkeys(warnings)),
         )
-        self._record(result)
+        self._record(result, chapter_fingerprint(request.translated_path))
         return result
 
     def _ratio_outlier(self, metrics: ChapterMetrics) -> bool:
@@ -982,7 +990,7 @@ class TranslationQualityService:
         to_analysis = getattr(report, "as_analysis", None)
         return to_analysis() if callable(to_analysis) else report
 
-    def _record(self, result: ChapterQaResult) -> None:
+    def _record(self, result: ChapterQaResult, fingerprint: str = "") -> None:
         entries = [
             QaJournalEntry(
                 entry_id=f"{result.chapter_id}:{repair.candidate_id}",
@@ -1012,6 +1020,7 @@ class TranslationQualityService:
                 analysis_identity=self._analysis_identity,
                 risk_level=result.risk_level,
                 book_sample_size=len(self._journal.metrics),
+                fingerprint=fingerprint,
                 updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             ),
         )
@@ -1117,6 +1126,20 @@ def _patch_for(
         parent_block_id=left_unit.block_id,
         translated_fragment=fragment,
     )
+
+
+def chapter_fingerprint(path: Path | str) -> str:
+    """Identify the chapter's text as it stands, or "" when it cannot be read.
+
+    Recorded after a check so a later pass can tell "this is the same chapter I
+    already answered for" from "this chapter has changed since".  An unreadable
+    file yields no fingerprint, which reads as "unknown" and re-checks.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return ""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def _risk(

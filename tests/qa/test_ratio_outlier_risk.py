@@ -283,3 +283,24 @@ def test_a_prose_chapter_is_narrative_so_the_book_baseline_can_use_it():
     assert _content_kind(prose) == "narrative"
     assert _content_kind(front_matter) == "heading"
     assert _content_kind(()) == "narrative"
+
+
+def test_the_state_records_the_text_the_check_answered_for(tmp_path):
+    """Без отпечатка итоговый проход не может отличить «то же самое» от «изменилось»."""
+    from gemini_translator.qa.service import chapter_fingerprint
+
+    journal = QaJournal.empty(book_id="book-1")
+    _run(tmp_path, _FULL, _FULL, journal=journal)
+
+    state = journal.chapter_states["chapter-1"]
+    assert state.fingerprint == chapter_fingerprint(tmp_path / "chapter-1.html")
+    assert state.fingerprint.startswith("sha256:")
+
+
+def test_the_check_records_how_long_it_took(tmp_path):
+    """Колонка длительности в отчёте всегда показывала ноль: её никто не заполнял."""
+    result = _run(tmp_path, _FULL, _FULL)
+
+    assert result.metrics is not None
+    assert result.metrics.duration_seconds > 0.0
+    assert result.metrics.duration_seconds < 60.0

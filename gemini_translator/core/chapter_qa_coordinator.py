@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import threading
 
 from ..qa.book_metrics import MIN_BASELINE_SAMPLE_SIZE
+from ..qa.coverage_service import SEMANTIC_ALIGNMENT_MODE
 from ..qa.estimators.base import (
     QualityEstimateRequest,
     SourceTranslationWindow,
@@ -19,8 +20,14 @@ from ..qa.service import (
     ChapterQaResult,
     QaOptions,
     TranslationQualityService,
+    chapter_fingerprint,
 )
 from .task_manager import QaQueueOutcome
+
+
+# How many chapters in a row must lose semantic comparison before the session
+# is told.  One is noise; a run of three is a broken setup.
+LIMITED_MODE_ALERT_STREAK = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +142,8 @@ class ChapterQaCoordinator:
         self._pending_tasks_provider = pending_tasks_provider
         self._analysis_identity_value = analysis_identity
         self._quality_estimator = quality_estimator
+        self._limited_streak = 0
+        self._limited_reported = False
         self._log = log
         self._max_concurrency = max(1, max_concurrency)
         self._cancellation = CancellationToken()
@@ -276,6 +285,7 @@ class ChapterQaCoordinator:
             states,
             analysis_identity=self._analysis_identity(),
             book_sample_size=len(getattr(journal, "metrics", {}) or {}),
+            fingerprint_for=lambda item: chapter_fingerprint(item.translated_path),
         )
         if not selected:
             self._report(
@@ -337,20 +347,39 @@ class ChapterQaCoordinator:
         events: Sequence[TranslationReadyEvent],
         options: QaOptions | None = None,
     ) -> BookQaResult:
-        """Run the cascade over many chapters, stopping cleanly on cancellation."""
+        """Run the cascade over many chapters, stopping cleanly on cancellation.
+
+        Chapters are independent — separate files, separate backups — and every
+        check spends most of its time waiting on the network, so a few may run
+        at once.  They share one event loop, which is what makes it safe: the
+        journal is only ever mutated inside synchronous sections, and a
+        cooperative loop cannot interrupt one.  The default of one keeps the
+        old behaviour for anyone who does not ask for more.
+        """
         resolved = options or self._options()
-        results: list[ChapterQaResult] = []
-        skipped: list[str] = []
-        for event in events:
+        limit = asyncio.Semaphore(self._max_concurrency)
+        outcomes: dict[int, ChapterQaResult] = {}
+
+        async def check(index: int, event: TranslationReadyEvent) -> None:
             if self._cancellation.is_cancelled:
-                skipped.extend(item.chapter_id for item in events[len(results) :])
-                break
-            result = await self._check_one(event, resolved)
-            if result is None:
-                skipped.append(event.chapter_id)
-            else:
-                results.append(result)
-        return BookQaResult(tuple(results), tuple(dict.fromkeys(skipped)))
+                return
+            async with limit:
+                if self._cancellation.is_cancelled:
+                    return
+                result = await self._check_one(event, resolved)
+                if result is not None:
+                    outcomes[index] = result
+
+        await asyncio.gather(
+            *(check(index, event) for index, event in enumerate(events))
+        )
+        results = tuple(outcomes[index] for index in sorted(outcomes))
+        skipped = tuple(
+            event.chapter_id
+            for index, event in enumerate(events)
+            if index not in outcomes
+        )
+        return BookQaResult(results, tuple(dict.fromkeys(skipped)))
 
     async def undo_chapter(self, chapter_id: str):
         """Revert one chapter's automatic repairs through the same service."""
@@ -380,8 +409,31 @@ class ChapterQaCoordinator:
             self._report(f"[QA] Проверка главы '{event.chapter_id}' не удалась: {error}")
             return None
         result = await self._estimate_quality(event, result)
+        self._note_limited_mode(result)
         self._report_chapter(event, result)
         return result
+
+    def _note_limited_mode(self, result: ChapterQaResult) -> None:
+        """Say once when semantic comparison has stopped working for the book.
+
+        A single chapter in limited mode is ordinary — a slow service, one bad
+        response.  A run of them means the embeddings are gone (a key, a quota,
+        a blocked network), and the whole book is being checked with half the
+        cascade while every chapter reports itself as merely deferred.
+        """
+        if result.coverage_mode == SEMANTIC_ALIGNMENT_MODE:
+            self._limited_streak = 0
+            self._limited_reported = False
+            return
+        self._limited_streak += 1
+        if self._limited_streak < LIMITED_MODE_ALERT_STREAK or self._limited_reported:
+            return
+        self._limited_reported = True
+        self._report(
+            f"[QA] Смысловое сравнение недоступно уже {self._limited_streak} глав подряд: "
+            "проверяется только язык и статистика. Проверьте ключ, лимиты и сеть "
+            "для эмбеддингов — эти главы попадут в итоговый проход."
+        )
 
     async def _estimate_quality(
         self, event: TranslationReadyEvent, result: ChapterQaResult
@@ -600,6 +652,24 @@ def _disputed_windows(
     return tuple(windows)
 
 
+def _text_unchanged(
+    event: TranslationReadyEvent, state: QaChapterState, fingerprint_for
+) -> bool:
+    """Report whether the chapter still holds the text its last check answered for.
+
+    Without a fingerprint on either side the answer is no: an unknown chapter is
+    re-checked, which is the safe direction.
+    """
+    recorded = str(getattr(state, "fingerprint", "") or "")
+    if not recorded or not callable(fingerprint_for):
+        return False
+    try:
+        current = str(fingerprint_for(event) or "")
+    except Exception:  # noqa: BLE001 - an unreadable chapter is simply unknown
+        return False
+    return bool(current) and current == recorded
+
+
 def _outcome_for(
     chapter_ids: Sequence[str], results: Sequence[ChapterQaResult]
 ) -> QaQueueOutcome:
@@ -637,12 +707,19 @@ def select_final_pass_chapters(
     analysis_identity: str,
     book_sample_size: int,
     minimum_baseline_sample: int = MIN_BASELINE_SAMPLE_SIZE,
+    fingerprint_for=None,
 ) -> tuple[SelectedChapter, ...]:
     """Pick the chapters whose last check no longer answers for them.
 
     A chapter that was fully checked under the current rules, carries no
     unresolved risk, and already had the book's statistics available is left
     alone: the final pass exists to close gaps, not to spend the book again.
+
+    A chapter that only reached MEDIUM is left alone too, provided its text has
+    not changed since that check: the same text under the same rules produces
+    the same answer, so re-asking costs the whole cascade to learn nothing.  A
+    reader who wants it asked again has "Проверить все главы", which never
+    consults this function.
     """
 
     selected: list[SelectedChapter] = []
@@ -657,7 +734,11 @@ def select_final_pass_chapters(
             reason = "unresolved_risk"
         elif analysis_identity and state.analysis_identity != analysis_identity:
             reason = "analysis_version_changed"
-        elif RiskLevel(state.risk_level) in {RiskLevel.MEDIUM, RiskLevel.HIGH}:
+        elif RiskLevel(state.risk_level) is RiskLevel.HIGH:
+            reason = "unresolved_risk"
+        elif RiskLevel(state.risk_level) is RiskLevel.MEDIUM and not _text_unchanged(
+            event, state, fingerprint_for
+        ):
             reason = "unresolved_risk"
         elif (
             state.book_sample_size < minimum_baseline_sample

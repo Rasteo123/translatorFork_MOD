@@ -45,6 +45,10 @@ class QaSettings:
     correction_provider: str = ""
     correction_model: str = ""
     final_book_pass: bool = True
+    # How many chapters a manual or final pass may check at once.  One keeps the
+    # old behaviour; a book with several healthy keys finishes a batch faster
+    # with two or three, at the cost of that many parallel requests.
+    batch_concurrency: int = 1
     capabilities: QaCapabilitySettings = field(default_factory=QaCapabilitySettings)
     language_tool_endpoint: str = ""
     language_tool_mode: str = "remote"
@@ -103,6 +107,9 @@ class QaSettings:
         )
         object.__setattr__(
             self, "slovnet_cpu_threads", _bounded_int(self.slovnet_cpu_threads, 2, 1, 32)
+        )
+        object.__setattr__(
+            self, "batch_concurrency", _bounded_int(self.batch_concurrency, 1, 1, 4)
         )
         object.__setattr__(
             self, "slovnet_batch_size", _bounded_int(self.slovnet_batch_size, 16, 1, 512)
@@ -173,6 +180,7 @@ class QaSettings:
             "correction_provider": self.correction_provider,
             "correction_model": self.correction_model,
             "final_book_pass": self.final_book_pass,
+            "batch_concurrency": self.batch_concurrency,
             "capabilities": {
                 "razdel_enabled": self.capabilities.razdel_enabled,
                 "language_tool_enabled": self.capabilities.language_tool_enabled,

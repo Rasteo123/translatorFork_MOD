@@ -100,7 +100,21 @@ class BookQaReportSnapshot:
             decisions_by_chapter={
                 chapter_id: tuple(values) for chapter_id, values in decisions.items()
             },
+            limited_mode_chapters=tuple(
+                item.chapter_id for item in metrics if _checked_without_alignment(item)
+            ),
         )
+
+
+def _checked_without_alignment(metrics: ChapterMetrics) -> bool:
+    """Report whether this chapter was checked without semantic comparison.
+
+    The journal keeps no mode field, but it does not need one: a chapter that
+    was aligned has aligned units, and a chapter checked in limited mode has
+    source units and none aligned.  The report's counter for this has existed
+    from the start and was never filled.
+    """
+    return metrics.source_units > 0 and metrics.aligned_units == 0
 
 
 def _book_positions(metrics: list[ChapterMetrics]) -> dict[str, str]:
