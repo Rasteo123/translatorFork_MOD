@@ -138,3 +138,19 @@ def validate_and_normalize_batch(batch: EmbeddingBatch, expected_rows: int) -> E
         model=batch.model,
         dimensions=batch.dimensions,
     )
+
+
+class EmbeddingKeyHealth(Protocol):
+    """Who decides whether a key may still be used for embeddings.
+
+    Key limits are tracked per model, so exhausting an embedding quota must not
+    take the same key out of translation, and the other way round.  Providers
+    ask before using a key and report back only when the service itself says the
+    quota is gone — a transient 429 is a reason to rotate, not to condemn.
+    """
+
+    def is_active(self, api_key: str) -> bool:
+        raise NotImplementedError
+
+    def mark_exhausted(self, api_key: str, reason: str = "") -> None:
+        raise NotImplementedError

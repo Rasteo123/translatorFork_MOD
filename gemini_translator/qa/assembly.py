@@ -113,6 +113,7 @@ def build_embedding_provider(
     api_keys_by_provider: Mapping[str, str],
     cache_dir: Path | None = None,
     preprocessing_identity: str | None = None,
+    key_health=None,
 ):
     """Create the configured embedding provider, or raise if none is usable.
 
@@ -160,6 +161,7 @@ def build_embedding_provider(
                 api_key=gemini_keys[0],
                 api_keys=tuple(gemini_keys),
                 model=qa_settings.embedding_model or DEFAULT_EMBEDDING_MODELS["gemini"],
+                key_health=key_health,
             )
         )
     if (
@@ -443,13 +445,32 @@ def attach_chapter_qa_coordinator(
         return None
 
     paths = ProjectQaPaths.for_project(project_manager)
+    keys_for_embeddings = embedding_key_pool(
+        settings_manager, qa_settings, api_keys_by_provider
+    )
+    if qa_settings.embedding_key_provider and not keys_for_embeddings:
+        _report(
+            log,
+            "[QA] У провайдера "
+            f"'{qa_settings.embedding_key_provider}' нет свободных ключей для "
+            "эмбеддингов: смысловое сравнение отключено, языковая проверка "
+            "продолжает работать.",
+        )
     try:
         embedding_provider = build_embedding_provider(
             qa_settings,
             session_factory,
-            api_keys_by_provider,
+            keys_for_embeddings,
             paths.embedding_cache,
             _extractor(qa_settings.effective_capabilities()).preprocessing_identity,
+            key_health=SettingsEmbeddingKeyHealth(
+                settings_manager,
+                embedding_model_for(
+                    qa_settings,
+                    embedding_key_namespace(qa_settings.embedding_key_provider),
+                ),
+                log,
+            ),
         )
     except Exception as error:  # noqa: BLE001 - QA without embeddings is limited, not fatal
         _report(
@@ -655,12 +676,147 @@ def detect_source_language(html: str) -> str:
     return "en"
 
 
-def embedding_keys_for_session(provider: str, api_key: str) -> dict[str, str]:
-    """Map the session's own key onto the embedding providers that accept it."""
-    normalized = str(provider or "").strip().lower()
-    if normalized in {"gemini", "google"} and api_key:
-        return {"google": api_key}
+# Which embedding backend a translation provider's keys can actually be used
+# with.  Everything absent from here has no embedding endpoint of its own.
+EMBEDDING_KEY_NAMESPACES = {
+    "gemini": "google",
+    "google": "google",
+    "openai": "openai",
+    "openai_compatible": "openai",
+    "openrouter": "openai",
+    "nvidia": "openai",
+    "deepseek": "openai",
+    "omniroute": "openai",
+    "local": "openai",
+}
+
+
+def embedding_key_namespace(provider: str) -> str:
+    """Name the embedding backend a provider's keys belong to, or an empty string."""
+    return EMBEDDING_KEY_NAMESPACES.get(str(provider or "").strip().lower(), "")
+
+
+def embedding_keys_for_session(provider: str, api_key) -> dict[str, object]:
+    """Map the session's own keys onto the embedding providers that accept them.
+
+    All of the session's keys, not just the first: one key that hits its limit
+    should hand the batch to the next one exactly as translation does.
+    """
+    namespace = embedding_key_namespace(provider)
+    keys = _keys(api_key)
+    if namespace == "google" and keys:
+        return {"google": keys}
     return {}
+
+
+def embedding_model_for(qa_settings: QaSettings, namespace: str = "") -> str:
+    """The model whose limits an embedding key is judged against."""
+    if qa_settings.embedding_model:
+        return qa_settings.embedding_model
+    if namespace == "openai":
+        return DEFAULT_EMBEDDING_MODELS["openai_compatible"]
+    return DEFAULT_EMBEDDING_MODELS["gemini"]
+
+
+def green_embedding_keys(
+    settings_manager, provider_id: str, model_id: str
+) -> tuple[str, ...]:
+    """Every key of one provider that is not rate limited for this model.
+
+    Key limits are already tracked per model, so a key that ran out of
+    translation quota is still green for embeddings and the other way round.
+    """
+    if settings_manager is None or not provider_id:
+        return ()
+    try:
+        statuses = settings_manager.load_key_statuses() or ()
+    except Exception:  # noqa: BLE001 - unreadable statuses mean no pool, not a crash
+        return ()
+    pool: list[str] = []
+    for key_info in statuses:
+        if str(key_info.get("provider") or "") != str(provider_id):
+            continue
+        key = str(key_info.get("key") or "").strip()
+        if not key:
+            continue
+        try:
+            blocked = settings_manager.is_key_limit_active(key_info, model_id)
+        except Exception:  # noqa: BLE001 - an unreadable status is not a red key
+            blocked = False
+        if not blocked:
+            pool.append(key)
+    return tuple(dict.fromkeys(pool))
+
+
+class SettingsEmbeddingKeyHealth:
+    """Track embedding quota per key against the embedding model, not the translation one.
+
+    The application already stores key limits per model, so writing the
+    embedding model's id here is exactly what makes a key go red for semantic
+    checking while it keeps translating chapters.
+    """
+
+    def __init__(self, settings_manager, model_id: str, log=None) -> None:
+        self._settings_manager = settings_manager
+        self._model_id = str(model_id or "").strip()
+        self._log = log
+
+    def is_active(self, api_key: str) -> bool:
+        manager = self._settings_manager
+        if manager is None or not self._model_id or not api_key:
+            return True
+        try:
+            key_info = manager.get_key_info(api_key)
+            if not key_info:
+                return True
+            return not manager.is_key_limit_active(key_info, self._model_id)
+        except Exception:  # noqa: BLE001 - unreadable status is not a red key
+            return True
+
+    def mark_exhausted(self, api_key: str, reason: str = "") -> None:
+        manager = self._settings_manager
+        if manager is None or not self._model_id or not api_key:
+            return
+        try:
+            manager.mark_key_as_exhausted(api_key, self._model_id)
+        except Exception:  # noqa: BLE001 - bookkeeping never fails a check
+            return
+        _report(
+            self._log,
+            f"[QA] Ключ …{api_key[-4:]} исчерпан для эмбеддингов "
+            f"({self._model_id}{': ' + reason if reason else ''}); "
+            "перевод этот лимит не затрагивает.",
+        )
+
+
+def embedding_key_pool(
+    settings_manager,
+    qa_settings: QaSettings,
+    session_keys: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Decide which keys embeddings may use, and say nothing when none may.
+
+    An explicitly chosen key wins.  Otherwise a chosen provider contributes all
+    of its keys that are still healthy *for the embedding model* — which is what
+    makes this survive a session whose fallback moved translation to a provider
+    with no embeddings at all.  The session's own key is only the last resort.
+    """
+    if qa_settings.embedding_api_key:
+        return dict(session_keys or {})
+    provider_id = str(qa_settings.embedding_key_provider or "").strip()
+    if not provider_id:
+        return dict(session_keys or {})
+    namespace = embedding_key_namespace(provider_id)
+    if not namespace:
+        return {}
+    pool = green_embedding_keys(
+        settings_manager, provider_id, embedding_model_for(qa_settings, namespace)
+    )
+    if not pool:
+        return {}
+    merged: dict[str, object] = dict(session_keys or {})
+    merged[namespace] = pool
+    return merged
 
 
 def aiohttp_session_factory():

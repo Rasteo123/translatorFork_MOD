@@ -35,6 +35,11 @@ class QaSettings:
     embedding_provider: str = "auto"
     embedding_model: str = ""
     embedding_api_key: str = ""
+    # The provider whose healthy keys embeddings may draw on.  The translation
+    # session's own key is a poor default: a fallback model can move the session
+    # to a provider that has no embedding endpoint at all, and then semantic
+    # checking silently stops working.
+    embedding_key_provider: str = ""
     embedding_base_url: str = ""
     correction_model_mode: str = "translation_model"
     correction_provider: str = ""
@@ -105,6 +110,7 @@ class QaSettings:
         for field_name in (
             "embedding_model",
             "embedding_api_key",
+            "embedding_key_provider",
             "embedding_base_url",
             "correction_provider",
             "correction_model",
@@ -161,6 +167,7 @@ class QaSettings:
             "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model,
             "embedding_api_key": self.embedding_api_key,
+            "embedding_key_provider": self.embedding_key_provider,
             "embedding_base_url": self.embedding_base_url,
             "correction_model_mode": self.correction_model_mode,
             "correction_provider": self.correction_provider,
@@ -195,10 +202,11 @@ class QaSettings:
             # A local model needs no key; whether it is installed is a question
             # for the place that can actually look at the disk.
             return ""
-        if self.embedding_provider == "gemini" and not self.embedding_api_key:
+        has_key = bool(self.embedding_api_key or self.embedding_key_provider)
+        if self.embedding_provider == "gemini" and not has_key:
             return "Для Gemini-эмбеддингов не выбран ключ."
         if self.embedding_provider == "openai_compatible":
-            if not self.embedding_api_key:
+            if not has_key:
                 return "Для OpenAI-совместимых эмбеддингов не выбран ключ."
             if not self.embedding_base_url:
                 return "Для OpenAI-совместимых эмбеддингов не указан адрес сервиса."

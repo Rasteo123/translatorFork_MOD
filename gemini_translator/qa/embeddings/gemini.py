@@ -16,7 +16,12 @@ from typing import Any
 import numpy as np
 
 from .base import EmbeddingBatch, EmbeddingContractError, EmbeddingRequest, validate_and_normalize_batch
-from .factory import EmbeddingHttpError, EmbeddingResponseError, EmbeddingTransportError
+from .factory import (
+    EmbeddingHttpError,
+    EmbeddingResponseError,
+    EmbeddingTransportError,
+    EmbeddingUnavailableError,
+)
 from .retry import DEFAULT_ATTEMPTS, exponential_delay, with_retries
 
 
@@ -26,6 +31,16 @@ _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta"
 MAX_KEY_ROTATIONS = 12
 # The service refuses more than this many items in one batch request.
 MAX_BATCH_REQUESTS = 100
+# What the service says when a key is out of quota rather than merely busy.  A
+# plain 429 is a reason to rotate and come back; these are a reason to stop
+# using the key for embeddings until its limit window resets.
+_QUOTA_MARKERS = (
+    "resource_exhausted",
+    "quota",
+    "billing",
+    "exceeded your current",
+    "per day",
+)
 
 
 def _positive_finite_timeout(value: object) -> float:
@@ -93,6 +108,7 @@ class GeminiEmbeddingProvider:
         *,
         retry_attempts: int = DEFAULT_ATTEMPTS,
         retry_sleep=asyncio.sleep,
+        key_health=None,
     ):
         keys = (api_key,) if isinstance(api_key, str) else tuple(api_key or ())
         cleaned = tuple(
@@ -112,6 +128,7 @@ class GeminiEmbeddingProvider:
         self._timeout_seconds = _positive_finite_timeout(timeout_seconds)
         self._retry_attempts = retry_attempts
         self._retry_sleep = retry_sleep
+        self._key_health = key_health
 
     async def embed(self, request: EmbeddingRequest) -> EmbeddingBatch:
         if not isinstance(request, EmbeddingRequest):
@@ -163,17 +180,45 @@ class GeminiEmbeddingProvider:
             raise EmbeddingResponseError(self.name)
         return batch
 
+    def _usable_keys(self) -> tuple[str, ...]:
+        """Skip keys already known to be out of embedding quota."""
+        health = self._key_health
+        if health is None:
+            return self._api_keys
+        usable = []
+        for key in self._api_keys:
+            try:
+                if health.is_active(key):
+                    usable.append(key)
+            except Exception:  # noqa: BLE001 - unreadable health is not a red key
+                usable.append(key)
+        return tuple(usable)
+
+    def _report_exhausted(self, api_key: str, reason: str) -> None:
+        health = self._key_health
+        if health is None:
+            return
+        try:
+            health.mark_exhausted(api_key, reason)
+        except Exception:  # noqa: BLE001 - bookkeeping never fails a check
+            return
+
     async def _post_json(self, url: str, payload: dict) -> object:
         """Send one request, moving to the next key before it starts waiting."""
+        available = self._usable_keys()
+        if not available:
+            raise EmbeddingUnavailableError(
+                "every Gemini key is out of embedding quota"
+            )
         state = {"attempt": 0}
 
         async def once():
-            key = self._api_keys[state["attempt"] % len(self._api_keys)]
+            key = available[state["attempt"] % len(available)]
             state["attempt"] += 1
             headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-            return await self._post_json_once(url, headers, payload)
+            return await self._post_json_once(url, headers, payload, api_key=key)
 
-        keys = len(self._api_keys)
+        keys = len(available)
         return await with_retries(
             once,
             attempts=max(self._retry_attempts, min(keys, MAX_KEY_ROTATIONS)),
@@ -183,7 +228,13 @@ class GeminiEmbeddingProvider:
             ),
         )
 
-    async def _post_json_once(self, url: str, headers: dict[str, str], payload: dict) -> object:
+    async def _post_json_once(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict,
+        api_key: str = "",
+    ) -> object:
         try:
             async with self._session_factory() as session:
                 async with session.post(url, headers=headers, json=payload, timeout=self._timeout_seconds) as response:
@@ -191,6 +242,10 @@ class GeminiEmbeddingProvider:
                     if isinstance(status, bool) or not isinstance(status, int):
                         raise EmbeddingResponseError(self.name)
                     if not 200 <= status < 300:
+                        if api_key and status in (403, 429):
+                            reason = await _quota_reason(response)
+                            if reason:
+                                self._report_exhausted(api_key, reason)
                         raise EmbeddingHttpError(status, self.name, status == 408 or status == 429 or status >= 500)
                     try:
                         return await response.json()
@@ -204,3 +259,26 @@ class GeminiEmbeddingProvider:
             raise
         except Exception:
             raise EmbeddingTransportError(self.name) from None
+
+
+async def _quota_reason(response) -> str:
+    """Name the quota the service refused on, or nothing for a transient refusal.
+
+    Reading the body is what separates "this key is busy right now" from "this
+    key has nothing left today"; only the second one may take a key out of the
+    embedding pool.
+    """
+    reader = getattr(response, "text", None)
+    if not callable(reader):
+        return ""
+    try:
+        body = await reader()
+    except Exception:  # noqa: BLE001 - an unreadable body is not evidence
+        return ""
+    if not isinstance(body, str):
+        return ""
+    lowered = body.lower()
+    for marker in _QUOTA_MARKERS:
+        if marker in lowered:
+            return marker
+    return ""

@@ -101,6 +101,9 @@ class EmbeddingProviderConfig:
     providers: tuple["EmbeddingProviderConfig", ...] = ()
     model_dir: str | None = None
     intra_op_threads: int = 2
+    # Who may say a key is out of embedding quota.  Deliberately not persisted
+    # and not part of the provider identity: it is a callback, not a setting.
+    key_health: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or self.kind not in {
@@ -168,7 +171,10 @@ def create_embedding_provider(
         from .gemini import GeminiEmbeddingProvider
 
         return GeminiEmbeddingProvider(
-            config.api_keys or config.api_key, session_factory, config.timeout_seconds
+            config.api_keys or config.api_key,
+            session_factory,
+            config.timeout_seconds,
+            key_health=config.key_health,
         )
     if config.kind == "openai_compatible":
         from .openai_compatible import OpenAICompatibleEmbeddingProvider

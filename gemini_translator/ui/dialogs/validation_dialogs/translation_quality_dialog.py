@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ....qa.capabilities import CAPABILITY_DESCRIPTIONS, QaCapabilityKey, QaCapabilitySettings
+from ....qa.assembly import EMBEDDING_KEY_NAMESPACES
 from ....qa.estimators.cometkiwi_model_manager import describe_cometkiwi_setup
 from ....qa.settings import QaSettings
 from .translation_quality_models import (
@@ -228,6 +229,20 @@ class TranslationQualityDialog(QDialog):
         )
         layout.addRow("Провайдер:", self.embedding_provider_combo)
 
+        # A session key is a bad default for embeddings: a content-filter
+        # fallback can move the session to a provider with no embedding endpoint
+        # at all.  Naming a provider instead uses every healthy key it has.
+        self.embedding_key_provider_combo = QComboBox(group)
+        self.embedding_key_provider_combo.addItem("Ключ сессии перевода", "")
+        for provider_id, provider_cfg in _embedding_key_providers():
+            self.embedding_key_provider_combo.addItem(
+                provider_cfg.get("display_name") or provider_id, provider_id
+            )
+        self.embedding_key_provider_combo.currentIndexChanged.connect(
+            self._on_settings_edited
+        )
+        layout.addRow("Ключи провайдера:", self.embedding_key_provider_combo)
+
         self.embedding_key_combo = QComboBox(group)
         self.embedding_key_combo.setEditable(False)
         self.embedding_key_combo.currentIndexChanged.connect(self._on_key_choice_changed)
@@ -264,6 +279,22 @@ class TranslationQualityDialog(QDialog):
         )
         layout.addRow("", self.embedding_test_button)
         return group
+
+    def _describe_embedding_keys(self) -> str:
+        """Say which keys embeddings will actually use, in the user's own terms."""
+        settings = self._settings
+        if settings.embedding_api_key:
+            return "Эмбеддинги используют выбранный ключ."
+        if settings.embedding_key_provider:
+            return (
+                "Эмбеддинги используют все зелёные ключи провайдера "
+                f"'{settings.embedding_key_provider}'. Лимит считается по модели "
+                "эмбеддингов, перевод он не затрагивает."
+            )
+        return (
+            "Эмбеддинги используют ключ сессии перевода — он может уйти на "
+            "резервную модель провайдера без эмбеддингов."
+        )
 
     def _build_capability_group(self, parent) -> QGroupBox:
         group = QGroupBox("Дополнительные анализаторы", parent)
@@ -387,6 +418,9 @@ class TranslationQualityDialog(QDialog):
             embedding_provider=str(provider),
             embedding_model=self.embedding_model_combo.currentText().strip(),
             embedding_api_key=manual_key or str(chosen_key),
+            embedding_key_provider=str(
+                self.embedding_key_provider_combo.currentData() or ""
+            ),
             embedding_base_url=self.embedding_base_url_edit.text().strip(),
             correction_model_mode=self._settings.correction_model_mode,
             correction_provider=self._settings.correction_provider,
@@ -427,6 +461,10 @@ class TranslationQualityDialog(QDialog):
 
         index = self.embedding_provider_combo.findData(settings.embedding_provider)
         self.embedding_provider_combo.setCurrentIndex(max(index, 0))
+        key_provider_index = self.embedding_key_provider_combo.findData(
+            settings.embedding_key_provider
+        )
+        self.embedding_key_provider_combo.setCurrentIndex(max(key_provider_index, 0))
         self._reload_key_choices(settings.embedding_api_key)
         self._reload_model_choices(settings.embedding_provider, settings.embedding_model)
         self.embedding_base_url_edit.setText(settings.embedding_base_url)
@@ -532,7 +570,7 @@ class TranslationQualityDialog(QDialog):
     def _refresh_setup_warnings(self) -> None:
         problem = self._settings.embedding_setup_problem()
         self.embedding_status_label.setText(
-            problem or "Готово к смысловому сравнению."
+            problem or self._describe_embedding_keys()
         )
         missing = self._settings.unsatisfied_requirements()
         self.capability_status_label.setText(
@@ -647,3 +685,18 @@ class TranslationQualityDialog(QDialog):
             QMessageBox.StandardButton.No,
         )
         return answer == QMessageBox.StandardButton.Yes
+
+
+def _embedding_key_providers():
+    """Providers whose keys an embedding backend can actually accept."""
+    try:
+        from ....api import config as api_config
+
+        view = api_config.api_providers_view()
+    except Exception:  # noqa: BLE001 - a settings dialog must open regardless
+        return ()
+    return tuple(
+        (provider_id, dict(provider_cfg or {}))
+        for provider_id, provider_cfg in view.items()
+        if provider_id in EMBEDDING_KEY_NAMESPACES
+    )

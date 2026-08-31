@@ -175,3 +175,28 @@ def test_the_category_policy_round_trips_and_rejects_invented_names():
 
     assert saved.auto_fix_language_categories == ("typo", "calque")
     assert QaSettings.from_dict(saved.to_dict()) == saved
+
+
+def test_a_provider_of_keys_counts_as_a_configured_embedding_key():
+    """Naming a provider is a complete answer; demanding one key too is a false alarm."""
+    by_provider = QaSettings(
+        embedding_provider="gemini", embedding_key_provider="gemini"
+    )
+    without_anything = QaSettings(embedding_provider="gemini")
+
+    assert by_provider.embedding_setup_problem() == ""
+    assert "ключ" in without_anything.embedding_setup_problem().lower()
+
+
+def test_the_key_provider_survives_a_restart(settings_manager, tmp_path: Path):
+    """A pool the user picked must not quietly revert to the session key."""
+    settings_manager.save_qa_settings(QaSettings(embedding_key_provider=" gemini "))
+    settings_manager.flush()
+
+    from gemini_translator.utils.settings import SettingsManager
+
+    reloaded = SettingsManager(
+        config_file=str(tmp_path / "settings.json")
+    ).get_qa_settings()
+
+    assert reloaded.embedding_key_provider == "gemini"

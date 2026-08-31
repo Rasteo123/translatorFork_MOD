@@ -894,7 +894,7 @@ class TranslationEngine(QObject):
                 settings_manager=self.settings_manager,
                 handler_factory=handler_factory,
                 session_id=str(self.session_id),
-                api_keys_by_provider=embedding_keys_for_session(provider, keys[0]),
+                api_keys_by_provider=embedding_keys_for_session(provider, keys),
                 session_factory=aiohttp_session_factory(),
                 translation_provider=provider,
                 translation_model=model_name,
