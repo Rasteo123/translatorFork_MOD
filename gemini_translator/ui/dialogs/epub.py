@@ -1638,6 +1638,10 @@ class TranslatedChaptersManagerDialog(QDialog):
         try:
             for i in range(self.table.rowCount()):
                 item = self.table.item(i, self.COL_SOURCE)
+                if item is None:
+                    # При чанковом заполнении строки создаются заранее и
+                    # получают элементы только в следующих тиках UI.
+                    continue
                 original_path = item.data(QtCore.Qt.ItemDataRole.UserRole)
                 
                 # Если это кастомный файл (нет оригинального пути) -> скрываем

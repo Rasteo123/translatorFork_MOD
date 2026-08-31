@@ -1,0 +1,210 @@
+<h2>MCP в существующем интерфейсе</h2>
+<p class="subtitle">Три варианта размещения. Кликните тот, который кажется естественнее, или напишите правки в чат.</p>
+
+<style>
+  .mcp-mini-window {
+    background: #0d141b;
+    border: 1px solid #26313b;
+    border-radius: 12px;
+    padding: 12px;
+    color: #d7dde5;
+    font-family: Inter, system-ui, sans-serif;
+  }
+  .mcp-top {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .mcp-pill {
+    border: 1px solid #2f3b47;
+    border-radius: 10px;
+    padding: 7px 12px;
+    color: #c9d0d8;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .mcp-pill.active {
+    border-color: #f47b20;
+    color: #ffffff;
+  }
+  .mcp-panel {
+    border: 1px solid #283440;
+    border-radius: 12px;
+    padding: 12px;
+    background: #111b24;
+  }
+  .mcp-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .mcp-section-title {
+    color: #ff7f24;
+    font-size: 12px;
+    font-weight: 800;
+    margin-bottom: 8px;
+  }
+  .mcp-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 7px 0;
+  }
+  .mcp-input {
+    flex: 1;
+    border: 1px solid #303b47;
+    border-radius: 9px;
+    padding: 9px;
+    color: #8f9aa7;
+    background: #0d141b;
+    font-size: 12px;
+  }
+  .mcp-button {
+    border-radius: 10px;
+    border: 1px solid #31404d;
+    padding: 8px 11px;
+    font-weight: 800;
+    font-size: 12px;
+    color: #dce3ea;
+    background: #111923;
+  }
+  .mcp-button.primary {
+    background: #f47b20;
+    border-color: #f47b20;
+    color: #fff;
+  }
+  .mcp-button.stop {
+    background: #55202a;
+    border-color: #b94658;
+    color: #ffd8de;
+  }
+  .mcp-status {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    border: 1px solid #24513e;
+    color: #00d084;
+    background: rgba(0, 208, 132, 0.08);
+    border-radius: 10px;
+    padding: 9px 10px;
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .mcp-muted {
+    color: #8e98a4;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .mcp-card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .mcp-home-card {
+    border: 1px solid #2a3642;
+    border-radius: 12px;
+    padding: 12px;
+    min-height: 74px;
+    background: #111b24;
+  }
+  .mcp-home-card.hero {
+    grid-column: span 2;
+    border-color: #f47b20;
+  }
+</style>
+
+<div class="cards">
+  <div class="card" data-choice="settings-inline" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mcp-mini-window">
+        <div class="mcp-top">
+          <div class="mcp-pill active">Настройки</div>
+          <div class="mcp-pill">Программа</div>
+          <div class="mcp-pill">Логирование</div>
+        </div>
+        <div class="mcp-grid">
+          <div class="mcp-panel">
+            <div class="mcp-section-title">1. Выбор сервиса</div>
+            <div class="mcp-row">
+              <div class="mcp-input">Google Gemini Free</div>
+              <div class="mcp-button">Ключи 75</div>
+            </div>
+            <div class="mcp-muted">Активные ключи, параллельная обработка, текущая сессия.</div>
+          </div>
+          <div class="mcp-panel">
+            <div class="mcp-section-title">MCP-сервер для AI-клиентов</div>
+            <div class="mcp-status"><span>Запущен</span><span>127.0.0.1:51504</span></div>
+            <div class="mcp-row">
+              <button class="mcp-button primary">Запустить</button>
+              <button class="mcp-button stop">Остановить</button>
+              <button class="mcp-button">Codex config</button>
+            </div>
+            <div class="mcp-muted">Клиент: Codex. Последний запрос: start_translation, 2 минуты назад.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Компактный блок в текущей вкладке</h3>
+      <p>Лучше всего отвечает твоей идее: MCP рядом с выбором сервиса, ключами и сессией. Минимум навигации.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="translator-tab" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mcp-mini-window">
+        <div class="mcp-top">
+          <div class="mcp-pill">Настройки</div>
+          <div class="mcp-pill">Логирование</div>
+          <div class="mcp-pill active">MCP</div>
+          <div class="mcp-pill">Глоссарий</div>
+        </div>
+        <div class="mcp-panel">
+          <div class="mcp-section-title">MCP-сервер</div>
+          <div class="mcp-status"><span>Готов к подключению</span><span>stdio + local daemon</span></div>
+          <div class="mcp-row">
+            <button class="mcp-button primary">Запустить сервер</button>
+            <button class="mcp-button">Скопировать config</button>
+            <button class="mcp-button">Открыть логи</button>
+          </div>
+          <div class="mcp-muted">Ниже: список последних jobs, их статусы, кнопки отмены и переход к файлам результата.</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Отдельная вкладка MCP внутри переводчика</h3>
+      <p>Больше места для jobs, логов и подсказок. Но это дальше от выбора сервиса.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="home-card" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mcp-mini-window">
+        <div class="mcp-card-grid">
+          <div class="mcp-home-card hero">
+            <div class="mcp-section-title">📖 Переводчик EPUB</div>
+            <div class="mcp-muted">Основной режим перевода и настройки провайдеров.</div>
+          </div>
+          <div class="mcp-home-card">
+            <div class="mcp-section-title">📚 Менеджер глоссариев</div>
+            <div class="mcp-muted">Редактор терминов.</div>
+          </div>
+          <div class="mcp-home-card">
+            <div class="mcp-section-title">🔌 MCP-сервер</div>
+            <div class="mcp-muted">Подключение Codex, Claude Desktop и Antigravity.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. Отдельная карточка в главном меню</h3>
+      <p>Самый заметный вариант для новичка, но хуже связан с конкретным проектом и выбранным сервисом.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Моя рекомендация</h3>
+  <p><strong>A сейчас + B позже при необходимости.</strong> Встроить компактный MCP-блок рядом с выбором сервиса: там уже есть контекст провайдера, ключей и сессии. Если потом появится много job-history и подключенных клиентов, можно вынести это в отдельную вкладку, не ломая первый вариант.</p>
+</div>
