@@ -503,6 +503,34 @@ class DefaultCandidateFilter:
         return filter_gap_candidates(result, contexts, glossary)
 
 
+# The share of a chapter's visible text that has to be ordinary prose before
+# the chapter counts as narrative.  A title page or a table of contents is
+# mostly headings and links, and its volume ratio means nothing.
+_NARRATIVE_TEXT_SHARE = 0.6
+_NARRATIVE_KINDS = frozenset({"paragraph", "blockquote", "list_item", "text_flow"})
+
+
+def _content_kind(units: Sequence[SemanticUnit]) -> str:
+    """Classify the chapter, not its first block.
+
+    This used to read the kind of unit zero, which is a block role such as
+    "paragraph" — never the "narrative" the book statistics ask for, so no
+    chapter ever entered the book baseline and the whole relative-ratio norm
+    stayed empty.
+    """
+    if not units:
+        return "narrative"
+    total = sum(len(unit.text) for unit in units)
+    if total <= 0:
+        return units[0].kind
+    prose = sum(
+        len(unit.text) for unit in units if unit.kind in _NARRATIVE_KINDS
+    )
+    if prose / total >= _NARRATIVE_TEXT_SHARE:
+        return "narrative"
+    return units[0].kind
+
+
 class DefaultCoverageMetricsCollector:
     """Build deterministic in-memory chapter metrics without persistence or pandas."""
 
@@ -519,7 +547,7 @@ class DefaultCoverageMetricsCollector:
             chapter_id=inputs.request.chapter_id,
             source_language=inputs.request.source_language,
             target_language=inputs.request.target_language,
-            content_kind=(inputs.source_units[0].kind if inputs.source_units else "narrative"),
+            content_kind=_content_kind(inputs.source_units),
             source_chars=sum(len(unit.text) for unit in inputs.source_units),
             translated_chars=sum(len(unit.text) for unit in inputs.target_units),
             source_units=len(inputs.source_units),

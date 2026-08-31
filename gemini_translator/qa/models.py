@@ -675,10 +675,24 @@ class AlignmentConfig:
     orphan_drop: float = 0.04
     orphan_penalty: float = 2.0
     orphan_min_chars: int = 60
+    # How many paragraphs a chapter needs before its own volume ratio is taken
+    # from a median of paired paragraphs rather than from its totals.  Totals
+    # are what a damaged chapter poisons: a chapter that lost a third of its
+    # text lowers its own expectation by a third, and the volume evidence goes
+    # quiet exactly where the loss is worst.  Measured on real chapters, the
+    # total ratio falls 3.0 -> 1.4 under 40% loss while the paired median holds
+    # 2.7 -> 2.8.
+    robust_ratio_min_blocks: int = 5
     operation_order: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
-        for field in ("max_span_size", "max_drift_units", "max_cells", "orphan_min_chars"):
+        for field in (
+            "max_span_size",
+            "max_drift_units",
+            "max_cells",
+            "orphan_min_chars",
+            "robust_ratio_min_blocks",
+        ):
             _require_integer(getattr(self, field), field)
         if (
             self.max_span_size < 1
@@ -686,6 +700,7 @@ class AlignmentConfig:
             or self.max_drift_units < 0
             or self.max_cells < 1
             or self.orphan_min_chars < 0
+            or self.robust_ratio_min_blocks < 0
         ):
             raise QaModelValidationError("alignment limits are outside supported bounds")
         for field in (

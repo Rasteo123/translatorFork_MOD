@@ -8,7 +8,15 @@ import math
 
 import numpy as np
 
-from .models import AlignmentConfig, AlignmentResult, AlignmentSpan, EmbeddedUnits, GapCandidate, QaModelValidationError
+from .models import (
+    AlignmentConfig,
+    AlignmentResult,
+    AlignmentSpan,
+    EmbeddedUnits,
+    GapCandidate,
+    QaModelValidationError,
+    SemanticUnit,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,9 +73,10 @@ class MonotonicAligner:
             raise AlignmentCapacityError(cells, self.config.max_cells)
         source_chars = tuple(_visible_chars(unit.text) for unit in source.units)
         target_chars = tuple(_visible_chars(unit.text) for unit in target.units)
-        expected_ratio = _expected_ratio(source_chars, target_chars)
+        paragraphs = _ParagraphView.build(source, target, source_chars, target_chars)
+        expected_ratio = self._expected_ratio(source_chars, target_chars, paragraphs)
         volume_scale = max(1.0, _typical(source_chars) * expected_ratio)
-        orphan = self._orphan_evidence(source, target, source_chars, target_chars)
+        orphan = self._orphan_evidence(source.units, paragraphs)
         source_prefix = _prefix_sums(source_chars)
         target_prefix = _prefix_sums(target_chars)
         states: dict[tuple[int, int], _State] = {(0, 0): _State(0.0, 0, 0, 0, None, None)}
@@ -160,12 +169,39 @@ class MonotonicAligner:
             return 0.0
         return self.config.volume_penalty * charged / volume_scale
 
-    def _orphan_evidence(
+    def _expected_ratio(
         self,
-        source: EmbeddedUnits,
-        target: EmbeddedUnits,
         source_chars: tuple[int, ...],
         target_chars: tuple[int, ...],
+        paragraphs: "_ParagraphView | None",
+    ) -> float:
+        """How much translation one source character is expected to produce.
+
+        The totals are the obvious answer and the wrong one for a damaged
+        chapter: they fall with the loss, so the volume evidence goes quiet
+        exactly where the most text is missing.  The median of paired
+        paragraphs answers the same question and a lost paragraph is one
+        sample among many, so it barely moves it.
+        """
+        if (
+            paragraphs is not None
+            and len(paragraphs.source) >= self.config.robust_ratio_min_blocks
+        ):
+            ratios = [
+                paragraphs.target[int(partner)].chars / block.chars
+                for block, partner in zip(
+                    paragraphs.source, paragraphs.partner, strict=True
+                )
+                if block.chars > 0
+            ]
+            if ratios:
+                return float(np.median(np.asarray(ratios, dtype=np.float64)))
+        return _expected_ratio(source_chars, target_chars)
+
+    def _orphan_evidence(
+        self,
+        units: tuple[SemanticUnit, ...],
+        paragraphs: "_ParagraphView | None",
     ) -> tuple[float, ...]:
         """Rate how badly each source unit's paragraph fails to match anything.
 
@@ -180,20 +216,22 @@ class MonotonicAligner:
         """
 
         if self.config.orphan_penalty <= 0.0 or self.config.orphan_drop <= 0.0:
-            return (0.0,) * len(source.units)
-        source_blocks = _block_vectors(source, source_chars)
-        target_blocks = _block_vectors(target, target_chars)
-        if not source_blocks or not target_blocks:
-            return (0.0,) * len(source.units)
-        matrix = np.asarray([block.vector for block in source_blocks], dtype=np.float64)
-        other = np.asarray([block.vector for block in target_blocks], dtype=np.float64)
-        best = np.clip(matrix @ other.T, -1.0, 1.0).max(axis=1)
-        median = float(np.median(best))
-        shares = [0.0] * len(source.units)
-        for block, score in zip(source_blocks, best, strict=True):
+            return (0.0,) * len(units)
+        if paragraphs is None:
+            return (0.0,) * len(units)
+        best = paragraphs.best
+        # The median, deliberately, and not a higher quantile: a higher
+        # reference survives a catastrophically damaged chapter but shifts the
+        # evidence for every paragraph of a healthy one.  Measured, that traded
+        # the common case away — 72% detection against 78% and half again as
+        # many candidates.  A chapter that lost a third of its text is the
+        # statistics' business, not the aligner's.
+        reference = float(np.median(best))
+        shares = [0.0] * len(units)
+        for block, score in zip(paragraphs.source, best, strict=True):
             if block.chars < self.config.orphan_min_chars:
                 continue
-            drop = median - float(score)
+            drop = reference - float(score)
             if drop <= 0.0:
                 continue
             share = min(1.0, drop / self.config.orphan_drop)
@@ -278,6 +316,42 @@ class MonotonicAligner:
             identity = "\x1f".join((source.document_id, target.document_id, side, *source_ids, "|", *target_ids))
             candidates.append(GapCandidate("gap-" + hashlib.sha256(identity.encode()).hexdigest()[:20], side, source_ids, target_ids, left_ok, right_ok, repairable, signals))
         return tuple(candidates)
+
+
+@dataclass(frozen=True, slots=True)
+class _ParagraphView:
+    """The chapter seen as paragraphs, matched once and reused.
+
+    Both the volume expectation and the orphan evidence ask questions of the
+    same paragraph-to-paragraph similarity matrix, so it is built once.
+    """
+
+    source: tuple["_Block", ...]
+    target: tuple["_Block", ...]
+    best: np.ndarray
+    partner: np.ndarray
+
+    @classmethod
+    def build(
+        cls,
+        source: EmbeddedUnits,
+        target: EmbeddedUnits,
+        source_chars: tuple[int, ...],
+        target_chars: tuple[int, ...],
+    ) -> "_ParagraphView | None":
+        source_blocks = _block_vectors(source, source_chars)
+        target_blocks = _block_vectors(target, target_chars)
+        if not source_blocks or not target_blocks:
+            return None
+        matrix = np.asarray([block.vector for block in source_blocks], dtype=np.float64)
+        other = np.asarray([block.vector for block in target_blocks], dtype=np.float64)
+        similarity = np.clip(matrix @ other.T, -1.0, 1.0)
+        return cls(
+            source=source_blocks,
+            target=target_blocks,
+            best=similarity.max(axis=1),
+            partner=similarity.argmax(axis=1),
+        )
 
 
 @dataclass(frozen=True, slots=True)

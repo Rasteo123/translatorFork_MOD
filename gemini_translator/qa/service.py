@@ -25,6 +25,7 @@ from .language_validation import (
 )
 from .llm.completion import CancellationToken, QaModelSelection
 from .llm.omission_repairer import OmissionRepairError, RepairContext
+from .book_metrics import MIN_BASELINE_SOURCE_CHARS, BookMetricsAnalyzer
 from .models import (
     ChapterMetrics,
     Decision,
@@ -55,6 +56,10 @@ from .structural_repair import (
 
 
 MAX_GLOSSARY_TERMS_PER_CANDIDATE = 12
+# A chapter whose volume is far outside its language pair's profile or its own
+# book's norm.  Deliberately not a deferred warning: nothing failed, the chapter
+# was checked, and it is worth a second look rather than a retry.
+RATIO_OUTLIER_WARNING = "length_ratio_outlier"
 DEFERRED_WARNINGS = frozenset(
     {
         "coverage_failed",
@@ -508,6 +513,8 @@ class TranslationQualityService:
             coverage.target_units if coverage is not None else (),
         )
         metrics = coverage.metrics if coverage is not None else None
+        if metrics is not None and self._ratio_outlier(metrics):
+            warnings.append(RATIO_OUTLIER_WARNING)
         risk, may_continue = _risk(verified, repairs, additions, coverage, warnings)
         result = ChapterQaResult(
             chapter_id=request.chapter_id,
@@ -523,6 +530,40 @@ class TranslationQualityService:
         )
         self._record(result)
         return result
+
+    def _ratio_outlier(self, metrics: ChapterMetrics) -> bool:
+        """Report whether this chapter's volume is unusual enough to look closer.
+
+        The design has always said a statistical deviation raises a chapter to
+        MEDIUM, and the search alone cannot deliver that: a chapter that lost a
+        third of its text lowers its own expectations along with it, so the
+        loudest evidence of all — the chapter being far outside the language
+        pair's ratio and its own book's norm — has to come from the statistics.
+        It only ever raises attention: length still proves nothing on its own,
+        so it can neither block the queue nor authorize a repair.
+        """
+        # The same bar the book baseline sets for itself: a title page or a
+        # three-line interlude has a ratio, and it means nothing.
+        if (
+            str(metrics.content_kind) != "narrative"
+            or metrics.source_chars < MIN_BASELINE_SOURCE_CHARS
+        ):
+            return False
+        try:
+            analyzer = BookMetricsAnalyzer()
+            history = {
+                chapter_id: value
+                for chapter_id, value in self._journal.metrics.items()
+                if chapter_id != metrics.chapter_id
+            }
+            frame = analyzer.analyze([*history.values(), metrics])
+            if frame.empty:
+                return False
+            return bool(
+                analyzer.classify_ratio_risk(frame, metrics.chapter_id).requires_deep_check
+            )
+        except Exception:  # noqa: BLE001 - statistics never break a check
+            return False
 
     def attach_quality_estimate(self, result: ChapterQaResult, estimate):
         """Record a quality estimate as evidence, without letting it change risk.
