@@ -678,7 +678,14 @@ class AlignmentConfig:
     # evidence is only read on paragraphs a reader would notice losing.
     orphan_drop: float = 0.04
     orphan_penalty: float = 2.0
-    orphan_min_chars: int = 60
+    # Which paragraphs are worth reading the evidence on.  An absolute size is
+    # not portable: 60 characters is a paragraph in Chinese and a short sentence
+    # in English, and even inside one Chinese book that threshold covered
+    # anywhere from 23% to 48% of the paragraphs chapter by chapter.  The floor
+    # is therefore the chapter's own median paragraph, with a small absolute
+    # sanity bound under it for a chapter made of one-word lines.
+    orphan_min_chars: int = 25
+    orphan_min_share: float = 1.0
     # How many paragraphs a chapter needs before its own volume ratio is taken
     # from a median of paired paragraphs rather than from its totals.  Totals
     # are what a damaged chapter poisons: a chapter that lost a third of its
@@ -717,6 +724,7 @@ class AlignmentConfig:
             "volume_surplus_weight",
             "orphan_drop",
             "orphan_penalty",
+            "orphan_min_share",
         ):
             _require_finite_number(getattr(self, field), field)
         if (
@@ -728,6 +736,7 @@ class AlignmentConfig:
             or not 0.0 <= self.volume_surplus_weight <= 1.0
             or not 0.0 <= self.orphan_drop <= 2.0
             or self.orphan_penalty < 0
+            or self.orphan_min_share < 0
             or not -1.0 <= self.anchor_similarity <= 1.0
         ):
             raise QaModelValidationError("alignment scores are outside supported bounds")

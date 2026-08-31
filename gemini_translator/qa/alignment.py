@@ -219,6 +219,14 @@ class MonotonicAligner:
             return (0.0,) * len(units)
         if paragraphs is None:
             return (0.0,) * len(units)
+        # The floor follows the book rather than the alphabet: half the
+        # chapter's paragraphs are large enough to carry this evidence, in any
+        # language and in every chapter.
+        typical = _typical(tuple(block.chars for block in paragraphs.source))
+        floor = max(
+            float(self.config.orphan_min_chars),
+            self.config.orphan_min_share * typical,
+        )
         best = paragraphs.best
         # The median, deliberately, and not a higher quantile: a higher
         # reference survives a catastrophically damaged chapter but shifts the
@@ -229,7 +237,7 @@ class MonotonicAligner:
         reference = float(np.median(best))
         shares = [0.0] * len(units)
         for block, score in zip(paragraphs.source, best, strict=True):
-            if block.chars < self.config.orphan_min_chars:
+            if block.chars < floor:
                 continue
             drop = reference - float(score)
             if drop <= 0.0:

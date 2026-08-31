@@ -600,11 +600,9 @@ def test_the_shipped_scoring_defaults_are_the_calibrated_ones():
     config = AlignmentConfig()
 
     assert (config.volume_penalty, config.volume_surplus_weight) == (0.5, 0.5)
-    assert (config.orphan_drop, config.orphan_penalty, config.orphan_min_chars) == (
-        0.04,
-        2.0,
-        60,
-    )
+    assert (config.orphan_drop, config.orphan_penalty) == (0.04, 2.0)
+    # The size floor follows the chapter, with a small absolute bound under it.
+    assert (config.orphan_min_share, config.orphan_min_chars) == (1.0, 25)
 
 
 def test_orphan_evidence_is_charged_once_per_covered_unit():
@@ -624,3 +622,34 @@ def test_orphan_evidence_is_charged_once_per_covered_unit():
         for unit_id in span.source_unit_ids
     )
     assert gapped == ("s2", "s3")
+
+
+def test_the_size_floor_follows_the_chapter_not_the_alphabet():
+    """Замер по корпусу: порог 60 символов смотрит на 61 % английских абзацев и 20 % китайских."""
+    long_text = _PARAGRAPH * 4
+    source = _units(
+        "s",
+        [[1.0, 0.0, 0.0]] * 2 + [[0.0, 1.0, 0.0]] * 2 + [[0.0, 0.0, 1.0]] * 2,
+        "source-doc",
+        texts=(long_text,) * 6,
+        blocks=(0, 0, 1, 1, 2, 2),
+    )
+    target = _units(
+        "t",
+        [[1.0, 0.0, 0.0]] * 2 + [[0.0, 0.0, 1.0]] * 2,
+        "target-doc",
+        texts=(long_text,) * 4,
+        blocks=(0, 0, 1, 1),
+    )
+
+    # Every paragraph here is far above any absolute floor, and the orphan is
+    # exactly the chapter's median size, so only a relative floor admits it.
+    caught = MonotonicAligner(
+        _config(orphan_drop=0.05, orphan_penalty=2.0, anchor_similarity=0.85)
+    ).align(source, target)
+    ignored = MonotonicAligner(
+        _config(orphan_drop=0.05, orphan_penalty=2.0, orphan_min_share=1.5)
+    ).align(source, target)
+
+    assert [gap.source_unit_ids for gap in caught.gaps] == [("s2", "s3")]
+    assert ignored.gaps == ()
