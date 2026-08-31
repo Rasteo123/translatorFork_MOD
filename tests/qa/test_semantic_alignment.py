@@ -605,3 +605,22 @@ def test_the_shipped_scoring_defaults_are_the_calibrated_ones():
         2.0,
         60,
     )
+
+
+def test_orphan_evidence_is_charged_once_per_covered_unit():
+    """Одна плата за спан делала слияние двухпредложенческого абзаца дешевле гэпа."""
+    source, target = _paragraph_case()
+
+    result = MonotonicAligner(
+        _config(orphan_drop=0.05, orphan_penalty=1.3, anchor_similarity=0.85)
+    ).align(source, target)
+
+    # Two orphan units: per unit the cover costs 2.6 against two gaps at 2.4,
+    # and the gap wins.  One fee for the whole span would have been 1.3.
+    gapped = tuple(
+        unit_id
+        for span in result.spans
+        if span.operation == "1:0"
+        for unit_id in span.source_unit_ids
+    )
+    assert gapped == ("s2", "s3")

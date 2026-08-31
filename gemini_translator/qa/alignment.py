@@ -98,7 +98,11 @@ class MonotonicAligner:
                             + self._volume_cost(
                                 span_source, span_target, expected_ratio, volume_scale
                             )
-                            + self.config.orphan_penalty * max(orphan[i - source_size:i])
+                            # Charged per covered unit, because the gap it is
+                            # compared against is also paid per unit: one fee for
+                            # a whole span would make merging a two-sentence
+                            # orphan cheaper than admitting it.
+                            + self.config.orphan_penalty * sum(orphan[i - source_size:i])
                         )
                     else:
                         similarity = 0.0
