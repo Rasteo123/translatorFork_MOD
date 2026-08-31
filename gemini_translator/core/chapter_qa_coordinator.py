@@ -273,7 +273,9 @@ class ChapterQaCoordinator:
             task_id, _outcome_for(chapter_ids, results), tuple(results)
         )
 
-    async def run_final_book_pass(self, session_id: str) -> BookQaResult:
+    async def run_final_book_pass(
+        self, session_id: str, on_progress=None
+    ) -> BookQaResult:
         """Re-check only the chapters the book's own history says are unsettled."""
         events = self._book_events()
         if not events:
@@ -299,7 +301,9 @@ class ChapterQaCoordinator:
             )
             + ("…" if len(selected) > 10 else "")
         )
-        return await self.check_all_now(tuple(item.event for item in selected))
+        return await self.check_all_now(
+            tuple(item.event for item in selected), on_progress=on_progress
+        )
 
     async def resume_pending_qa(self) -> ResumeResult:
         """Finish the checks a previous run owed, without repeating applied repairs."""
@@ -346,6 +350,7 @@ class ChapterQaCoordinator:
         self,
         events: Sequence[TranslationReadyEvent],
         options: QaOptions | None = None,
+        on_progress=None,
     ) -> BookQaResult:
         """Run the cascade over many chapters, stopping cleanly on cancellation.
 
@@ -359,8 +364,19 @@ class ChapterQaCoordinator:
         resolved = options or self._options()
         limit = asyncio.Semaphore(self._max_concurrency)
         outcomes: dict[int, ChapterQaResult] = {}
+        total = len(events)
+        done = 0
+
+        def report_progress(chapter_id: str) -> None:
+            if not callable(on_progress):
+                return
+            try:
+                on_progress(done, total, chapter_id)
+            except Exception:  # noqa: BLE001 - a display never fails a check
+                return
 
         async def check(index: int, event: TranslationReadyEvent) -> None:
+            nonlocal done
             if self._cancellation.is_cancelled:
                 return
             async with limit:
@@ -369,6 +385,11 @@ class ChapterQaCoordinator:
                 result = await self._check_one(event, resolved)
                 if result is not None:
                     outcomes[index] = result
+            # Counted whether the chapter produced a result or not: the reader
+            # is watching how much of the pass is left, not how much of it
+            # succeeded.
+            done += 1
+            report_progress(event.chapter_id)
 
         await asyncio.gather(
             *(check(index, event) for index, event in enumerate(events))

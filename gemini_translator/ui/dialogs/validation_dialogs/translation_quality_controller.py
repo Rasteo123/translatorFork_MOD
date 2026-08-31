@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -107,8 +108,9 @@ class TranslationQualityController(QObject):
         coordinator.reset_cancellation()
         self._set_busy(True)
         self.progress_changed.emit(0, len(events), "")
+        self._pass_started = time.monotonic()
         coordinator.run_background(
-            lambda: coordinator.check_all_now(events),
+            lambda: coordinator.check_all_now(events, on_progress=self._on_chapter_done),
             lambda result, error: self._finish_book_pass(result, error, len(events)),
         )
 
@@ -199,6 +201,23 @@ class TranslationQualityController(QObject):
             self.status_changed.emit(f"Не удалось собрать список глав: {error}")
             return ()
 
+    def _on_chapter_done(self, done: int, total: int, chapter_id: str) -> None:
+        """Show which chapter just finished and what the rest is likely to cost.
+
+        The estimate is the pass's own pace so far, not a guess about the book:
+        one chapter's duration says little, so nothing is promised until two
+        have finished.
+        """
+        label = str(chapter_id or "")
+        elapsed = time.monotonic() - getattr(self, "_pass_started", time.monotonic())
+        remaining = total - done
+        if done >= 2 and remaining > 0 and elapsed > 0:
+            seconds = int(remaining * elapsed / done)
+            label = f"{label} · осталось ~{_humanize_seconds(seconds)}" if label else (
+                f"осталось ~{_humanize_seconds(seconds)}"
+            )
+        self.progress_changed.emit(done, total, label)
+
     def _finish_check(self, error, checked: int, total: int, chapter_id: str) -> None:
         if error is not None:
             self.status_changed.emit(f"Проверка не удалась: {error}")
@@ -277,3 +296,15 @@ def _probe_embedding(qa_settings) -> str:
         f"Подключение работает: {batch.provider}, модель {batch.model}, "
         f"{batch.dimensions} измерений."
     )
+
+
+def _humanize_seconds(seconds: int) -> str:
+    """Say a duration the way a person waiting for it would."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} с"
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} мин" if rest < 30 else f"{minutes + 1} мин"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} ч {minutes:02d} мин"

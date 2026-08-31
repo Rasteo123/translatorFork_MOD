@@ -945,8 +945,17 @@ class TranslationEngine(QObject):
             'message': "[QA] Итоговый проход по книге перед завершением сессии…"
         })
         session_id = str(self.session_id)
+
+        def report_progress(done, total, chapter_id):
+            # The session waits for this pass, so it must not look frozen.
+            self._post_event('log_message', {
+                'message': f"[QA] Итоговый проход: {done}/{total} — {chapter_id}"
+            })
+
         coordinator.run_background(
-            lambda: coordinator.run_final_book_pass(session_id),
+            lambda: coordinator.run_final_book_pass(
+                session_id, on_progress=report_progress
+            ),
             lambda result, error: self.qa_final_pass_finished.emit(result, error),
         )
         return True

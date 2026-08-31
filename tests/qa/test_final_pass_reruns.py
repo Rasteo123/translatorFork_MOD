@@ -273,3 +273,79 @@ def test_the_batch_size_is_bounded_by_the_settings():
     assert QaSettings(batch_concurrency=99).batch_concurrency == 4
     assert QaSettings(batch_concurrency=0).batch_concurrency == 1
     assert QaSettings.from_dict({"batch_concurrency": "два"}).batch_concurrency == 1
+
+
+def test_the_pass_reports_each_finished_chapter():
+    """Проход, который молчит минутами, неотличим от зависшего."""
+    import asyncio
+
+    from gemini_translator.core.chapter_qa_coordinator import ChapterQaCoordinator
+    from gemini_translator.qa.models import RiskLevel
+    from gemini_translator.qa.service import ChapterQaResult, QaOptions
+
+    class _Service:
+        async def check_chapter(self, request, options, cancellation):
+            if request == "chapter-1":
+                raise RuntimeError("unreadable")
+            return ChapterQaResult(
+                chapter_id=request,
+                risk_level=RiskLevel.LOW,
+                may_continue_translation=True,
+                coverage_mode="semantic_alignment",
+            )
+
+    seen: list[tuple[int, int, str]] = []
+    coordinator = ChapterQaCoordinator(
+        service=_Service(),
+        task_manager=None,
+        request_builder=lambda event: event.chapter_id,
+    )
+    events = tuple(
+        _event(f"chapter-{index}", Path(f"/tmp/chapter-{index}")) for index in range(3)
+    )
+
+    asyncio.run(
+        coordinator.check_all_now(
+            events, QaOptions(), on_progress=lambda *args: seen.append(args)
+        )
+    )
+
+    # Counted even for the chapter that failed: the reader watches the pass,
+    # not its success rate.
+    assert [item[0] for item in seen] == [1, 2, 3]
+    assert {item[1] for item in seen} == {3}
+    assert seen[-1][2] == "chapter-2"
+
+
+def test_a_broken_progress_callback_never_fails_the_pass():
+    """Отчёт о ходе — украшение, а не условие проверки."""
+    import asyncio
+
+    from gemini_translator.core.chapter_qa_coordinator import ChapterQaCoordinator
+    from gemini_translator.qa.models import RiskLevel
+    from gemini_translator.qa.service import ChapterQaResult, QaOptions
+
+    class _Service:
+        async def check_chapter(self, request, options, cancellation):
+            return ChapterQaResult(
+                chapter_id=request,
+                risk_level=RiskLevel.LOW,
+                may_continue_translation=True,
+                coverage_mode="semantic_alignment",
+            )
+
+    def explode(*_args):
+        raise RuntimeError("the progress bar is on fire")
+
+    coordinator = ChapterQaCoordinator(
+        service=_Service(),
+        task_manager=None,
+        request_builder=lambda event: event.chapter_id,
+    )
+    events = (_event("chapter-0", Path("/tmp/chapter-0")),)
+
+    outcome = asyncio.run(
+        coordinator.check_all_now(events, QaOptions(), on_progress=explode)
+    )
+
+    assert [item.chapter_id for item in outcome.results] == ["chapter-0"]

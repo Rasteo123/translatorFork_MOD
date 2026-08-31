@@ -65,10 +65,13 @@ class _Coordinator:
             coverage_mode="semantic_alignment",
         )
 
-    async def check_all_now(self, events, options=None):
+    async def check_all_now(self, events, options=None, on_progress=None):
         if self.error is not None:
             raise self.error
         self.checked.extend(event.chapter_id for event in events)
+        for index, event in enumerate(events, start=1):
+            if callable(on_progress):
+                on_progress(index, len(events), event.chapter_id)
         return self.book_result or BookQaResult(
             results=tuple(
                 ChapterQaResult(
@@ -342,3 +345,33 @@ def test_export_reports_a_broken_journal_instead_of_writing_nothing(qt_app, tmp_
 
     assert "corrupted" in statuses[-1]
     assert not list(tmp_path.glob("*.csv"))
+
+
+def test_the_progress_bar_names_the_chapter_and_estimates_the_rest(qt_app):
+    """Полоса, которая молчит до конца прохода, ничего не сообщает."""
+    coordinator = _Coordinator()
+    controller = _controller(coordinator, events=("chapter-1", "chapter-2", "chapter-3"))
+    updates = []
+    controller.progress_changed.connect(lambda *args: updates.append(args))
+
+    controller.check_all()
+
+    assert updates[0] == (0, 3, "")
+    assert [item[0] for item in updates[1:4]] == [1, 2, 3]
+    assert updates[1][2] == "chapter-1"
+    # The estimate appears only once the pass has a pace to estimate from.
+    assert "осталось" not in updates[1][2]
+    assert "осталось" in updates[2][2]
+
+
+def test_a_duration_is_spelled_the_way_a_waiting_person_reads_it():
+    from gemini_translator.ui.dialogs.validation_dialogs.translation_quality_controller import (
+        _humanize_seconds,
+    )
+
+    assert _humanize_seconds(0) == "0 с"
+    assert _humanize_seconds(45) == "45 с"
+    assert _humanize_seconds(90) == "2 мин"
+    assert _humanize_seconds(100) == "2 мин"
+    assert _humanize_seconds(3700) == "1 ч 01 мин"
+    assert _humanize_seconds(-5) == "0 с"
