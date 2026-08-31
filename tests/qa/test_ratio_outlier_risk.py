@@ -306,6 +306,18 @@ def test_the_check_records_how_long_it_took(tmp_path):
     assert result.metrics.duration_seconds < 60.0
 
 
+def test_a_coarse_monotonic_clock_still_yields_a_duration(tmp_path, monkeypatch):
+    """Windows CI: time.monotonic тикает раз в ~15.6 мс, и главы «шли ноль секунд»."""
+    import time
+
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
+
+    result = _run(tmp_path, _FULL, _FULL)
+
+    assert result.metrics is not None
+    assert result.metrics.duration_seconds > 0.0
+
+
 def test_the_check_records_how_many_requests_it_spent(tmp_path):
     """«Сколько стоила проверка» — вопрос про запросы, и он был без ответа."""
 

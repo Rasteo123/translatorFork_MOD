@@ -505,7 +505,10 @@ class TranslationQualityService:
             raise TypeError("options must be a QaOptions")
         cancellation.raise_if_cancelled()
 
-        started = time.monotonic()
+        # perf_counter, not monotonic: on Windows monotonic ticks every
+        # ~15.6 ms, and a chapter that checks faster than one tick would
+        # record the same zero this column showed before it was filled.
+        started = time.perf_counter()
         requests_before = self._requests_made()
         warnings: list[str] = []
         coverage: CoverageAnalysis | None = None
@@ -547,7 +550,7 @@ class TranslationQualityService:
             # zero: nobody measured what a check actually costs in time.
             metrics = replace(
                 metrics,
-                duration_seconds=round(time.monotonic() - started, 3),
+                duration_seconds=round(time.perf_counter() - started, 6),
                 llm_requests=max(0, self._requests_made() - requests_before),
             )
         if metrics is not None and self._ratio_outlier(metrics):
