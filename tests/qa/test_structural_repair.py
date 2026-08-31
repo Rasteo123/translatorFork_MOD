@@ -277,3 +277,89 @@ def test_document_fingerprint_tracks_visible_text_and_identity():
         document_fingerprint(model).split(":", 1)[1]
         != hashlib.sha256(b"").hexdigest()
     )
+
+
+# --- a paragraph that was never translated ---------------------------------
+
+
+_PARAGRAPH_HTML = (
+    "<p>Она посмотрела на ворота.</p>"
+    "<p>Башня стояла у самой реки.</p>"
+)
+
+
+def _paragraph_patch(model: dict) -> StructuralPatch:
+    units = _units(model)
+    left = next(unit for unit in units if unit.text.startswith("Она посмотрела"))
+    right = next(unit for unit in units if unit.text.startswith("Башня стояла"))
+    return StructuralPatch(
+        patch_id="patch-0002",
+        chapter_id="chapter-1",
+        expected_fingerprint=document_fingerprint(model),
+        left_anchor_unit_id=left.unit_id,
+        right_anchor_unit_id=right.unit_id,
+        parent_block_id=left.block_id,
+        translated_fragment=_FRAGMENT,
+    )
+
+
+def test_a_lost_paragraph_is_restored_as_its_own_paragraph():
+    """Appending it to the neighbour would restore the words and lose the typography."""
+    model = _model(_PARAGRAPH_HTML)
+
+    preview = _engine().preview(model, _paragraph_patch(model))
+
+    assert preview.placement == "block"
+    blocks = build_translation_payload(preview.document_model)["blocks"]
+    texts = [
+        "".join(
+            inline.get("text", "") for inline in block["inlines"]
+        ).strip()
+        for block in blocks
+    ]
+    assert texts == ["Она посмотрела на ворота.", _FRAGMENT, "Башня стояла у самой реки."]
+    assert f"<p{chr(32)}" in preview.rendered_html or "<p>" in preview.rendered_html
+
+
+def test_a_restored_paragraph_keeps_every_other_block_and_passes_validation():
+    """A new block must be the only difference the engine will accept."""
+    model = _model(_PARAGRAPH_HTML)
+    engine = _engine()
+    preview = engine.preview(model, _paragraph_patch(model))
+
+    validation = engine.validate(preview, RepairValidationContext(source_text="src"))
+
+    assert validation.reasons == ()
+    assert validation.accepted is True
+
+
+def test_a_restored_paragraph_is_committed_once_and_undone_byte_for_byte(
+    tmp_path: Path, store: RepairStore
+):
+    """The whole point of a block insertion is that it is still reversible."""
+    chapter = tmp_path / "chapter-1.html"
+    chapter.write_text(_PARAGRAPH_HTML, encoding="utf-8")
+    original = chapter.read_bytes()
+    engine = _engine()
+    model = build_html_document_model(
+        chapter.read_text(encoding="utf-8"), document_id="chapter-1"
+    )
+    patch = _paragraph_patch(model)
+
+    applied = engine.commit(engine.preview(model, patch), chapter, store)
+    repeated = engine.commit(
+        engine.preview(
+            build_html_document_model(
+                chapter.read_text(encoding="utf-8"), document_id="chapter-1"
+            ),
+            patch,
+        ),
+        chapter,
+        store,
+    )
+    undo = store.undo_chapter("chapter-1")
+
+    assert applied.status == "applied"
+    assert repeated.status == "already_applied"
+    assert undo.status == "restored"
+    assert chapter.read_bytes() == original

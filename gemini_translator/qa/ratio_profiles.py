@@ -18,7 +18,7 @@ CJK_TO_RUSSIAN = RatioProfile(
     source_languages=frozenset({"zh", "ja", "ko"}),
     target_language="ru",
     minimum=2.80,
-    maximum=3.30,
+    maximum=3.80,
 )
 ALPHABETIC_TO_RUSSIAN = RatioProfile(
     key="alphabetic_to_ru",

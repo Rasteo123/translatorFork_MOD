@@ -316,3 +316,74 @@ def test_candidate_identity_mismatch_is_rejected():
 
     assert validation.accepted is False
     assert "post_check_invalid_response" in validation.reasons
+
+
+# --- a paragraph restored as its own block ---------------------------------
+
+
+_PARAGRAPH_BEFORE = (
+    f"<p>{_LEFT_ANCHOR}</p><p>{_RIGHT_ANCHOR}</p>"
+)
+_PARAGRAPH_AFTER = (
+    f"<p>{_LEFT_ANCHOR}</p>"
+    f"<p data-qa-repair=\"patch-1\">{_FRAGMENT}</p>"
+    f"<p>{_RIGHT_ANCHOR}</p>"
+)
+
+
+def test_a_paragraph_restored_between_two_blocks_is_accepted():
+    """Block ids are positional, so a new paragraph renumbers the rest of the chapter."""
+    client = RecordingClient(_post_check(_candidate()))
+
+    result = _validate(
+        client, before_html=_PARAGRAPH_BEFORE, after_html=_PARAGRAPH_AFTER
+    )
+
+    assert result.reasons == ()
+    assert result.accepted is True
+
+
+def test_a_restored_paragraph_that_also_edits_a_neighbour_is_rejected():
+    """Renumbering must not become a licence to rewrite the blocks around it."""
+    client = RecordingClient(_post_check(_candidate()))
+    tampered = (
+        f"<p>{_LEFT_ANCHOR}</p>"
+        f"<p data-qa-repair=\"patch-1\">{_FRAGMENT}</p>"
+        f"<p>{_RIGHT_ANCHOR} И башня рухнула.</p>"
+    )
+
+    result = _validate(client, before_html=_PARAGRAPH_BEFORE, after_html=tampered)
+
+    assert result.accepted is False
+    assert "unrelated_text_changed" in result.reasons
+
+
+def test_a_new_paragraph_holding_something_else_is_rejected():
+    """The restored block must carry the confirmed fragment and nothing more."""
+    client = RecordingClient(_post_check(_candidate()))
+    padded = (
+        f"<p>{_LEFT_ANCHOR}</p>"
+        f"<p data-qa-repair=\"patch-1\">{_FRAGMENT} И ещё одна мысль.</p>"
+        f"<p>{_RIGHT_ANCHOR}</p>"
+    )
+
+    result = _validate(client, before_html=_PARAGRAPH_BEFORE, after_html=padded)
+
+    assert result.accepted is False
+    assert "fragment_not_inserted" in result.reasons
+
+
+def test_two_new_paragraphs_are_rejected_even_if_one_is_the_fragment():
+    """One confirmed omission authorizes exactly one restored paragraph."""
+    client = RecordingClient(_post_check(_candidate()))
+    doubled = (
+        f"<p>{_LEFT_ANCHOR}</p>"
+        f"<p data-qa-repair=\"patch-1\">{_FRAGMENT}</p>"
+        "<p>Ещё один абзац ниоткуда.</p>"
+        f"<p>{_RIGHT_ANCHOR}</p>"
+    )
+
+    result = _validate(client, before_html=_PARAGRAPH_BEFORE, after_html=doubled)
+
+    assert result.accepted is False
+    assert "block_identity_changed" in result.reasons

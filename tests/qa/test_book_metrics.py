@@ -224,8 +224,9 @@ def test_supported_profile_with_nonfinite_target_has_no_absolute_verdict():
         ("en", 1.201, "alphabetic_to_ru", False),
         ("zh", 2.80, "cjk_to_ru", True),
         ("zh", 3.30, "cjk_to_ru", True),
+        ("zh", 3.80, "cjk_to_ru", True),
         ("zh", 2.799, "cjk_to_ru", False),
-        ("zh", 3.301, "cjk_to_ru", False),
+        ("zh", 3.801, "cjk_to_ru", False),
     ],
 )
 def test_absolute_profiles_include_documented_endpoints_only(

@@ -33,7 +33,10 @@ from .semantic_units import flatten_visible_text
 from .structural_repair import REPAIR_MARKER_ATTRIBUTE, RepairValidation
 
 
+# An inline repair wraps its text in one span; a restored paragraph is one new
+# block-level tag of the same kind as the block it follows.
 _ALLOWED_ADDED_TAGS = Counter({"span": 1})
+_BLOCK_REPAIR_TAGS = frozenset({"p", "div", "li", "blockquote", "dd", "dt"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,18 +182,29 @@ def _local_reasons(
     if not is_valid:
         reasons.append("invalid_html")
 
-    added_tags = _tag_counts(preview.html) - _tag_counts(before.html)
-    removed_tags = _tag_counts(before.html) - _tag_counts(preview.html)
-    if removed_tags or added_tags - _ALLOWED_ADDED_TAGS:
-        reasons.append("structure_changed")
-
     before_payload = before.payload()
     preview_payload = preview.payload()
     before_ids = [block["id"] for block in before_payload["blocks"]]
     preview_ids = [block["id"] for block in preview_payload["blocks"]]
     fragment = proposal.translated_fragment
-    if before_ids != preview_ids:
-        reasons.append("block_identity_changed")
+    # Block identifiers are positional, so a restored paragraph renumbers every
+    # block after it.  Only for that case is identity checked by text instead.
+    restored_paragraph = before_ids != preview_ids
+
+    added_tags = _tag_counts(preview.html) - _tag_counts(before.html)
+    removed_tags = _tag_counts(before.html) - _tag_counts(preview.html)
+    allowed = Counter(_ALLOWED_ADDED_TAGS)
+    if restored_paragraph:
+        allowed += Counter(
+            {tag: 1 for tag in added_tags if tag in _BLOCK_REPAIR_TAGS}
+        )
+    if removed_tags or added_tags - allowed:
+        reasons.append("structure_changed")
+
+    if restored_paragraph:
+        reasons.extend(
+            _new_block_reasons(before_payload, preview_payload, fragment)
+        )
     else:
         reasons.extend(
             _text_difference_reasons(before_payload, preview_payload, fragment)
@@ -203,6 +217,28 @@ def _local_reasons(
     if _violates_glossary(fragment, candidate.context.source_text, glossary):
         reasons.append("glossary_violation")
     return tuple(dict.fromkeys(reasons))
+
+
+def _block_texts(payload: dict) -> list[str]:
+    return [
+        flatten_visible_text(block["inlines"])[0] for block in payload["blocks"]
+    ]
+
+
+def _new_block_reasons(
+    before_payload: dict, preview_payload: dict, fragment: str
+) -> tuple[str, ...]:
+    """A restored paragraph must be exactly the fragment and change nothing else."""
+    before_texts = _block_texts(before_payload)
+    preview_texts = _block_texts(preview_payload)
+    if len(preview_texts) != len(before_texts) + 1:
+        return ("block_identity_changed",)
+    for position in range(len(preview_texts)):
+        if preview_texts[:position] + preview_texts[position + 1:] == before_texts:
+            if preview_texts[position] != fragment:
+                return ("fragment_not_inserted",)
+            return ()
+    return ("unrelated_text_changed",)
 
 
 def _text_difference_reasons(
@@ -251,20 +287,27 @@ def _single_insertion(before_text: str, after_text: str) -> str | None:
 def _anchors_surround_fragment(
     payload: dict, candidate: VerifiedCandidate, fragment: str
 ) -> bool:
+    """Check reading order, not block membership.
+
+    A restored paragraph sits in a block of its own, so its anchors are in the
+    neighbouring blocks; only the order of the chapter's visible text can say
+    whether the fragment landed where the alignment put it.
+    """
     context = candidate.context
-    for block in payload["blocks"]:
-        text = flatten_visible_text(block["inlines"])[0]
-        position = text.find(fragment)
-        if position < 0:
-            continue
+    text = "\n".join(
+        flatten_visible_text(block["inlines"])[0] for block in payload["blocks"]
+    )
+    position = text.find(fragment)
+    if position < 0:
+        return False
+    if context.target_before:
         left = text.find(context.target_before)
-        right = text.find(context.target_after, position + len(fragment))
-        if context.target_before and (left < 0 or left >= position):
+        if left < 0 or left >= position:
             return False
-        if context.target_after and right < 0:
+    if context.target_after:
+        if text.find(context.target_after, position + len(fragment)) < 0:
             return False
-        return True
-    return False
+    return True
 
 
 def _occurrences(payload: dict, fragment: str) -> int:

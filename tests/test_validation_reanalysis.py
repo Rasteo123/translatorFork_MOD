@@ -151,13 +151,14 @@ class _MessageBoxStub:
 
 
 class ValidationReanalysisTests(unittest.TestCase):
-    def test_cjk_ratio_preset_uses_2_80_minimum(self):
+    def test_cjk_ratio_preset_follows_the_language_profile(self):
+        """The window and the QA profile must agree, or they contradict each other."""
         ratio_min, ratio_max, description = TranslationValidatorPage.RATIO_PRESETS[
             "Иероглифический (象 -> A)"
         ]
 
         self.assertEqual(ratio_min, 2.80)
-        self.assertEqual(ratio_max, 3.30)
+        self.assertEqual(ratio_max, 3.80)
         self.assertIn("x2.8", description)
 
     def test_ratio_equal_to_lower_bound_is_not_too_short(self):

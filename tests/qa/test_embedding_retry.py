@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-import numpy as np
 import pytest
 
-from gemini_translator.qa.embeddings.base import EmbeddingBatch, EmbeddingRequest
+from gemini_translator.qa.embeddings.base import EmbeddingRequest
 from gemini_translator.qa.embeddings.factory import (
     EmbeddingHttpError,
     EmbeddingResponseError,

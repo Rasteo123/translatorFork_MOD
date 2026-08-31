@@ -12,6 +12,7 @@ import unicodedata
 from ..utils.epub_json import (
     build_html_document_model,
     build_translation_payload,
+    insert_block_after,
     insert_text_between_units,
     render_document_html,
 )
@@ -92,6 +93,9 @@ class RepairPreview:
     inserted_text: str
     block_id: str
     status: str = "prepared"
+    # "inline" puts the fragment inside the left anchor's block; "block" gives a
+    # lost paragraph a paragraph of its own, after the block it follows.
+    placement: str = "inline"
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +174,11 @@ class StructuralRepairEngine:
         if left.block_id != patch.parent_block_id:
             raise RepairLocationError("parent block must own the left anchor")
 
+        if left.block_id != right.block_id:
+            return self._preview_new_block(
+                document_model, patch, before_html, fingerprint
+            )
+
         block = next(
             (item for item in payload["blocks"] if item["id"] == patch.parent_block_id),
             None,
@@ -213,6 +222,41 @@ class StructuralRepairEngine:
             block_id=patch.parent_block_id,
         )
 
+    def _preview_new_block(
+        self,
+        document_model: dict,
+        patch: StructuralPatch,
+        before_html: str,
+        fingerprint: str,
+    ) -> RepairPreview:
+        """Restore a whole lost paragraph as its own block after the left anchor."""
+        try:
+            model = insert_block_after(
+                document_model,
+                {
+                    "after_block_id": patch.parent_block_id,
+                    "node_id": f"qa-repair.{patch.patch_id}",
+                    "text_node_id": f"qa-repair.{patch.patch_id}.text",
+                    "attrs": [
+                        {"name": REPAIR_MARKER_ATTRIBUTE, "value": patch.patch_id}
+                    ],
+                },
+                patch.translated_fragment,
+            )
+        except ValueError as error:
+            raise RepairLocationError(str(error)) from error
+        return RepairPreview(
+            patch=patch,
+            document_model=model,
+            rendered_html=render_document_html(model),
+            before_html=before_html,
+            before_fingerprint=fingerprint,
+            after_fingerprint=document_fingerprint(model),
+            inserted_text=patch.translated_fragment,
+            block_id=f"qa-repair.{patch.patch_id}",
+            placement="block",
+        )
+
     def validate(
         self, preview: RepairPreview, context: RepairValidationContext
     ) -> RepairValidation:
@@ -231,12 +275,10 @@ class StructuralRepairEngine:
         )
         after_payload = build_translation_payload(preview.document_model)
 
-        if [block["id"] for block in before_payload["blocks"]] != [
-            block["id"] for block in after_payload["blocks"]
-        ]:
+        if not _block_identity_kept(before_payload, after_payload, preview):
             reasons.append("block_identity_changed")
         elif not _only_patched_block_changed(
-            before_payload, after_payload, patch.parent_block_id, preview.inserted_text
+            before_payload, after_payload, preview
         ):
             reasons.append("unrelated_text_changed")
 
@@ -354,16 +396,54 @@ def _block_text(payload: dict, block_id: str) -> str:
     return flatten_visible_text(block["inlines"])[0]
 
 
+def _block_ids(payload: dict) -> list[str]:
+    return [block["id"] for block in payload["blocks"]]
+
+
+def _block_identity_kept(
+    before_payload: dict, after_payload: dict, preview: RepairPreview
+) -> bool:
+    """No block may lose its identity; a new paragraph may only be added."""
+    before_ids = _block_ids(before_payload)
+    after_ids = _block_ids(after_payload)
+    if preview.placement != "block":
+        return before_ids == after_ids
+    if len(after_ids) != len(before_ids) + 1:
+        return False
+    if preview.block_id not in after_ids:
+        return False
+    return [item for item in after_ids if item != preview.block_id] == before_ids
+
+
 def _only_patched_block_changed(
-    before_payload: dict, after_payload: dict, block_id: str, inserted_text: str
+    before_payload: dict, after_payload: dict, preview: RepairPreview
 ) -> bool:
     """Confirm the insertion is the single difference between both payloads."""
+    inserted_text = preview.inserted_text
+    after_blocks = [
+        block
+        for block in after_payload["blocks"]
+        if not (preview.placement == "block" and block["id"] == preview.block_id)
+    ]
+    if preview.placement == "block":
+        new_block = next(
+            (
+                block
+                for block in after_payload["blocks"]
+                if block["id"] == preview.block_id
+            ),
+            None,
+        )
+        if new_block is None:
+            return False
+        if flatten_visible_text(new_block["inlines"])[0] != inserted_text:
+            return False
     for before_block, after_block in zip(
-        before_payload["blocks"], after_payload["blocks"], strict=True
+        before_payload["blocks"], after_blocks, strict=True
     ):
         before_text = flatten_visible_text(before_block["inlines"])[0]
         after_text = flatten_visible_text(after_block["inlines"])[0]
-        if before_block["id"] == block_id:
+        if preview.placement == "inline" and before_block["id"] == preview.block_id:
             if len(after_text) != len(before_text) + len(inserted_text):
                 return False
             if inserted_text not in after_text:
@@ -376,8 +456,15 @@ def _only_patched_block_changed(
 
 
 def _anchors_surround_fragment(after_payload: dict, preview: RepairPreview) -> bool:
-    text = _block_text(after_payload, preview.block_id)
     fragment = preview.patch.translated_fragment
+    if preview.placement == "block":
+        ids = _block_ids(after_payload)
+        if preview.block_id not in ids or preview.patch.parent_block_id not in ids:
+            return False
+        if ids.index(preview.block_id) != ids.index(preview.patch.parent_block_id) + 1:
+            return False
+        return _block_text(after_payload, preview.block_id) == fragment
+    text = _block_text(after_payload, preview.block_id)
     position = text.find(fragment)
     return position > 0 and position + len(fragment) <= len(text)
 

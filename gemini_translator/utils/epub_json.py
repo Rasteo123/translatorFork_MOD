@@ -724,6 +724,87 @@ def insert_text_between_units(document_model, location, text):
     return model
 
 
+def insert_block_after(document_model, location, text):
+    """Insert one new block-level node after ``after_block_id`` in a deep copy.
+
+    A paragraph the translator lost belongs in a paragraph of its own: appending
+    it to the neighbour would restore the words and break the typography.  The
+    new node borrows the tag of the block it follows, so a restored list item
+    stays a list item.
+    """
+
+    if not isinstance(document_model, dict):
+        raise ValueError("document_model must be a dict")
+    if not isinstance(location, dict):
+        raise ValueError("location must be a dict")
+    if not isinstance(text, str) or not text:
+        raise ValueError("text must be a nonempty string")
+
+    after_block_id = location.get("after_block_id")
+    node_id = location.get("node_id")
+    text_node_id = location.get("text_node_id")
+    attrs = location.get("attrs") or []
+    for value, name in (
+        (after_block_id, "after_block_id"),
+        (node_id, "node_id"),
+        (text_node_id, "text_node_id"),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"location {name} must be a nonempty string")
+    if node_id == text_node_id:
+        raise ValueError("location node_id and text_node_id must differ")
+
+    model = copy.deepcopy(document_model)
+    existing_ids = _collect_node_ids(model)
+    for value in (node_id, text_node_id):
+        if value in existing_ids:
+            raise ValueError("location node id already exists in the document")
+
+    block_node = None
+    block_parent = None
+    for node, parent in _iter_nodes_with_parent(model.get("body", {})):
+        if node.get("node_id") == after_block_id:
+            block_node = node
+            block_parent = parent
+            break
+    if block_node is None:
+        raise ValueError("location after_block_id is not part of the document")
+    if block_node.get("kind") != "tag":
+        raise ValueError("location after_block_id is not an element node")
+    if block_parent is None:
+        raise ValueError("location after_block_id has no editable parent")
+    siblings = block_parent.get("children")
+    if not isinstance(siblings, list):
+        raise ValueError("location after_block_id has no editable parent")
+
+    tag = str(location.get("tag") or block_node.get("tag") or "p").lower()
+    path = list(block_node.get("path", []))
+    inserted = {
+        "node_id": node_id,
+        "path": path,
+        "kind": "tag",
+        "tag": tag,
+        "role": _classify_tag_role(tag, {}),
+        "attrs": [dict(item) for item in attrs],
+        "self_closing": False,
+        "children": [
+            {
+                "node_id": text_node_id,
+                "path": list(path),
+                "kind": "text",
+                "text": text,
+            }
+        ],
+    }
+    index = next(
+        position
+        for position, child in enumerate(siblings)
+        if child.get("node_id") == after_block_id
+    )
+    siblings.insert(index + 1, inserted)
+    return model
+
+
 def render_document_html(document_model):
     def render_node(node):
         kind = node.get("kind")

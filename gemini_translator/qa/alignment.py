@@ -63,6 +63,13 @@ class MonotonicAligner:
         cells = self._preflight_cells(n, m, band)
         if cells > self.config.max_cells:
             raise AlignmentCapacityError(cells, self.config.max_cells)
+        source_chars = tuple(_visible_chars(unit.text) for unit in source.units)
+        target_chars = tuple(_visible_chars(unit.text) for unit in target.units)
+        expected_ratio = _expected_ratio(source_chars, target_chars)
+        volume_scale = max(1.0, _typical(source_chars) * expected_ratio)
+        orphan = self._orphan_evidence(source, target, source_chars, target_chars)
+        source_prefix = _prefix_sums(source_chars)
+        target_prefix = _prefix_sums(target_chars)
         states: dict[tuple[int, int], _State] = {(0, 0): _State(0.0, 0, 0, 0, None, None)}
         vectors: dict[tuple[int, int, int], np.ndarray | None] = {}
         order = {operation: index for index, operation in enumerate(self.config.operation_order)}
@@ -82,7 +89,17 @@ class MonotonicAligner:
                         similarity = self._similarity(source, i - source_size, source_size, target, j - target_size, target_size, vectors)
                         if similarity is None:
                             continue
-                        cost = 1.0 - similarity + self.config.merge_penalty * (source_size + target_size - 2)
+                        span_source = source_prefix[i] - source_prefix[i - source_size]
+                        span_target = target_prefix[j] - target_prefix[j - target_size]
+                        cost = (
+                            1.0
+                            - similarity
+                            + self.config.merge_penalty * (source_size + target_size - 2)
+                            + self._volume_cost(
+                                span_source, span_target, expected_ratio, volume_scale
+                            )
+                            + self.config.orphan_penalty * max(orphan[i - source_size:i])
+                        )
                     else:
                         similarity = 0.0
                         cost = self.config.gap_penalty + self.config.local_gap_penalty
@@ -108,6 +125,77 @@ class MonotonicAligner:
         spans.reverse()
         stable_spans = tuple(spans)
         return AlignmentResult(stable_spans, self._gaps(stable_spans, source, target), len(states))
+
+    def _volume_cost(
+        self,
+        source_chars: int,
+        target_chars: int,
+        expected_ratio: float,
+        volume_scale: float,
+    ) -> float:
+        """Charge a span for the translated characters it is missing or has spare.
+
+        The charge counts characters rather than a ratio, so it grows with the
+        amount of content at stake: a terse sentence stays cheap while a lost
+        paragraph cannot be redistributed into the neighbours for free.  Surplus
+        is charged more lightly than shortfall — a verbose translator is not a
+        defect — but it must be charged, or declaring any unit missing and
+        pushing its text onto a neighbour would always look cheaper.
+        """
+
+        if self.config.volume_penalty <= 0.0 or not source_chars:
+            return 0.0
+        expected = source_chars * expected_ratio
+        free = expected * self.config.volume_tolerance
+        difference = expected - target_chars
+        if difference > free:
+            charged = difference - free
+        elif -difference > free:
+            charged = (-difference - free) * self.config.volume_surplus_weight
+        else:
+            return 0.0
+        return self.config.volume_penalty * charged / volume_scale
+
+    def _orphan_evidence(
+        self,
+        source: EmbeddedUnits,
+        target: EmbeddedUnits,
+        source_chars: tuple[int, ...],
+        target_chars: tuple[int, ...],
+    ) -> tuple[float, ...]:
+        """Rate how badly each source unit's paragraph fails to match anything.
+
+        The result is a share between 0 and 1 per unit, charged to every span
+        that tries to cover it: covering a paragraph nobody translated with the
+        neighbour's text has to cost more than admitting the gap.
+
+        Measured on real chapters: a paragraph that was translated matches its
+        counterpart near the chapter's median, while one that was dropped falls
+        a stable distance below it.  The distance is read against the chapter's
+        own median, so no absolute similarity threshold is baked in.
+        """
+
+        if self.config.orphan_penalty <= 0.0 or self.config.orphan_drop <= 0.0:
+            return (0.0,) * len(source.units)
+        source_blocks = _block_vectors(source, source_chars)
+        target_blocks = _block_vectors(target, target_chars)
+        if not source_blocks or not target_blocks:
+            return (0.0,) * len(source.units)
+        matrix = np.asarray([block.vector for block in source_blocks], dtype=np.float64)
+        other = np.asarray([block.vector for block in target_blocks], dtype=np.float64)
+        best = np.clip(matrix @ other.T, -1.0, 1.0).max(axis=1)
+        median = float(np.median(best))
+        shares = [0.0] * len(source.units)
+        for block, score in zip(source_blocks, best, strict=True):
+            if block.chars < self.config.orphan_min_chars:
+                continue
+            drop = median - float(score)
+            if drop <= 0.0:
+                continue
+            share = min(1.0, drop / self.config.orphan_drop)
+            for index in range(block.start, block.stop):
+                shares[index] = share
+        return tuple(shares)
 
     def _operations(self):
         for source_size in range(1, self.config.max_span_size + 1):
@@ -186,3 +274,63 @@ class MonotonicAligner:
             identity = "\x1f".join((source.document_id, target.document_id, side, *source_ids, "|", *target_ids))
             candidates.append(GapCandidate("gap-" + hashlib.sha256(identity.encode()).hexdigest()[:20], side, source_ids, target_ids, left_ok, right_ok, repairable, signals))
         return tuple(candidates)
+
+
+@dataclass(frozen=True, slots=True)
+class _Block:
+    """One EPUB block, pooled from the semantic units that make it up."""
+
+    start: int
+    stop: int
+    chars: int
+    vector: np.ndarray
+
+
+def _block_vectors(data: EmbeddedUnits, chars: tuple[int, ...]) -> tuple[_Block, ...]:
+    """Pool units into the blocks a reader sees as paragraphs."""
+    blocks: list[_Block] = []
+    start = 0
+    for index in range(1, len(data.units) + 1):
+        if index < len(data.units) and data.units[index].block_id == data.units[start].block_id:
+            continue
+        weights = np.asarray([max(1, value) for value in chars[start:index]], dtype=np.float64)
+        mean = np.average(data.vectors[start:index].astype(np.float64), axis=0, weights=weights)
+        norm = np.linalg.norm(mean)
+        if np.isfinite(norm) and norm > np.finfo(np.float32).eps:
+            blocks.append(_Block(start, index, sum(chars[start:index]), mean / norm))
+        start = index
+    return tuple(blocks)
+
+
+def _visible_chars(text: str) -> int:
+    """Count the characters a reader sees, ignoring layout whitespace."""
+    return sum(1 for character in text if not character.isspace())
+
+
+def _prefix_sums(values: tuple[int, ...]) -> tuple[int, ...]:
+    total = 0
+    sums = [0]
+    for value in values:
+        total += value
+        sums.append(total)
+    return tuple(sums)
+
+
+def _expected_ratio(source_chars: tuple[int, ...], target_chars: tuple[int, ...]) -> float:
+    """Use the chapter's own volume ratio, so no language pair is configured."""
+    source_total = sum(source_chars)
+    target_total = sum(target_chars)
+    if source_total <= 0 or target_total <= 0:
+        return 1.0
+    return target_total / source_total
+
+
+def _typical(values: tuple[int, ...]) -> float:
+    """Return the median size, the scale against which a span counts as large."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return float(ordered[middle])
+    return (ordered[middle - 1] + ordered[middle]) / 2.0

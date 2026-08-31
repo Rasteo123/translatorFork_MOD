@@ -26,11 +26,12 @@ from gemini_translator.qa.models import (
 _CASES = json.loads((Path(__file__).parents[1] / "fixtures/qa/alignment_cases.json").read_text())
 
 
-def _units(prefix, vectors, document_id, *, texts=None):
+def _units(prefix, vectors, document_id, *, texts=None, blocks=None):
     texts = tuple(texts) if texts is not None else ("visible",) * len(vectors)
+    blocks = tuple(blocks) if blocks is not None else tuple(range(len(texts)))
     units = tuple(
         SemanticUnit(
-            unit_id=f"{prefix}{index}", document_id=document_id, block_id=f"b{index}",
+            unit_id=f"{prefix}{index}", document_id=document_id, block_id=f"b{blocks[index]}",
             ordinal=index, text=text, normalized_text=text.strip(), source_start=0,
             source_end=len(text), kind="paragraph",
             inline_spans=(SemanticInlineSpan(f"i{index}", 0, len(text), 0, len(text)),),
@@ -46,8 +47,11 @@ def _case(name):
 
 
 def _config(**changes):
+    # The volume and orphan terms are opt-in here: every case that predates them
+    # isolates one scoring rule, and their own cases switch them on explicitly.
     values = dict(max_span_size=3, max_drift_units=4, max_cells=10_000, merge_penalty=0.05,
-                  gap_penalty=1.2, anchor_similarity=0.95)
+                  gap_penalty=1.2, anchor_similarity=0.95, volume_penalty=0.0,
+                  orphan_penalty=0.0)
     values.update(changes)
     return AlignmentConfig(**values)
 
@@ -483,3 +487,121 @@ import gemini_translator.qa.alignment
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+# --- missing paragraphs ----------------------------------------------------
+
+
+_PARAGRAPH = "Достаточно длинная строка перевода для целого абзаца."
+_LINE = "Коротко."
+
+
+def _paragraph_case(text=_PARAGRAPH):
+    """Three source paragraphs of two sentences each; the middle one is untranslated."""
+    source = _units(
+        "s",
+        [[1.0, 0.0, 0.0]] * 2 + [[0.0, 1.0, 0.0]] * 2 + [[0.0, 0.0, 1.0]] * 2,
+        "source-doc",
+        texts=(text,) * 6,
+        blocks=(0, 0, 1, 1, 2, 2),
+    )
+    target = _units(
+        "t",
+        [[1.0, 0.0, 0.0]] * 2 + [[0.0, 0.0, 1.0]] * 2,
+        "target-doc",
+        texts=(text,) * 4,
+        blocks=(0, 0, 1, 1),
+    )
+    return source, target
+
+
+def test_an_untranslated_paragraph_becomes_a_repairable_gap_on_its_own_evidence():
+    """Without this the sentences of a dropped paragraph are absorbed by the neighbours."""
+    source, target = _paragraph_case()
+
+    blind = MonotonicAligner(_config(orphan_penalty=0.0)).align(source, target)
+    aware = MonotonicAligner(
+        _config(orphan_drop=0.05, orphan_penalty=2.0, anchor_similarity=0.85)
+    ).align(source, target)
+
+    assert blind.gaps == ()
+    assert len(aware.gaps) == 1
+    gap = aware.gaps[0]
+    assert gap.side == "source"
+    assert gap.source_unit_ids == ("s2", "s3")
+    assert gap.repairable is True
+
+
+def test_a_short_paragraph_is_never_called_missing_on_similarity_alone():
+    """One-word lines drift below any median; treating that as evidence floods the LLM."""
+    source, target = _paragraph_case(_LINE)
+
+    result = MonotonicAligner(
+        _config(orphan_drop=0.05, orphan_penalty=2.0)
+    ).align(source, target)
+
+    assert result.gaps == ()
+
+
+def test_orphan_evidence_only_charges_the_paragraph_it_was_measured_on():
+    """Charging a whole span would drag the neighbouring paragraphs into the gap."""
+    source, target = _paragraph_case()
+
+    result = MonotonicAligner(
+        _config(orphan_drop=0.05, orphan_penalty=50.0)
+    ).align(source, target)
+
+    gapped = tuple(
+        unit_id for span in result.spans if span.operation == "1:0"
+        for unit_id in span.source_unit_ids
+    )
+    assert gapped == ("s2", "s3")
+
+
+def _volume_case():
+    """Two source sentences whose translations are split 50/150 instead of 100/100."""
+    source = _units(
+        "s", [[1.0, 0.0]] * 2, "source-doc", texts=("x" * 100,) * 2
+    )
+    target = _units(
+        "t", [[1.0, 0.0]] * 2, "target-doc", texts=("y" * 50, "y" * 150)
+    )
+    return source, target
+
+
+def test_a_span_is_not_free_to_shrink_or_stretch_the_text_it_carries():
+    """Ignoring volume lets the search move characters between spans to hide a loss."""
+    source, target = _volume_case()
+
+    blind = MonotonicAligner(_config(volume_penalty=0.0)).align(source, target)
+    aware = MonotonicAligner(_config(volume_penalty=2.0)).align(source, target)
+
+    assert tuple(span.operation for span in blind.spans) == ("1:1", "1:1")
+    assert tuple(span.operation for span in aware.spans) == ("2:2",)
+
+
+def test_surplus_text_is_charged_more_lightly_than_missing_text():
+    """Charging only shortfalls would make dropping any unit look like an improvement."""
+    source, target = _volume_case()
+
+    lenient = MonotonicAligner(
+        _config(volume_penalty=0.15, volume_surplus_weight=0.0)
+    ).align(source, target)
+    strict = MonotonicAligner(
+        _config(volume_penalty=0.15, volume_surplus_weight=1.0)
+    ).align(source, target)
+
+    assert tuple(span.operation for span in lenient.spans) == ("1:1", "1:1")
+    assert tuple(span.operation for span in strict.spans) == ("2:2",)
+
+
+def test_the_shipped_scoring_defaults_are_the_calibrated_ones():
+    """These numbers were measured on real chapters; drifting from them silently is a regression."""
+    config = AlignmentConfig()
+
+    assert (config.volume_penalty, config.volume_surplus_weight) == (0.5, 0.5)
+    assert (config.orphan_drop, config.orphan_penalty, config.orphan_min_chars) == (
+        0.04,
+        2.0,
+        60,
+    )

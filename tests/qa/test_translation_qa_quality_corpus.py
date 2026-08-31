@@ -53,13 +53,13 @@ from gemini_translator.utils.epub_json import (
 # --- absolute language profiles -------------------------------------------
 
 
-@pytest.mark.parametrize("ratio", [2.80, 3.05, 3.30])
+@pytest.mark.parametrize("ratio", [2.80, 3.05, 3.30, 3.59, 3.80])
 def test_cjk_ratios_inside_the_profile_are_normal(ratio):
-    """A Chinese chapter three times longer in Russian is ordinary, not a defect."""
+    """Measured on a real book: chapters land between 3.4 and 3.6, not at 3.0."""
     assert get_ratio_profile("zh", "ru").contains(ratio) is True
 
 
-@pytest.mark.parametrize("ratio", [2.79, 3.31])
+@pytest.mark.parametrize("ratio", [2.79, 3.81])
 def test_cjk_ratios_outside_the_profile_are_signals(ratio):
     """The profile edges are the whole point of having a profile."""
     assert get_ratio_profile("zh", "ru").contains(ratio) is False

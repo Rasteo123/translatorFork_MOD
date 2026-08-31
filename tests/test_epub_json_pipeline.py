@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from gemini_translator.core.worker_helpers.taskers.base_processor import BaseTaskProcessor
 from gemini_translator.utils.epub_json import (
     apply_transport_payload,
+    insert_block_after,
     apply_translation_payload,
     build_html_document_model,
     build_transport_payload,
@@ -282,3 +283,60 @@ class EpubJsonPipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InsertBlockAfterTests(unittest.TestCase):
+    """A restored paragraph must be a real sibling block, added to a copy."""
+
+    HTML = "<p>Первый абзац.</p><p>Второй абзац.</p>"
+
+    def _model(self):
+        return build_html_document_model(self.HTML, document_id="chapter-1")
+
+    def _location(self, model, **overrides):
+        blocks = build_translation_payload(model)["blocks"]
+        location = {
+            "after_block_id": blocks[0]["id"],
+            "node_id": "qa-repair.patch-1",
+            "text_node_id": "qa-repair.patch-1.text",
+            "attrs": [{"name": "data-qa-repair", "value": "patch-1"}],
+        }
+        location.update(overrides)
+        return location
+
+    def test_new_block_lands_between_its_neighbours_and_keeps_their_tag(self):
+        model = self._model()
+
+        updated = insert_block_after(model, self._location(model), "Пропавший абзац.")
+
+        texts = [
+            "".join(inline.get("text", "") for inline in block["inlines"])
+            for block in build_translation_payload(updated)["blocks"]
+        ]
+        self.assertEqual(
+            texts, ["Первый абзац.", "Пропавший абзац.", "Второй абзац."]
+        )
+        self.assertIn('data-qa-repair="patch-1"', render_document_html(updated))
+
+    def test_the_source_model_is_never_touched(self):
+        model = self._model()
+        before = copy.deepcopy(model)
+
+        insert_block_after(model, self._location(model), "Пропавший абзац.")
+
+        self.assertEqual(model, before)
+
+    def test_a_reused_node_id_or_unknown_block_is_refused(self):
+        model = self._model()
+        blocks = build_translation_payload(model)["blocks"]
+
+        with self.assertRaises(ValueError):
+            insert_block_after(
+                model, self._location(model, node_id=blocks[0]["id"]), "текст"
+            )
+        with self.assertRaises(ValueError):
+            insert_block_after(
+                model, self._location(model, after_block_id="нет такого"), "текст"
+            )
+        with self.assertRaises(ValueError):
+            insert_block_after(model, self._location(model), "")
