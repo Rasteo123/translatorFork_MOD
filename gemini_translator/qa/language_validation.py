@@ -214,6 +214,48 @@ class LanguageQaResult:
     suggestions: tuple[LanguageIssue, ...] = ()
     preview_model: dict | None = None
     warnings: tuple[str, ...] = ()
+    # Why each suggestion was not applied, by issue id.  A refusal nobody can
+    # see teaches the user nothing; this is what the log renders next to the
+    # suggestion.  Codes are stable; a parenthesized tail may add specifics.
+    refusals: Mapping[str, str] = field(default_factory=dict)
+
+
+# One honest sentence per refusal code.  The keys are contracts: tests and the
+# log rely on them, so a new refusal path must add its code here.
+REFUSAL_DESCRIPTIONS: Mapping[str, str] = {
+    "style_suggestion": "стилистическое предложение — автоматически не правится",
+    "subjective": "модель не считает правку объективной",
+    "no_replacement": "нет текста замены",
+    "low_confidence": "уверенность ниже порога",
+    "ambiguous_span": "фрагмент встречается в абзаце не один раз",
+    "no_change": "замена совпадает с исходным текстом",
+    "protected_entity": "правка затрагивает защищённое имя",
+    "glossary_term_dropped": "правка теряет термин глоссария",
+    "category_not_auto_fixable": "категория не входит в список автоправки",
+    "validation_declined": "модель-проверщик не подтвердила правку",
+    "apply_conflict": "не удалось применить однозначно: конфликт с текстом главы",
+    "language_diagnosis_failed": "диагностика не удалась (сбой запроса)",
+    "language_diagnosis_timeout": "диагностика превысила время ожидания",
+    "language_diagnosis_invalid_response": "модель вернула непригодный ответ диагностики",
+    "language_batch_correction_failed": "запрос пакета исправлений не удался",
+    "language_batch_correction_timeout": "запрос пакета исправлений превысил время",
+    "language_batch_correction_invalid_response": "модель вернула непригодный пакет исправлений",
+    "language_batch_validation_failed": "проверка пакета исправлений не удалась",
+    "language_batch_validation_timeout": "проверка пакета исправлений превысила время",
+    "language_batch_validation_invalid_response": "модель вернула непригодный ответ проверки",
+}
+
+
+def describe_refusal(code: str) -> str:
+    """Turn a stable refusal code into the sentence the log shows.
+
+    An unknown code comes back as itself: better an honest identifier than a
+    silent blank when a new path forgets to register its description.
+    """
+    text = str(code or "")
+    base, _, tail = text.partition(" (")
+    described = REFUSAL_DESCRIPTIONS.get(base, base)
+    return f"{described} ({tail}" if tail else described
 
 
 def blocks_from_model(document_model: dict) -> tuple[LanguageBlock, ...]:
@@ -438,6 +480,11 @@ class LanguageQualityPipeline:
         issues: list[LanguageIssue] = []
         applied: list[LanguageReplacement] = []
         suggestions: list[LanguageIssue] = []
+        refusals: dict[str, str] = {}
+
+        def defer(issue: LanguageIssue, reason: str) -> None:
+            suggestions.append(issue)
+            refusals[issue.issue_id] = reason
         warnings: list[str] = []
         changed = False
         seen_issue_ids: set[str] = set()
@@ -470,8 +517,13 @@ class LanguageQualityPipeline:
                     min_confidence=request.min_confidence,
                     auto_fix_categories=request.auto_fix_categories,
                 )
+                if refusal == "low_confidence":
+                    refusal = (
+                        f"low_confidence ({issue.confidence:.2f}"
+                        f" < {request.min_confidence:.2f})"
+                    )
                 if refusal:
-                    suggestions.append(issue)
+                    defer(issue, refusal)
                 else:
                     eligible.append(issue)
             if not eligible:
@@ -483,12 +535,14 @@ class LanguageQualityPipeline:
                 )
             except LanguageReviewError as error:
                 warnings.append(error.reason)
-                suggestions.extend(eligible)
+                for issue in eligible:
+                    defer(issue, error.reason)
                 continue
 
             preview = _apply_or_warn(current_model, batch.replacements, warnings)
             if preview is None:
-                suggestions.extend(eligible)
+                for issue in eligible:
+                    defer(issue, "apply_conflict")
                 continue
 
             try:
@@ -497,7 +551,8 @@ class LanguageQualityPipeline:
                 )
             except LanguageReviewError as error:
                 warnings.append(error.reason)
-                suggestions.extend(eligible)
+                for issue in eligible:
+                    defer(issue, error.reason)
                 continue
 
             confirmed = tuple(
@@ -510,15 +565,20 @@ class LanguageQualityPipeline:
                 for replacement in batch.replacements
                 if replacement not in confirmed
             }
-            suggestions.extend(
-                issue for issue in eligible if issue.issue_id in refused_ids
-            )
+            for issue in eligible:
+                if issue.issue_id in refused_ids:
+                    defer(issue, "validation_declined")
             if not confirmed:
                 continue
             if len(confirmed) != len(batch.replacements):
                 preview = _apply_or_warn(current_model, confirmed, warnings)
                 if preview is None:
-                    suggestions.extend(eligible)
+                    # Only the confirmed ones fall back here: the refused ones
+                    # were already deferred above and must not be listed twice.
+                    confirmed_ids = {item.issue_id for item in confirmed}
+                    for issue in eligible:
+                        if issue.issue_id in confirmed_ids:
+                            defer(issue, "apply_conflict")
                     continue
             current_model = preview
             applied.extend(confirmed)
@@ -531,6 +591,7 @@ class LanguageQualityPipeline:
             suggestions=tuple(suggestions),
             preview_model=current_model if changed else None,
             warnings=tuple(dict.fromkeys(warnings)),
+            refusals=refusals,
         )
 
 

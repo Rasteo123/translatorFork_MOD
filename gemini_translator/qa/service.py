@@ -214,14 +214,21 @@ class ChapterQaResult:
                     same_language=True,
                 )
             )
+        refusals = dict(getattr(self.language, "refusals", {}) or {}) if self.language else {}
         for issue in getattr(self.language, "suggestions", ()) or ():
+            reason = refusals.get(issue.issue_id, "")
+            note = issue.category
+            if reason:
+                from .language_validation import describe_refusal
+
+                note = f"{issue.category} — не применено: {describe_refusal(reason)}"
             records.append(
                 ChapterChange(
                     kind="suggestion",
                     identity=issue.issue_id,
                     before=issue.original_text,
                     after=issue.replacement_text or "",
-                    note=issue.category,
+                    note=note,
                     same_language=True,
                 )
             )
@@ -281,6 +288,19 @@ class ChapterQaResult:
                     )
                 else:
                     parts.append(f"{before_label}: {_escape(change.before)}</p>")
+        language_warnings = tuple(
+            getattr(self.language, "warnings", ()) if self.language else ()
+        )
+        if language_warnings:
+            from .language_validation import describe_refusal
+
+            parts.append("<p><b>Предупреждения языковой проверки:</b><br>")
+            parts.append(
+                "<br>".join(
+                    _escape(describe_refusal(warning)) for warning in language_warnings
+                )
+            )
+            parts.append("</p>")
         parts.append("</div>")
         return "".join(parts)
 
@@ -347,10 +367,29 @@ class ChapterQaResult:
             getattr(self.language, "suggestions", ()) if self.language else ()
         )
         if suggestions:
+            from .language_validation import describe_refusal
+
+            refusals = dict(getattr(self.language, "refusals", {}) or {})
             lines.append("")
             lines.append(f"Предложения без применения: {len(suggestions)}")
             for issue in suggestions[:20]:
                 lines.append(f"  [{issue.issue_id}, {issue.category}] {issue.original_text}")
+                if issue.replacement_text:
+                    lines.append(f"  предложено: {issue.replacement_text}")
+                reason = refusals.get(issue.issue_id)
+                if reason:
+                    lines.append(f"  причина: {describe_refusal(reason)}")
+
+        language_warnings = tuple(
+            getattr(self.language, "warnings", ()) if self.language else ()
+        )
+        if language_warnings:
+            from .language_validation import describe_refusal
+
+            lines.append("")
+            lines.append("Предупреждения языковой проверки:")
+            for warning in language_warnings:
+                lines.append(f"  {describe_refusal(warning)}")
 
         additions = [addition for addition in self.additions if addition.blocks_gate]
         if additions:
