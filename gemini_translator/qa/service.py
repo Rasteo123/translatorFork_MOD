@@ -303,8 +303,9 @@ class ChapterQaResult:
         if unchecked:
             total = int(getattr(self.language, "blocks_total", 0) or 0)
             parts.append(
-                f"<p><b>НЕ ПРОВЕРЕНО абзацев: {unchecked} из {total}</b><br>"
-                "запросы не прошли, глава вернётся на проверку</p>"
+                f"<p><b>ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено {unchecked} "
+                f"из {total} абзацев</b><br>запросы не дошли до модели, "
+                "глава вернётся на проверку</p>"
             )
 
         language_warnings = tuple(
@@ -404,8 +405,9 @@ class ChapterQaResult:
             total = int(getattr(self.language, "blocks_total", 0) or 0)
             lines.append("")
             lines.append(
-                f"НЕ ПРОВЕРЕНО абзацев: {unchecked} из {total} — "
-                "запросы не прошли, глава вернётся на проверку"
+                f"ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено {unchecked} "
+                f"из {total} абзацев — запросы не дошли до модели, "
+                "глава вернётся на проверку"
             )
 
         language_warnings = tuple(

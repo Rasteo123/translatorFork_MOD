@@ -40,9 +40,18 @@ class LanguageRepairConflict(RuntimeError):
 class LanguageReviewError(RuntimeError):
     """Typed, sanitized refusal of one language QA request stage."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, detail: str = "") -> None:
         super().__init__(reason)
         self.reason = reason
+        # What the service actually said.  «Сбой запроса» tells a reader
+        # nothing: an exhausted key, a busy service and a dead proxy all need
+        # different answers, and the difference was being discarded here.
+        self.detail = str(detail or "")[:160]
+
+    @property
+    def described(self) -> str:
+        """The reason as the log shows it, with the cause when there is one."""
+        return f"{self.reason} ({self.detail})" if self.detail else self.reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,7 +254,7 @@ REFUSAL_DESCRIPTIONS: Mapping[str, str] = {
     "paragraph_break": "правка просит разбить абзац — это делает человек",
     "validation_declined": "модель-проверщик не подтвердила правку",
     "apply_conflict": "не удалось применить однозначно: конфликт с текстом главы",
-    "language_diagnosis_failed": "диагностика не удалась (сбой запроса)",
+    "language_diagnosis_failed": "диагностика не удалась",
     "language_diagnosis_timeout": "диагностика превысила время ожидания",
     "language_diagnosis_invalid_response": "модель вернула непригодный ответ диагностики",
     "language_batch_correction_failed": "запрос пакета исправлений не удался",
@@ -543,7 +552,7 @@ class LanguageQualityPipeline:
                     request, chunk, chunk_rules, chunk_nlp
                 )
             except LanguageReviewError as error:
-                warnings.append(error.reason)
+                warnings.append(error.described)
                 unchecked_blocks += len(chunk)
                 continue
 
@@ -577,7 +586,7 @@ class LanguageQualityPipeline:
                     request, chunk, tuple(eligible)
                 )
             except LanguageReviewError as error:
-                warnings.append(error.reason)
+                warnings.append(error.described)
                 for issue in eligible:
                     defer(issue, error.reason)
                 continue
@@ -593,7 +602,7 @@ class LanguageQualityPipeline:
                     request, chunk, batch, preview
                 )
             except LanguageReviewError as error:
-                warnings.append(error.reason)
+                warnings.append(error.described)
                 for issue in eligible:
                     defer(issue, error.reason)
                 continue

@@ -124,7 +124,9 @@ def test_a_correction_stage_failure_marks_every_eligible_issue():
     result = _run(client, _request(model))
 
     assert result.refusals["issue-1"] == "language_batch_correction_timeout"
-    assert "language_batch_correction_timeout" in result.warnings
+    # The per-issue code stays a stable identity; the warning carries the cause.
+    assert result.warnings[0].startswith("language_batch_correction_timeout")
+    assert "slow" in result.warnings[0]
 
 
 def test_a_validator_veto_is_recorded_per_issue():

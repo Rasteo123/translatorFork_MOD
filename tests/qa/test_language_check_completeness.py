@@ -189,7 +189,11 @@ def test_a_chapter_the_model_never_saw_says_so():
     assert result.blocks_total == 2
     assert result.unchecked_blocks == 2
     assert result.fully_checked is False
-    assert "language_diagnosis_failed" in result.warnings
+    warning = result.warnings[0]
+    assert warning.startswith("language_diagnosis_failed")
+    # The cause is the whole point: an exhausted key, a busy service and a dead
+    # proxy all read as «сбой запроса» and need different answers.
+    assert "quota" in warning
 
 
 def test_a_chapter_that_was_checked_and_is_clean_says_that_instead():
@@ -220,9 +224,11 @@ def test_the_log_shows_how_much_of_the_chapter_was_missed():
     text = result.change_details()
     html = result.change_details_html()
 
-    assert "НЕ ПРОВЕРЕНО абзацев: 12 из 40" in text
+    # The line names its own stage: someone who enabled only the typo check
+    # must not read this as a paragraph check they never asked for.
+    assert "ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено 12 из 40 абзацев" in text
     assert "глава вернётся на проверку" in text
-    assert "НЕ ПРОВЕРЕНО абзацев: 12 из 40" in html
+    assert "ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено 12 из 40 абзацев" in html
 
 
 def test_an_incompletely_checked_chapter_comes_back():

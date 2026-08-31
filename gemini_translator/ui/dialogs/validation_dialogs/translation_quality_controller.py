@@ -205,9 +205,11 @@ class TranslationQualityController(QObject):
             f"{RECHECK_REASONS.get(reason, reason)} — {count}"
             for reason, count in sorted(counts.items(), key=lambda pair: -pair[1])
         )
+        settled = max(0, total - len(selected))
+        tail = f" Пропущено как улаженные: {settled}." if settled else ""
         return (
             f"<p><b>Продолжаем проверку: {len(selected)} глав(ы) из {total}.</b>"
-            f"<br>{_escape(parts)}</p>"
+            f"{_escape(tail)}<br>{_escape(parts)}</p>"
         )
 
     def undo_chapter(self, chapter_id: str) -> None:

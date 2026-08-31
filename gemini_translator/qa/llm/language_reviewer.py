@@ -200,9 +200,10 @@ async def request_qa_json(
         # A cancelled check must not spend its last seconds sleeping.
         request.cancellation.raise_if_cancelled()
         await sleep(retry_delay(attempt))
+    detail = f"{type(failure).__name__}: {failure}" if failure is not None else ""
     if isinstance(failure, TimeoutError):
-        raise LanguageReviewError(f"{purpose}_timeout") from None
-    raise LanguageReviewError(f"{purpose}_failed") from None
+        raise LanguageReviewError(f"{purpose}_timeout", detail) from None
+    raise LanguageReviewError(f"{purpose}_failed", detail) from None
 
 
 def _diagnosis_lines(
