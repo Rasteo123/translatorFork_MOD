@@ -69,6 +69,20 @@ class EpubBuildManagerFillTests(unittest.TestCase):
         self._drain_until_filled(dialog)
         self.assertTrue(dialog.create_epub_btn.isEnabled())
 
+    def test_original_structure_view_tolerates_unpopulated_chunk_rows(self):
+        dialog = self._dialog(400)
+        self.app.processEvents()  # стартовый тик: load_chapters + первый чанк
+
+        self.assertTrue(dialog._fill_in_progress)
+        self.assertTrue(
+            any(
+                dialog.table.item(row, dialog.COL_SOURCE) is None
+                for row in range(dialog.table.rowCount())
+            )
+        )
+
+        dialog._enforce_original_structure_view()
+
     def test_small_projects_fill_synchronously(self):
         dialog = self._dialog(20)
         self.app.processEvents()  # отложенный load_chapters
