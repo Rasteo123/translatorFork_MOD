@@ -38,11 +38,23 @@ def test_notifications_import_without_loguru(monkeypatch):
                 delattr(parent_module, "notifications")
 
 
-def test_notification_settings_toggle(monkeypatch):
+def test_notification_settings_toggle(monkeypatch, request):
     """Test that NotificationManager respects QSettings."""
     if QApplication.instance() is None:
         QApplication([])
     settings = QSettings("SiberianTeam", "TranslatorFork")
+    # Даже с изоляцией из conftest тест не оставляет за собой чужое значение:
+    # ключ общий с живым приложением, а «выключено» — не то, с чем стоит
+    # заканчивать прогон.
+    previous = settings.value("notifications_enabled", None)
+
+    def _restore():
+        if previous is None:
+            settings.remove("notifications_enabled")
+        else:
+            settings.setValue("notifications_enabled", previous)
+        settings.sync()
+    request.addfinalizer(_restore)
     
     # Mock subprocess.Popen and QSystemTrayIcon to avoid actual OS notifications during tests
     called = []
