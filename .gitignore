@@ -68,3 +68,9 @@ Thumbs.db
 benchmarks/*.json
 !benchmarks/prompt_benchmark.example.json
 benchmark_results/
+
+# Локальные конфиги и рабочие каталоги инструментов
+# (.mcp.json содержит абсолютные пути к venv этой машины,
+#  .superpowers/ — брифы, отчёты, диффы ревью и server.pid)
+.mcp.json
+.superpowers/
