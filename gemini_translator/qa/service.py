@@ -81,6 +81,27 @@ DEFERRED_WARNINGS = frozenset(
         "slovnet_unavailable",
     }
 )
+# What each deferral means, in the words the log shows.  A code alone told the
+# reader nothing about whether the key, the network or the model was at fault.
+DEFERRED_REASONS = {
+    "coverage_failed": "не удалось сравнить перевод с оригиналом",
+    "embeddings_unavailable": "эмбеддинги недоступны",
+    "invalid_embedding_response": "сервис эмбеддингов ответил непригодно",
+    "alignment_capacity_exceeded": "глава слишком велика для выравнивания",
+    "verification_failed": "проверка пропусков моделью не удалась",
+    "language_check_failed": "языковая проверка упала с ошибкой",
+    "language_check_incomplete": "языковая проверка не дошла до модели",
+    "addition_detection_failed": "поиск добавленных фактов не удался",
+    "chapter_not_readable": "файл главы не удалось прочитать",
+    "language_tool_unavailable": "LanguageTool недоступен",
+    "slovnet_unavailable": "Slovnet недоступен",
+}
+
+
+def describe_deferral(code: str) -> str:
+    """Turn a deferral code into the sentence the log shows; unknown stays as is."""
+    text = str(code or "")
+    return DEFERRED_REASONS.get(text, text)
 
 
 @dataclass(frozen=True, slots=True)

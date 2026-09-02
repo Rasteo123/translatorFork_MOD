@@ -3060,11 +3060,12 @@ class TranslationValidatorPage(ShellPage):
             attach_chapter_qa_coordinator,
             detect_source_language,
             embedding_keys_for_session,
-            first_green_key,
+            green_keys,
             manual_session_settings,
             resolve_manual_qa_model,
         )
         from ...qa.handler_factory import build_qa_handler_factory
+        from ...qa.key_pool import QaKeyPool
 
         settings_manager = self._quality_settings_manager()
         project_manager = getattr(self, "project_manager", None)
@@ -3081,8 +3082,8 @@ class TranslationValidatorPage(ShellPage):
                 "«Настройки проверки» → «Модель для исправлений»."
             )
             return None
-        api_key = first_green_key(settings_manager, provider, model_name)
-        if not api_key:
+        keys = green_keys(settings_manager, provider, model_name)
+        if not keys:
             self._quality_setup_problem = (
                 f"У провайдера «{provider}» нет свободных ключей для модели "
                 f"«{model_name}»."
@@ -3096,13 +3097,15 @@ class TranslationValidatorPage(ShellPage):
                 settings_manager=settings_manager,
                 handler_factory=build_qa_handler_factory(
                     settings_manager=settings_manager,
-                    api_key_for=lambda _provider: api_key,
+                    key_pool=QaKeyPool(
+                        keys, model_id=model_name, settings_manager=settings_manager
+                    ),
                     session_settings=manual_session_settings(
                         settings_manager, proxy_settings
                     ),
                 ),
                 session_id="manual",
-                api_keys_by_provider=embedding_keys_for_session(provider, api_key),
+                api_keys_by_provider=embedding_keys_for_session(provider, list(keys)),
                 session_factory=aiohttp_session_factory(proxy_settings),
                 translation_provider=provider,
                 translation_model=model_name,

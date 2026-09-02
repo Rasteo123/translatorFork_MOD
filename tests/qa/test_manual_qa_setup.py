@@ -6,6 +6,7 @@ import pytest
 
 from gemini_translator.qa.assembly import (
     first_green_key,
+    green_keys,
     resolve_manual_qa_model,
 )
 from gemini_translator.qa.settings import QaSettings
@@ -133,6 +134,20 @@ def test_the_first_healthy_key_of_the_provider_is_used():
     )
 
     assert first_green_key(manager, "gemini", "gemini-3.7-flash") == "g-2"
+
+
+def test_every_healthy_key_of_the_provider_is_offered_for_rotation():
+    """Проверка книги в 600 глав на одном ключе умирает на третьей главе."""
+    manager = _SettingsManager(
+        keys=_keys(
+            ("nv-1", "nvidia"), ("g-1", "gemini"), ("g-2", "gemini"), ("g-3", "gemini")
+        ),
+        blocked=[("g-1", "gemini-3.7-flash")],
+    )
+
+    assert green_keys(manager, "gemini", "gemini-3.7-flash") == ("g-2", "g-3")
+    assert green_keys(None, "gemini", "gemini-3.7-flash") == ()
+    assert green_keys(manager, "", "gemini-3.7-flash") == ()
 
 
 def test_a_provider_with_only_exhausted_keys_offers_none():

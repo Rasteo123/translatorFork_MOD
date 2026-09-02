@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+import inspect
 
 from .llm.completion import QaModelSelection
 
@@ -112,26 +114,145 @@ class QaHandlerWorker:
             self._log(str(message))
 
 
+# How long one request may wait for a paused key before it is refused.  A key
+# paused for a minute is worth waiting for; one paused for an hour is not, and
+# the chapter is better deferred than held for that long.
+MAX_KEY_WAIT_SECONDS = 120.0
+
+
+class RotatingQaHandler:
+    """Answer one request with whichever key of the pool is ready for it.
+
+    A real handler is built per attempt around one key and closed after it,
+    success or failure: the handlers were written for a worker that keeps its
+    session for the whole run, and a check that builds one per request and
+    never closes it leaked a session and a connector on every question.
+
+    A key the service declares spent is dropped and the next one asked the
+    same question at once.  A key the service asks to rest is rested for the
+    time it named and the next one is asked.  Only when no key is ready does
+    the request wait, and never longer than :data:`MAX_KEY_WAIT_SECONDS`.
+    """
+
+    def __init__(
+        self,
+        pool,
+        make_handler: Callable[[str], object],
+        *,
+        log: Callable[[str], None] | None = None,
+        sleep=None,
+        max_wait_seconds: float = MAX_KEY_WAIT_SECONDS,
+        close_handler: Callable[[object], object] | None = None,
+    ) -> None:
+        if not callable(make_handler):
+            raise TypeError("make_handler must be callable")
+        self._pool = pool
+        self._make_handler = make_handler
+        self._log = log if callable(log) else None
+        self._sleep = sleep if callable(sleep) else asyncio.sleep
+        self._max_wait = max(0.0, float(max_wait_seconds))
+        self._close_handler = close_handler
+
+    async def execute_api_call(self, prompt, log_prefix, **kwargs):
+        from ..api.errors import RateLimitExceededError, TemporaryRateLimitError
+
+        waited = 0.0
+        last_error: BaseException | None = None
+        while True:
+            key = self._pool.acquire()
+            if key is None:
+                wait = self._pool.seconds_until_available()
+                if wait is None or waited >= self._max_wait:
+                    raise QaHandlerError(self._refusal(last_error)) from last_error
+                pause = min(max(float(wait), 0.5), self._max_wait - waited)
+                waited += pause
+                await self._sleep(pause)
+                continue
+            handler = self._make_handler(key)
+            try:
+                result = handler.execute_api_call(prompt, log_prefix, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
+            except RateLimitExceededError as error:
+                last_error = error
+                self._pool.mark_exhausted(key)
+                self._say(
+                    f"[QA] Ключ …{key[-4:]} исчерпан, проверка переходит на "
+                    f"следующий: {error}"
+                )
+            except TemporaryRateLimitError as error:
+                last_error = error
+                delay = _requested_delay(error, default=60.0)
+                self._pool.pause(key, delay)
+                self._say(
+                    f"[QA] Ключ …{key[-4:]} отдыхает {delay:.0f} с по просьбе "
+                    "сервиса, проверка берёт следующий."
+                )
+            finally:
+                await self._close(handler)
+
+    @staticmethod
+    def _refusal(error: BaseException | None) -> str:
+        if error is None:
+            return "У проверки не осталось рабочих ключей."
+        return f"У проверки не осталось рабочих ключей: {error}"
+
+    def _say(self, message: str) -> None:
+        if self._log is None:
+            return
+        try:
+            self._log(message)
+        except Exception:  # noqa: BLE001 - logging must never fail a request
+            return
+
+    async def _close(self, handler) -> None:
+        closer = self._close_handler or _close_handler_session
+        try:
+            result = closer(handler)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 - a session that will not close is not an error
+            return
+
+
+def _requested_delay(error: BaseException, *, default: float) -> float:
+    value = getattr(error, "delay_seconds", None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return default
+    return float(value)
+
+
+def _close_handler_session(handler):
+    """Close whatever session a handler opened, by whichever name it uses."""
+    for name in ("_close_thread_session_internal", "aclose", "close"):
+        closer = getattr(handler, name, None)
+        if callable(closer):
+            return closer()
+    return None
+
+
 def build_qa_handler_factory(
     *,
     settings_manager,
-    api_key_for,
+    api_key_for: Callable[[str], str] | None = None,
+    key_pool=None,
     session_settings: Mapping[str, object] | None = None,
     cancellation=None,
     log: Callable[[str], None] | None = None,
 ) -> Callable[[QaModelSelection], object]:
     """Return a factory that creates one configured handler per QA model.
 
-    ``api_key_for(provider_id)`` supplies the key; QA never reads or stores keys
-    of its own.
+    With ``key_pool`` every request is answered by a :class:`RotatingQaHandler`
+    that spends the pool's keys in turn.  Without one, ``api_key_for(provider)``
+    supplies the single key; QA never reads or stores keys of its own.
     """
 
-    if not callable(api_key_for):
-        raise TypeError("api_key_for must be callable")
+    if key_pool is None and not callable(api_key_for):
+        raise TypeError("api_key_for or key_pool is required")
 
-    def factory(model: QaModelSelection):
+    def resolve(model: QaModelSelection) -> tuple[dict, dict]:
         from ..api import config as api_config
-        from ..api.factory import get_api_handler_class
 
         if not isinstance(model, QaModelSelection):
             raise QaHandlerError("model must be a QaModelSelection")
@@ -140,11 +261,14 @@ def build_qa_handler_factory(
         if not isinstance(provider_config, Mapping):
             raise QaHandlerError(f"Unknown QA provider: {model.provider}")
         provider_config = deepcopy(dict(provider_config))
-        model_config = _model_config(provider_config, model.model)
-        api_key = str(api_key_for(model.provider) or "")
+        return provider_config, _model_config(provider_config, model.model)
+
+    def build(model: QaModelSelection, provider_config, model_config, api_key: str):
+        from ..api.factory import get_api_handler_class
+
+        api_key = str(api_key or "")
         if not api_key:
             raise QaHandlerError(f"No API key configured for {model.provider}")
-
         handler_class = get_api_handler_class(provider_config.get("handler_class"))
         worker = QaHandlerWorker(
             settings_manager=settings_manager,
@@ -162,6 +286,16 @@ def build_qa_handler_factory(
                 f"Failed to initialize the QA API handler for {model.provider}"
             )
         return handler
+
+    def factory(model: QaModelSelection):
+        provider_config, model_config = resolve(model)
+        if key_pool is not None:
+            return RotatingQaHandler(
+                key_pool,
+                lambda key: build(model, provider_config, model_config, key),
+                log=log,
+            )
+        return build(model, provider_config, model_config, api_key_for(model.provider))
 
     return factory
 

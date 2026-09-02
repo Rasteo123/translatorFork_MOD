@@ -882,9 +882,23 @@ class TranslationEngine(QObject):
                         payload['details_html'] = details_html
                 self._post_event('log_message', payload)
 
+            # QA spends the session's keys from the back of the list, skips the
+            # ones the workers are holding, and drops any the service declares
+            # spent.  Pinned to the first key it died within a minute: that key
+            # is also the first worker's, and the model allows it twenty
+            # requests a day.
+            from ..qa.key_pool import QaKeyPool
+
+            key_manager = getattr(self, 'api_key_manager', None)
+            key_pool = QaKeyPool(
+                keys,
+                model_id=str(settings.get('model_id') or ''),
+                settings_manager=self.settings_manager,
+                busy=lambda key: key in (getattr(key_manager, 'active_keys', None) or ()),
+            )
             handler_factory = build_qa_handler_factory(
                 settings_manager=self.settings_manager,
-                api_key_for=lambda provider_id: keys[0],
+                key_pool=key_pool,
                 session_settings=settings,
                 log=log,
             )
@@ -906,7 +920,10 @@ class TranslationEngine(QObject):
                 log=log,
             )
             if coordinator is not None:
-                log("[QA] Проверка качества перевода включена для этой сессии.")
+                log(
+                    "[QA] Проверка качества перевода включена для этой сессии"
+                    f"{self._describe_qa_checks()}; ключей для проверки: {len(key_pool)}."
+                )
                 coordinator.run_background(
                     coordinator.resume_pending_qa,
                     lambda result, error: self._report_resumed_qa(result, error),
@@ -915,6 +932,18 @@ class TranslationEngine(QObject):
             self._post_event('log_message', {
                 'message': f"[QA WARN] Проверка качества не запущена: {exc}"
             })
+
+    def _describe_qa_checks(self) -> str:
+        """Say which checks the session runs, so a silent night is not a mystery."""
+        try:
+            qa_settings = self.settings_manager.get_qa_settings()
+        except Exception:  # noqa: BLE001 - the line is a courtesy, not a check
+            return ""
+        state = lambda enabled: "вкл" if enabled else "выкл"  # noqa: E731
+        return (
+            f" (язык — {state(qa_settings.check_language_after_chapter)}, "
+            f"полнота — {state(qa_settings.check_completeness_after_chapter)})"
+        )
 
     def _start_final_qa_pass(self) -> bool:
         """Run the closing quality pass once, before the session is declared done.

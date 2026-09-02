@@ -635,27 +635,39 @@ def _provider_with_a_key(settings_manager, providers) -> tuple[str, str]:
     return "", ""
 
 
-def first_green_key(settings_manager, provider_id: str, model_id: str) -> str:
-    """One healthy key of a provider, or an empty string when it has none."""
+def green_keys(settings_manager, provider_id: str, model_id: str) -> tuple[str, ...]:
+    """Every healthy key of a provider, in the order the settings list them.
+
+    A manual pass over a book has no session pool to borrow, and one key runs
+    out of its daily allowance a few chapters in; the whole list is what lets
+    the pass rotate the way the translation does.
+    """
     if settings_manager is None or not provider_id:
-        return ""
+        return ()
     try:
         statuses = settings_manager.load_key_statuses() or ()
     except Exception:  # noqa: BLE001 - unreadable statuses mean no key
-        return ""
+        return ()
+    keys: list[str] = []
     for key_info in statuses:
         if str(key_info.get("provider") or "") != str(provider_id):
             continue
         key = str(key_info.get("key") or "").strip()
-        if not key:
+        if not key or key in keys:
             continue
         try:
             if settings_manager.is_key_limit_active(key_info, model_id):
                 continue
         except Exception:  # noqa: BLE001 - an unreadable status is not a red key
             pass
-        return key
-    return ""
+        keys.append(key)
+    return tuple(keys)
+
+
+def first_green_key(settings_manager, provider_id: str, model_id: str) -> str:
+    """One healthy key of a provider, or an empty string when it has none."""
+    keys = green_keys(settings_manager, provider_id, model_id)
+    return keys[0] if keys else ""
 
 
 def build_quality_estimator(qa_settings: QaSettings, paths: "ProjectQaPaths"):

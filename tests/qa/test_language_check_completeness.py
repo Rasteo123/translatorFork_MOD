@@ -22,6 +22,7 @@ from gemini_translator.qa.language_validation import (
 from gemini_translator.qa.llm import CancellationToken, QaModelSelection
 from gemini_translator.qa.llm.language_reviewer import (
     RETRY_ATTEMPTS,
+    RETRY_MAX_WAIT_SECONDS,
     is_transient,
     request_qa_json,
     retry_delay,
@@ -149,6 +150,25 @@ def test_the_pauses_grow_and_then_stop_growing():
     assert delays == sorted(delays)
     assert delays[0] < delays[1]
     assert max(delays) <= 20.0
+
+
+def test_a_pause_is_never_shorter_than_what_the_service_asked_for():
+    """503 «перегружен, подождите 20 с» через полторы секунды ответит тем же."""
+    client = _Client(_Busy(delay_seconds=20), {"issues": []})
+
+    _payload, pauses = _ask(client)
+
+    assert pauses == [pytest.approx(20)]
+
+
+def test_a_service_asking_for_an_hour_gets_the_ceiling_instead():
+    """Ожидание ограничено: ключ на паузе — не повод держать главу час."""
+    client = _Client(_Busy(delay_seconds=3600), {"issues": []})
+
+    _payload, pauses = _ask(client)
+
+    assert pauses == [RETRY_MAX_WAIT_SECONDS]
+    assert RETRY_MAX_WAIT_SECONDS <= 120
 
 
 def test_cancelling_during_the_pause_stops_the_check():

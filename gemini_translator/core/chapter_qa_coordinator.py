@@ -21,6 +21,7 @@ from ..qa.service import (
     QaOptions,
     TranslationQualityService,
     chapter_fingerprint,
+    describe_deferral,
 )
 from .task_manager import QaQueueOutcome
 
@@ -446,6 +447,12 @@ class ChapterQaCoordinator:
             self._report(f"[QA] Не удалось собрать запрос для '{event.chapter_id}': {error}")
             return None
         if request is None:
+            # Measured on a live book: sixty chapters vanished this way, with
+            # no trace in the journal and none in the log.
+            self._report(
+                f"[QA] Глава '{event.chapter_id}' пропущена: не удалось прочитать "
+                "оригинал или перевод."
+            )
             return None
         try:
             result = await self._service.check_chapter(
@@ -472,6 +479,9 @@ class ChapterQaCoordinator:
         if result.coverage_mode == SEMANTIC_ALIGNMENT_MODE:
             self._limited_streak = 0
             self._limited_reported = False
+            return
+        if "completeness_check_disabled" in (getattr(result, "warnings", ()) or ()):
+            # Nothing stopped working: the user switched the comparison off.
             return
         self._limited_streak += 1
         if self._limited_streak < LIMITED_MODE_ALERT_STREAK or self._limited_reported:
@@ -532,6 +542,22 @@ class ChapterQaCoordinator:
                 self._report(
                     f"[QA] Глава '{event.chapter_id}': перевод остановлен, "
                     "нужно решение.",
+                    details_title=f"Проверка главы '{event.chapter_id}'",
+                    details_text=result.change_details(),
+                    details_html=result.change_details_html(),
+                )
+                return
+            deferred = tuple(
+                warning
+                for warning in (getattr(result, "warnings", ()) or ())
+                if warning in DEFERRED_WARNINGS
+            )
+            if deferred:
+                # A deferred chapter used to pass in silence, and a whole night
+                # of them read as "the check is not running at all".
+                self._report(
+                    f"[QA] Глава '{event.chapter_id}' отложена: "
+                    f"{_deferral_summary(result, deferred)}",
                     details_title=f"Проверка главы '{event.chapter_id}'",
                     details_text=result.change_details(),
                     details_html=result.change_details_html(),
@@ -716,6 +742,24 @@ def _text_unchanged(
     except Exception:  # noqa: BLE001 - an unreadable chapter is simply unknown
         return False
     return bool(current) and current == recorded
+
+
+def _deferral_summary(result, deferred: Sequence[str]) -> str:
+    """One line saying why a chapter was deferred, with the service's own words.
+
+    The deferral code names the stage; the language stage's first warning
+    names the cause — an exhausted key, a busy service, a refused prompt — and
+    that is what decides what to do about it.
+    """
+    from ..qa.language_validation import describe_refusal
+
+    reasons = [describe_deferral(code) for code in deferred]
+    language = getattr(result, "language", None)
+    causes = tuple(getattr(language, "warnings", ()) or ()) if language else ()
+    summary = "; ".join(dict.fromkeys(reasons))
+    if causes:
+        summary += f" — {describe_refusal(causes[0])}"
+    return summary
 
 
 def _outcome_for(

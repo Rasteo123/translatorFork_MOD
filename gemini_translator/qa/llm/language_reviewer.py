@@ -149,11 +149,23 @@ class LanguageQualityReviewer:
 RETRY_ATTEMPTS = 4
 RETRY_BASE_DELAY_SECONDS = 1.5
 RETRY_MAX_DELAY_SECONDS = 20.0
+# The longest a single pause may be when the service names its own delay.  An
+# overloaded server asks for twenty seconds; asking again after one and a half
+# only got the same answer, and the chapter was deferred after four of those.
+RETRY_MAX_WAIT_SECONDS = 90.0
 
 
 def retry_delay(attempt: int) -> float:
     """Grow the pause with each attempt, up to a fixed ceiling."""
     return min(RETRY_BASE_DELAY_SECONDS * (2**attempt), RETRY_MAX_DELAY_SECONDS)
+
+
+def pause_before_retry(attempt: int, error: BaseException | None) -> float:
+    """The backoff, or the delay the service itself asked for when it is longer."""
+    requested = getattr(error, "delay_seconds", None)
+    if isinstance(requested, bool) or not isinstance(requested, (int, float)):
+        requested = 0.0
+    return min(max(retry_delay(attempt), float(requested)), RETRY_MAX_WAIT_SECONDS)
 
 
 def is_transient(error: BaseException) -> bool:
@@ -202,7 +214,7 @@ async def request_qa_json(
                 break
         # A cancelled check must not spend its last seconds sleeping.
         request.cancellation.raise_if_cancelled()
-        await sleep(retry_delay(attempt))
+        await sleep(pause_before_retry(attempt, failure))
     detail = f"{type(failure).__name__}: {failure}" if failure is not None else ""
     if isinstance(failure, TimeoutError):
         raise LanguageReviewError(f"{purpose}_timeout", detail) from None
