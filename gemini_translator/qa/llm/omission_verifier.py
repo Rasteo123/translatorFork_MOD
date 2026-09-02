@@ -21,6 +21,9 @@ from .prompts import PromptConfigurationError, escaped, load_prompt_template, re
 from .schemas import OmissionVerdict
 
 
+VERIFICATION_PURPOSE = "omission_verification"
+
+
 class OmissionVerifier:
     """Verify one bounded candidate without granting authority on weak evidence."""
 
@@ -85,6 +88,7 @@ class OmissionVerifier:
                 model=model,
                 max_output_tokens=self._config.max_output_tokens,
                 cancellation=cancellation,
+                purpose=VERIFICATION_PURPOSE,
             )
         except asyncio.CancelledError:
             raise

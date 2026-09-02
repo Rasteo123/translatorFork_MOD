@@ -19,6 +19,7 @@ from .glossary_context import GlossaryContextSelector, GlossaryTerm
 from .journal import QaJournal
 from .language_validation import (
     DEFAULT_AUTO_FIX_CATEGORIES,
+    DEFAULT_MAX_CHUNK_CHARS,
     LanguageQaRequest,
     LanguageQaResult,
     LanguageRuleIssue,
@@ -90,6 +91,7 @@ class QaOptions:
     check_completeness: bool = True
     auto_repair_omissions: bool = True
     check_language: bool = True
+    language_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS
     auto_repair_language: bool = True
     detect_additions: bool = True
     auto_fix_language_categories: tuple[str, ...] = DEFAULT_AUTO_FIX_CATEGORIES
@@ -918,6 +920,7 @@ class TranslationQualityService:
             cancellation=cancellation,
             source_text_by_block=request.source_text_by_block,
             auto_fix_categories=options.auto_fix_language_categories,
+            max_chunk_chars=options.language_chunk_chars,
         )
         rule_candidates = await self._collect_rules(
             target_units, options, warnings

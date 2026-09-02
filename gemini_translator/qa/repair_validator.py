@@ -37,6 +37,9 @@ _ALLOWED_ADDED_TAGS = Counter({"span": 1})
 _BLOCK_REPAIR_TAGS = frozenset({"p", "div", "li", "blockquote", "dd", "dt"})
 
 
+POST_CHECK_PURPOSE = "omission_repair_post_check"
+
+
 @dataclass(frozen=True, slots=True)
 class ChapterSnapshot:
     """One immutable chapter state, before or after a previewed repair."""
@@ -122,6 +125,7 @@ class RepairValidator:
                 model=model,
                 max_output_tokens=self._config.max_output_tokens,
                 cancellation=cancellation,
+                purpose=POST_CHECK_PURPOSE,
             )
         except asyncio.CancelledError:
             raise

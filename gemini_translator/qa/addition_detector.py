@@ -53,6 +53,9 @@ _STATUSES = frozenset(
 )
 
 
+DETECTION_PURPOSE = "addition_detection"
+
+
 @dataclass(frozen=True, slots=True)
 class ChapterContext:
     """Routing and policy for one chapter-level addition sweep."""
@@ -201,6 +204,7 @@ class AdditionDetector:
                 model=context.model,
                 max_output_tokens=self._config.max_output_tokens,
                 cancellation=context.cancellation,
+                purpose=DETECTION_PURPOSE,
             )
         except asyncio.CancelledError:
             raise

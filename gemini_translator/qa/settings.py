@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 
 from .capabilities import QaCapabilityKey, QaCapabilitySettings
 from .language_validation import DEFAULT_AUTO_FIX_CATEGORIES, LANGUAGE_ISSUE_CATEGORIES
+from .language_validation import DEFAULT_MAX_CHUNK_CHARS
 from .service import QaOptions
 
 
@@ -49,6 +50,9 @@ class QaSettings:
     # old behaviour; a book with several healthy keys finishes a batch faster
     # with two or three, at the cost of that many parallel requests.
     batch_concurrency: int = 1
+    # How much of a chapter one language request may carry.  Bigger is
+    # fewer requests; too big and the model answers about less of it.
+    language_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS
     capabilities: QaCapabilitySettings = field(default_factory=QaCapabilitySettings)
     language_tool_endpoint: str = ""
     language_tool_mode: str = "remote"
@@ -110,6 +114,13 @@ class QaSettings:
         )
         object.__setattr__(
             self, "batch_concurrency", _bounded_int(self.batch_concurrency, 1, 1, 4)
+        )
+        object.__setattr__(
+            self,
+            "language_chunk_chars",
+            _bounded_int(
+                self.language_chunk_chars, DEFAULT_MAX_CHUNK_CHARS, 1000, 32000
+            ),
         )
         object.__setattr__(
             self, "slovnet_batch_size", _bounded_int(self.slovnet_batch_size, 16, 1, 512)
@@ -181,6 +192,7 @@ class QaSettings:
             "correction_model": self.correction_model,
             "final_book_pass": self.final_book_pass,
             "batch_concurrency": self.batch_concurrency,
+            "language_chunk_chars": self.language_chunk_chars,
             "capabilities": {
                 "razdel_enabled": self.capabilities.razdel_enabled,
                 "language_tool_enabled": self.capabilities.language_tool_enabled,
@@ -249,6 +261,7 @@ class QaSettings:
     def to_options(self) -> QaOptions:
         """Project the user's settings onto one QA pass configuration."""
         return QaOptions(
+            language_chunk_chars=self.language_chunk_chars,
             capabilities=self.effective_capabilities(),
             check_completeness=self.check_completeness_after_chapter,
             auto_repair_omissions=self.auto_repair_confirmed_omissions,

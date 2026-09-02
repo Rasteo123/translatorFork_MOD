@@ -48,6 +48,7 @@ class RecordingClient:
         model: QaModelSelection,
         max_output_tokens: int,
         cancellation: CancellationToken,
+        purpose: str = "",
     ) -> dict[str, object]:
         self.calls += 1
         self.last_prompt = prompt

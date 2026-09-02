@@ -31,6 +31,9 @@ _HTML_DOCUMENT_RE = re.compile(r"<!doctype\s|</?html[\s>]|</?body[\s>]", re.IGNO
 _FENCE_RE = re.compile(r"```|~~~")
 
 
+REPAIR_PURPOSE = "omission_repair"
+
+
 class OmissionRepairError(RuntimeError):
     """Typed, sanitized reason why one repair attempt produced nothing usable."""
 
@@ -130,6 +133,7 @@ class OmissionRepairer:
                 model=request.model,
                 max_output_tokens=self._config.max_output_tokens,
                 cancellation=request.cancellation,
+                purpose=REPAIR_PURPOSE,
             )
         except asyncio.CancelledError:
             raise
