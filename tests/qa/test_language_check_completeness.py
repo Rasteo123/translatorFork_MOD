@@ -227,8 +227,12 @@ def test_the_log_shows_how_much_of_the_chapter_was_missed():
     # The line names its own stage: someone who enabled only the typo check
     # must not read this as a paragraph check they never asked for.
     assert "ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено 12 из 40 абзацев" in text
-    assert "глава вернётся на проверку" in text
+    # Текущий проход к главе не возвращается — он идёт по списку, собранному
+    # на старте.  Сообщение обязано назвать момент, иначе читатель ждёт
+    # повтора следующим же шагом и видит вместо него новую главу.
+    assert "следующее «Продолжить проверку»" in text
     assert "ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено 12 из 40 абзацев" in html
+    assert "следующее «Продолжить проверку»" in html
 
 
 def test_an_incompletely_checked_chapter_comes_back():

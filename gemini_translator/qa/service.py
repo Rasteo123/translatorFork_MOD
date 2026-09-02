@@ -306,8 +306,10 @@ class ChapterQaResult:
             total = int(getattr(self.language, "blocks_total", 0) or 0)
             parts.append(
                 f"<p><b>ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено {unchecked} "
-                f"из {total} абзацев</b><br>запросы не дошли до модели, "
-                "глава вернётся на проверку</p>"
+                f"из {total} абзацев</b><br>запросы не дошли до модели. "
+                "Текущий проход идёт по списку глав, собранному на старте, и "
+                "к этой главе не вернётся: она останется неулаженной, и её "
+                "подберёт следующее «Продолжить проверку»</p>"
             )
 
         language_warnings = tuple(
@@ -408,8 +410,10 @@ class ChapterQaResult:
             lines.append("")
             lines.append(
                 f"ЯЗЫКОВАЯ ПРОВЕРКА НЕ ПРОШЛА: не проверено {unchecked} "
-                f"из {total} абзацев — запросы не дошли до модели, "
-                "глава вернётся на проверку"
+                f"из {total} абзацев — запросы не дошли до модели. "
+                "Текущий проход идёт по списку глав, собранному на старте, и "
+                "к этой главе не вернётся: она останется неулаженной, и её "
+                "подберёт следующее «Продолжить проверку»"
             )
 
         language_warnings = tuple(
@@ -940,7 +944,8 @@ class TranslationQualityService:
         if result.unchecked_blocks:
             # Part of the chapter never reached the model.  Saying nothing here
             # would report it as checked and clean; instead the chapter is
-            # deferred, and the queue comes back to it.
+            # deferred, so the next pass selects it again.  Not this one: a
+            # pass walks the list it was given at the start and never grows.
             warnings.append("language_check_incomplete")
         if result.preview_model is not None and options.auto_repair_language:
             self._write_language_repairs(request, result, warnings)
