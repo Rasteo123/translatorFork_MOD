@@ -6,8 +6,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
 from .capabilities import QaCapabilityKey, QaCapabilitySettings
-from .language_validation import DEFAULT_AUTO_FIX_CATEGORIES, LANGUAGE_ISSUE_CATEGORIES
-from .language_validation import DEFAULT_MAX_CHUNK_CHARS
+from .language_validation import (
+    DEFAULT_AUTO_FIX_CATEGORIES,
+    DEFAULT_LANGUAGE_CHUNK_CHARS,
+    LANGUAGE_ISSUE_CATEGORIES,
+    MAX_LANGUAGE_CHUNK_CHARS,
+    MIN_LANGUAGE_CHUNK_CHARS,
+)
 from .service import QaOptions
 
 
@@ -50,9 +55,12 @@ class QaSettings:
     # old behaviour; a book with several healthy keys finishes a batch faster
     # with two or three, at the cost of that many parallel requests.
     batch_concurrency: int = 1
-    # How much of a chapter one language request may carry.  Bigger is
-    # fewer requests; too big and the model answers about less of it.
-    language_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS
+    # How much of a chapter one language request may carry, translation and
+    # source together.  Zero means the project's own translation limit: a book
+    # is checked in the portions it was translated in unless someone
+    # deliberately says otherwise.  Bigger is fewer requests; too big and the
+    # model answers about less of it.
+    language_chunk_chars: int = 0
     capabilities: QaCapabilitySettings = field(default_factory=QaCapabilitySettings)
     language_tool_endpoint: str = ""
     language_tool_mode: str = "remote"
@@ -118,9 +126,7 @@ class QaSettings:
         object.__setattr__(
             self,
             "language_chunk_chars",
-            _bounded_int(
-                self.language_chunk_chars, DEFAULT_MAX_CHUNK_CHARS, 1000, 32000
-            ),
+            _language_chunk_setting(self.language_chunk_chars),
         )
         object.__setattr__(
             self, "slovnet_batch_size", _bounded_int(self.slovnet_batch_size, 16, 1, 512)
@@ -261,7 +267,9 @@ class QaSettings:
     def to_options(self) -> QaOptions:
         """Project the user's settings onto one QA pass configuration."""
         return QaOptions(
-            language_chunk_chars=self.language_chunk_chars,
+            language_chunk_chars=(
+                self.language_chunk_chars or DEFAULT_LANGUAGE_CHUNK_CHARS
+            ),
             capabilities=self.effective_capabilities(),
             check_completeness=self.check_completeness_after_chapter,
             auto_repair_omissions=self.auto_repair_confirmed_omissions,
@@ -281,6 +289,45 @@ class QaSettings:
         ):
             return self.correction_provider, self.correction_model
         return str(translation_provider or ""), str(translation_model or "")
+
+
+def _language_chunk_setting(value: object) -> int:
+    """Keep the stored size usable: zero stays automatic, the rest is bounded.
+
+    A hand-edited settings file must not be able to break a check, and a
+    nonsense value must not silently mean something specific.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return 0
+    return min(max(value, MIN_LANGUAGE_CHUNK_CHARS), MAX_LANGUAGE_CHUNK_CHARS)
+
+
+def language_chunk_chars_for(saved_settings: Mapping | None) -> int:
+    """Size one language-check request the way the project sizes a translation.
+
+    Whatever amount of text this project translates in one go, it also checks
+    in one go: the check reads the same chapter through the same model, and a
+    separate constant only meant more requests for the same work.  A limit
+    expressed in tokens says nothing about characters, so it takes the default
+    rather than a guessed conversion.
+    """
+
+    if not isinstance(saved_settings, Mapping):
+        return DEFAULT_LANGUAGE_CHUNK_CHARS
+    from ..utils.epub_tools import TASK_SIZE_UNIT_CHARS, normalize_task_size_unit
+
+    if normalize_task_size_unit(saved_settings.get("task_size_unit")) != TASK_SIZE_UNIT_CHARS:
+        return DEFAULT_LANGUAGE_CHUNK_CHARS
+    limit = saved_settings.get("task_size_limit")
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+        return DEFAULT_LANGUAGE_CHUNK_CHARS
+    return _bounded_int(
+        int(limit),
+        DEFAULT_LANGUAGE_CHUNK_CHARS,
+        MIN_LANGUAGE_CHUNK_CHARS,
+        MAX_LANGUAGE_CHUNK_CHARS,
+    )
 
 
 def _choice(value: object, allowed: frozenset[str], default: str) -> str:

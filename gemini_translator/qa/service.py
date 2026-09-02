@@ -19,7 +19,7 @@ from .glossary_context import GlossaryContextSelector, GlossaryTerm
 from .journal import QaJournal
 from .language_validation import (
     DEFAULT_AUTO_FIX_CATEGORIES,
-    DEFAULT_MAX_CHUNK_CHARS,
+    DEFAULT_LANGUAGE_CHUNK_CHARS,
     LanguageQaRequest,
     LanguageQaResult,
     LanguageRuleIssue,
@@ -91,11 +91,14 @@ class QaOptions:
     check_completeness: bool = True
     auto_repair_omissions: bool = True
     check_language: bool = True
-    language_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS
     auto_repair_language: bool = True
     detect_additions: bool = True
     auto_fix_language_categories: tuple[str, ...] = DEFAULT_AUTO_FIX_CATEGORIES
     max_repairs_per_chapter: int = 5
+    # How much text one language-check request may carry, translation and
+    # source together.  Read from the project's translation limit, so a book is
+    # checked in the same portions it was translated in.
+    language_chunk_chars: int = DEFAULT_LANGUAGE_CHUNK_CHARS
 
     def __post_init__(self) -> None:
         if not isinstance(self.capabilities, QaCapabilitySettings):
@@ -107,6 +110,14 @@ class QaOptions:
         ):
             raise QaModelValidationError(
                 "max_repairs_per_chapter must be a non-negative integer"
+            )
+        if (
+            isinstance(self.language_chunk_chars, bool)
+            or not isinstance(self.language_chunk_chars, int)
+            or self.language_chunk_chars < 1
+        ):
+            raise QaModelValidationError(
+                "language_chunk_chars must be a positive integer"
             )
 
 

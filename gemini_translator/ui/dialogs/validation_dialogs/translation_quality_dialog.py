@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 from ....qa.capabilities import CAPABILITY_DESCRIPTIONS, QaCapabilityKey, QaCapabilitySettings
 from ....qa.assembly import EMBEDDING_KEY_NAMESPACES
 from ....qa.estimators.cometkiwi_model_manager import describe_cometkiwi_setup
+from ....qa.language_validation import MAX_LANGUAGE_CHUNK_CHARS
 from ....qa.settings import QaSettings
 from .translation_quality_models import (
     BookQaReportSnapshot,
@@ -258,11 +259,16 @@ class TranslationQualityDialog(QDialog):
         # check costs: a larger piece is fewer requests over the same text.
         chunk_row = QHBoxLayout()
         self.language_chunk_spin = QSpinBox(group)
-        self.language_chunk_spin.setRange(1000, 32000)
+        self.language_chunk_spin.setRange(0, MAX_LANGUAGE_CHUNK_CHARS)
         self.language_chunk_spin.setSingleStep(1000)
         self.language_chunk_spin.setSuffix(" символов")
+        # The lowest position is not a size but the absence of one: the check
+        # then asks the project how much it translates in, and matches it.
+        self.language_chunk_spin.setSpecialValueText("как при переводе")
         self.language_chunk_spin.setToolTip(
-            "Сколько текста главы уходит в один запрос языковой проверки.\n"
+            "Сколько текста главы уходит в один запрос языковой проверки:\n"
+            "перевод и оригинал вместе.\n"
+            "«Как при переводе» — тот же размер, которым переводилась книга.\n"
             "Больше — меньше запросов на главу и дешевле проверка;\n"
             "меньше — модель разбирает каждый кусок внимательнее."
         )

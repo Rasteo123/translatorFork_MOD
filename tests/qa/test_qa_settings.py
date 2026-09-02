@@ -200,3 +200,33 @@ def test_the_key_provider_survives_a_restart(settings_manager, tmp_path: Path):
     ).get_qa_settings()
 
     assert reloaded.embedding_key_provider == "gemini"
+
+
+def test_the_language_check_is_sized_by_the_project_translation_limit():
+    """Проверка шлёт главу такими же порциями, какими её переводили.
+
+    Отдельная константа в 4000 символов означала три-четыре запроса там,
+    где перевод обходился одним, и вся разница уходила в квоту ключа.
+    """
+    from gemini_translator.qa.settings import language_chunk_chars_for
+
+    assert language_chunk_chars_for(
+        {"task_size_limit": 25000, "task_size_unit": "chars"}
+    ) == 25000
+
+
+def test_a_limit_in_tokens_says_nothing_about_characters():
+    """Порция считается в символах, поэтому лимит в токенах уходит в умолчание."""
+    from gemini_translator.qa.settings import (
+        DEFAULT_LANGUAGE_CHUNK_CHARS,
+        language_chunk_chars_for,
+    )
+
+    assert language_chunk_chars_for(
+        {"task_size_limit": 8000, "task_size_unit": "tokens"}
+    ) == DEFAULT_LANGUAGE_CHUNK_CHARS
+    assert language_chunk_chars_for({}) == DEFAULT_LANGUAGE_CHUNK_CHARS
+    assert language_chunk_chars_for(None) == DEFAULT_LANGUAGE_CHUNK_CHARS
+    assert language_chunk_chars_for(
+        {"task_size_limit": "нечисло", "task_size_unit": "chars"}
+    ) == DEFAULT_LANGUAGE_CHUNK_CHARS

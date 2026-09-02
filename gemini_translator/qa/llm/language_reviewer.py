@@ -44,8 +44,11 @@ class LanguageQualityReviewer:
         if not callable(getattr(client, "complete_json", None)):
             raise TypeError("client must implement complete_json")
         self._client = client
+        # The ceiling QA allows, on purpose.  The answer lists every defect
+        # found, so its length follows the number of defects, not the size of
+        # the text — and a truncated answer costs a whole chunk.
         self._config = config or OmissionRepairerConfig(
-            max_output_tokens=2048, prompt_version="language_diagnosis_v1"
+            max_output_tokens=4096, prompt_version="language_diagnosis_v1"
         )
         # Diagnosis is the one QA request that is asked again about text nobody
         # touched: a deferred chapter retried, a manual re-check, a resumed

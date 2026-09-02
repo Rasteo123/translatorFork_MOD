@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import zipfile
@@ -42,7 +42,7 @@ from .models import AlignmentConfig, GlossaryRule
 from .repair_store import RepairStore
 from .repair_validator import RepairValidator
 from .service import ChapterQaRequest, TranslationQualityService
-from .settings import QaSettings
+from .settings import QaSettings, language_chunk_chars_for
 from .structural_repair import StructuralRepairEngine
 
 
@@ -715,9 +715,20 @@ def _pending_qa_tasks(task_manager):
 def _current_options(settings_manager):
     """Read the user's switches again so a mid-session change applies next."""
     try:
-        return settings_manager.get_qa_settings().to_options()
+        qa_settings = settings_manager.get_qa_settings()
     except Exception:  # noqa: BLE001 - unreadable settings fall back to defaults
-        return QaSettings().to_options()
+        qa_settings = QaSettings()
+    options = qa_settings.to_options()
+    if qa_settings.language_chunk_chars:
+        return options
+    # An automatic size is the project's own translation limit: whatever amount
+    # of text this book is translated in, it is also checked in.  That number
+    # lives in the translation settings, which only this side can read.
+    try:
+        saved = settings_manager.load_settings()
+    except Exception:  # noqa: BLE001 - a size nobody can read is not fatal
+        saved = None
+    return replace(options, language_chunk_chars=language_chunk_chars_for(saved))
 
 
 def _report(log, message: str) -> None:

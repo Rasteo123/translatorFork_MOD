@@ -638,3 +638,23 @@ def test_a_language_fix_that_cannot_be_recorded_is_rolled_back(tmp_path, chapter
 
     assert chapter.read_bytes() == original
     assert "language_repair_not_recorded" in result.warnings
+
+
+def test_the_pass_size_reaches_the_language_request(tmp_path, chapter):
+    """Настройка размера бесполезна, пока она не доезжает до самого запроса."""
+    from gemini_translator.qa.language_validation import LanguageQaResult
+
+    seen: list[int] = []
+
+    class _Language:
+        async def check_chapter(self, request, *, rule_candidates=(), nlp_analysis=None):
+            seen.append(request.max_chunk_chars)
+            return LanguageQaResult(chapter_id=request.chapter_id)
+
+    service, _journal, _path = _service(
+        tmp_path, aligner=_CleanAligner(), language=_Language()
+    )
+
+    _check(service, _request(chapter), QaOptions(language_chunk_chars=25000))
+
+    assert seen == [25000]

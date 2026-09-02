@@ -24,6 +24,7 @@ from gemini_translator.qa.language_validation import (
     chunk_blocks,
 )
 from gemini_translator.qa.llm import CancellationToken, QaModelSelection
+from gemini_translator.qa.llm.json_response import QaResponseSchemaError
 from gemini_translator.qa.llm.schemas import LanguageIssue
 from gemini_translator.qa.models import GlossaryPolicy, RelevantGlossaryTerm
 from gemini_translator.utils.epub_json import (
@@ -400,3 +401,116 @@ def test_typos_and_grammar_stay_automatic():
     )
 
     assert auto_fix_refusal(typo, "Он вошёл в тёмный преход.") == ""
+
+
+def test_chunking_counts_the_source_text_that_rides_along():
+    """Бюджет куска обязан означать то, что реально уходит в запрос.
+
+    В payload на каждый блок кладётся и перевод, и оригинал. Считая один
+    перевод, чанкер обещает лимит и отправляет вдвое больше.
+    """
+    blocks = tuple(LanguageBlock(f"b-{index}", "к" * 100) for index in range(6))
+    sources = {block.block_id: "s" * 100 for block in blocks}
+
+    translation_only = chunk_blocks(blocks, 300)
+    both = chunk_blocks(blocks, 300, source_text_by_block=sources)
+
+    assert len(translation_only) == 2
+    assert len(both) == 6
+    assert [block.block_id for chunk in both for block in chunk] == [
+        block.block_id for block in blocks
+    ]
+
+
+def test_the_checker_weighs_the_source_text_when_it_splits_a_chapter():
+    """Один и тот же лимит должен означать одно и то же на всём пути.
+
+    Чанкер умеет считать оригинал, но пока проверка ему его не отдаёт,
+    глава по-прежнему режется по половине настоящего размера запроса.
+    """
+    model = _model()
+    sources = {block.block_id: "s" * 60 for block in _blocks(model)}
+    client = RecordingClient({"language_diagnosis": {"issues": []}})
+
+    _check(
+        client,
+        _request(model, max_chunk_chars=120, source_text_by_block=sources),
+    )
+
+    assert client.calls.count("language_diagnosis") == 3
+
+
+class TruncatingClient:
+    """Обрывает ответ на первых N запросах диагностики, дальше отвечает пусто."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.calls: list[str] = []
+        self.chunk_sizes: list[int] = []
+        self.budgets: list[int] = []
+
+    async def complete_json(
+        self,
+        prompt: str,
+        *,
+        model: QaModelSelection,
+        max_output_tokens: int,
+        cancellation: CancellationToken,
+        purpose: str = "",
+    ) -> dict[str, object]:
+        self.calls.append(purpose)
+        self.chunk_sizes.append(prompt.count("- block_id:"))
+        self.budgets.append(max_output_tokens)
+        if purpose == "language_diagnosis" and self.failures > 0:
+            self.failures -= 1
+            raise QaResponseSchemaError("truncated JSON")
+        return {"issues": []}
+
+
+def test_a_truncated_diagnosis_splits_the_chunk_instead_of_losing_it():
+    """Обрезанный JSON — это «кусок велик», а не «главу проверить нельзя».
+
+    Ответ режется по лимиту вывода, а его длина зависит от числа дефектов и
+    заранее неизвестна. Единственный честный вывод из обрыва — спросить о
+    меньшем куске, а не выбрасывать блоки непроверенными.
+    """
+    model = _model()
+    client = TruncatingClient(failures=1)
+
+    result = _check(client, _request(model, max_chunk_chars=100_000))
+
+    assert client.chunk_sizes[0] == 3, "сперва спрашиваем главу целиком"
+    assert all(size < 3 for size in client.chunk_sizes[1:]), "переспрашиваем меньшим"
+    assert sum(client.chunk_sizes[1:]) == 3, "и ровно про те же блоки"
+    assert result.unchecked_blocks == 0
+
+
+def test_a_block_that_keeps_failing_is_reported_unchecked_not_retried_forever():
+    """Дробление обязано упираться в дно, а не крутиться на месте.
+
+    Если обрыв повторяется на каждом куске, проверка должна дойти до
+    одиночного блока, сдаться и честно сказать, сколько абзацев осталось
+    непроверенными.
+    """
+    model = _model()
+    client = TruncatingClient(failures=99)
+
+    result = _check(client, _request(model, max_chunk_chars=100_000))
+
+    assert len(client.chunk_sizes) > 1, "должна была переспросить меньшим куском"
+    assert min(client.chunk_sizes) == 1, "должна была дойти до одиночного блока"
+    assert result.unchecked_blocks == 3
+    assert result.warnings
+
+
+def test_the_diagnosis_asks_for_the_whole_output_budget():
+    """Ответ обрывается по лимиту вывода, а не по объёму текста.
+
+    Половина разрешённого бюджета кончается тем быстрее, чем крупнее порция,
+    а обрыв стоит дороже любого сэкономленного токена.
+    """
+    client = TruncatingClient(failures=0)
+
+    _check(client, _request(_model()))
+
+    assert client.budgets[0] == 4096

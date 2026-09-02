@@ -30,6 +30,17 @@ LANGUAGE_ISSUE_CATEGORIES = (
     "hallucinated_addition",
 )
 DEFAULT_MAX_CHUNK_CHARS = 4000
+# How much text one language-check request may carry when the project's own
+# translation limit cannot be read as characters.  Far above the 4000 above:
+# that number was chosen for the worst chapter in a book and charged to every
+# other one.
+DEFAULT_LANGUAGE_CHUNK_CHARS = 16000
+# Below the first, a piece is too small to carry a sentence's context; above
+# the second, the model stops answering about all of it.  The ceiling counts
+# translation and source together, so it is twice the amount of chapter it
+# looks like.
+MIN_LANGUAGE_CHUNK_CHARS = 1000
+MAX_LANGUAGE_CHUNK_CHARS = 64000
 PROTECTED_ENTITY_CATEGORIES = frozenset({"PER", "ORG", "LOC"})
 
 
@@ -288,21 +299,33 @@ def blocks_from_model(document_model: dict) -> tuple[LanguageBlock, ...]:
 
 
 def chunk_blocks(
-    blocks: Sequence[LanguageBlock], max_chars: int
+    blocks: Sequence[LanguageBlock],
+    max_chars: int,
+    source_text_by_block: Mapping[str, str] | None = None,
 ) -> tuple[tuple[LanguageBlock, ...], ...]:
-    """Split blocks into deterministic chunks that never reorder or drop one."""
+    """Split blocks into deterministic chunks that never reorder or drop one.
+
+    The budget counts what the request actually carries.  Every block goes to
+    the model with its source text beside it, so counting the translation alone
+    promised one size and sent close to twice it.
+    """
     if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
         raise QaModelValidationError("max_chars must be a positive integer")
+    sources = dict(source_text_by_block or {})
+
+    def weigh(block: LanguageBlock) -> int:
+        return len(block.text) + len(sources.get(block.block_id, ""))
+
     chunks: list[tuple[LanguageBlock, ...]] = []
     current: list[LanguageBlock] = []
     size = 0
     for block in blocks:
-        if current and size + len(block.text) > max_chars:
+        if current and size + weigh(block) > max_chars:
             chunks.append(tuple(current))
             current = []
             size = 0
         current.append(block)
-        size += len(block.text)
+        size += weigh(block)
     if current:
         chunks.append(tuple(current))
     return tuple(chunks)
@@ -540,7 +563,13 @@ class LanguageQualityPipeline:
         chapter_blocks = blocks_from_model(current_model)
         unchecked_blocks = 0
 
-        for chunk in chunk_blocks(chapter_blocks, request.max_chunk_chars):
+        pending = list(
+            chunk_blocks(
+                chapter_blocks, request.max_chunk_chars, request.source_text_by_block
+            )
+        )
+        while pending:
+            chunk = pending.pop(0)
             request.cancellation.raise_if_cancelled()
             block_ids = {block.block_id for block in chunk}
             chunk_rules = tuple(
@@ -552,6 +581,16 @@ class LanguageQualityPipeline:
                     request, chunk, chunk_rules, chunk_nlp
                 )
             except LanguageReviewError as error:
+                # A truncated answer says the chunk was too big for the output
+                # budget, not that the chapter cannot be checked: the reply
+                # lists every defect found, so its length follows the number of
+                # defects, which nobody knows before asking.  Halving asks about
+                # less.  One block that still fails is the end of the road, and
+                # is reported unchecked exactly as before.
+                if error.reason.endswith("_invalid_response") and len(chunk) > 1:
+                    middle = len(chunk) // 2
+                    pending[:0] = [chunk[:middle], chunk[middle:]]
+                    continue
                 warnings.append(error.described)
                 unchecked_blocks += len(chunk)
                 continue

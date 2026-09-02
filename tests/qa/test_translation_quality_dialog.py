@@ -265,3 +265,14 @@ def test_export_is_offered_only_when_there_is_a_report(qt_app):
 
     dialog.set_busy(True)
     assert dialog.export_button.isEnabled() is False
+
+
+def test_the_chunk_spin_offers_the_automatic_size(qt_app):
+    """Нижнее положение крутилки — «как при переводе», а не запрещённый ноль."""
+    dialog = _dialog(qt_app)
+
+    assert dialog.language_chunk_spin.minimum() == 0
+    assert dialog.language_chunk_spin.specialValueText()
+    dialog.language_chunk_spin.setValue(0)
+
+    assert dialog.qa_settings().language_chunk_chars == 0

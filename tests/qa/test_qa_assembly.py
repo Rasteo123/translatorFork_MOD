@@ -267,3 +267,59 @@ def test_local_nlp_is_built_only_when_switched_on(tmp_path):
     assert result.status == "unavailable"
     assert result.analysis is None
     assert result.warnings and result.warnings[0].startswith("slovnet_")
+
+
+def test_the_pass_is_sized_by_the_project_translation_limit():
+    """Настройки перевода — единственный источник размера порции.
+
+    Проверка читает ту же главу той же моделью, что и перевод; отдельная
+    константа означала лишние запросы за ту же работу.
+    """
+    from gemini_translator.qa.assembly import _current_options
+
+    class Manager:
+        def get_qa_settings(self):
+            from gemini_translator.qa.settings import QaSettings
+
+            return QaSettings()
+
+        def load_settings(self):
+            return {"task_size_limit": 25000, "task_size_unit": "chars"}
+
+    assert _current_options(Manager()).language_chunk_chars == 25000
+
+
+def test_unreadable_translation_settings_leave_a_workable_size():
+    """Нечитаемые настройки не должны возвращать проверку к дроблению по 4000."""
+    from gemini_translator.qa.assembly import _current_options
+    from gemini_translator.qa.language_validation import DEFAULT_LANGUAGE_CHUNK_CHARS
+
+    class Manager:
+        def get_qa_settings(self):
+            from gemini_translator.qa.settings import QaSettings
+
+            return QaSettings()
+
+        def load_settings(self):
+            raise OSError("нет доступа к настройкам")
+
+    assert (
+        _current_options(Manager()).language_chunk_chars
+        == DEFAULT_LANGUAGE_CHUNK_CHARS
+    )
+
+
+def test_a_size_the_user_set_wins_over_the_project_limit():
+    """Автоматика — умолчание, а не запрет: явное число должно её перебивать."""
+    from gemini_translator.qa.assembly import _current_options
+
+    class Manager:
+        def get_qa_settings(self):
+            from gemini_translator.qa.settings import QaSettings
+
+            return QaSettings(language_chunk_chars=12000)
+
+        def load_settings(self):
+            return {"task_size_limit": 25000, "task_size_unit": "chars"}
+
+    assert _current_options(Manager()).language_chunk_chars == 12000
