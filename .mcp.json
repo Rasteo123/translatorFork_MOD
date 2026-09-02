@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "translatorFork": {
+      "command": "/Users/rasreo/dev/translatorFork_MOD/.venv/bin/python",
+      "args": [
+        "-m",
+        "gemini_translator.mcp",
+        "server"
+      ],
+      "env": {
+        "PYTHONPATH": "/Users/rasreo/dev/translatorFork_MOD"
+      }
+    }
+  }
+}
