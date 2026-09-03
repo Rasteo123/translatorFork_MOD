@@ -55,7 +55,16 @@ def test_qa_takes_the_keys_from_the_end_where_the_workers_are_not():
     """Воркеры берут ключи с начала списка; проверка должна начинать с конца."""
     pool = QaKeyPool(["a", "b", "c"])
 
-    assert [pool.acquire() for _ in range(4)] == ["c", "b", "a", "c"]
+    assert pool.acquire() == "c"
+
+
+def test_a_key_is_kept_until_the_service_turns_it_away():
+    """Как воркер перевода: один ключ, пока он работает. Смена — исключение."""
+    pool = QaKeyPool(["a", "b", "c"])
+
+    assert [pool.acquire() for _ in range(4)] == ["c", "c", "c", "c"]
+    pool.mark_exhausted("c")
+    assert [pool.acquire() for _ in range(2)] == ["b", "b"]
 
 
 def test_an_exhausted_key_is_never_offered_again():
@@ -89,6 +98,9 @@ def test_a_paused_key_comes_back_when_its_time_is_up():
     clock.now += 10
     assert pool.acquire() == "a"
     clock.now += 20
+    # "b" is back, but "a" works and a working key is kept.
+    assert pool.acquire() == "a"
+    pool.pause("a", 5)
     assert pool.acquire() == "b"
 
 
@@ -114,9 +126,10 @@ def test_keys_a_worker_is_using_right_now_are_the_last_resort():
     busy = {"c"}
     pool = QaKeyPool(["a", "b", "c"], busy=lambda key: key in busy)
 
-    assert [pool.acquire() for _ in range(2)] == ["b", "a"]
-    pool.mark_exhausted("a")
+    assert pool.acquire() == "b"
     pool.mark_exhausted("b")
+    assert pool.acquire() == "a"
+    pool.mark_exhausted("a")
     assert pool.acquire() == "c"
 
 
@@ -193,18 +206,26 @@ def test_an_exhausted_key_is_replaced_within_the_same_request():
     assert any("исчерпан" in message for message in messages)
 
 
-def test_a_busy_key_is_paused_for_as_long_as_the_service_asked():
-    """429 с задержкой — это «этот ключ подождёт», а не «проверка провалилась»."""
+def test_a_busy_key_is_asked_again_and_only_a_second_refusal_rests_it():
+    """Как у воркера: первое 429 — ждём на том же ключе, второе — ключ отдыхает."""
     clock = _Clock()
+    pauses: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        clock.now += seconds
+
     busy = TemporaryRateLimitError("API запросил паузу", delay_seconds=42)
     handler, made, pool = _rotating(
-        ["a", "b"], {"b": busy, "a": '{"issues": []}'}, clock=clock
+        ["a", "b"], {"b": busy, "a": '{"issues": []}'}, clock=clock, sleep=sleep
     )
 
     assert _ask(handler) == '{"issues": []}'
-    assert [item.key for item in made] == ["b", "a"]
+    assert [item.key for item in made] == ["b", "b", "a"]
+    assert pauses == [pytest.approx(42)]
     assert pool.acquire() == "a"
-    assert pool.acquire() == "a"
+    pool.mark_exhausted("a")
+    assert pool.acquire() is None
     clock.now += 42
     assert pool.acquire() == "b"
 
@@ -279,6 +300,69 @@ def test_other_errors_pass_through_untouched_and_still_close_the_session():
 
     assert made[0].closed is True
     assert pool.remaining == 1
+
+
+# --- the storm ----------------------------------------------------------------
+#
+# Measured on a live book: when the service began answering 429 to everyone,
+# the check hopped to the next key on every refusal and asked all 150 keys
+# within two minutes, then again a minute later when their pauses ran out.
+# Dozens of chapters were being checked at once, each hopping on its own.
+# An hour later the service accounts behind the keys were disabled.
+
+
+def test_when_several_keys_are_throttled_at_once_the_whole_pool_rests():
+    """Три ключа подряд с 429 за минуту — лимит общий, перебор бесполезен и опасен."""
+    clock = _Clock()
+    pool = QaKeyPool(["a", "b", "c", "d", "e"], clock=clock)
+
+    pool.pause("e", 60)
+    pool.pause("d", 60)
+    assert pool.acquire() == "c"
+    pool.pause("c", 60)
+
+    assert pool.acquire() is None
+    assert pool.seconds_until_available() == pytest.approx(60)
+    clock.now += 60
+    assert pool.acquire() is not None
+
+
+def test_the_pool_never_hands_out_more_than_its_minute_budget():
+    """Потолок на все запросы проверки в минуту, сколько бы ключей ни было."""
+    clock = _Clock()
+    pool = QaKeyPool(["a", "b", "c", "d"], clock=clock, max_requests_per_minute=3)
+
+    assert [pool.acquire() for _ in range(3)] == ["d", "d", "d"]
+    assert pool.acquire() is None
+    wait = pool.seconds_until_available()
+    assert 0 < wait <= 60
+    clock.now += wait
+    assert pool.acquire() == "d"
+
+
+def test_a_throttled_key_is_waited_on_not_hopped_away_from():
+    """Перебрать все ключи за минуту — это и есть шторм, за который банят."""
+    clock = _Clock()
+    pauses: list[float] = []
+    calls: dict[str, int] = {}
+
+    class _Throttling(_Handler):
+        async def execute_api_call(self, prompt, log_prefix, **kwargs):
+            calls[self.key] = calls.get(self.key, 0) + 1
+            if calls[self.key] == 1:
+                raise TemporaryRateLimitError("busy", delay_seconds=30)
+            return '{"issues": []}'
+
+    async def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        clock.now += seconds
+
+    pool = QaKeyPool(["a", "b", "c", "d"], clock=clock)
+    handler = RotatingQaHandler(pool, lambda key: _Throttling(key, None), sleep=sleep)
+
+    assert _ask(handler) == '{"issues": []}'
+    assert calls == {"d": 2}
+    assert pauses == [pytest.approx(30)]
 
 
 # --- wiring into the factory -------------------------------------------------

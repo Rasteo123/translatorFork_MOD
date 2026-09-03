@@ -147,6 +147,12 @@ class ChapterQaCoordinator:
         self._limited_reported = False
         self._log = log
         self._max_concurrency = max(1, max_concurrency)
+        # One check at a time unless the user allowed more.  Measured on a live
+        # book: the translation outran the check, dozens of chapters were
+        # checked at once, and together they asked every key of the pool
+        # within two minutes whenever the service throttled.
+        self._check_limit: asyncio.Semaphore | None = None
+        self._check_limit_loop: asyncio.AbstractEventLoop | None = None
         self._cancellation = CancellationToken()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -455,9 +461,10 @@ class ChapterQaCoordinator:
             )
             return None
         try:
-            result = await self._service.check_chapter(
-                request, options, self._cancellation
-            )
+            async with self._one_check_at_a_time():
+                result = await self._service.check_chapter(
+                    request, options, self._cancellation
+                )
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - QA never breaks translation
@@ -467,6 +474,18 @@ class ChapterQaCoordinator:
         self._note_limited_mode(result)
         self._report_chapter(event, result)
         return result
+
+    def _one_check_at_a_time(self) -> asyncio.Semaphore:
+        """The semaphore every check passes through, bound to the running loop.
+
+        The QA loop is stopped and started again between sessions, and a
+        semaphore belongs to the loop it was first used on.
+        """
+        loop = asyncio.get_running_loop()
+        if self._check_limit is None or self._check_limit_loop is not loop:
+            self._check_limit = asyncio.Semaphore(self._max_concurrency)
+            self._check_limit_loop = loop
+        return self._check_limit
 
     def _note_limited_mode(self, result: ChapterQaResult) -> None:
         """Say once when semantic comparison has stopped working for the book.

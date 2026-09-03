@@ -129,9 +129,12 @@ class RotatingQaHandler:
     never closes it leaked a session and a connector on every question.
 
     A key the service declares spent is dropped and the next one asked the
-    same question at once.  A key the service asks to rest is rested for the
-    time it named and the next one is asked.  Only when no key is ready does
-    the request wait, and never longer than :data:`MAX_KEY_WAIT_SECONDS`.
+    same question.  A key the service asks to rest is asked again after the
+    pause it named — the way a translation worker waits on its own key — and
+    only a second refusal in a row rests it and moves on.  Measured on a live
+    book: hopping to the next key on every refusal asked all 150 keys within
+    two minutes, and an hour later the accounts behind them were disabled.
+    One request never waits longer than :data:`MAX_KEY_WAIT_SECONDS` in total.
     """
 
     def __init__(
@@ -173,6 +176,7 @@ class RotatingQaHandler:
                 result = handler.execute_api_call(prompt, log_prefix, **kwargs)
                 if inspect.isawaitable(result):
                     result = await result
+                self._pool.note_success(key)
                 return result
             except RateLimitExceededError as error:
                 last_error = error
@@ -184,11 +188,21 @@ class RotatingQaHandler:
             except TemporaryRateLimitError as error:
                 last_error = error
                 delay = _requested_delay(error, default=60.0)
-                self._pool.pause(key, delay)
+                if self._pool.note_throttled(key, delay):
+                    self._say(
+                        f"[QA] Ключ …{key[-4:]} отдыхает {delay:.0f} с по просьбе "
+                        "сервиса, проверка берёт следующий."
+                    )
+                    continue
+                pause = min(delay, self._max_wait - waited)
+                if pause <= 0:
+                    raise QaHandlerError(self._refusal(error)) from error
                 self._say(
-                    f"[QA] Ключ …{key[-4:]} отдыхает {delay:.0f} с по просьбе "
-                    "сервиса, проверка берёт следующий."
+                    f"[QA] Ключ …{key[-4:]} просит подождать {delay:.0f} с, "
+                    "проверка ждёт на нём."
                 )
+                waited += pause
+                await self._sleep(pause)
             finally:
                 await self._close(handler)
 
@@ -196,6 +210,8 @@ class RotatingQaHandler:
     def _refusal(error: BaseException | None) -> str:
         if error is None:
             return "У проверки не осталось рабочих ключей."
+        if getattr(error, "delay_seconds", None):
+            return f"Сервис просит ждать дольше, чем может одна проверка: {error}"
         return f"У проверки не осталось рабочих ключей: {error}"
 
     def _say(self, message: str) -> None:

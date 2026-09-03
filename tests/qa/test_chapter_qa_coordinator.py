@@ -407,6 +407,54 @@ def test_a_blocked_chapter_is_logged_with_the_reason():
     assert "He never told her." in details
 
 
+def _peak_concurrency(max_concurrency: int, tasks: int = 4) -> int:
+    running = 0
+    peak = 0
+
+    class _Slow:
+        async def check_chapter(self, request, options, cancellation):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return _result(request)
+
+    coordinator = ChapterQaCoordinator(
+        service=_Slow(),
+        task_manager=_QueueStub(),
+        request_builder=lambda event: event.chapter_id,
+        max_concurrency=max_concurrency,
+    )
+
+    async def run() -> None:
+        await asyncio.gather(
+            *(
+                coordinator._inspect_and_resolve(
+                    f"task-{index}", (_event(f"chapter-{index}", f"task-{index}"),)
+                )
+                for index in range(tasks)
+            )
+        )
+
+    asyncio.run(run())
+    return peak
+
+
+def test_automatic_checks_run_one_at_a_time_by_default():
+    """Очередь из десятков готовых глав не должна крутить пул ключей разом.
+
+    Measured on a live book: the translation outran the check, dozens of
+    chapters were checked at once, and together they asked every key of the
+    pool within two minutes whenever the service throttled.
+    """
+    assert _peak_concurrency(1) == 1
+
+
+def test_the_user_may_allow_more_checks_at_once():
+    assert _peak_concurrency(3) <= 3
+
+
 def test_a_logger_without_details_support_still_works():
     """An older log callback must keep working, not swallow the message."""
     logged: list[str] = []
