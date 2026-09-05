@@ -555,18 +555,39 @@ def _patched_rename(src, dst):
 
 def _patched_replace(src, dst):
     """
-    Атомарная замена. В Windows os.replace часто кидает PermissionError, 
+    Атомарная замена. В Windows os.replace часто кидает PermissionError,
     если целевой файл существует и открыт кем-то на чтение.
-    """
-    # Если мы работаем с реальной ФС, пытаемся подготовить почву
-    is_virtual_dst, _, _ = _parse_path(dst)
-    if not is_virtual_dst and _patched_exists(dst):
-        # Пытаемся удалить старый файл перед заменой, используя наш "терпеливый" remove
-        try:
-            _patched_remove(dst)
-        except OSError:
-            pass # Если не удалилось, rename ниже попробует сам или выкинет ошибку
 
+    ВАЖНО: для двух реальных (не mem://) путей замена делается ОДНИМ нативным
+    вызовом os.replace (через сохранённый оригинал), а не парой remove(dst)+
+    rename(src, dst). os.replace в Python кроссплатформенно атомарен и сам
+    умеет заменять существующий dst — предварительный remove лишь открывает
+    окно, в котором dst временно не существует: при падении процесса или
+    сбое переименования именно в этом окне файл состояния (settings.json,
+    job.json и т.п.) терялся бы безвозвратно вместо отката к старой версии.
+    "Терпеливость" (ретраи при занятом файле на Windows) сохранена.
+    """
+    src_is_virtual, _, _ = _parse_path(src)
+    dst_is_virtual, _, _ = _parse_path(dst)
+
+    if not src_is_virtual and not dst_is_virtual:
+        # --- ТЕРПЕЛИВАЯ АТОМАРНАЯ ЗАМЕНА (NATIVE) ---
+        MAX_RETRIES = 7
+        for attempt in range(MAX_RETRIES):
+            try:
+                return _original["replace"](src, dst)
+            except (OSError, PermissionError) as e:
+                error_str = str(e).lower()
+                if "used by another process" in error_str or "sharing violation" in error_str or e.errno in (13, 32):
+                    if attempt == MAX_RETRIES - 1:
+                        raise e
+                    wait_time = 0.25 * (attempt + 1)
+                    print(f"[OS_PATCH:replace] Файл занят, повтор {attempt+1}/{MAX_RETRIES} через {wait_time}с...")
+                    time.sleep(wait_time)
+                else:
+                    raise e
+
+    # mem:// и смешанные (mem<->диск) пути — поведение как раньше.
     return _patched_rename(src, dst)
 
 def _install_qt_message_handler():

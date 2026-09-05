@@ -16,6 +16,7 @@ import asyncio
 import sqlite3
 import atexit
 import base64
+import threading
 import importlib
 import subprocess
 from collections import deque
@@ -673,37 +674,32 @@ def restart_with_new_files(epub_path, chapters):
         app.exit(EXIT_CODE_REBOOT)
 
 
-def global_excepthook(exc_type, exc_value, exc_tb):
+# Сколько ждём подтверждения, что Qt event loop реально доставил
+# critical_error_requested (QueuedConnection), прежде чем считать GUI
+# зависшим. Сам факт успешного emit() на QueuedConnection ничего не
+# доказывает — сигнал лишь ставится в очередь, независимо от того, крутится
+# ли цикл событий (см. root-entry/bugs/2-excepthook-emit-not-liveness-c).
+EXCEPTHOOK_LIVENESS_TIMEOUT_SEC = 5.0
+
+# Single-flight guard: не даём каждому необработанному исключению плодить
+# собственный watchdog-поток. PyQt вызывает sys.excepthook на КАЖДОЕ такое
+# исключение — серия однотипных сбоев (например, падающий обработчик
+# частого события) иначе породит десятки потоков одновременно, а главное:
+# clear() от исключения B затирал бы подтверждение, которого ждёт watchdog
+# исключения A (см. review round 2, major). Пока watchdog уже активен,
+# новые исключения просто показываются пользователю без повторной проверки
+# отзывчивости — активный watchdog и так эскалирует при реальном зависании.
+_excepthook_watchdog_guard = threading.Lock()
+
+
+def _escalate_to_emergency_shutdown(app, error_message: str):
+    """Грациозно останавливает фоновые потоки и запускает аварийный просмотрщик.
+
+    Вызывается, только когда GUI не отвечает (или отвечать нечему): либо
+    сразу из global_excepthook (нет app/dispatcher, emit упал), либо из
+    watchdog-потока, когда доставка critical_error_requested не была
+    подтверждена за EXCEPTHOOK_LIVENESS_TIMEOUT_SEC.
     """
-    Обрабатывает все неперехваченные исключения.
-    Если приложение отвечает, показывает встроенное окно.
-    Если приложение зависло, пытается грациозно завершить фоновые потоки
-    и только потом запускает аварийный режим.
-    """
-    tb_list = traceback.format_exception(exc_type, exc_value, exc_tb)
-    tb_str = "".join(tb_list)
-    error_message = (
-        f"Произошла неперехваченная ошибка: {exc_type.__name__}\n\n"
-        f"--- Полный Traceback ---\n{tb_str}"
-    )
-    print(f"КРИТИЧЕСКАЯ ОШИБКА (Unhandled Exception):\n{error_message}")
-
-    app = QtWidgets.QApplication.instance()
-
-    # Сценарий 1: Приложение "живо" и может показать окно само.
-    if app:
-        try:
-            dispatcher = getattr(app, "critical_error_requested", None)
-            if dispatcher and hasattr(dispatcher, "emit"):
-                dispatcher.emit(error_message)
-                return
-        except Exception as e:
-            print(
-                f"[CRITICAL] Не удалось показать QMessageBox, даже при живом app: {e}")
-            # Если даже QMessageBox падает, переходим к плану "Б".
-
-    # --- НОВЫЙ БЛОК: Попытка грациозного завершения ---
-    # Это выполняется, только если приложение не отвечает.
     print("[CRITICAL] Приложение Qt не отвечает. Попытка принудительной, но грациозной остановки...")
     if app and hasattr(app, 'engine') and hasattr(app, 'engine_thread'):
         try:
@@ -721,7 +717,6 @@ def global_excepthook(exc_type, exc_value, exc_tb):
         except Exception as e:
             print(
                 f"[CRITICAL] Ошибка во время попытки грациозного завершения: {e}")
-    # --- КОНЕЦ НОВОГО БЛОКА ---
 
     # Сценарий 2: Запускаем "Спасательную шлюпку".
     print("[CRITICAL] Запуск аварийного просмотрщика ошибок...")
@@ -749,6 +744,94 @@ def global_excepthook(exc_type, exc_value, exc_tb):
     os._exit(1)
 
 
+def _watch_gui_liveness_and_escalate(app, liveness_event, error_message: str, guard):
+    """Ждёт подтверждения, что GUI-поток обработал critical_error_requested.
+
+    liveness_event выставляется ApplicationWithContext._show_critical_error
+    в момент, когда Qt реально доставил QueuedConnection-сигнал — то есть
+    событийный цикл провернулся. Если этого не произошло за отведённое
+    время, GUI считается зависшим и запускается тот же путь, что и раньше
+    использовался для "неотвечающего" приложения.
+
+    guard — тот же threading.Lock, что был захвачен вызывающим кодом перед
+    стартом этого потока (single-flight). Освобождаем его в любом исходе,
+    чтобы следующее исключение снова могло проверить отзывчивость GUI.
+    """
+    try:
+        if not liveness_event.wait(timeout=EXCEPTHOOK_LIVENESS_TIMEOUT_SEC):
+            print(
+                "[CRITICAL] Qt event loop не подтвердил обработку "
+                f"critical_error_requested за {EXCEPTHOOK_LIVENESS_TIMEOUT_SEC:.0f} с "
+                "— считаем GUI зависшим."
+            )
+            _escalate_to_emergency_shutdown(app, error_message)
+    finally:
+        guard.release()
+
+
+def global_excepthook(exc_type, exc_value, exc_tb):
+    """
+    Обрабатывает все неперехваченные исключения.
+    Если приложение отвечает, показывает встроенное окно.
+    Если приложение зависло, пытается грациозно завершить фоновые потоки
+    и только потом запускает аварийный режим.
+    """
+    tb_list = traceback.format_exception(exc_type, exc_value, exc_tb)
+    tb_str = "".join(tb_list)
+    error_message = (
+        f"Произошла неперехваченная ошибка: {exc_type.__name__}\n\n"
+        f"--- Полный Traceback ---\n{tb_str}"
+    )
+    print(f"КРИТИЧЕСКАЯ ОШИБКА (Unhandled Exception):\n{error_message}")
+
+    app = QtWidgets.QApplication.instance()
+
+    # Сценарий 1: Приложение "живо" и может показать окно само.
+    if app:
+        try:
+            dispatcher = getattr(app, "critical_error_requested", None)
+            if dispatcher and hasattr(dispatcher, "emit"):
+                # emit() на QueuedConnection лишь кладёт сигнал в очередь и
+                # не доказывает, что событийный цикл вообще жив. Если у
+                # приложения есть счётчик подтверждения доставки (реальный
+                # ApplicationWithContext), проверяем его в фоне и эскалируем
+                # только при реальном зависании — не блокируя вызывающий
+                # поток (это может быть тот же GUI-поток).
+                liveness_event = getattr(app, "_critical_error_delivered", None)
+                if liveness_event is not None and _excepthook_watchdog_guard.acquire(blocking=False):
+                    # ВАЖНО: clear() обязан выполниться ДО emit(). При очень
+                    # быстрой доставке (тот же тик событийного цикла)
+                    # _show_critical_error может выставить событие раньше,
+                    # чем управление вернётся сюда — если бы clear() шёл
+                    # после emit(), он затёр бы уже полученное подтверждение
+                    # и watchdog ошибочно эскалировал бы на живом приложении
+                    # (см. review round 2, blocker).
+                    liveness_event.clear()
+                    dispatcher.emit(error_message)
+                    watchdog = threading.Thread(
+                        target=_watch_gui_liveness_and_escalate,
+                        args=(app, liveness_event, error_message, _excepthook_watchdog_guard),
+                        daemon=True,
+                        name="excepthook-liveness-watchdog",
+                    )
+                    watchdog.start()
+                else:
+                    # Либо это не ApplicationWithContext (нет счётчика
+                    # доставки — прежнее поведение: просто emit), либо
+                    # watchdog уже активен для более раннего исключения —
+                    # он и так эскалирует при реальном зависании GUI, второй
+                    # проверки отзывчивости параллельно не требуется.
+                    dispatcher.emit(error_message)
+                return
+        except Exception as e:
+            print(
+                f"[CRITICAL] Не удалось показать QMessageBox, даже при живом app: {e}")
+            # Если даже QMessageBox падает, переходим к плану "Б".
+
+    # Это выполняется, только если приложения нет или emit сразу упал.
+    _escalate_to_emergency_shutdown(app, error_message)
+
+
 class ApplicationWithContext(QtWidgets.QApplication):
     """
     Расширенный класс QApplication для управления активным контекстом настроек.
@@ -759,6 +842,11 @@ class ApplicationWithContext(QtWidgets.QApplication):
         super().__init__(*args, **kwargs)
         self._true_global_settings_manager = None
         self._active_settings_manager = None
+        # Выставляется _show_critical_error в момент, когда QueuedConnection
+        # реально доставлен — то есть событийный цикл провернулся. Это
+        # единственное реальное доказательство отзывчивости GUI, которого
+        # не даёт сам факт успешного emit() (см. global_excepthook).
+        self._critical_error_delivered = threading.Event()
         self.critical_error_requested.connect(
             self._show_critical_error,
             QtCore.Qt.ConnectionType.QueuedConnection,
@@ -772,6 +860,10 @@ class ApplicationWithContext(QtWidgets.QApplication):
 
     @QtCore.pyqtSlot(str)
     def _show_critical_error(self, error_message: str):
+        # Сам факт вызова этого слота доказывает, что Qt доставил
+        # QueuedConnection-сигнал, то есть событийный цикл жив.
+        self._critical_error_delivered.set()
+
         def show_and_quit():
             QtWidgets.QMessageBox.critical(
                 None, "Критическая Ошибка Приложения", error_message
@@ -799,13 +891,74 @@ class ApplicationWithContext(QtWidgets.QApplication):
         return self.server_manager
 
 
+class _KeysSnapshotDict(dict):
+    """dict, чей .keys() всегда возвращает неизменяемый снимок под общим lock.
+
+    EventBus._data_store мутируется из разных потоков через set_data/pop_data
+    (см. EventBus.set_data/pop_data/get_data) под self._lock, но несколько
+    мест в ядре (worker.py, task_manager.py, translation_engine.py) итерируют
+    `bus._data_store.keys()` напрямую, без блокировки. Обычный dict.keys()
+    — это "живое" view: конкурентная мутация словаря во время такой итерации
+    бросает RuntimeError('dictionary changed size during iteration').
+    Переопределяя здесь .keys() (метод, который сегодня действительно
+    вызывает внешний код), делаем эти места безопасными, не трогая сами
+    внешние файлы: результат — статический tuple-снимок ключей, взятый
+    атомарно под тем же lock, что и set_data/pop_data. По той же схеме
+    защищены .items() и .values(), и .copy() (все три — на случай будущего
+    кода, который вместо .keys() возьмёт одно из них).
+
+    __iter__ НАМЕРЕННО не переопределён (в отличие от предложения ревью) —
+    это не упущение. dict.copy()/dict(x) для аргумента-подкласса dict берут
+    в CPython быстрый путь (прямой клон внутренней хэш-таблицы, атомарно,
+    без единого Python-вызова) только пока `type(x).__iter__` совпадает с
+    базовым dict.__iter__; стоит переопределить __iter__ — и dict.copy()/
+    dict(x) переключаются на общий protocol для мэппингов: сначала
+    `x.keys()`, затем `x[key]` по одному. Для .copy() это гарантированный
+    deadlock (тот же self._snapshot_lock захватывается повторно изнутри
+    keys(), а Lock не рекурсивный — проверено на практике при первой
+    попытке добавить __iter__); для стороннего `dict(x)` — это как раз
+    открывает ту самую гонку: keys() под локом успевает вернуть безопасный
+    снимок, а вот `x[key]` для каждого ключа уже НЕ под локом и может
+    словить KeyError, если ключ выпилили между этими двумя шагами. Поэтому
+    `for k in bus._data_store` / `list(bus._data_store)` остаются
+    незащищёнными (как и раньше) — но, как отмечено в ревью, реальные
+    внешние вызовы (worker.py, task_manager.py, translation_engine.py)
+    используют только .keys(), так что описанный failure_scenario этим не
+    затронут.
+    """
+
+    def __init__(self, lock):
+        super().__init__()
+        self._snapshot_lock = lock
+
+    def keys(self):
+        with self._snapshot_lock:
+            return tuple(dict.keys(self))
+
+    def items(self):
+        with self._snapshot_lock:
+            return tuple(dict.items(self))
+
+    def values(self):
+        with self._snapshot_lock:
+            return tuple(dict.values(self))
+
+    def copy(self):
+        with self._snapshot_lock:
+            # dict.copy(self) — метод базового класса: пока __iter__ не
+            # переопределён, CPython клонирует внутреннюю таблицу напрямую,
+            # не вызывая ни keys(), ни __getitem__ — реентерантности в наш
+            # же self._snapshot_lock не возникает.
+            return dict.copy(self)
+
+
 class EventBus(QtCore.QObject):
     import threading
     event_posted = QtCore.pyqtSignal(dict)
     data_changed = QtCore.pyqtSignal(str)
     _queued_log_events_ready = QtCore.pyqtSignal()
-    _data_store = {}
     _lock = threading.Lock()
+    _data_store = _KeysSnapshotDict(_lock)
 
     # Worker pools can produce log messages much faster than the GUI event loop
     # can consume individual queued Qt signals.  Keep that traffic bounded and
@@ -818,6 +971,11 @@ class EventBus(QtCore.QObject):
         super().__init__()
         self._topic_subscribers = {}
         self._topic_lock = self.threading.Lock()
+        # Счётчик повторных сбоев одного и того же подписчика на одном и том
+        # же событии — чтобы не заваливать GUI-поток полными traceback'ами
+        # на каждый вызов, если подписчик падает стабильно на частом событии
+        # (см. EventBus._log_topic_subscriber_error).
+        self._topic_error_counts = {}
         self._pending_log_events = deque()
         self._pending_log_lock = self.threading.Lock()
         self._log_drain_scheduled = False
@@ -886,11 +1044,48 @@ class EventBus(QtCore.QObject):
                 continue
             try:
                 self._dispatch_callback(callback, event)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Раньше сбой подписчика исчезал бесследно (bare except: pass),
+                # что маскировало реальные проблемы синхронизации UI/очереди
+                # (см. историю: "Тупик qa_pending", "Глава-зомби ЧАНК 1/1").
+                # Перехват оставляем — иначе PyQt6 роняет процесс через qFatal
+                # прямо из слота event_posted, — но теперь пишем след в лог.
+                self._log_topic_subscriber_error(event_name, callback, exc)
         if dead_callbacks:
             for callback in dead_callbacks:
                 self._unsubscribe_all_impl(callback)
+
+    def _log_topic_subscriber_error(self, event_name: str, callback, exc: Exception):
+        """Пишет след сбоя подписчика в консоль/лог с троттлингом.
+
+        Первый сбой конкретного (событие, подписчик, тип исключения) —
+        полный traceback. Дальнейшие повторы того же сбоя — короткая строка
+        со счётчиком, без traceback: иначе стабильно падающий подписчик на
+        частом событии (лог/прогресс главы — сотни событий в минуту) залил
+        бы главный поток потоком одинаковых полных трейсбеков.
+        """
+        receiver = getattr(callback, "__self__", None)
+        callback_desc = (
+            f"{type(receiver).__name__}.{getattr(callback, '__name__', callback)}"
+            if receiver is not None
+            else repr(callback)
+        )
+        error_key = (event_name, callback_desc, type(exc).__name__)
+        with self._topic_lock:
+            count = self._topic_error_counts.get(error_key, 0) + 1
+            self._topic_error_counts[error_key] = count
+        if count == 1:
+            print(
+                f"[EventBus-TOPIC-ERROR] Подписчик {callback_desc} на "
+                f"'{event_name}' упал: {type(exc).__name__}: {exc}"
+            )
+            traceback.print_exc()
+        else:
+            print(
+                f"[EventBus-TOPIC-ERROR] Подписчик {callback_desc} на "
+                f"'{event_name}' падает повторно ({count}-й раз подряд с "
+                f"начала сессии): {type(exc).__name__}: {exc}"
+            )
 
     @staticmethod
     def _is_dead_subscriber(callback) -> bool:
