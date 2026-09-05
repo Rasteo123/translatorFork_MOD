@@ -59,7 +59,6 @@ Segment every sentence. Determine what is spoken and what is authorial explanati
 
 The symbol `─` (U+2500) is the sole separator between states [SOUND] and [SILENCE]. Inside paragraphs and sentences – AS WELL.
 *   Place `─` **every time** the source of the text changes within a paragraph (speech started, speech interrupted by author, speech resumed).
-*   Every new speech segment must launch with `─`, in a new paragraph.
 *   *Rule:* If a Character speaks, and then the Author narrates – `─` must stand between them.
 
 #### INTERRUPTION LOGIC
@@ -72,11 +71,11 @@ If speech cuts off mid-word or on a pause:
 
 #### STATE [SOUND] (Speech Rules)
 
-*   Every new speech segment must launch with `─`, in a new paragraph.
+*   **Dialogue Paragraphs:** Every paragraph containing ordinary spoken dialogue must begin with `─` followed by speech. A change of speaker requires a new paragraph; author narration interrupting the same speaker’s turn does not.
+*   If narration precedes speech, keep it in a separate paragraph or reposition it using the attribution-inversion rule. Preserve who speaks and the order of events.
 *   **Quotation Marks:** Strictly forbidden for framing speech.
 *   **Internal Objects:** Thoughts/inscriptions inside speech are highlighted with `«...»`.
-*   **Internal Dash:** Use `–` (En-dash) **only** for pauses within a ***continuous*** flow of speech by one character.
-    *   *Prohibition:* Never use `–` or `—` to separate author's words.
+*   **Internal Dash:** Within a character’s speech, use `–` for any dash that does not mark a transition to or from author narration.
 
 #### FORMATTING STANDARDS (Special Symbols)
 
@@ -113,10 +112,10 @@ Before placing ANY dash, check the State on the Left and Right:
 
 1. [SOUND]   <-> [SILENCE] : Use `─` (Operator). (Boundary switch).
 2. [SILENCE] <-> [SOUND]   : Use `─` (Operator). (Boundary switch).
-3. [SOUND]   <-> [SOUND]   : Use `–` (En-dash). (Internal pause in speech).
-4. [SILENCE] <-> [SILENCE] : Use `–` (En-dash). (Internal pause in narration).
+3. [SOUND]   <-> [SOUND]   : Use `–` (En-dash). (Internal dash in speech).
+4. [SILENCE] <-> [SILENCE] : Use `–` (En-dash). (Internal dash in narration).
 
-*Avoid the construction `, –` for internal pauses. Rephrase the sentence if necessary to use only the En-dash (`–`) without a preceding comma, or use alternative punctuation.*
+*Do not add a comma before `–` merely to mark a pause. Preserve `, –` when the comma and dash are independently required by Russian syntax.*
 
 ---
 
