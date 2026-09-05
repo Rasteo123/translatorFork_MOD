@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 
 import re
 import traceback
@@ -442,8 +443,32 @@ class GlossaryWidget(QWidget):
         self.project_save_btn.setText("💾 Сохранить в проект*" if is_dirty else "💾 Сохранить в проект")
 
     def _write_glossary_json(self, file_path: str, glossary_data) -> None:
-        with open(file_path, "w", encoding="utf-8") as handle:
-            json.dump(glossary_data, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        # Атомарная запись: сначала во временный файл рядом с целевым, затем
+        # os.replace(). Так крах/исключение посреди записи не оставляет на
+        # диске усечённый JSON поверх ранее сохранённых данных.
+        directory = os.path.dirname(file_path) or "."
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=directory,
+                prefix=os.path.basename(file_path) + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                tmp_path = handle.name
+                json.dump(glossary_data, handle, ensure_ascii=False, indent=2, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, file_path)
+        except Exception:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
 
     def _load_glossary_json(self, file_path: str, missing_value=None):
         if not file_path or not os.path.exists(file_path):
@@ -480,9 +505,19 @@ class GlossaryWidget(QWidget):
         autosave_path = self._project_glossary_autosave_path()
 
         if project_path and os.path.exists(project_path):
-            project_data = self._load_glossary_json(project_path, missing_value=[]) or []
+            try:
+                project_data = self._load_glossary_json(project_path, missing_value=[]) or []
+            except Exception:
+                # Битый project_glossary.json не должен прерывать загрузку —
+                # ниже есть шанс восстановиться из автокопии.
+                project_data = []
 
-        autosave_data = self._load_glossary_json(autosave_path, missing_value=None)
+        try:
+            autosave_data = self._load_glossary_json(autosave_path, missing_value=None)
+        except Exception:
+            # Битая автокопия не должна мешать использованию целого
+            # project_glossary.json.
+            autosave_data = None
         glossary_to_display = project_data
 
         if autosave_data is not None and glossary_snapshot(autosave_data) != glossary_snapshot(project_data):

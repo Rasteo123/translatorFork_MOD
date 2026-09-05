@@ -5091,11 +5091,16 @@ class TranslationValidatorPage(ShellPage):
         if not self.is_code_view:
             return
 
-        selected_rows = list(set(item.row() for item in self.table_results.selectedItems()))
-        if not selected_rows:
+        # ВАЖНО: строка должна вычисляться ТЕМ ЖЕ способом, что и в
+        # update_comparison_view/toggle_code_view (selected_items[0].row()),
+        # иначе при множественном выделении (например, ctrl-клик сначала по
+        # нижней, потом по верхней строке) редактор покажет одну главу, а
+        # правка запишется в results_data другой — молча портя чужой перевод.
+        selected_items = self.table_results.selectedItems()
+        if not selected_items:
             return
-    
-        row = selected_rows[0]
+
+        row = selected_items[0].row()
     
         if row in self.results_data:
             # 1. Сохраняем "истинный" код из редактора в наш буфер
@@ -5254,7 +5259,8 @@ class TranslationValidatorPage(ShellPage):
         # --- УПРОЩЕНИЕ: Убираем логику сохранения отсюда ---
         # if self.is_code_view and old_row != -1 …
         
-        selected_rows = list(set(item.row() for item in self.table_results.selectedItems()))
+        selected_items = self.table_results.selectedItems()
+        selected_rows = list(set(item.row() for item in selected_items))
         if hasattr(self, 'btn_show_editor_tab'):
             self.btn_show_editor_tab.setEnabled(bool(selected_rows))
         self._update_translation_find_replace_state()
@@ -5271,8 +5277,11 @@ class TranslationValidatorPage(ShellPage):
             # Кнопка сохранения НЕ деактивируется, так как могут быть другие измененные файлы
             return
 
-        row = selected_rows[0]
-        
+        # ВАЖНО: та же строка, что покажет update_comparison_view ниже
+        # (selected_items[0].row()) — иначе кнопка "сравнить с готовой" и
+        # т.п. будут рассчитаны для одной главы, а редактор покажет другую.
+        row = selected_items[0].row()
+
         # --- НАЧАЛО КЛЮЧЕВОГО ИЗМЕНЕНИЯ ---
         data = self.results_data.get(row, {})
         # Проверяем, не является ли текущий файл сам по себе "готовым"
@@ -6439,6 +6448,14 @@ class TranslationValidatorPage(ShellPage):
         # --- КОНЕЦ ИСПРАВЛЕНИЙ ---
 
     def can_leave(self) -> bool:
+        # Пока крутится вложенный цикл ожидания ниже, Qt продолжает
+        # обрабатывать события — повторный клик по "Назад" вызовет can_leave()
+        # ещё раз, а NavigationController.pop() не защищён от повторного
+        # входа: второй pop() дойдёт до тела поверх ещё не завершившегося
+        # первого и повредит стек навигации (двойной removeWidget/disconnect).
+        # Не пускаем такой реентрантный вызов, пока не решена судьба первого.
+        if getattr(self, "_awaiting_analysis_thread_stop", False):
+            return False
         if self.analysis_thread is not None and self.analysis_thread.isRunning():
             answer = QMessageBox.question(
                 self, "Выход",
@@ -6450,7 +6467,43 @@ class TranslationValidatorPage(ShellPage):
                 return False
             self.analysis_thread.stop()
             if not self.analysis_thread.wait(1000):
-                self.analysis_thread.terminate()
+                # ВНИМАНИЕ: terminate() здесь раньше применялся к потоку,
+                # который почти всегда в этот момент выполняет CPU-bound
+                # Python-код (BeautifulSoup, re, детектор языка) под GIL.
+                # Снятие потока в такой момент может унести с собой
+                # захваченный внутренний мьютекс GIL и намертво подвесить
+                # процесс — это хуже, чем не завершившаяся вовремя проверка.
+                # Вместо этого ждём штатного завершения (флаг _is_running уже
+                # снят stop()), не блокируя цикл событий, чтобы страницу
+                # можно было безопасно удалить только после реальной
+                # остановки потока.
+                self._awaiting_analysis_thread_stop = True
+                try:
+                    # Вложенный цикл ниже доставляет очередные сигналы потока
+                    # (result_found/progress_update/analysis_finished) слотам
+                    # ЭТОЙ, уходящей страницы. analysis_finished успевает
+                    # выполнить on_analysis_finished (снапшот, возможный
+                    # модальный диалог "Проблем не найдено" с перезапуском
+                    # анализа) ещё до того, как страницу уберут со стека —
+                    # отключаем сигналы заранее, чтобы этого не происходило.
+                    for signal_name, slot in (
+                        ("result_found", getattr(self, "add_result", None)),
+                        ("progress_update", getattr(self, "update_status", None)),
+                        ("analysis_finished", getattr(self, "on_analysis_finished", None)),
+                    ):
+                        signal = getattr(self.analysis_thread, signal_name, None)
+                        if signal is None or slot is None:
+                            continue
+                        try:
+                            signal.disconnect(slot)
+                        except TypeError:
+                            pass
+                    wait_loop = QtCore.QEventLoop()
+                    self.analysis_thread.finished.connect(wait_loop.quit)
+                    if self.analysis_thread.isRunning():
+                        wait_loop.exec()
+                finally:
+                    self._awaiting_analysis_thread_stop = False
         return True
 
 
@@ -6501,6 +6554,15 @@ class TranslationValidatorDialog(QDialog, metaclass=_ValidatorDialogMeta):
         # MOVED VERBATIM from the old dialog, with self.<x> -> self.page.<x>
         # for analysis_thread and retry_is_available.
 
+        # См. комментарий в TranslationValidatorPage.can_leave: пока крутится
+        # вложенный цикл ожидания ниже, Qt продолжает обрабатывать события —
+        # повторное закрытие окна (второй клик/Alt+F4) вызовет closeEvent ещё
+        # раз поверх ещё не завершившегося первого вызова. Игнорируем такой
+        # реентрантный вызов, пока не решена судьба первого.
+        if getattr(self.page, "_awaiting_analysis_thread_stop", False):
+            event.ignore()
+            return
+
         # 1. Проверка потока
         if self.page.analysis_thread and self.page.analysis_thread.isRunning():
             msg_box = QMessageBox(self)
@@ -6518,7 +6580,34 @@ class TranslationValidatorDialog(QDialog, metaclass=_ValidatorDialogMeta):
 
             self.page.analysis_thread.stop()
             if not self.page.analysis_thread.wait(1000):
-                self.page.analysis_thread.terminate()
+                # См. комментарий в TranslationValidatorPage.can_leave: не
+                # используем terminate() — на CPU-bound Python-потоке это
+                # может намертво подвесить процесс. Ждём штатного завершения.
+                self.page._awaiting_analysis_thread_stop = True
+                try:
+                    # Отключаем сигналы потока от слотов уходящей страницы —
+                    # иначе on_analysis_finished (снапшот, модальный диалог,
+                    # возможный перезапуск анализа) выполнится на странице,
+                    # которую вот-вот закроют.
+                    for signal_name, slot in (
+                        ("result_found", getattr(self.page, "add_result", None)),
+                        ("progress_update", getattr(self.page, "update_status", None)),
+                        ("analysis_finished", getattr(self.page, "on_analysis_finished", None)),
+                    ):
+                        signal = getattr(self.page.analysis_thread, signal_name, None)
+                        if signal is None or slot is None:
+                            continue
+                        try:
+                            signal.disconnect(slot)
+                        except TypeError:
+                            pass
+
+                    wait_loop = QtCore.QEventLoop()
+                    self.page.analysis_thread.finished.connect(wait_loop.quit)
+                    if self.page.analysis_thread.isRunning():
+                        wait_loop.exec()
+                finally:
+                    self.page._awaiting_analysis_thread_stop = False
 
         # 2. Логика выхода в меню (только если retry недоступен, т.е. автономный режим)
         if not self.page.retry_is_available:

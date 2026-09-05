@@ -747,6 +747,15 @@ class QidianCreatorPage(ShellPage):
     def _on_translator_team_mode_changed(self, _index: int) -> None:
         self._save_ui_state()
 
+    def can_leave(self) -> bool:
+        if any(worker.isRunning() for worker in getattr(self, "_workers", [])):
+            QMessageBox.warning(
+                self, "Подождите",
+                "Сначала дождитесь завершения текущей операции.",
+            )
+            return False
+        return True
+
     def on_leave(self) -> None:
         self._save_ui_state()
 

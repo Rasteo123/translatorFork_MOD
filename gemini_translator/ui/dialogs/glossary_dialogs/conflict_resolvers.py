@@ -1092,7 +1092,11 @@ class ReverseConflictResolverPage(ShellPage):
         orphan_note = orphan_entry.get('note', '')
         for i in range(self.complete_table.rowCount()):
              # --- ИЗМЕНЕНИЕ: Обновляем item напрямую ---
-            note_item = self.complete_table.item(i, 3)
+             # ИСПРАВЛЕНИЕ: колонка "Примечание" имеет индекс 2 (0=Оригинал,
+             # 1=Перевод, 2=Примечание, 3=Действия — там QTableWidgetItem
+             # никогда не создаётся, только setCellWidget), поэтому раньше
+             # note_item всегда был None и примечание никуда не копировалось.
+            note_item = self.complete_table.item(i, 2)
             if note_item:
                 note_item.setText(orphan_note)
 
@@ -1197,10 +1201,17 @@ class DirectConflictResolverDialog(QDialog):
     """
     def __init__(self, conflicts, parent=None, morph=None):
         super().__init__(parent)
-        self.conflicts = conflicts
+        # ИСПРАВЛЕНИЕ: раньше self.conflicts был тем же словарём, что и
+        # GlossaryManagerPage.direct_conflicts (передаётся по ссылке).
+        # Ручное удаление строки в таблице мутировало его немедленно —
+        # термин пропадал из конфликтов страницы даже при нажатии
+        # «Отмена». Работаем с собственной копией: словарь и списки
+        # вариантов копируются, отдельные словари-варианты — нет (они не
+        # изменяются на месте нигде в этом диалоге).
+        self.conflicts = {term: list(options) for term, options in conflicts.items()}
         self.morph = morph
         self.resolved_glossary = {}
-        
+
         # --- Состояние для пошагового режима ---
         self.wizard_conflicts_list = list(self.conflicts.keys())
         self.wizard_current_index = 0
@@ -1397,21 +1408,98 @@ class DirectConflictResolverDialog(QDialog):
                 gen_note_btn = QPushButton(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "")
                 gen_note_btn.setFixedSize(24, 24)
                 gen_note_btn.setToolTip("Сгенерировать примечание")
-                gen_note_btn.clicked.connect(lambda ch, r=i: self.generate_note_for_table(r))
+                # ИСПРАВЛЕНИЕ: раньше в замыкании захватывался индекс строки
+                # на момент построения таблицы (r=i). После ручного удаления
+                # ДРУГОЙ строки (см. _delete_conflict_row) все строки ниже
+                # неё сдвигаются вверх, и захваченный индекс перестаёт
+                # соответствовать реальной строке кнопки. Теперь строка
+                # определяется динамически по текущему положению контейнера
+                # actions_widget в таблице (_row_of_cell_widget), поэтому
+                # устареть не может.
+                gen_note_btn.clicked.connect(
+                    lambda ch, aw=actions_widget: self.generate_note_for_table(
+                        self._row_of_cell_widget(aw, 5)
+                    )
+                )
                 actions_layout.addWidget(gen_note_btn)
-            
+
             delete_btn = QPushButton(delete_icon, "")
             delete_btn.setToolTip("Удалить этот конфликт из списка")
-            delete_btn.clicked.connect(lambda checked, row=i: self.table.removeRow(row))
+            # ИСПРАВЛЕНИЕ: раньше в замыкании захватывался индекс строки на
+            # момент построения таблицы (row=i). После первого ручного
+            # removeRow() персистентные виджеты нижних строк визуально
+            # сдвигались вверх, но их кнопки продолжали хранить старый
+            # индекс — повторное нажатие удаляло не тот термин. Теперь
+            # кнопка хранит сам термин, а _delete_conflict_row удаляет ровно
+            # одну строку таблицы (без полной перестройки — та сбрасывала бы
+            # выбор пользователя во ВСЕХ остальных строках).
+            delete_btn.clicked.connect(lambda checked, t=term: self._delete_conflict_row(t))
             actions_layout.addWidget(delete_btn)
             self.table.setCellWidget(i, 5, actions_widget)
 
             combo.setProperty("options", trans_options)
-            combo.setProperty("row", i)
             combo.currentIndexChanged.connect(self.on_combo_changed_for_table)
 
         self.table.resizeRowsToContents()
-    
+
+    def _row_of_cell_widget(self, widget, column):
+        """Определяет актуальный номер строки таблицы, в чьей ячейке
+        указанной колонки сейчас расположен widget.
+
+        Нужен потому, что после ручного удаления одной строки (removeRow)
+        Qt сам корректно переносит персистентные виджеты нижних строк
+        вверх вместе с их состоянием, но любой индекс, заранее захваченный
+        в замыкании или сохранённый в свойстве виджета при построении
+        таблицы, при этом устаревает. Поиск по текущему положению виджета
+        всегда актуален и не может рассинхронизироваться.
+        """
+        for row in range(self.table.rowCount()):
+            if self.table.cellWidget(row, column) is widget:
+                return row
+        return -1
+
+    def _update_conflicts_count_label(self):
+        """Обновляет подпись «Найдено N терминов…» над табличным режимом."""
+        if hasattr(self, 'table_widget') and self.table_widget.layout():
+            top_bar_layout = self.table_widget.layout().itemAt(0).layout()
+            if top_bar_layout and top_bar_layout.itemAt(0) and isinstance(top_bar_layout.itemAt(0).widget(), QLabel):
+                top_bar_layout.itemAt(0).widget().setText(
+                    f"<b>Найдено {len(self.conflicts)} терминов с несколькими вариантами перевода.</b>"
+                )
+
+    def _delete_conflict_row(self, term):
+        """Удаляет термин из self.conflicts и убирает ровно его строку из
+        таблицы.
+
+        ИСПРАВЛЕНИЕ: раньше метод полностью перестраивал таблицу через
+        _populate_table(), которая создаёт все виджеты заново — комбобокс
+        сбрасывался на первый вариант, ячейка «Свой вариант» очищалась, а
+        примечание перезаписывалось значением по умолчанию ВО ВСЕХ
+        остальных строках, а не только в удаляемой. Теперь удаляется
+        только сама строка (removeRow корректно переносит состояние
+        нижних строк вверх), а self.conflicts и список визарда
+        синхронизируются отдельно.
+        """
+        row = None
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if item is not None and item.text() == term:
+                row = r
+                break
+        if row is not None:
+            self.table.removeRow(row)
+
+        self.conflicts.pop(term, None)
+
+        # Синхронизируем список визарда с self.conflicts (как это уже
+        # делает auto_resolve_by_frequency) — иначе переход в пошаговый
+        # режим падает с KeyError на удалённом термине.
+        self.wizard_conflicts_list = list(self.conflicts.keys())
+        if self.wizard_current_index >= len(self.wizard_conflicts_list):
+            self.wizard_current_index = max(0, len(self.wizard_conflicts_list) - 1)
+
+        self._update_conflicts_count_label()
+
     def auto_resolve_by_frequency(self):
         resolved_count = 0
         reduced_count = 0
@@ -1509,12 +1597,9 @@ class DirectConflictResolverDialog(QDialog):
              self.wizard_progress_label.setText("Готово")
         
         # Обновляем заголовок таблицы (если виджет существует)
-        if hasattr(self, 'table_widget') and self.table_widget.layout():
-            top_bar_layout = self.table_widget.layout().itemAt(0).layout()
-            if top_bar_layout and top_bar_layout.itemAt(0) and isinstance(top_bar_layout.itemAt(0).widget(), QLabel):
-                 top_bar_layout.itemAt(0).widget().setText(f"<b>Найдено {len(self.conflicts)} терминов с несколькими вариантами перевода.</b>")
+        self._update_conflicts_count_label()
 
-        QMessageBox.information(self, "Результат схлопывания", 
+        QMessageBox.information(self, "Результат схлопывания",
                                 f"Автоматически разрешено конфликтов: {resolved_count}\n"
                                 f"Упрощено (удалены слабые варианты): {reduced_count}\n\n"
                                 f"Осталось разобрать вручную: {len(self.conflicts)}")
@@ -1533,7 +1618,12 @@ class DirectConflictResolverDialog(QDialog):
              return
 
         term = self.wizard_conflicts_list[self.wizard_current_index]
-        options = self.conflicts[term]
+        # Защитная страховка: term мог быть удалён из self.conflicts не
+        # через штатную синхронизацию (см. _delete_conflict_row) — тогда
+        # просто не показываем шаг вместо падения с KeyError.
+        options = self.conflicts.get(term)
+        if options is None:
+            return
 
         self.wizard_progress_label.setText(f"<b>Шаг {self.wizard_current_index + 1} из {len(self.wizard_conflicts_list)}</b>")
         self.wizard_term_label.setText(term)
@@ -1680,7 +1770,12 @@ class DirectConflictResolverDialog(QDialog):
 
     def on_combo_changed_for_table(self, index):
         combo = self.sender()
-        row = combo.property("row")
+        # ИСПРАВЛЕНИЕ: раньше номер строки брался из свойства "row",
+        # выставленного один раз при построении таблицы, — после ручного
+        # удаления другой строки (см. _delete_conflict_row) это значение
+        # устаревало. Определяем строку динамически по текущему положению
+        # самого комбобокса.
+        row = self._row_of_cell_widget(combo, 2)
         options = combo.property("options")
         custom_variant_item = self.table.item(row, 3)
         note_item = self.table.item(row, 4)

@@ -47,7 +47,7 @@ from ...core.consistency_engine import (
     normalize_consistency_mode,
 )
 from ...core.translation_engine import TranslationEngine
-from ...core.task_manager import ChapterQueueManager, TaskDBWorker
+from ...core.task_manager import ChapterQueueManager, TaskDBWorker, tuple_deserializer
 from ...utils.settings import SettingsManager
 from ...utils.epub_tools import (
     extract_number_from_path,
@@ -911,6 +911,38 @@ class InitialSetupPage(ShellPage):
         """Обрабатывает несохраненные изменения перед закрытием окна."""
         location_worker = getattr(self, '_project_location_worker', None)
         if location_worker is not None and location_worker.isRunning():
+            return False
+
+        # AutoConsistencyWorker — QThread(parent=self) без кооперативной
+        # остановки. Уход со страницы, пока он работает, приводит к тому, что
+        # NavigationController.pop() удаляет живой дочерний QThread —
+        # qFatal('QThread: Destroyed while thread is still running') и
+        # аварийное завершение процесса (см. находку
+        # ui-dialogs-setup/runtime/2-auto-pipeline-qthread-destroyed).
+        consistency_worker = getattr(self, '_auto_consistency_worker', None)
+        if consistency_worker is not None and consistency_worker.isRunning():
+            self._auto_log(
+                "Дождитесь завершения фоновой AI-проверки согласованности "
+                "перед уходом со страницы.",
+                force=True,
+            )
+            # ПРИМЕЧАНИЕ (ревью, minor): запись в auto-лог не видна
+            # пользователю, если он не открыл панель лога — при уходе через
+            # диалог выхода MainShell ("Выйти") окно просто молча не
+            # закроется без объяснения. Сознательно НЕ добавляю здесь
+            # блокирующий QMessageBox.information/.question: can_leave() и
+            # этот метод вызываются в т.ч. из автоматических/повторных
+            # проверок (см. test_fix_g00_auto_pipeline_qthread_destroyed.py —
+            # вызывает _prepare_for_close() напрямую на настоящем работающем
+            # QThread), и модальный exec() там же в headless-тестах на
+            # offscreen-платформе завис бы навсегда, ожидая клика; в реальном
+            # UI лишний попап на каждую попытку уйти, пока воркер работает,
+            # тоже может быть навязчивым. Кооперативной остановки у
+            # AutoConsistencyWorker всё равно нет (auto_workflow.py, вне
+            # разрешённого списка файлов этой правки) — сообщать было бы не
+            # о чем, кроме "подождите". Оставляю как blocked-часть находки:
+            # правильное решение — кооперативная отмена в auto_workflow.py
+            # плюс явный, не блокирующий UI индикатор занятости.
             return False
 
         has_unsaved_settings = self.is_settings_dirty
@@ -3471,8 +3503,15 @@ class InitialSetupPage(ShellPage):
         if not self.output_folder: return
 
         project_settings_path = os.path.join(self.output_folder, "project_settings.json")
+        # SettingsManager при создании/сохранении безусловно переприменяет
+        # custom_provider_models из СВОЕГО кэша в глобальный реестр api_config.
+        # У проектного файла этого ключа нет, поэтому без снимка/восстановления
+        # реестр custom-моделей приложения обнулится (см. находку
+        # ui-dialogs-setup/logic/3-project-settings-manager-wipes).
+        custom_models_snapshot = api_config.custom_provider_models_snapshot()
         manager_to_save = SettingsManager(config_file=project_settings_path)
         manager_to_save.save_full_session_settings(self._get_full_ui_settings())
+        api_config.set_custom_provider_models(custom_models_snapshot)
 
         self.is_settings_dirty = False
         self._refresh_dirty_window_title()
@@ -5265,6 +5304,22 @@ class InitialSetupPage(ShellPage):
                 runner.setdefault('source_task_ids', set()).update(str(task_id) for task_id in (source_task_ids or []))
                 return True
 
+        # Ресурсы, которые могут быть частично созданы до сбоя — используются
+        # в except-ветке для отката (см. находку
+        # ui-dialogs-setup/logic/2-redirect-queue-rescue-crosstalk, major #2):
+        # раньше исключение ПОСЛЕ подписки фильтра/установки гейта (например,
+        # в set_pending_tasks, конструкторе TranslationEngine или
+        # moveToThread/start) не откатывало ничего — гейт основного
+        # task_manager оставался висеть навсегда (при нуле активных
+        # прогонов), а task_manager_session_finished_filter — подписанным на
+        # шину, держа ChapterQueueManager живым без единого способа его
+        # снять (утечка воркера на шине).
+        db_anchor = None
+        task_manager = None
+        task_manager_session_finished_filter = None
+        guard_installed_here = False
+        engine = None
+        engine_thread = None
         try:
             settings = self.get_settings()
             settings.update(self._get_filter_retry_translation_options())
@@ -5293,6 +5348,29 @@ class InitialSetupPage(ShellPage):
                 db_uri=db_uri,
                 main_connection=db_anchor,
             )
+            # ChapterQueueManager безусловно подписывается на 'session_finished'
+            # ОБЩЕЙ шины (self.bus) и на нём же сбрасывает в pending любые свои
+            # in_progress-задачи. Без фильтра по своему run_id это заодно
+            # реагирует на завершение ОСНОВНОЙ сессии (и других параллельных
+            # redirect-прогонов), см. находку
+            # ui-dialogs-setup/logic/2-redirect-queue-rescue-crosstalk.
+            if hasattr(self.bus, 'subscribe') and hasattr(self.bus, 'unsubscribe'):
+                self.bus.unsubscribe('session_finished', task_manager.on_event)
+                task_manager_session_finished_filter = (
+                    self._make_redirect_task_manager_session_finished_filter(task_manager, run_id)
+                )
+                self.bus.subscribe('session_finished', task_manager_session_finished_filter)
+
+                # Симметрично: основной task_manager приложения подписан на тот
+                # же 'session_finished' и без фильтра реагирует на финиш ЭТОГО
+                # redirect-прогона, сбрасывая свои реально работающие
+                # in_progress задачи. Ставим гейт на время жизни любых
+                # параллельных redirect-прогонов (снимается, когда прогонов не
+                # остаётся).
+                if not self._auto_filter_parallel_redirect_runs:
+                    self._install_main_task_manager_redirect_guard()
+                    guard_installed_here = True
+
             task_manager.set_pending_tasks(payloads)
 
             engine = TranslationEngine(
@@ -5311,6 +5389,7 @@ class InitialSetupPage(ShellPage):
                 'chapters': normalized_chapters,
                 'source_task_ids': {str(task_id) for task_id in (source_task_ids or [])},
                 'task_manager': task_manager,
+                'task_manager_session_finished_filter': task_manager_session_finished_filter,
                 'engine': engine,
                 'thread': engine_thread,
                 'db_anchor': db_anchor,
@@ -5343,13 +5422,119 @@ class InitialSetupPage(ShellPage):
             return True
         except Exception as exc:
             self._auto_log(f"Не удалось запустить параллельный filter redirect: {exc}", force=True)
+            # Откатываем то, что успело подцепиться к общей шине/состоянию
+            # страницы ДО сбоя — run_id ещё не попал в
+            # _auto_filter_parallel_redirect_runs (это делается только после
+            # успешного запуска engine_thread), поэтому
+            # _maybe_uninstall_main_task_manager_redirect_guard() ниже увидит
+            # корректную картину активных прогонов.
+            try:
+                if engine_thread is not None:
+                    if engine_thread.isRunning():
+                        engine_thread.quit()
+                        engine_thread.wait(3000)
+            except Exception:
+                pass
+            if task_manager_session_finished_filter is not None:
+                self.bus.unsubscribe('session_finished', task_manager_session_finished_filter)
+            if task_manager is not None:
+                task_manager.deleteLater()
+            if db_anchor is not None:
+                try:
+                    db_anchor.close()
+                except Exception:
+                    pass
+            if guard_installed_here:
+                self._maybe_uninstall_main_task_manager_redirect_guard()
             return False
+
+    def _make_redirect_task_manager_session_finished_filter(self, task_manager, run_id: str):
+        """Оборачивает on_event redirect-очереди фильтром по своему run_id,
+        чтобы 'session_finished' чужой сессии (основной или другого
+        параллельного redirect-прогона) не заставлял её сбрасывать СВОИ
+        реально работающие in_progress-задачи (crosstalk, см. находку
+        ui-dialogs-setup/logic/2-redirect-queue-rescue-crosstalk)."""
+        def _filtered_on_event(event_data, _tm=task_manager, _run_id=run_id):
+            if not isinstance(event_data, dict):
+                return
+            data = event_data.get('data', {}) if isinstance(event_data.get('data'), dict) else {}
+            if data.get('background_run_id') != _run_id:
+                return
+            _tm.on_event(event_data)
+        return _filtered_on_event
+
+    def _install_main_task_manager_redirect_guard(self):
+        """Пока идёт хотя бы один параллельный filter redirect, основной
+        task_manager не должен реагировать на ЕГО 'session_finished' (иначе
+        сбрасывает свои живые in_progress-задачи, см. находку
+        ui-dialogs-setup/logic/2-redirect-queue-rescue-crosstalk). Гейт ставится
+        один раз на всех параллельных redirect-прогонов и снимается, когда
+        прогонов не остаётся (_maybe_uninstall_main_task_manager_redirect_guard)."""
+        if getattr(self, '_main_task_manager_redirect_guard', None) is not None:
+            return
+        main_task_manager = self.engine.task_manager if self.engine else None
+        if main_task_manager is None:
+            return
+        original_on_event = main_task_manager.on_event
+
+        def _guarded_on_event(event_data, _original=original_on_event):
+            if isinstance(event_data, dict):
+                data = event_data.get('data', {}) if isinstance(event_data.get('data'), dict) else {}
+                # ВАЖНО: гейт должен резать ТОЛЬКО 'session_finished' СВОИХ
+                # параллельных filter-redirect прогонов. Предыдущая версия
+                # резала любое событие с background_session=True, а эту же
+                # основную очередь (self.engine.task_manager) использует и
+                # исправитель непереведённого (untranslated_fixer_dialog.py),
+                # который тоже помечает свою сессию background_session=True,
+                # но settings['background_role'] != 'auto_filter_redirect' —
+                # широкий предикат ломал штатное спасение ЕГО зависших
+                # in_progress-задач (найдено ревью, см. находку
+                # ui-dialogs-setup/logic/2-redirect-queue-rescue-crosstalk).
+                # Не проверяем принадлежность run_id текущему
+                # self._auto_filter_parallel_redirect_runs: порядок доставки
+                # события подписчикам этой же шины не гарантирует, что запись
+                # ещё не была удалена из runs (см.
+                # _handle_background_session_event/_finish_parallel_filter_redirect_run,
+                # которые могут отработать раньше этого колбэка) — тогда
+                # проверка на членство в словаре ошибочно пропустила бы то же
+                # самое событие сквозь гейт.
+                if data.get('background_role') == 'auto_filter_redirect':
+                    return
+            _original(event_data)
+
+        self.bus.unsubscribe('session_finished', original_on_event)
+        self.bus.subscribe('session_finished', _guarded_on_event)
+        self._main_task_manager_redirect_guard = {
+            'original': original_on_event,
+            'wrapper': _guarded_on_event,
+        }
+
+    def _maybe_uninstall_main_task_manager_redirect_guard(self):
+        if self._auto_filter_parallel_redirect_runs:
+            return
+        guard = getattr(self, '_main_task_manager_redirect_guard', None)
+        if not guard:
+            return
+        self.bus.unsubscribe('session_finished', guard['wrapper'])
+        self.bus.subscribe('session_finished', guard['original'])
+        self._main_task_manager_redirect_guard = None
 
     def _shutdown_parallel_filter_redirect_runs(self):
         """Гасит фоновые redirect-движки при уходе со страницы: без этого их
         QThread'ы (дети страницы) уничтожаются работающими."""
         runs = getattr(self, '_auto_filter_parallel_redirect_runs', None)
         if not runs:
+            # ВАЖНО: гейт основного task_manager (см.
+            # _install_main_task_manager_redirect_guard) мог быть установлен
+            # неудачным стартом _start_parallel_filter_redirect, который так
+            # и не успел добавить свой run_id в runs (сбой между установкой
+            # гейта и добавлением в словарь) — раньше ранний return здесь
+            # обходил снятие гейта, и он висел до конца жизни страницы
+            # (находка ui-dialogs-setup/logic/2-redirect-queue-rescue-crosstalk,
+            # major #2). except-ветка _start_parallel_filter_redirect теперь
+            # откатывает такой гейт сама, но снятие здесь оставляем как
+            # дополнительную страховку — вызов идемпотентен.
+            self._maybe_uninstall_main_task_manager_redirect_guard()
             return
         for run_id in list(runs.keys()):
             runner = runs.pop(run_id, None)
@@ -5375,10 +5560,14 @@ class InitialSetupPage(ShellPage):
                     db_anchor.close()
                 except Exception:
                     pass
+            task_manager_session_finished_filter = runner.get('task_manager_session_finished_filter')
+            if task_manager_session_finished_filter is not None:
+                self.bus.unsubscribe('session_finished', task_manager_session_finished_filter)
             task_manager = runner.get('task_manager')
             if task_manager is not None:
                 task_manager.deleteLater()
             self._auto_filter_parallel_redirect_signatures.discard(runner.get('signature'))
+        self._maybe_uninstall_main_task_manager_redirect_guard()
 
     def _finish_parallel_filter_redirect_run(self, run_id: str, reason: str | None = None):
         runner = self._auto_filter_parallel_redirect_runs.pop(run_id, None)
@@ -5392,9 +5581,35 @@ class InitialSetupPage(ShellPage):
         error_chapters = set()
 
         try:
-            states = task_manager._get_ui_state_list_background() if task_manager else []
-            for task_info, status, _details in states or []:
-                task_chapters = self._extract_chapters_from_payload(task_info[1])
+            # ВАЖНО: _get_ui_state_list_background(snapshot) — приватный метод
+            # для фонового кэш-воркера, а не публичный синхронный запрос.
+            # Читаем актуальное состояние задач напрямую из БД, чтобы не
+            # зависеть от debounce-таймера кэша `get_ui_state_list()`, который
+            # к моменту финиша фонового прогона мог ещё не обновиться.
+            #
+            # Здесь нужны только payload и status двух статусов — не полный
+            # _fetch_full_ui_state (error_histories, sort_keys, весь набор
+            # колонок). _get_read_only_conn() — это backup ВСЕЙ БД прогона в
+            # память под приоритетным замком (оправдан для длительной тяжёлой
+            # обработки, не для пары полей), да ещё без явного закрытия
+            # соединения (sqlite3 `with conn:` — это транзакция, а не
+            # closing). Используем узкий _light_read_conn() (настоящий
+            # contextmanager, закрывает соединение сам) и тот же маппинг
+            # статусов/тот же _payload_for_ui, что использует сам
+            # _build_ui_entry — для 'epub'/'epub_batch' payload'ов
+            # _payload_for_ui — identity, так что поведение извлечения глав
+            # не меняется.
+            states = []
+            if task_manager is not None:
+                with task_manager._light_read_conn() as conn:
+                    rows = conn.execute("SELECT payload, status FROM tasks").fetchall()
+                for row in rows:
+                    payload = json.loads(row['payload'], object_hook=tuple_deserializer)
+                    payload = task_manager._payload_for_ui(payload)
+                    ui_status = {'completed': 'success', 'failed': 'error'}.get(row['status'], row['status'])
+                    states.append((payload, ui_status))
+            for payload, status in states:
+                task_chapters = self._extract_chapters_from_payload(payload)
                 if status == 'success':
                     success_chapters.update(task_chapters)
                 elif status == 'error':
@@ -5427,6 +5642,16 @@ class InitialSetupPage(ShellPage):
                         ("Ошибки", self._normalize_auto_chapters(error_chapters)),
                     ]),
                 )
+        except Exception as exc:
+            # Не даём сбою чтения статусов оставить сигнатуру навечно —
+            # иначе _try_auto_filter_recovery/_try_auto_filter_redirect_followup
+            # будут молча возвращать False для этих глав до конца авто-раунда.
+            if signature in self._auto_filter_parallel_redirect_signatures:
+                self._auto_filter_parallel_redirect_signatures.discard(signature)
+            self._auto_log(
+                f"Параллельный filter redirect завершился с ошибкой: {exc}",
+                force=True,
+            )
         finally:
             thread = runner.get('thread')
             if thread:
@@ -5435,8 +5660,12 @@ class InitialSetupPage(ShellPage):
             db_anchor = runner.get('db_anchor')
             if db_anchor:
                 db_anchor.close()
+            task_manager_session_finished_filter = runner.get('task_manager_session_finished_filter')
+            if task_manager_session_finished_filter is not None:
+                self.bus.unsubscribe('session_finished', task_manager_session_finished_filter)
             if task_manager:
                 task_manager.deleteLater()
+            self._maybe_uninstall_main_task_manager_redirect_guard()
 
     def _extract_chapters_from_payload(self, payload) -> list[str]:
         return auto_workflow_helpers.extract_chapters_from_payload(payload)
@@ -5530,7 +5759,20 @@ class InitialSetupPage(ShellPage):
         self._auto_filter_parallel_redirect_signatures = set()
         self._auto_restart_session_override = None
         self._auto_validator_dialog = None
-        self._auto_consistency_worker = None
+        # ВАЖНО: НЕ обнуляем self._auto_consistency_worker здесь. Этот метод
+        # зовётся из _on_auto_consistency_finished/_on_auto_consistency_failed
+        # — слотов сигналов finished_with_result/failed, которые
+        # AutoConsistencyWorker эмитит ИЗНУТРИ run() ДО его фактического
+        # возврата (а значит, до того как QThread.isRunning() станет False).
+        # Обнуление ссылки прямо тут открывало окно, в котором
+        # _prepare_for_close (см. находку
+        # ui-dialogs-setup/runtime/2-auto-pipeline-qthread-destroyed) видит
+        # _auto_consistency_worker is None и разрешает уход со страницы, пока
+        # QThread — ребёнок страницы — ещё физически работает: тот же
+        # qFatal('QThread: Destroyed while thread is still running'), только
+        # в узком окне. Единственное безопасное место снять ссылку —
+        # worker.finished (эмитится ПОСЛЕ реального завершения run()), это
+        # уже подключено при создании воркера.
 
     def _auto_retry_round_available(self, auto_settings: dict | None = None) -> tuple[bool, int]:
         if not isinstance(auto_settings, dict):
@@ -6651,8 +6893,13 @@ class InitialSetupPage(ShellPage):
             print("[SETTINGS] Переключение на настройки проекта…")
             project_settings_path = os.path.join(self.output_folder, "project_settings.json")
             if os.path.exists(project_settings_path):
+                # Тот же обнуляющий эффект SettingsManager, что и в
+                # _save_project_settings_only — снимаем и восстанавливаем
+                # реестр custom-моделей вокруг временного менеджера.
+                custom_models_snapshot = api_config.custom_provider_models_snapshot()
                 local_manager = SettingsManager(config_file=project_settings_path)
                 local_settings = local_manager.load_full_session_settings()
+                api_config.set_custom_provider_models(custom_models_snapshot)
                 self.global_settings = self._get_full_ui_settings()
                 self._apply_full_ui_settings(local_settings)
                 self.local_set = True
@@ -6899,9 +7146,15 @@ class InitialSetupDialog(QDialog, metaclass=_InitialSetupDialogMeta):
         raise AttributeError(name)
 
     def closeEvent(self, event):
-        # MOVED from the page; self.<x> → self.page.<x> for _disconnect_event_bus/_prepare_for_close
+        # MOVED from the page; self.<x> → self.page.<x> for on_leave/_prepare_for_close.
+        # on_leave() (а не голый _disconnect_event_bus()) обязателен: он же
+        # штатно гасит параллельные filter-redirect движки
+        # (_shutdown_parallel_filter_redirect_runs) перед тем, как окно
+        # закроется — иначе их QThread'ы (дети страницы) уничтожаются
+        # работающими (см. находку
+        # ui-dialogs-setup/runtime/2-auto-pipeline-qthread-destroyed).
         if self._returning_to_main_menu:
-            self.page._disconnect_event_bus()
+            self.page.on_leave()
             return_to_main_menu()
             event.accept()
             return
@@ -6912,7 +7165,7 @@ class InitialSetupDialog(QDialog, metaclass=_InitialSetupDialogMeta):
         if not self.page._prepare_for_close():
             event.ignore()
             return
-        self.page._disconnect_event_bus()
+        self.page.on_leave()
         if action == "menu":
             return_to_main_menu()
         event.accept()

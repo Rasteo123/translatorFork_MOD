@@ -1859,15 +1859,19 @@ class TranslatedChaptersManagerDialog(QDialog):
                     current_paths.append(None) # Битые строки
 
             # 3. Принимаем решение: Хирургия или Полный сброс
+            rebuild_deferred = False
             if current_paths == target_paths:
                 # Идеальное совпадение, обновляем только содержимое (статусы, если надо)
                 # В данном диалоге контент статичен, поэтому ничего не делаем
                 pass
             else:
-                self._surgical_update(current_paths, target_paths)
-            
-            # 4. Всегда обновляем нумерацию строк в конце (это быстро)
-            self._renumber_rows()
+                rebuild_deferred = self._surgical_update(current_paths, target_paths)
+
+            # 4. Обновляем нумерацию строк в конце (это быстро) - но только
+            # если перерисовка не ушла в фон через _chunked_fill: там своя
+            # перенумеровка по завершении, а таблица сейчас ещё не заполнена.
+            if not rebuild_deferred:
+                self._renumber_rows()
 
         finally:
             # 5. Разблокировка
@@ -1917,56 +1921,119 @@ class TranslatedChaptersManagerDialog(QDialog):
 
         _fill_from(0)
 
+    #: Максимум ячеек dp-таблицы LCS (n*m после срезки общего префикса и
+    #: суффикса, см. ниже), после которого её построение на чистом Python
+    #: (без QThread, на GUI-потоке) само по себе фризит интерфейс ещё до
+    #: того, как triage ниже успеет решить, что дешевле перерисовать
+    #: таблицу целиком. Порог подобран так, чтобы построение dp
+    #: укладывалось в доли секунды даже на медленной машине.
+    MAX_LCS_CELLS = 1_000_000
+
+    def _full_table_rebuild(self, new_ids):
+        """
+        Перерисовывает таблицу целиком по целевому списку.
+
+        Для больших списков заливка режется по тикам цикла событий уже
+        существующим _chunked_fill (та же причина, что и для первичного
+        заполнения: комбобоксы с полишем темы дороги, синхронная заливка
+        тысяч строк фризит GUI). В этом случае возвращает True, и
+        вызывающая сторона обязана НЕ перенумеровывать строки и не
+        включать кнопку сборки сама - это сделает сам _chunked_fill по
+        завершении фона.
+        """
+        if len(new_ids) > self.CHUNKED_FILL_THRESHOLD:
+            self._chunked_fill(list(new_ids))
+            return True
+
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(new_ids))
+        for idx, path in enumerate(new_ids):
+            self._populate_row(idx, path)
+        return False
+
     def _surgical_update(self, old_ids, new_ids):
         """
         Реализация Diff алгоритма (Longest Common Subsequence).
         old_ids: список текущих ID в таблице.
         new_ids: целевой список ID.
+
+        Возвращает True, если перерисовка ушла в фон через
+        _full_table_rebuild (см. его докстринг) - тогда вызывающая
+        сторона не должна сама перенумеровывать строки/включать кнопку
+        сборки сразу после вызова.
         """
         n, m = len(old_ids), len(new_ids)
 
-        # Используем твой проверенный алгоритм на Python
-        dp = [[0] * (m + 1) for _ in range(n + 1)]
-        for i in range(n):
-            for j in range(m):
-                if old_ids[i] == new_ids[j]:
+        # Срезаем общий префикс и суффикс ДО дорогого LCS: в самом частом
+        # сценарии (изменилась одна-две главы в большом списке) это сводит
+        # стоимость dp к размеру реально изменившейся середины, а не всего
+        # списка, и не трогает строки вне правки - сохраняются чекбоксы
+        # "включить в сборку", выбранные версии, выделение и скролл.
+        prefix = 0
+        while prefix < n and prefix < m and old_ids[prefix] == new_ids[prefix]:
+            prefix += 1
+
+        old_end, new_end = n, m
+        while (
+            old_end > prefix
+            and new_end > prefix
+            and old_ids[old_end - 1] == new_ids[new_end - 1]
+        ):
+            old_end -= 1
+            new_end -= 1
+
+        mid_old = old_ids[prefix:old_end]
+        mid_new = new_ids[prefix:new_end]
+        n2, m2 = len(mid_old), len(mid_new)
+
+        # Стоимость dp-таблицы квадратична по n2*m2 и не зависит от того,
+        # сколько реально изменилось внутри середины - при больших
+        # списках без общего префикса/суффикса (тысячи глав, всё меняется)
+        # само построение dp фризит GUI ещё до подсчёта structural_changes
+        # ниже. Отсекаем такие случаи заранее, не дожидаясь triage.
+        if n2 * m2 > self.MAX_LCS_CELLS:
+            return self._full_table_rebuild(new_ids)
+
+        # Используем твой проверенный алгоритм на Python (только по середине)
+        dp = [[0] * (m2 + 1) for _ in range(n2 + 1)]
+        for i in range(n2):
+            for j in range(m2):
+                if mid_old[i] == mid_new[j]:
                     dp[i+1][j+1] = dp[i][j] + 1
                 else:
                     dp[i+1][j+1] = max(dp[i+1][j], dp[i][j+1])
-        
-        i, j = n, m
+
+        i, j = n2, m2
         ops = []
         while i > 0 or j > 0:
-            if i > 0 and j > 0 and old_ids[i-1] == new_ids[j-1]:
+            if i > 0 and j > 0 and mid_old[i-1] == mid_new[j-1]:
                 ops.append(('keep', i-1, j-1))
-                i -= 1; j -= 1
+                i -= 1
+                j -= 1
             elif j > 0 and (i == 0 or dp[i][j-1] >= dp[i-1][j]):
                 ops.append(('insert', -1, j-1))
                 j -= 1
             elif i > 0 and (j == 0 or dp[i][j-1] < dp[i-1][j]):
                 ops.append(('delete', i-1, -1))
                 i -= 1
-        
+
         ops.reverse()
-        
+
         # --- Проверка на хаос (Triage) ---
         structural_changes = sum(1 for op in ops if op[0] != 'keep')
         if len(new_ids) > 0 and (structural_changes / len(new_ids) > 0.5) and len(new_ids) > 1000:
             # Если меняется более 50% таблицы при большом размере - быстрее перерисовать всё
-            self.table.setRowCount(0)
-            self.table.setRowCount(len(new_ids))
-            for idx, path in enumerate(new_ids):
-                self._populate_row(idx, path)
-            return
+            return self._full_table_rebuild(new_ids)
 
-        # --- Применение операций ---
-        current_row = 0
+        # --- Применение операций (только к изменившейся середине;
+        # префикс и суффикс не трогаем - Qt сам сдвинет их строки) ---
+        current_row = prefix
         for op, old_idx, new_idx in ops:
             if op == 'delete':
                 self.table.removeRow(current_row)
                 # current_row НЕ увеличиваем, т.к. следующая строка сдвинулась на место удаленной
             elif op == 'insert':
-                target_path = new_ids[new_idx]
+                target_path = mid_new[new_idx]
                 self.table.insertRow(current_row)
                 self._populate_row(current_row, target_path)
                 current_row += 1
@@ -1975,6 +2042,8 @@ class TranslatedChaptersManagerDialog(QDialog):
                 # Можно вызвать _populate_row(..., update_only=True), если нужно обновить данные внутри.
                 # В данном случае, если ID (путь) совпал, то контент (QComboBox) скорее всего верный.
                 current_row += 1
+
+        return False
 
     def _populate_row(self, row, internal_path, update_only=False):
         """

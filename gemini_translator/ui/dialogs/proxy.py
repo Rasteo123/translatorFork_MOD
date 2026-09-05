@@ -369,10 +369,24 @@ class ProxySettingsDialog(QDialog):
             "pass": "" if is_ssh else self.proxy_pass_edit.text(),
             "tunnel_mode": "ssh" if is_ssh else "none",
             "ssh_host": self.ssh_host_edit.text().strip(),
-            "ssh_port": int(self.ssh_port_edit.text() or 22),
+            "ssh_port": self._parse_ssh_port(self.ssh_port_edit.text()),
             "ssh_user": self.ssh_user_edit.text().strip(),
             "ssh_key_path": os.path.expanduser(self.ssh_key_path_edit.text().strip()),
         }
+
+    @staticmethod
+    def _parse_ssh_port(text):
+        """Безопасно парсит SSH-порт: невалидный/пустой текст -> порт по умолчанию 22.
+
+        validate_inputs() проверяет ssh_port_edit только в SSH-режиме, поэтому
+        при переключении режима обратно поле может остаться с невалидным
+        текстом (не сбрасывается _on_tunnel_mode_changed). Без этой защиты
+        int() здесь падал бы с необработанным ValueError внутри accept().
+        """
+        try:
+            return int(text or 22)
+        except ValueError:
+            return 22
 
     @staticmethod
     def _proxy_identity(proxy):

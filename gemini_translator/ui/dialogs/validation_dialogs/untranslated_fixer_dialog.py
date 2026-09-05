@@ -2241,6 +2241,11 @@ class AITranslationPage(ShellPage):
         self.is_session_active = False
         self._session_run_id = None
         self._owned_session_id = None
+        # Снимок общей очереди (app.task_manager == engine.task_manager),
+        # снятый перед первым clear_all_queues() этой страницы, — чтобы
+        # вернуть чужие задачи (главы главного окна) на место после
+        # завершения AI-сессии фиксера. None, пока ничего не сохранено.
+        self._preserved_queue_snapshot = None
         self._token_input_total = 0
         self._token_output_total = 0
         self._token_total = 0
@@ -2436,12 +2441,27 @@ class AITranslationPage(ShellPage):
 
     def _check_can_close(self):
         if self.is_session_active:
-            self._on_start_stop_clicked()
-            return False 
+            if self.engine and self.engine.session_id:
+                self._on_start_stop_clicked()
+                return False
+            # is_session_active выставляется оптимистично в
+            # _on_start_stop_clicked() ДО того, как движок реально подтвердит
+            # старт событием session_started (translation_engine.py молча
+            # игнорирует start_session_requested, если сессия уже занята
+            # кем-то другим). Если у движка нет session_id — нашего запуска
+            # не существует и session_started/session_finished для него не
+            # придут никогда: _on_start_stop_clicked() тоже не сделал бы
+            # ничего (ветка отправки manual_stop_requested требует
+            # engine.session_id), и страница осталась бы невыходимой
+            # навсегда. Разблокируем её сами и вернём чужую очередь на место.
+            self._abort_stuck_session_start()
 
-        if self.translated_results:
+        # В авто-режиме (suppress_popups) модальный вопрос показывать нельзя —
+        # диалог скрыт (dialog.hide()), и невидимое модальное окно повесило
+        # бы автоматический пайплайн; выход в этом случае всегда разрешён.
+        if self.translated_results and not self.suppress_popups:
             reply = QMessageBox.question(
-                self, 
+                self,
                 "Несохраненные результаты",
                 f"Есть непримененные переводы ({len(self.translated_results)} шт.).\n"
                 "Если вы закроете окно, они пропадут.\n\n"
@@ -2450,23 +2470,68 @@ class AITranslationPage(ShellPage):
                 QMessageBox.StandardButton.No
             )
             return reply == QMessageBox.StandardButton.Yes
-            
+
         return True
 
+    def _abort_stuck_session_start(self):
+        """Сбрасывает "зависшее" is_session_active, когда движок так и не
+        подтвердил старт этой сессии (engine.session_id пуст). Без этого
+        сброса страница становится невыходимой: can_leave()/_check_can_close
+        вечно видели бы is_session_active=True, а событие session_finished
+        с нашим _session_run_id никогда не придёт, потому что сессии с этим
+        run_id в движке никогда не было."""
+        self._set_ui_active(False)
+        self._session_run_id = None
+        self._owned_session_id = None
+        # getattr — на случай минимального тестового харнесса без этого
+        # метода (см. _on_global_event ниже); на боевом объекте метод есть
+        # всегда.
+        restore_queue = getattr(self, '_restore_preserved_queue', None)
+        if restore_queue:
+            restore_queue()
+
     def reject(self):
-        if self._check_can_close():
-            super().reject()
+        # ShellPage — это QWidget, а не QDialog: у него нет super().reject().
+        # Раньше это защищённое определение было мёртвым кодом — его
+        # затирало второе, безусловное def reject() в конце класса (см.
+        # accept()/reject() ниже), из-за чего «Прервать» во время активной
+        # сессии сразу закрывало страницу, не останавливая движок.
+        if not self._check_can_close():
+            return
+        self.result_ready.emit([])
+        self.finished.emit(0)
+        self.request_back.emit()
 
     def closeEvent(self, event):
-        if self.result() != QDialog.DialogCode.Accepted:
-            if not self._check_can_close():
-                event.ignore()
-                return
+        if not self._check_can_close():
+            event.ignore()
+            return
 
         self._disconnect_global_events()
         super().closeEvent(event)
 
+    def can_leave(self) -> bool:
+        # Пока AI-сессия фиксера активна, уход со страницы (кнопка "Назад"
+        # в шапке шелла, смена страницы и т.п.) должен быть запрещён так же,
+        # как и явное "Прервать" — иначе сессия становится осиротевшей
+        # фоновой (background_session=True) и никто её не останавливает.
+        #
+        # Важно: вето — на РЕАЛЬНУЮ сессию движка (engine.session_id), а не
+        # только на локальный флаг is_session_active. Флаг выставляется
+        # оптимистично в _on_start_stop_clicked() ДО ответа движка; если
+        # движок проигнорировал старт (сессия уже была занята и потом
+        # остановлена кем-то другим), session_id пуст, а session_started для
+        # нашего запуска не придёт никогда — иначе can_leave() вето бы
+        # навсегда и страницу нельзя было бы покинуть вообще ничем.
+        return not (self.is_session_active and self.engine and self.engine.session_id)
+
     def on_leave(self):
+        # Если can_leave() пропустил уход именно из-за "зависшего" запуска
+        # (see can_leave/_abort_stuck_session_start) — состояние страницы
+        # нужно всё равно привести в порядок и вернуть чужую очередь, пока
+        # страница ещё жива (после on_leave она будет удалена deleteLater).
+        if self.is_session_active and not (self.engine and self.engine.session_id):
+            self._abort_stuck_session_start()
         self._disconnect_global_events()
 
     def _disconnect_global_events(self):
@@ -2577,11 +2642,55 @@ class AITranslationPage(ShellPage):
             for i, payload in enumerate(self.tasks_payloads):
                 task = ('raw_text_translation', payload, prompt, f"Пакет {i+1}/{len(self.tasks_payloads)}")
                 tasks_to_add.append(task)
-            
+
+            if self._preserved_queue_snapshot is None:
+                # self.task_manager — общая очередь главного окна. Сохраняем
+                # то, что в ней уже лежит (главы, реально ждущие перевода —
+                # 'pending'/'held'), прежде чем clear_all_queues() ниже её
+                # сотрёт — иначе они теряются безвозвратно.
+                #
+                # Намеренно НЕ get_all_tasks_for_rebuild() (отдаёт ВСЕ задачи
+                # независимо от статуса): уже переведённые ('completed')
+                # главы при восстановлении через add_pending_tasks легли бы
+                # обратно как 'pending' и перевелись бы заново — то есть одна
+                # потеря данных менялась бы на другую, менее заметную. Главы
+                # с ошибкой ('failed') этим же способом тоже не воскресают —
+                # см. докстринг _restore_preserved_queue.
+                self._preserved_queue_snapshot = self.task_manager.get_all_pending_tasks()
             self.task_manager.clear_all_queues()
             self.task_manager.add_pending_tasks(tasks_to_add)
             
             self._post_event('start_session_requested', {'settings': settings})
+
+    def _restore_preserved_queue(self):
+        """Возвращает в общую очередь задачи, снятые в _on_start_stop_clicked.
+
+        Снимок берётся через get_all_pending_tasks() — только 'pending'/
+        'held'. Известные, сознательно принятые компромиссы этого способа
+        восстановления (полноценный fix потребовал бы нового API в
+        task_manager.py — тегирования задач фиксера run_id и точечного
+        удаления только своих строк, что вне разрешённых для этой правки
+        файлов):
+
+        - Главы со статусом 'completed' и 'failed' в снимок не попадают
+          вовсе (не воскресают ни как есть, ни как 'pending') — история
+          ошибок (task_errors) и частичные chunk_results для них теряются
+          вместе с самой строкой задачи. Здесь это лучше, чем раньше:
+          'completed' не переводится заново, а не превращается в 'pending'.
+        - chain_id/chain_index у восстановленных задач обнуляются (round-trip
+          через add_pending_tasks их не сохраняет) — последовательный
+          перевод (контекст предыдущей главы по цепочке) для них деградирует
+          до fallback-ветки для chain_id IS NULL.
+        - add_pending_tasks повторно прогоняет payload через
+          _normalize_payload → os.copy_to_mem, хотя payload в снимке уже
+          виртуальный ('mem://...'): вместо no-op создаётся вторая полная
+          копия исходного файла в memfs с вложенным путём, и каждый следующий
+          цикл старт/финиш добавляет ещё один уровень вложенности.
+        """
+        snapshot = self._preserved_queue_snapshot
+        self._preserved_queue_snapshot = None
+        if snapshot:
+            self.task_manager.add_pending_tasks([payload for _, payload in snapshot])
 
     @pyqtSlot(dict)
     def _on_global_event(self, event: dict):
@@ -2602,6 +2711,12 @@ class AITranslationPage(ShellPage):
             if self._owned_session_id and event_session_id != self._owned_session_id:
                 return
             self.task_manager.clear_all_queues()
+            # getattr вместо прямого вызова: некоторые существующие тесты
+            # гоняют этот обработчик на минимальном харнессе, привязывающем
+            # только часть методов класса, без _restore_preserved_queue.
+            restore_queue = getattr(self, '_restore_preserved_queue', None)
+            if restore_queue:
+                restore_queue()
             self._set_ui_active(False)
             self.finish_reason = data.get('reason', '')
             self._owned_session_id = None
@@ -2723,11 +2838,6 @@ class AITranslationPage(ShellPage):
     def accept(self):
         self.result_ready.emit(self.get_translated_results())
         self.finished.emit(1)
-        self.request_back.emit()
-
-    def reject(self):
-        self.result_ready.emit([])
-        self.finished.emit(0)
         self.request_back.emit()
 
 AITranslationDialog = AITranslationPage

@@ -19,7 +19,7 @@ import json
 import shutil
 from pathlib import Path
 from datetime import datetime
-from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QRectF, QEvent
+from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QRectF, QEvent, QEventLoop, QTimer
 from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption, QPainter
 
 class CenteredCheckboxDelegate(QStyledItemDelegate):
@@ -1654,15 +1654,68 @@ class ConsistencyValidatorPage(ShellPage):
             setattr(self, thread_attr, None)
             return False
 
-    def _wait_for_thread(self, thread_attr: str, timeout_ms: int = 1000):
-        """Wait for a QThread without crashing on a stale PyQt wrapper."""
+    def _wait_for_thread(self, thread_attr: str, timeout_ms: int = 1000, hard_cap_ms: int = 20000):
+        """Wait for a QThread without crashing on a stale PyQt wrapper.
+
+        Короткого timeout_ms обычно достаточно, но реальный сетевой AI-запрос
+        часто идёт намного дольше: если поток всё ещё жив после быстрого
+        ожидания, дожидаемся его сигнала finished через локальный цикл
+        событий, не убивая поток через terminate() — terminate() посреди
+        сетевого/CPU-bound кода под GIL опаснее подвисания (то же
+        обоснование, что у TranslationValidatorPage.can_leave).
+
+        Вложенный цикл ожидания запускается с ExcludeUserInputEvents: в этот
+        момент страница всё ещё в середине ещё не завершившегося
+        NavigationController.pop() (can_leave() уже вернул True, on_leave()
+        ещё не вернулся). Если пропускать пользовательский ввод, повторный
+        клик по «← Назад» реентерабельно войдёт в pop() поверх текущего,
+        снимет страницу со стека и удалит её, пока первый вызов ещё ждёт —
+        когда тот проснётся, он попытается сделать то же самое со страницей,
+        которой уже нет (см. can_leave()/on_leave() — там же флаг-страж
+        от повторного входа). Системные события (таймеры, сигналы потока)
+        по-прежнему доставляются.
+
+        hard_cap_ms — верхняя граница ожидания на случай, если поток вообще
+        не завершится (у сетевого запроса внутри может не быть собственного
+        таймаута): по истечении этого времени выходим из цикла, не дожидаясь
+        потока, и глушим его сигналы (blockSignals) — Worker(QThread) здесь
+        одновременно и есть эмиттер result_ready/error/finished, — чтобы
+        поздний сигнал не долетел до слотов уже удалённой страницы. Сам
+        поток при этом никто не убивает, он продолжает жить своей жизнью и
+        остаётся в _threads_pending_delete до фактического уничтожения."""
         thread = getattr(self, thread_attr, None)
         if thread is None:
             return
 
         try:
+            if not thread.isRunning():
+                return
+            if thread.wait(timeout_ms):
+                return
+
+            wait_loop = QEventLoop()
+            thread.finished.connect(wait_loop.quit)
+            cap_timer = QTimer()
+            cap_timer.setSingleShot(True)
+            cap_timer.timeout.connect(wait_loop.quit)
+            cap_timer.start(hard_cap_ms)
+            try:
+                # thread.isRunning() может на короткое время разойтись с
+                # isFinished(): QThreadPrivate::finish() снимает running
+                # только ПОСЛЕ emit finished. Проверяем именно isFinished(),
+                # иначе в этом узком окне можно поймать вечное ожидание
+                # сигнала, который уже никогда не придёт.
+                if not thread.isFinished():
+                    wait_loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            finally:
+                cap_timer.stop()
+
             if thread.isRunning():
-                thread.wait(timeout_ms)
+                try:
+                    thread.blockSignals(True)
+                except RuntimeError:
+                    pass
+                self._remember_thread_until_deleted(thread)
         except RuntimeError:
             setattr(self, thread_attr, None)
 
@@ -2806,6 +2859,19 @@ class ConsistencyValidatorPage(ShellPage):
             self._log(f"❌ Ошибка восстановления сессии: {e}")
 
     def can_leave(self) -> bool:
+        # Пока on_leave() крутит вложенный цикл ожидания потока
+        # (_wait_for_thread, с ExcludeUserInputEvents), Qt всё равно
+        # продолжает доставлять системные события — таймеры, сигналы. Если
+        # что-то (например, повторный клик, дошедший через другой путь, или
+        # отложенный вызов) вызовет can_leave()/pop() ещё раз поверх ещё не
+        # завершившегося ухода, NavigationController.pop() не защищён от
+        # такого реентерабельного вызова: второй pop() успеет снять страницу
+        # со стека и удалить её, пока первый ещё ждёт — тогда первый
+        # проснётся и попытается сделать то же самое со страницей, которой
+        # уже нет. Блокируем повторный вход целиком.
+        if getattr(self, "_leaving_in_progress", False):
+            return False
+
         if self.pending_fixes:
             reply = QMessageBox.question(
                 self, "Несохранённые изменения",
@@ -2815,15 +2881,37 @@ class ConsistencyValidatorPage(ShellPage):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return False
+
+        if (
+            self._is_thread_running('analysis_thread')
+            or self._is_thread_running('fix_thread')
+            or self._is_thread_running('single_fix_thread')
+        ):
+            reply = QMessageBox.question(
+                self, "Операция не завершена",
+                "Фоновая AI-проверка или исправление ещё выполняется.\n\n"
+                "Прервать и уйти со страницы?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return False
+
         return True
 
     def on_leave(self) -> None:
-        # Отменяем фоновые операции
-        self.engine.cancel()
-        self._wait_for_thread('analysis_thread', 1000)
-        self._wait_for_thread('fix_thread', 1000)
-        self._wait_for_thread('single_fix_thread', 1000)
-        self._release_power_inhibitor()
+        # Флаг-страж от реентерабельного вызова can_leave()/on_leave() —
+        # см. комментарий в can_leave().
+        self._leaving_in_progress = True
+        try:
+            # Отменяем фоновые операции
+            self.engine.cancel()
+            self._wait_for_thread('analysis_thread', 1000)
+            self._wait_for_thread('fix_thread', 1000)
+            self._wait_for_thread('single_fix_thread', 1000)
+            self._release_power_inhibitor()
+        finally:
+            self._leaving_in_progress = False
 
 
 class _ConsistencyValidatorDialogMeta(type(QDialog)):
