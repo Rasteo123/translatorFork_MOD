@@ -454,8 +454,8 @@ def _clean_qidian_description(value: str | None, *, title: str = "", author: str
     escaped_title = re.escape(title) if title else r"[^》]+"
 
     seo_prefix_patterns = [
-        rf"^.{0,80}?创作的[^。]{{0,120}}?《{escaped_title}》[^。]{{0,160}}?最新章节[:：][^。]*。",
-        rf"^.{0,80}?创作的[^。]{{0,120}}?《{escaped_title}》，已更新[^。]*。",
+        rf"^.{{0,80}}?创作的[^。]{{0,120}}?《{escaped_title}》[^。]{{0,160}}?最新章节[:：][^。]*。",
+        rf"^.{{0,80}}?创作的[^。]{{0,120}}?《{escaped_title}》，已更新[^。]*。",
     ]
     if author:
         escaped_author = re.escape(author)
@@ -3375,7 +3375,7 @@ def _wait_for_selector_attached(page, selector: str, timeout: int = 15000) -> bo
         return True
     except Exception:
         try:
-            page.locator(selector).first().wait_for(state="attached", timeout=timeout)
+            page.locator(selector).first.wait_for(state="attached", timeout=timeout)
             return True
         except Exception:
             return False

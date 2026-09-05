@@ -3015,6 +3015,8 @@ class UploadWorker(QThread):
         self.force_num = force_num
         self.is_running = True
         self.limit_date = datetime.now() + timedelta(days=60)
+        # Сбой вне цикла по главам (запуск браузера): главы не обрабатывались
+        self.fatal_error = ""
 
         # Статистика
         self._ok = 0
@@ -3329,6 +3331,7 @@ class UploadWorker(QThread):
 
     def run(self):
         self.log("INFO", "Запуск браузера Chrome...")
+        self.fatal_error = ""
         try:
             with sync_playwright() as p:
                 browser = _launch_persistent_chromium_context(
@@ -3398,6 +3401,7 @@ class UploadWorker(QThread):
                 browser.close()
 
         except Exception as e:
+            self.fatal_error = str(e) or e.__class__.__name__
             self.log("ERROR", f"Критическая ошибка браузера: {e}")
             logging.error(traceback.format_exc())
 

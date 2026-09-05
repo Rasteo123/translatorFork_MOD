@@ -451,6 +451,8 @@ class ApiUploadWorker(QThread):
         self.price = price
         self.force_num = force_num
         self.is_running = True
+        # Сбой вне цикла по главам (авторизация, список глав): главы не обрабатывались
+        self.fatal_error = ""
         self.limit_date = datetime.now() + timedelta(days=60)
 
         self._ok = 0
@@ -650,6 +652,7 @@ class ApiUploadWorker(QThread):
 
     def run(self):
         total = len(self.chapters_list)
+        self.fatal_error = ""
         try:
             if self.paid_enabled:
                 raise RuntimeError(
@@ -730,6 +733,7 @@ class ApiUploadWorker(QThread):
                     self.eta_signal.emit("—")
 
         except Exception as error:
+            self.fatal_error = str(error) or error.__class__.__name__
             self.log("ERROR", f"Критическая ошибка API-загрузки: {error}")
             logging.error(traceback.format_exc())
 
