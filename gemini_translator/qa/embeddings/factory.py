@@ -34,10 +34,15 @@ _SAFE_ERROR_TYPES = frozenset(
 class EmbeddingHttpError(RuntimeError):
     """A secret-safe HTTP failure reported by an online embedding adapter."""
 
-    def __init__(self, status: int, provider: str, retryable: bool) -> None:
+    def __init__(
+        self, status: int, provider: str, retryable: bool, *,
+        retry_after_seconds: float = 60.0, quota_exhausted: bool = False,
+    ) -> None:
         self.status = status
         self.provider = _provider_name_or_error(provider)
         self.retryable = bool(retryable)
+        self.retry_after_seconds = retry_after_seconds
+        self.quota_exhausted = quota_exhausted
         super().__init__(f"embedding HTTP request failed (status={status}, retryable={self.retryable})")
 
 

@@ -185,11 +185,17 @@ def test_the_model_a_key_is_judged_against_follows_the_chosen_backend():
 def _provider(keys, health, responses):
     from gemini_translator.qa.embeddings.gemini import GeminiEmbeddingProvider
 
+    now = [1000.0]
+
+    async def sleep(delay):
+        now[0] += delay
+
     return GeminiEmbeddingProvider(
         keys,
         _session_factory(responses),
         timeout_seconds=5.0,
-        retry_sleep=_no_sleep,
+        retry_sleep=sleep,
+        clock=lambda: now[0],
         key_health=health,
     )
 
@@ -267,7 +273,7 @@ def test_a_key_out_of_quota_is_reported_and_not_used_again():
     provider = _provider(
         ("AQ.one", "AQ.two"),
         health,
-        [{"status": 429, "text": "RESOURCE_EXHAUSTED: quota exceeded"}],
+        [{"status": 429, "text": "RESOURCE_EXHAUSTED: quota exceeded per day"}],
     )
 
     with pytest.raises(EmbeddingHttpError):

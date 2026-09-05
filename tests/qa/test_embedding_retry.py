@@ -68,12 +68,18 @@ async def _no_sleep(_delay: float) -> None:
 
 
 def _provider(session, attempts=4):
+    now = [1000.0]
+
+    async def sleep(delay):
+        now[0] += delay
+
     return GeminiEmbeddingProvider(
         "key",
         lambda: session,
         30,
         retry_attempts=attempts,
-        retry_sleep=_no_sleep,
+        retry_sleep=sleep,
+        clock=lambda: now[0],
     )
 
 

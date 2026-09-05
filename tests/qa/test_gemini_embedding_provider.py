@@ -22,7 +22,13 @@ async def _no_sleep(_delay: float) -> None:
 
 def GeminiEmbeddingProvider_fast(*args, **kwargs):
     """Build the adapter with the retry policy tests want to control."""
-    kwargs.setdefault("retry_sleep", _no_sleep)
+    now = [1000.0]
+
+    async def sleep(delay):
+        now[0] += delay
+
+    kwargs.setdefault("retry_sleep", sleep)
+    kwargs.setdefault("clock", lambda: now[0])
     return GeminiEmbeddingProvider(*args, **kwargs)
 
 

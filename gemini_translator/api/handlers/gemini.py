@@ -6,7 +6,7 @@ import re
 from ..base import BaseApiHandler
 from ..errors import (
     ContentFilterError, NetworkError, LocationBlockedError, 
-    RateLimitExceededError, ModelNotFoundError, ValidationFailedError, 
+    RateLimitExceededError, ApiAccessError, ModelNotFoundError, ValidationFailedError,
     TemporaryRateLimitError, PartialGenerationError
 )
 
@@ -318,9 +318,9 @@ class GeminiApiHandler(BaseApiHandler):
         if response.status in [401, 403]:
             if "user location" in error_str: raise LocationBlockedError("Геоблокировка Gemini.")
             if any(x in error_str for x in ["suspended", "api key", "permission"]): 
-                raise RateLimitExceededError(f"Ошибка доступа ({response.status}): {error_message}")
+                raise ApiAccessError(f"Ошибка доступа ({response.status}): {error_message}")
             if "model" in error_str: raise ModelNotFoundError(f"Модель недоступна: {error_message}")
-            raise RateLimitExceededError(f"Ошибка доступа ({response.status}): {error_message}")
+            raise ApiAccessError(f"Ошибка доступа ({response.status}): {error_message}")
         if response.status in [404]:
             if "model" in error_str: raise ModelNotFoundError(f"Модель недоступна: {error_message}")
         
@@ -375,7 +375,7 @@ class GeminiApiHandler(BaseApiHandler):
         if is_model_error:
             raise ModelNotFoundError(f"Модель недоступна: {error_message}")
         if error_status in {'PERMISSION_DENIED', 'UNAUTHENTICATED'}:
-            raise RateLimitExceededError(f"Ошибка доступа Gemini stream: {error_message}")
+            raise ApiAccessError(f"Ошибка доступа Gemini stream: {error_message}")
 
         raise NetworkError(f"Gemini stream error ({error_status}): {error_message}", delay_seconds=25)
 

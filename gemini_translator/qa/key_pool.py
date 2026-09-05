@@ -72,6 +72,7 @@ class QaKeyPool:
         self._cooldown_until = 0.0
         self._handed_out: deque[float] = deque()
         self._current: str | None = None
+        self._blocked_reason: str | None = None
         self._cursor = 0
         self._lock = threading.Lock()
 
@@ -91,6 +92,8 @@ class QaKeyPool:
         exception, not the rhythm.
         """
         with self._lock:
+            if self._blocked_reason is not None:
+                return None
             now = self._clock()
             if now < self._cooldown_until:
                 return None
@@ -98,9 +101,16 @@ class QaKeyPool:
             if self._per_minute and len(self._handed_out) >= self._per_minute:
                 return None
             current = self._current
+            if current is not None and self._locally_limited(current):
+                self._strikes.pop(current, None)
+                self._current = current = None
             if current is not None and self._is_ready(current, now):
                 self._handed_out.append(now)
                 return current
+            if current is not None and self._strikes.get(current):
+                # The first refusal waits on this key. Other callers must
+                # neither use it early nor turn that wait into key rotation.
+                return None
             ready = [key for key in self._rotation() if self._is_ready(key, now)]
             if not ready:
                 self._current = None
@@ -114,7 +124,11 @@ class QaKeyPool:
     def note_success(self, key: str) -> None:
         """A key that answered has proven itself; its yellow cards are torn up."""
         with self._lock:
-            self._strikes.pop(key, None)
+            # A request already in flight before another request's 429 is not
+            # evidence that the new pause may be cancelled. A post-deadline
+            # acquisition removes the pause before a fresh success clears it.
+            if key not in self._paused_until:
+                self._strikes.pop(key, None)
 
     def note_throttled(self, key: str, seconds: float) -> bool:
         """Record one "try later" from the service.
@@ -129,6 +143,9 @@ class QaKeyPool:
             strikes = self._strikes.get(key, 0) + 1
             if strikes < STRIKES_BEFORE_SWITCH:
                 self._strikes[key] = strikes
+                self._paused_until[key] = max(
+                    self._paused_until.get(key, 0.0), self._clock() + seconds
+                )
                 return False
             self._strikes.pop(key, None)
             self._pause_locked(key, seconds, self._clock())
@@ -159,12 +176,21 @@ class QaKeyPool:
     def seconds_until_available(self) -> float | None:
         """How long until some key may be asked, or None when none ever will be."""
         with self._lock:
+            if self._blocked_reason is not None:
+                return None
             now = self._clock()
             if now < self._cooldown_until:
                 return self._cooldown_until - now
             self._forget_old_handouts(now)
             if self._per_minute and len(self._handed_out) >= self._per_minute:
                 return max(0.0, STORM_WINDOW_SECONDS - (now - self._handed_out[0]))
+            if (
+                self._current is not None
+                and self._strikes.get(self._current)
+                and not self._locally_limited(self._current)
+            ):
+                until = self._paused_until.get(self._current, now)
+                return max(0.0, until - now)
             soonest: float | None = None
             for key in self._keys:
                 if key in self._exhausted or self._locally_limited(key):
@@ -176,6 +202,16 @@ class QaKeyPool:
                 soonest = wait if soonest is None else min(soonest, wait)
             return soonest
 
+    @property
+    def blocked_reason(self) -> str | None:
+        with self._lock:
+            return self._blocked_reason
+
+    def block(self, reason: str) -> None:
+        """Stop subsequent QA calls after an access refusal, without rotating."""
+        with self._lock:
+            self._blocked_reason = reason
+
     # -- internals ---------------------------------------------------------
 
     def _pause_locked(self, key: str, seconds: float, now: float) -> None:
@@ -185,7 +221,7 @@ class QaKeyPool:
             delay = 0.0
         if key not in self._keys or key in self._exhausted:
             return
-        self._paused_until[key] = now + delay
+        self._paused_until[key] = max(self._paused_until.get(key, 0.0), now + delay)
         self._rested_at[key] = now
         if self._current == key:
             self._current = None

@@ -36,6 +36,13 @@ class RateLimitExceededError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
+class ApiAccessError(RateLimitExceededError):
+    """Authentication/access was refused, rather than a quota being spent.
+
+    The base class preserves translation-worker handling; QA treats this as
+    terminal for its pool instead of cycling through credentials.
+    """
+
 class TemporaryRateLimitError(Exception):
     def __init__(self, message, delay_seconds=60):
         super().__init__(message)

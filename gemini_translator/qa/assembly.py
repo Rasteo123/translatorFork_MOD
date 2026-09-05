@@ -158,8 +158,8 @@ def build_embedding_provider(
         gemini_keys = ()
     candidates: list[EmbeddingProviderConfig] = []
     if qa_settings.embedding_provider in {"auto", "gemini"} and gemini_keys:
-        # One provider with several keys: a key that hits its rate limit hands
-        # the batch to the next one, and they all share one cache.
+        # One provider with several keys and a shared cache. Temporary limits
+        # wait on the current key before considering a reserve key.
         candidates.append(
             EmbeddingProviderConfig(
                 kind="gemini",

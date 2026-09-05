@@ -157,13 +157,15 @@ class RotatingQaHandler:
         self._close_handler = close_handler
 
     async def execute_api_call(self, prompt, log_prefix, **kwargs):
-        from ..api.errors import RateLimitExceededError, TemporaryRateLimitError
+        from ..api.errors import ApiAccessError, RateLimitExceededError, TemporaryRateLimitError
 
         waited = 0.0
         last_error: BaseException | None = None
         while True:
             key = self._pool.acquire()
             if key is None:
+                if self._pool.blocked_reason is not None:
+                    raise QaHandlerError(self._pool.blocked_reason) from last_error
                 wait = self._pool.seconds_until_available()
                 if wait is None or waited >= self._max_wait:
                     raise QaHandlerError(self._refusal(last_error)) from last_error
@@ -178,6 +180,11 @@ class RotatingQaHandler:
                     result = await result
                 self._pool.note_success(key)
                 return result
+            except ApiAccessError as error:
+                reason = f"QA остановлена: сервис отказал в доступе. {error}"
+                self._pool.block(reason)
+                self._say(f"[QA] {reason}")
+                raise QaHandlerError(reason) from error
             except RateLimitExceededError as error:
                 last_error = error
                 self._pool.mark_exhausted(key)
@@ -194,15 +201,13 @@ class RotatingQaHandler:
                         "сервиса, проверка берёт следующий."
                     )
                     continue
-                pause = min(delay, self._max_wait - waited)
-                if pause <= 0:
-                    raise QaHandlerError(self._refusal(error)) from error
                 self._say(
                     f"[QA] Ключ …{key[-4:]} просит подождать {delay:.0f} с, "
                     "проверка ждёт на нём."
                 )
-                waited += pause
-                await self._sleep(pause)
+                # The pool owns the full deadline for every caller. The next
+                # loop waits within this request's budget; expiry never makes
+                # the key available before the server's deadline.
             finally:
                 await self._close(handler)
 
