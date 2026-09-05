@@ -1383,7 +1383,16 @@ def _collect_untranslated_fix_items(
                     context_text = str(node).strip()
                     use_orphan_mode = True
                     if len(context_text) > max_context_chars:
-                        context_text = context_text[:max(0, max_context_chars - 3)].rstrip() + "..."
+                        # Сам узел (без окружающего блока) всё равно длиннее лимита.
+                        # Раньше здесь контекст обрезался до max_context_chars и всё
+                        # равно уходил в замену ВСЕГО узла — перевод урезанного куска
+                        # заменял собой полный узел, и хвост исходного текста
+                        # безвозвратно терялся при сохранении файла. Безопаснее
+                        # пропустить автозамену этого вхождения целиком: слово
+                        # останется отмеченным в scan_issues (сканирование не
+                        # зависит от лимита), но группа для автоперевода не
+                        # создаётся, и исходный текст узла не повреждается.
+                        continue
 
                 unique_id = id(target_object)
                 if unique_id in processed_containers:

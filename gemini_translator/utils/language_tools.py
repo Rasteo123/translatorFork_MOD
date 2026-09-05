@@ -14,6 +14,7 @@ import math
 from collections import Counter, defaultdict # Убедимся, что Counter импортирован
 
 import importlib
+import threading
 try:
     import jieba
     JIEBA_AVAILABLE = True
@@ -152,13 +153,38 @@ class LanguageDetector:
 
 class ChineseTextProcessor:
     """Обработчик китайского текста с поддержкой сегментации"""
-    
-    def __init__(self, freq_power=3, freq_base=10, freq_offset=5, 
+
+    # --- Общий на ВЕСЬ процесс стек "обучений" Jieba ---
+    # Защищаемый ресурс — сам модуль jieba (jieba.dt.FREQ), процесс-глобальное
+    # состояние, а не поле одного экземпляра ChineseTextProcessor. Его пишут и
+    # читают РАЗНЫЕ экземпляры этого класса: общий ContextManager.chinese_processor
+    # (основная сессия перевода + параллельный content-filter redirect-движок,
+    # см. setup.py:_maybe_start_parallel_filter_redirect) и отдельный процессор,
+    # который создаёт себе SmartGlossaryFilter/GlossaryReplacer (см. add_custom_words
+    # и reset ниже). Поэтому стек обучений и его лок — атрибуты КЛАССА: reset()
+    # одного экземпляра обязан видеть (и не портить) обучения, сделанные через другой.
+    #
+    # Каждый элемент стека — снимок ОДНОГО вызова add_custom_words():
+    #   {"owner": <вызвавший ChineseTextProcessor>, "words": {слово: freq_до_обучения}}
+    # freq_до_обучения — число (слово уже было в словаре Jieba) либо _ABSENT
+    # (слова не было вовсе — при откате его нужно удалить через jieba.del_word()).
+    _training_stack = []
+    _training_lock = threading.Lock()
+    _ABSENT = object()
+
+    def __init__(self, freq_power=3, freq_base=10, freq_offset=5,
                  mult_factor_base=1.0, mult_factor_len_coeff=0.5):
         """
         Инициализирует процессор с параметрами для умной настройки частот.
         """
         self.jieba_initialized = False
+        # Сколько СОБСТВЕННЫХ (сделанных через add_custom_words именно на ЭТОМ
+        # экземпляре) обучений ещё не сняты парным reset() именно с него.
+        # Нужно, чтобы reset() экземпляра, который сам ничего не обучал
+        # (например, свежий процессор GlossaryReplacer.cleanup() при
+        # has_cjk_terms=False), не трогал обучения ДРУГИХ процессоров в общем
+        # _training_stack и не вызывал внеплановую перезагрузку jieba.
+        self._own_pending_trainings = 0
         if JIEBA_AVAILABLE:
             self.init_jieba()
             # Сохраняем параметры для настройки весов
@@ -225,64 +251,159 @@ class ChineseTextProcessor:
         """
         if not JIEBA_AVAILABLE or not glossary:
             return
-            
+
         if not self.jieba_initialized:
             self.init_jieba()
-            
-        try:
-            cleaner_re = re.compile(r'\W+', re.UNICODE)
-            words_to_train = set()
-            
-            for term in glossary.keys():
-                if not LanguageDetector.contains_chinese(term):
-                    continue
 
-                # --- ШАГ 1: Получаем чистое содержание термина ---
-                # Мы делаем это ОДИН раз в самом начале.
-                clean_content_str = cleaner_re.sub(' ', term).strip()
+        # Всё обучение (включая фактическую запись в jieba.dt.FREQ и снимок
+        # для отката) выполняется под тем же классовым локом, под которым
+        # reset() целиком делает откат и полную importlib.reload(jieba).
+        # Без этого возможна гонка: reset() другой сессии уже решил
+        # перезагрузить jieba и делает reload вне лока, а это обучение
+        # параллельно пишет в jieba.dt.FREQ — свежую запись стирает чужой reload.
+        with self.__class__._training_lock:
+            try:
+                cleaner_re = re.compile(r'\W+', re.UNICODE)
+                words_to_train = set()
 
-                # Если после очистки ничего не осталось, пропускаем
-                if not clean_content_str:
-                    continue
+                for term in glossary.keys():
+                    if not LanguageDetector.contains_chinese(term):
+                        continue
 
-                for script_variant in get_chinese_script_variants(clean_content_str):
-                    # --- ШАГ 2: Добавляем слова из оригинального чистого содержания ---
-                    words_to_train.update(script_variant.split())
+                    # --- ШАГ 1: Получаем чистое содержание термина ---
+                    # Мы делаем это ОДИН раз в самом начале.
+                    clean_content_str = cleaner_re.sub(' ', term).strip()
 
-                    # --- ШАГ 3: Ищем и добавляем нормализованные вариации ---
-                    normalized_content_str = unicodedata.normalize('NFKC', script_variant)
+                    # Если после очистки ничего не осталось, пропускаем
+                    if not clean_content_str:
+                        continue
 
-                    if script_variant != normalized_content_str:
-                        words_to_train.update(normalized_content_str.split())
+                    for script_variant in get_chinese_script_variants(clean_content_str):
+                        # --- ШАГ 2: Добавляем слова из оригинального чистого содержания ---
+                        words_to_train.update(script_variant.split())
 
-            # --- ШАГ 4: Обучение Jieba на финальном, уникальном наборе слов ---
-            for word in words_to_train:
-                if not word or not LanguageDetector.contains_chinese(word): 
-                    continue
+                        # --- ШАГ 3: Ищем и добавляем нормализованные вариации ---
+                        normalized_content_str = unicodedata.normalize('NFKC', script_variant)
 
-                # === ИСПРАВЛЕНИЕ ЗДЕСЬ ===
-                # Заменяем несуществующий get_abs_freqs на прямой доступ к словарю
-                current_freq = jieba.dt.FREQ.get(word, 0)
-                # =========================
-                
-                base_freq = self._get_word_freq_by_length(word)
-                
-                if current_freq > 0:
-                    multiplication_factor = self._get_multiplication_factor(word)
-                    new_freq = int(current_freq * multiplication_factor) + base_freq
-                else:
-                    new_freq = base_freq
-                jieba.add_word(word, freq=new_freq)
+                        if script_variant != normalized_content_str:
+                            words_to_train.update(normalized_content_str.split())
 
-        except Exception as e:
-            print(f"Error adding smart custom words to jieba: {e}")
-    
+                # --- ШАГ 4: Обучение Jieba на финальном, уникальном наборе слов ---
+                # Снимок "какая частота была ДО обучения" — чтобы reset() потом
+                # мог откатить именно ЭТО обучение, не трогая слова, за которые
+                # всё ещё отвечает другое активное обучение (см. reset() ниже).
+                snapshot = {}
+                for word in words_to_train:
+                    if not word or not LanguageDetector.contains_chinese(word):
+                        continue
+
+                    # === ИСПРАВЛЕНИЕ ЗДЕСЬ ===
+                    # Заменяем несуществующий get_abs_freqs на прямой доступ к словарю
+                    raw_freq = jieba.dt.FREQ.get(word, self.__class__._ABSENT)
+                    current_freq = 0 if raw_freq is self.__class__._ABSENT else raw_freq
+                    # =========================
+
+                    base_freq = self._get_word_freq_by_length(word)
+
+                    if current_freq > 0:
+                        multiplication_factor = self._get_multiplication_factor(word)
+                        new_freq = int(current_freq * multiplication_factor) + base_freq
+                    else:
+                        new_freq = base_freq
+
+                    if word not in snapshot:
+                        snapshot[word] = raw_freq
+                    jieba.add_word(word, freq=new_freq)
+
+                if snapshot:
+                    # Регистрируем это обучение в общем стеке — оно должно
+                    # получить парный reset() до того, как состояние Jieba
+                    # будет реально очищено (см. _training_stack в начале класса).
+                    self.__class__._training_stack.append({"owner": self, "words": snapshot})
+                    self._own_pending_trainings += 1
+
+            except Exception as e:
+                print(f"Error adding smart custom words to jieba: {e}")
+
     def reset(self):
         """
-        Полностью сбрасывает состояние Jieba путем перезагрузки модуля.
-        Это единственный надежный способ очистить измененные в памяти частоты слов.
+        Откатывает результат СОБСТВЕННЫХ (сделанных этим экземпляром) обучений
+        и, только если во всём процессе не осталось ни одного незакрытого
+        обучения, полностью перезагружает модуль jieba.
+
+        jieba — общий на процесс ресурс, а не состояние одного экземпляра
+        ChineseTextProcessor (см. _training_stack в начале класса): его
+        параллельно используют несколько TranslationEngine (основная сессия +
+        redirect-движок content-filter) и отдельный процессор, который
+        создаёт себе GlossaryReplacer. Раньше reset() безусловно делал
+        importlib.reload(jieba), стирая обучение ЛЮБОЙ другой активной сессии.
+        Теперь:
+          1. Экземпляр, который сам ничего не обучал (self._own_pending_trainings
+             == 0 — например, только что созданный процессор
+             GlossaryReplacer.cleanup() при has_cjk_terms=False), вообще не
+             трогает общий стек и не запускает перезагрузку — иначе он стирал
+             бы обучение чужой активной сессии, разделяющей тот же jieba.
+          2. Иначе снимается ОДНО собственное обучение из общего стека, и
+             откатываются частоты только тех слов, за которые не отвечает
+             НИ ОДНО из оставшихся в стеке обучений.
+          3. Полный importlib.reload(jieba) происходит, только когда общий
+             стек опустел — т.е. закрыты вообще ВСЕ активные обучения во
+             всём процессе, а не только в этом экземпляре.
+        Так непарный add_custom_words (например, обучение redirect-движка,
+        который гасят через engine.cleanup() в обход stop_session() —
+        см. находку major) оставляет в стеке одну "зависшую" запись, а не
+        выключает очистку jieba навсегда для всех последующих сессий.
         """
-        if JIEBA_AVAILABLE and self.jieba_initialized:
+        if not (JIEBA_AVAILABLE and self.jieba_initialized):
+            return
+
+        with self.__class__._training_lock:
+            if self._own_pending_trainings <= 0:
+                # Этот экземпляр сам ничего не обучал — снимать нечего, и
+                # трогать чужие записи в общем стеке нельзя.
+                return
+
+            stack = self.__class__._training_stack
+
+            # Ищем последнюю (LIFO) ещё не снятую запись, положенную именно
+            # этим экземпляром.
+            own_index = None
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i]["owner"] is self:
+                    own_index = i
+                    break
+
+            if own_index is None:
+                # В норме не должно происходить (счётчик разошёлся со стеком):
+                # молча не откатываем чужие слова, просто чиним свой счётчик.
+                self._own_pending_trainings = 0
+                return
+
+            entry = stack.pop(own_index)
+            self._own_pending_trainings -= 1
+
+            # Слова, всё ещё нужные хотя бы одному ОСТАВШЕМУСЯ обучению,
+            # откатывать нельзя.
+            still_needed = set()
+            for other in stack:
+                still_needed.update(other["words"].keys())
+
+            for word, prior_freq in entry["words"].items():
+                if word in still_needed:
+                    continue
+                try:
+                    if prior_freq is self.__class__._ABSENT:
+                        jieba.del_word(word)
+                    else:
+                        jieba.add_word(word, freq=prior_freq)
+                except Exception as e:
+                    print(f"[JIEBA ERROR] Не удалось откатить слово '{word}': {e}")
+
+            should_reload = len(stack) == 0
+            if not should_reload:
+                print("[JIEBA] Полная перезагрузка Jieba отложена: в процессе есть другие активные обучения.")
+                return
+
             try:
                 # Перезагружаем модуль jieba, чтобы он заново считал свои словари с диска
                 importlib.reload(jieba)

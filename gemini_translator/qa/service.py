@@ -79,6 +79,8 @@ DEFERRED_WARNINGS = frozenset(
         "chapter_not_readable",
         "language_tool_unavailable",
         "slovnet_unavailable",
+        "language_repair_not_written",
+        "language_repair_not_recorded",
     }
 )
 # What each deferral means, in the words the log shows.  A code alone told the
@@ -95,6 +97,8 @@ DEFERRED_REASONS = {
     "chapter_not_readable": "файл главы не удалось прочитать",
     "language_tool_unavailable": "LanguageTool недоступен",
     "slovnet_unavailable": "Slovnet недоступен",
+    "language_repair_not_written": "не удалось записать языковое исправление на диск",
+    "language_repair_not_recorded": "языковое исправление записано, но не учтено в журнале правок",
 }
 
 
@@ -991,8 +995,26 @@ class TranslationQualityService:
         A language fix edits the book exactly as a restored omission does, so it
         gets the same backup and the same journal entry: without them the undo
         button would silently leave these edits in place.
-        """
 
+        Every step below — the render, the backup, the rollback write, the
+        journal append — can fail on its own (a disk that is out of space
+        keeps failing the second time too, exactly when the code below tries
+        to roll the file back), so the whole thing is guarded here: any
+        failure degrades to a warning instead of escaping check_chapter and
+        losing the whole chapter's result.
+        """
+        warnings_before = len(warnings)
+        try:
+            self._write_language_repairs_unguarded(request, result, warnings)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a language fix must never break the whole check
+            if len(warnings) == warnings_before:
+                warnings.append("language_repair_not_written")
+
+    def _write_language_repairs_unguarded(
+        self, request: ChapterQaRequest, result: LanguageQaResult, warnings: list[str]
+    ) -> None:
         path = request.translated_path
         payload = render_document_html(result.preview_model).encode("utf-8")
         try:

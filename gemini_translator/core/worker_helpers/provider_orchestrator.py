@@ -22,6 +22,7 @@ from gemini_translator.api.errors import (
     ValidationFailedError,
 )
 from gemini_translator.api.factory import get_api_handler_class
+from gemini_translator.utils.helpers import estimate_gemini_tokens
 
 
 TRANSLATION_TASK_TYPES = {"epub", "epub_batch", "epub_chunk", "raw_text_translation"}
@@ -619,9 +620,11 @@ def _target_input_token_budget(worker) -> tuple[int | None, str | None]:
 def _estimate_input_tokens(text: str) -> int:
     if not text:
         return 0
+    # Наивная оценка chars/4 занижает кириллицу/CJK в 1.8-2.7 раза, из-за чего
+    # страж бюджета синтеза пропускал промпты, реально не влезающие в контекст
+    # целевой модели. estimate_gemini_tokens учитывает алфавит символов.
     compact_pieces = len(re.findall(r"\S+", text))
-    char_estimate = (len(text) + TOKEN_ESTIMATE_CHARS_PER_TOKEN - 1) // TOKEN_ESTIMATE_CHARS_PER_TOKEN
-    return max(1, compact_pieces, char_estimate)
+    return max(1, compact_pieces, estimate_gemini_tokens(text))
 
 
 def _synthesis_context_budget_exceeded(worker, synthesis_prompt: str) -> tuple[bool, str]:

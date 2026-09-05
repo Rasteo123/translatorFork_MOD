@@ -9,6 +9,7 @@ from pathlib import Path
 import zipfile
 
 from ..utils.epub_json import build_html_document_model, build_translation_payload
+from ..utils.translation_versions import select_target_translation_version
 from .addition_detector import AdditionDetector
 from .alignment import MonotonicAligner
 from .capabilities import QaCapabilitySettings
@@ -778,22 +779,27 @@ def build_manual_events(
         versions = translations.get(original_path) or {}
         if not isinstance(versions, Mapping):
             continue
-        for _suffix, relative_path in sorted(versions.items()):
+        # Тот же выбор версии, что и при сборке EPUB: сначала '_validated.html',
+        # иначе — самая свежая из остальных. Раньше здесь брали первый по
+        # алфавиту суффикс, из-за чего ручной/книжный проход QA мог править
+        # непроверенный '_translated.html', а не файл, реально идущий в книгу.
+        relative_path, _is_validated = select_target_translation_version(
+            versions, project_folder
+        )
+        if relative_path:
             translated = project_folder / str(relative_path)
-            if not translated.is_file():
-                continue
-            events.append(
-                TranslationReadyEvent(
-                    task_id=task_id,
-                    chapter_id=str(original_path),
-                    source_path=str(original_path),
-                    translated_path=str(translated),
-                    source_language="auto",
-                    target_language=target_language,
-                    epub_path=str(epub_path or ""),
+            if translated.is_file():
+                events.append(
+                    TranslationReadyEvent(
+                        task_id=task_id,
+                        chapter_id=str(original_path),
+                        source_path=str(original_path),
+                        translated_path=str(translated),
+                        source_language="auto",
+                        target_language=target_language,
+                        epub_path=str(epub_path or ""),
+                    )
                 )
-            )
-            break
     return tuple(events)
 
 

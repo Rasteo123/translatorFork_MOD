@@ -17,6 +17,9 @@ from gemini_translator.core.task_manager import (
 )
 
 
+_MISSING = object()
+
+
 class _DummyBus:
     def __init__(self):
         self.subscriptions = {}
@@ -44,11 +47,31 @@ class QaGateQueueTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        # Запоминаем, что висело на QApplication до нас: заглушка _DummyBus без
+        # event_posted, оставленная после класса, роняет SettingsManager() в
+        # следующих тестах (порядковая зависимость набора).
+        cls._previous_app_attrs = {
+            name: getattr(cls.app, name, _MISSING)
+            for name in ("event_bus", "task_manager", "main_db_connection")
+        }
         cls.app.event_bus = _DummyBus()
         cls.app.main_db_connection = sqlite3.connect(
             api_config.SHARED_DB_URI, uri=True, check_same_thread=False
         )
         cls.app.main_db_connection.row_factory = sqlite3.Row
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.app.main_db_connection.close()
+        except Exception:
+            pass
+        for name, value in cls._previous_app_attrs.items():
+            if value is _MISSING:
+                if hasattr(cls.app, name):
+                    delattr(cls.app, name)
+            else:
+                setattr(cls.app, name, value)
 
     def setUp(self):
         self.manager = ChapterQueueManager(event_bus=self.app.event_bus)

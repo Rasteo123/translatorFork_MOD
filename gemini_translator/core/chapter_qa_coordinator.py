@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import threading
+import time
 
 from ..qa.book_metrics import MIN_BASELINE_SAMPLE_SIZE, eligible_baseline_size
 from ..qa.coverage_service import SEMANTIC_ALIGNMENT_MODE
@@ -231,12 +232,25 @@ class ChapterQaCoordinator:
         self._cancellation = CancellationToken()
 
     def drain(self, timeout: float | None = None) -> None:
-        """Wait for every scheduled check to finish."""
+        """Wait for every scheduled check to finish, within one shared deadline.
+
+        ``timeout`` bounds the whole call, not each future in turn: a caller
+        that says "wait up to 5 seconds" means five seconds total, not five
+        per pending check.  Handing each future its own full timeout let a
+        handful of stuck checks (a network call with no cancellation of its
+        own) turn a 5 second shutdown into N*5 seconds of a frozen interface.
+        """
         with self._pending_lock:
             pending = tuple(self._pending)
+        deadline = None if timeout is None else time.monotonic() + timeout
         for future in pending:
+            remaining = timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
             try:
-                future.result(timeout=timeout)
+                future.result(timeout=remaining)
             except Exception:  # noqa: BLE001 - a failed check is already recorded
                 continue
 

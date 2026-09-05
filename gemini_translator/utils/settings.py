@@ -269,8 +269,12 @@ class SettingsManager(QObject):
         self._is_dirty = False
 
     def _apply_custom_provider_models_to_runtime(self):
-        custom_provider_models = self._cache.get("custom_provider_models", {})
-        api_config.set_custom_provider_models(custom_provider_models)
+        # Файл, в котором ключа нет (например, project_settings.json проекта),
+        # не имеет права обнулять глобальный реестр custom-моделей пользователя.
+        # Применяем только явно объявленное значение.
+        if "custom_provider_models" not in self._cache:
+            return
+        api_config.set_custom_provider_models(self._cache["custom_provider_models"])
     
     def _merge_disk_timestamps(self, disk_data):
         """Вспомогательный метод: объединяет таймстампы из файла с текущим кэшем."""
@@ -324,7 +328,13 @@ class SettingsManager(QObject):
                 try:
                     self._save_to_disk_unsafe()
                     self._last_save_error = None
-                except OSError as e:
+                except Exception as e:
+                    # Ловим не только OSError: несериализуемое значение в кэше
+                    # (например set/bytes) даёт TypeError из json.dumps внутри
+                    # _save_unsafe. Раньше такая ошибка пробрасывалась из этого
+                    # слота (таймер автосохранения / aboutToQuit) необработанной,
+                    # а _is_dirty оставался True навсегда — автосохранение
+                    # "залипало" до конца жизни процесса.
                     self._last_save_error = e
                     save_error = e
 

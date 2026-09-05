@@ -1,5 +1,6 @@
 # gemini_translator/utils/txt_importer.py
 
+import html
 import os
 import re
 import unicodedata
@@ -1177,16 +1178,21 @@ class TxtImportWizardDialog(QDialog):
                 # Пропускаем совсем пустые главы, если они случайно образовались
                 if not content.strip() and not title: continue
                 
-                # Экранирование HTML внутри текста не нужно, если content чистый текст, 
-                # но EpubCreator обычно сам оборачивает. Здесь мы делаем базовую разметку.
+                # Файл объявлен как application/xhtml+xml (epub_tools.py), поэтому
+                # заголовок и текст обязаны быть экранированы: '&', '<', '>' в сыром
+                # TXT-тексте (имена вида "Tom & Jerry", сравнения "a < b") иначе
+                # делают главу невалидным XML.
                 # strip() у каждой строки нужен, чтобы убрать лишние пробелы.
-                paragraphs = '\n\n'.join([f'<p>{line.strip()}</p>' for line in content.splitlines() if line.strip()])
-                
+                safe_title = html.escape(title, quote=True)
+                paragraphs = '\n\n'.join(
+                    [f'<p>{html.escape(line.strip(), quote=True)}</p>' for line in content.splitlines() if line.strip()]
+                )
+
                 html_content = f"""<?xml version='1.0' encoding='utf-8'?>
 <html xmlns="http://www.w3.org/1999/xhtml">
-<head><title>{title}</title></head>
+<head><title>{safe_title}</title></head>
 <body>
-<h1>{title}</h1>
+<h1>{safe_title}</h1>
 {paragraphs}
 </body></html>"""
                 creator.add_chapter(f"chapter_{i+1}.xhtml", html_content, title)

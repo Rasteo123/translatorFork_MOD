@@ -20,7 +20,13 @@ def select_target_translation_version(versions, translated_folder):
 
     validated_rel_path = versions.get(VALIDATED_SUFFIX)
     if validated_rel_path:
-        return validated_rel_path, True
+        # Файл validated может значиться в карте версий, но быть удалён с диска
+        # (вручную, сбоем синхронизации и т.п.). В этом случае нельзя молча
+        # считать главу «готовой» — нужно откатиться к другим версиям, как это
+        # уже делает sort_translation_versions_for_epub_build.
+        validated_score = _version_file_score(translated_folder, VALIDATED_SUFFIX, validated_rel_path)
+        if validated_score[0]:
+            return validated_rel_path, True
 
     candidates = [
         (suffix, rel_path)

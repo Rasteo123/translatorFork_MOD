@@ -11,6 +11,55 @@ from .paths import clients_dir, ensure_state_dirs, validate_job_id
 
 STALE_CLIENT_SECONDS = 6 * 60 * 60
 
+# Ленивый кэш kernel32: ctypes.WinDLL грузит библиотеку и теряет ранее
+# полученные указатели функций при каждом новом объекте, а _pid_is_alive_windows
+# зовётся на каждый файл клиентской сессии при каждом опросе status_payload
+# (виджет опрашивает раз в ~2.5с) — без кэша это N x LoadLibrary на опрос.
+_KERNEL32 = None
+
+
+def _get_kernel32():
+    global _KERNEL32
+    if _KERNEL32 is None:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int
+        _KERNEL32 = kernel32
+    return _KERNEL32
+
+
+def _pid_is_alive_windows(pid_value: int, *, kernel32=None, get_last_error=None) -> bool:
+    """Проверка существования процесса на Windows через OpenProcess.
+
+    os.kill(pid, 0) на Windows — НЕ POSIX-проба существования: sig=0 совпадает
+    с CTRL_C_EVENT, и os.kill на этой платформе уходит в
+    GenerateConsoleCtrlEvent, а не проверяет процесс (см. worker.cancel_process,
+    который по этой же причине на Windows использует taskkill, а не os.kill).
+    """
+    if kernel32 is None:
+        kernel32 = _get_kernel32()
+    if get_last_error is None:
+        import ctypes
+
+        get_last_error = ctypes.get_last_error
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    ERROR_ACCESS_DENIED = 5
+
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid_value)
+    if not handle:
+        # Отказ в доступе означает, что процесс существует, но принадлежит
+        # другому пользователю/сессии — трактуем как живой (аналогично
+        # PermissionError в POSIX-ветке ниже). Любая другая ошибка (в первую
+        # очередь ERROR_INVALID_PARAMETER) означает, что pid не существует.
+        return get_last_error() == ERROR_ACCESS_DENIED
+    kernel32.CloseHandle(handle)
+    return True
+
 
 def _pid_is_alive(pid) -> bool:
     try:
@@ -19,6 +68,15 @@ def _pid_is_alive(pid) -> bool:
         return False
     if pid_value <= 0:
         return False
+    if os.name == "nt":
+        try:
+            return _pid_is_alive_windows(pid_value)
+        except Exception:
+            # Проверка живости не должна ронять опрос статуса (list_active_client_sessions
+            # вызывается из daemon.status_payload): помимо OSError, граница ctypes может
+            # дать ArgumentError/AttributeError при испорченном pid или отсутствующем
+            # символе — в любом случае трактуем как «процесса нет».
+            return False
     try:
         os.kill(pid_value, 0)
     except ProcessLookupError:

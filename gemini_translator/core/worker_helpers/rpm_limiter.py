@@ -8,14 +8,19 @@ class RPMLimiter:
     """
     def __init__(self, rpm_limit: int):
         if rpm_limit <= 0:
-            self.rpm_limit, self.interval = 0, 0
-
-            self.can_proceed = lambda: True
-            self.reset = lambda: None
-            self.update_last_request_time = lambda: None
-            self.seconds_until_next_allowed = lambda: 0.0
+            # "Безлимитный" режим: interval = 0.0 позволяет использовать
+            # боевые методы класса без лямбда-заглушек. При interval == 0.0
+            # can_proceed() всегда True, а seconds_until_next_allowed()
+            # всегда 0.0 (см. tests/test_rpm_limiter.py::test_no_limit_always_zero) —
+            # ЗА ИСКЛЮЧЕНИЕМ случая, когда update_last_request_time(delay)
+            # явно отодвинула last_request_time в будущее: тогда пауза,
+            # запрошенная сервером (TEMPORARY_LIMIT/NETWORK), по-прежнему
+            # соблюдается, а не молча теряется, как было при лямбда-заглушках.
+            self.rpm_limit = 0
+            self.interval = 0.0
+            self.lock = threading.Lock()
+            self.last_request_time = 0
             return
-        
 
         self.rpm_limit = rpm_limit
         self.interval = 60.0 / self.rpm_limit
@@ -61,6 +66,12 @@ class RPMLimiter:
         Пересчитывает интервал.
         """
         with self.lock:
+            if self.rpm_limit <= 0:
+                # "Безлимитный" режим (см. __init__) — снижать нечего,
+                # иначе get_rpm() начнёт врать (rpm_limit=1), а реального
+                # троттлинга всё равно не появится: can_proceed() по-прежнему
+                # руководствуется interval == 0.0.
+                return
             # Считаем, на сколько нужно уменьшить
             reduction = int(self.rpm_limit * (percentage / 100.0))
             # Уменьшаем, но гарантируем, что останется хотя бы 1

@@ -56,6 +56,27 @@ except (ImportError, AttributeError):
     print("[ProjectManager WARN] PatientLock не найден. Используется стандартный RLock.")
     from threading import RLock as PatientLock
 
+# Лок на файл карты проекта, а не на экземпляр: несколько живых
+# TranslationProjectManager на одну и ту же project_folder (основное окно
+# перевода + диалог глоссария/анализатора частотности, открытые параллельно)
+# обязаны сериализовать свои read-modify-write через ОДИН и тот же объект,
+# иначе более поздний flush() затирает диск снимком, снятым до записи
+# другого экземпляра, и молча теряет его регистрации. WeakValueDictionary —
+# лок живёт, пока жив хотя бы один менеджер этого файла, и не течёт после.
+_MAP_LOCKS_GUARD = threading.Lock()
+_MAP_LOCKS = weakref.WeakValueDictionary()
+
+
+def _get_shared_map_lock(map_file_path):
+    """Возвращает единый на процесс лок для конкретного файла карты проекта."""
+    key = os.path.abspath(map_file_path)
+    with _MAP_LOCKS_GUARD:
+        lock = _MAP_LOCKS.get(key)
+        if lock is None:
+            lock = PatientLock()
+            _MAP_LOCKS[key] = lock
+        return lock
+
 import zipfile
 import re
 from ..api import config as api_config
@@ -76,7 +97,7 @@ class TranslationProjectManager:
         self.validation_cache_zst_path = self.validation_cache_path + '.zst'
         self.term_frequency_cache_path = os.path.join(project_folder, 'term_frequency_cache.json')
         self.chapter_analysis_cache_path = os.path.join(project_folder, 'chapter_analysis_cache.json')
-        self.lock = PatientLock()
+        self.lock = _get_shared_map_lock(self.map_file_path)
         # Отложенные регистрации: register_translation вызывается на каждую
         # главу, а полная перезапись растущего файла на каждую делает
         # суммарную запись за сессию квадратичной. Регистрации копятся здесь

@@ -560,12 +560,16 @@ def main():
             pass
 
     try:
+        # identity.json копируется в журнал ДО фазы backup() отдельных файлов:
+        # если backup() упадёт на середине (нет места, антивирус держит файл),
+        # restore() должен найти уже сохранённую идентичность и восстановить
+        # её, а не стереть валидный identity_path как «нечего восстанавливать».
+        if os.path.isfile(identity_path):
+            shutil.copy2(identity_path, os.path.join(JOURNAL, "identity.json"))
         for rel, _member in entries:
             backup(rel)
         for rel in to_remove:
             backup(rel)
-        if os.path.isfile(identity_path):
-            shutil.copy2(identity_path, os.path.join(JOURNAL, "identity.json"))
 
         with zipfile.ZipFile(ZIP_PATH) as z:
             for rel, member in entries:

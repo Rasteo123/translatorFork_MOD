@@ -54,8 +54,9 @@ class QaAnswerCache:
 
     def get(self, digest: str) -> object | None:
         """Return a stored answer, or nothing when it is missing, old, or broken."""
+        path = self._path(digest)
         try:
-            payload = json.loads(self._path(digest).read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         if not isinstance(payload, dict):
@@ -64,6 +65,13 @@ class QaAnswerCache:
         if not isinstance(stored_at, (int, float)):
             return None
         if self.ttl_seconds > 0 and time.time() - stored_at > self.ttl_seconds:
+            # Просроченная запись не должна пережить TTL физически на диске:
+            # иначе каталог кэша растёт без ограничения, ведь put() только
+            # добавляет файлы (qa-b/bugs/3-qa-disk-caches-never-pruned).
+            try:
+                path.unlink()
+            except OSError:
+                pass
             return None
         return payload.get("answer")
 

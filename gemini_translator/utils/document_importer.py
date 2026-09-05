@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import codecs
 from dataclasses import dataclass
 import html as html_lib
 import os
@@ -118,10 +119,51 @@ def _wrap_xhtml(title: str, body_html: str) -> str:
 
 
 def _read_text_with_fallbacks(path: Path) -> str:
+    raw_bytes = path.read_bytes()
+
+    # Сначала честно смотрим на BOM: cp1251/utf-8 в переборе ниже почти всегда
+    # "успешно", но неверно декодируют UTF-16-байты кириллического текста
+    # раньше, чем очередь доходит до настоящей кодировки (см.
+    # utils-io/bugs/1-docimp-utf16-misdecode).
+    bom_encodings = (
+        (codecs.BOM_UTF8, "utf-8-sig"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+    )
+    for bom, encoding in bom_encodings:
+        if raw_bytes.startswith(bom):
+            try:
+                return raw_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                pass
+
+    # Без BOM полагаемся на эвристику bs4 (как уже сделано в epub_json.py), но
+    # доверяем ей только результат из семейства UTF-16/UTF-32: для однобайтовых
+    # кодировок (cp1251 и т.п.) статистическая эвристика регулярно ошибается на
+    # коротких текстах (например, cp1251 путается с cp1125/windows-1250), а
+    # именно ради них ниже есть детерминированный перебор — им и оставляем
+    # решение в остальных случаях.
+    try:
+        from bs4 import UnicodeDammit
+    except ImportError:
+        pass
+    else:
+        is_html = path.suffix.lower() in {".html", ".htm", ".xhtml"}
+        decoded = UnicodeDammit(raw_bytes, is_html=is_html)
+        detected_encoding = str(decoded.original_encoding or "").lower().replace("_", "-")
+        if (
+            decoded.unicode_markup is not None
+            and not decoded.contains_replacement_characters
+            and detected_encoding.startswith(("utf-16", "utf-32"))
+        ):
+            return decoded.unicode_markup
+
     errors = []
     for encoding in ("utf-8-sig", "utf-8", "cp1251", "utf-16"):
         try:
-            return path.read_text(encoding=encoding)
+            return raw_bytes.decode(encoding)
         except UnicodeDecodeError as exc:
             errors.append(f"{encoding}: {exc}")
     raise DocumentImportError(f"Не удалось определить кодировку файла {path.name}: {'; '.join(errors[:2])}")

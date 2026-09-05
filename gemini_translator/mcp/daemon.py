@@ -876,19 +876,34 @@ class McpDaemon:
             def log_message(self, format, *args) -> None:
                 return
 
+            def _request_token(self, parsed) -> str | None:
+                # SSE-транспорт открывается как обычный GET (EventSource-подобным
+                # клиентом), который не всегда умеет проставлять произвольные
+                # заголовки — поэтому токен принимаем и из query-параметра.
+                header_token = self.headers.get(TOKEN_HEADER)
+                if header_token:
+                    return header_token
+                query_token = parse_qs(parsed.query).get("token")
+                return query_token[0] if query_token else None
+
             def _dispatch(self, method: str) -> None:
                 try:
                     parsed = urlsplit(self.path)
                     path = parsed.path
+
+                    # /sse и /messages раньше обрабатывались ДО проверки токена —
+                    # любой локальный процесс получал полный доступ ко всем
+                    # MCP-инструментам демона без секрета. Теперь токен обязателен
+                    # и для них.
+                    if self._request_token(parsed) != daemon.token:
+                        self._send_json(401, {"ok": False, "error": "unauthorized"})
+                        return
+
                     if method == "GET" and path == "/sse":
                         self._serve_sse()
                         return
                     if method == "POST" and path in {"/messages", "/messages/", "/message"}:
                         self._handle_sse_message(parsed)
-                        return
-
-                    if self.headers.get(TOKEN_HEADER) != daemon.token:
-                        self._send_json(401, {"ok": False, "error": "unauthorized"})
                         return
 
                     if method == "GET" and path == "/status":
@@ -955,7 +970,15 @@ class McpDaemon:
 
             def _serve_sse(self) -> None:
                 session, event_queue = daemon._register_sse_session(self.headers.get("User-Agent"))
-                endpoint = f"{daemon.base_url}/messages?session_id={quote(session.id, safe='')}"
+                # Токен кладём прямо в endpoint-URL: клиент получает его только
+                # после того, как уже прошёл проверку токена на /sse, поэтому
+                # это не ослабляет защиту, а лишь избавляет клиентов без
+                # поддержки кастомных заголовков от ручной передачи токена.
+                endpoint = (
+                    f"{daemon.base_url}/messages"
+                    f"?session_id={quote(session.id, safe='')}"
+                    f"&token={quote(daemon.token, safe='')}"
+                )
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream; charset=utf-8")

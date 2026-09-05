@@ -98,7 +98,7 @@ class RepairStore:
         except OSError as exc:
             raise RepairStoreError(f"chapter is not readable: {exc}") from exc
 
-        directory = self.root / _safe_name(chapter_id)
+        directory = self._chapter_dir(chapter_id)
         directory.mkdir(parents=True, exist_ok=True)
         backup_path = directory / f"{_safe_name(self.session_id)}.html"
         atomic_write_bytes(backup_path, data)
@@ -260,18 +260,61 @@ class RepairStore:
             ),
         )
 
+    def _chapter_dir(self, chapter_id: str) -> Path:
+        """Вернуть каталог бэкапов для chapter_id, устойчивый к коллизиям _safe_name.
+
+        _safe_name() необратимо схлопывает разные chapter_id (например, не-ASCII
+        имена файлов внутри EPUB) в одно и то же имя каталога. Если основной
+        каталог уже занят метаданными ДРУГОЙ главы, используем каталог с
+        детерминированным хеш-суффиксом — так каждая коллизирующая глава получает
+        собственный бэкап вместо отказа чинить и потери всего результата QA.
+        Не коллизирующие главы (подавляющее большинство) имя каталога не меняют,
+        поэтому уже созданные на диске бэкапы остаются читаемыми как прежде.
+        """
+        chapter_id = _identity(chapter_id, "chapter_id")
+        primary = self.root / _safe_name(chapter_id)
+        primary_metadata = _read_json(primary / "repairs.json")
+        if not isinstance(primary_metadata, dict) or primary_metadata.get("chapter_id") == chapter_id:
+            return primary
+        suffix = hashlib.sha256(chapter_id.encode("utf-8")).hexdigest()[:8]
+        fallback = self.root / f"{_safe_name(chapter_id)[:111]}-{suffix}"
+        fallback_metadata = _read_json(fallback / "repairs.json")
+        if isinstance(fallback_metadata, dict) and fallback_metadata.get("chapter_id") != chapter_id:
+            # Последний рубеж: даже каталог с хеш-суффиксом занят метаданными
+            # ТРЕТЬЕЙ главы (двойная коллизия — практически невероятна для
+            # настоящего sha256, но не исключена при вырожденных подменах).
+            # Дальше подставлять уже некуда — честнее отказать, чем подменить бэкап.
+            raise RepairStoreError(
+                "repair metadata directory collision could not be resolved for "
+                f"chapter_id {chapter_id!r}: both the primary and hash-suffixed "
+                "backup directories belong to other chapters"
+            )
+        return fallback
+
     def _metadata_path(self, chapter_id: str) -> Path:
-        return self.root / _safe_name(chapter_id) / "repairs.json"
+        return self._chapter_dir(chapter_id) / "repairs.json"
 
     def _load_metadata(self, chapter_id: str) -> dict | None:
+        chapter_id = _identity(chapter_id, "chapter_id")
         metadata = _read_json(self._metadata_path(chapter_id))
         if metadata is None:
             return None
         if not isinstance(metadata, dict) or metadata.get("version") != _METADATA_VERSION:
             raise RepairStoreError("repair metadata is corrupted or unsupported")
+        if metadata.get("chapter_id") != chapter_id:
+            # Последний рубеж: даже каталог с хеш-суффиксом из _chapter_dir занят
+            # метаданными другой главы (двойная коллизия хешей — практически
+            # невероятно). Использовать эти метаданные значило бы подменить
+            # чужой бэкап и затем затереть эту главу при undo.
+            raise RepairStoreError(
+                "repair metadata belongs to a different chapter_id "
+                f"({metadata.get('chapter_id')!r} != {chapter_id!r}); "
+                "this is a directory-name collision after sanitizing chapter_id"
+            )
         return metadata
 
     def _save_metadata(self, chapter_id: str, metadata: dict) -> None:
+        chapter_id = _identity(chapter_id, "chapter_id")
         path = self._metadata_path(chapter_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(
