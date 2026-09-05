@@ -3472,6 +3472,46 @@ class AudioCombinerWorker(QThread):
             logger.exception(f"Непредвиденная ошибка при объединении аудио: {e}")
             self.finished_signal.emit(f"Ошибка: {str(e)}")
 
+
+class ParallelLiveChapterCombineWorker(QThread):
+    """Фоновая склейка сегментов главы, озвученной несколькими live-воркерами.
+
+    Раньше эта склейка (через ffmpeg, см. ``_combine_mp3_sequence``) выполнялась
+    синхронно прямо в обработчике Qt-сигнала ``finished`` воркера — то есть в
+    главном потоке — и замораживала интерфейс на время работы ffmpeg. Здесь она
+    вынесена в отдельный QThread по аналогии с ``AudioCombinerWorker``: работа с
+    файлами идёт в ``run()`` (другой поток), результат (успех/сообщение)
+    передаётся через ``finished_signal``, а обнуление ссылки на воркер и вся
+    работа с виджетами выполняются в обработчике встроенного сигнала
+    ``finished`` (эмитируется гарантированно ПОСЛЕ фактического завершения
+    потока) — см. ``_finalize_parallel_live_chapter``.
+    """
+
+    finished_signal = pyqtSignal(bool, int, str)
+
+    def __init__(self, book_manager, chapter_index, output_paths, total_tasks, worker_count):
+        super().__init__()
+        self.bm = book_manager
+        self.chapter_index = chapter_index
+        self.output_paths = output_paths
+        self.total_tasks = total_tasks
+        self.worker_count = worker_count
+
+    def run(self):
+        chapter_path = self.bm.get_mp3_path(self.chapter_index)
+        try:
+            _combine_mp3_sequence(self.output_paths, chapter_path)
+            self.bm.mark_chapter_done(self.chapter_index)
+            message = (
+                f"Глава {self.chapter_index + 1} озвучена параллельно: "
+                f"{self.total_tasks} блок(ов), {self.worker_count} воркер(ов)."
+            )
+            self.finished_signal.emit(True, self.chapter_index, message)
+        except Exception as exc:
+            message = f"Ошибка сборки главы {self.chapter_index + 1}: {exc}"
+            self.finished_signal.emit(False, self.chapter_index, message)
+
+
 class AudioPlayer(QThread):
     def __init__(self, audio_queue, vol=80):
         super().__init__()
@@ -3514,8 +3554,19 @@ class AudioPlayer(QThread):
             self.stream.stop_stream()
             self.stream.close()
             self.p.terminate()
-        except:
+        except Exception:
             pass
+        # Плеер больше не читает очередь: освобождаем место, чтобы производители,
+        # ждущие put(), не остались заблокированными на переполненной очереди.
+        while True:
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self.audio_queue.task_done()
+            except ValueError:
+                pass
 
 
 # --- ВОРКЕР (С ПОДМЕНОЙ EDGE TTS) ---
@@ -4120,6 +4171,25 @@ class GeminiWorker(QThread):
         raw_audio = await self._collect_live_request_raw_audio(client, config, text_to_send)
         return _trim_raw_pcm_boundaries(raw_audio)
 
+    def _enqueue_live_audio(self, item):
+        """Кладёт чанк в очередь воспроизведения, не блокируясь навсегда после «Стоп».
+
+        Очередь ограничена (maxsize=100), а после force_stop() AudioPlayer её больше
+        не читает. Блокирующий put() без таймаута вешал поток воркера, QThread не
+        завершался и окно отказывалось закрываться. Ждём место короткими интервалами
+        и перепроверяем флаг остановки; после остановки чанк просто отбрасывается.
+        """
+        audio_queue = self.audio_queue
+        if audio_queue is None:
+            return False
+        while self._is_running:
+            try:
+                audio_queue.put(item, timeout=0.2)
+                return True
+            except queue.Full:
+                continue
+        return False
+
     def _commit_live_audio_bytes(self, audio_bytes):
         if not audio_bytes:
             return False
@@ -4127,7 +4197,7 @@ class GeminiWorker(QThread):
             with self.buffer_lock:
                 self.audio_chunks.append(audio_bytes)
         if self.audio_queue and not self.fast:
-            self.audio_queue.put((audio_bytes, self.c_idx, self.s_idx, False))
+            self._enqueue_live_audio((audio_bytes, self.c_idx, self.s_idx, False))
         return True
 
     async def _collect_live_payload_audio(self, client, payload):
@@ -4260,7 +4330,7 @@ class GeminiWorker(QThread):
                     def _on_live_chunk(data):
                         request_audio.extend(data)
                         if self.audio_queue and not self.fast:
-                            self.audio_queue.put((data, self.c_idx, self.s_idx, False))
+                            self._enqueue_live_audio((data, self.c_idx, self.s_idx, False))
 
                     raw_audio = await self._collect_live_request_raw_audio(
                         client,
@@ -5246,7 +5316,7 @@ class FlashTtsWorker(GeminiWorker):
                 with self.buffer_lock:
                     self.audio_chunks.append(audio_bytes)
             if self.audio_queue and not self.fast:
-                self.audio_queue.put((audio_bytes, chapter_index, chunk_index - 1, False))
+                self._enqueue_live_audio((audio_bytes, chapter_index, chunk_index - 1, False))
             if self.record:
                 await self.save_file()
                 self._save_flash_tts_progress(chapter_index, script_text, script_chunks, chunk_index)
@@ -5811,6 +5881,7 @@ class MainWindow(QMainWindow):
         self._active_flash_run_mode = None
         self._active_manager_queue = None
         self._parallel_live_state = None
+        self._parallel_live_combine_worker = None
         self._run_had_invalid_keys = False
         self._project_quota_message = ""
         self._stop_requested = False
@@ -6294,7 +6365,14 @@ class MainWindow(QMainWindow):
         active_workers = any(getattr(worker, "isRunning", lambda: False)() for worker in self.workers)
         combiner_running = bool(self.combiner and self.combiner.isRunning())
         tester_running = bool(self.tester_worker and self.tester_worker.isRunning())
-        return active_workers or combiner_running or tester_running
+        # Фоновая склейка параллельно озвученной главы (см.
+        # ParallelLiveChapterCombineWorker) идёт уже после того, как self.workers
+        # опустел, — без этой проверки приложение считало себя простаивающим
+        # во время её работы: окно можно было закрыть, а кнопку "СТАРТ" нажать
+        # поверх ещё не завершённой склейки.
+        parallel_combine_worker = getattr(self, "_parallel_live_combine_worker", None)
+        parallel_combine_running = bool(parallel_combine_worker and parallel_combine_worker.isRunning())
+        return active_workers or combiner_running or tester_running or parallel_combine_running
 
     def _refresh_runtime_controls(self):
         running = self._running_tasks_exist()
@@ -8279,6 +8357,12 @@ class MainWindow(QMainWindow):
                 final_message = "Процесс остановлен."
             elif self._active_job_kind == "tts_parallel_live" and self._parallel_live_state is not None:
                 final_message = self._finalize_parallel_live_chapter()
+                if final_message is None:
+                    # Склейка сегментов главы запущена в фоновом QThread; сообщение
+                    # о завершении сессии придёт из её колбэка позже (см. локальный
+                    # on_thread_finished внутри _finalize_parallel_live_chapter),
+                    # здесь ничего больше делать не нужно.
+                    return
             elif self._project_quota_message:
                 final_message = self._project_quota_message
             elif remaining_chapters > 0:
@@ -8290,15 +8374,18 @@ class MainWindow(QMainWindow):
                 final_message = "AI-сценарии подготовлены." if self._active_job_kind == "prepare" else "Озвучка завершена."
                 if self._run_had_invalid_keys:
                     final_message += " Невалидные ключи были исключены из запуска."
-            self._active_manager_queue = None
-            self._active_reader_engine = None
-            self._active_flash_run_mode = None
-            self._run_had_invalid_keys = False
-            self._project_quota_message = ""
-            self._stop_requested = False
-            self.statusBar().showMessage(final_message)
-            from gemini_translator.ui.notifications import NotificationManager
-            NotificationManager.show("Сессия завершена", final_message)
+            self._complete_reading_session(final_message)
+
+    def _complete_reading_session(self, final_message):
+        self._active_manager_queue = None
+        self._active_reader_engine = None
+        self._active_flash_run_mode = None
+        self._run_had_invalid_keys = False
+        self._project_quota_message = ""
+        self._stop_requested = False
+        self.statusBar().showMessage(final_message)
+        from gemini_translator.ui.notifications import NotificationManager
+        NotificationManager.show("Сессия завершена", final_message)
 
     def _on_invalid_worker_key(self, worker_id, api_key, error_text, chapter_index):
         self.disabled_api_keys.add(api_key)
@@ -8523,19 +8610,62 @@ class MainWindow(QMainWindow):
                 f"({len(missing_files)} шт.)."
             )
 
-        chapter_path = self.bm.get_mp3_path(chapter_index)
-        try:
-            _combine_mp3_sequence(output_paths, chapter_path)
-            self.bm.mark_chapter_done(chapter_index)
-            self.on_chapter_done_ui(chapter_index)
-            self._cleanup_parallel_live_state(remove_files=True)
-            return (
-                f"Глава {chapter_index + 1} озвучена параллельно: "
-                f"{total_tasks} блок(ов), {state.get('worker_count', 1)} воркер(ов)."
+        # Сама склейка (ffmpeg-конкатенация + loudnorm) может занимать заметное
+        # время на длинных главах, поэтому выполняется в фоновом QThread, а не
+        # синхронно в этом Qt-слоте — иначе интерфейс замирает до её окончания.
+        worker_count = state.get("worker_count", 1)
+        temp_dir = state.get("temp_dir")
+        # Отвязываем состояние сессии от self ДО старта фонового потока: пока
+        # склейка идёт, GUI отзывчив (в отличие от старой синхронной версии),
+        # и пользователь может успеть запустить новую параллельную озвучку —
+        # она не должна унаследовать или затереть чужой self._parallel_live_state.
+        # Всё нужное отложенному колбэку (chapter_index, temp_dir) захватываем
+        # локальными переменными, а не читаем заново из self._parallel_live_state,
+        # который к моменту завершения склейки может принадлежать уже новой сессии.
+        self._parallel_live_state = None
+
+        combine_worker = ParallelLiveChapterCombineWorker(
+            self.bm, chapter_index, output_paths, total_tasks, worker_count
+        )
+        # Храним ссылку на воркер, пока он работает: без этого Python может
+        # собрать объект как мусор до завершения потока (падение QThread), а
+        # _running_tasks_exist()/_refresh_runtime_controls() по этой ссылке
+        # видят, что фоновая склейка ещё идёт (кнопка "СТАРТ" и закрытие окна
+        # остаются заблокированы).
+        self._parallel_live_combine_worker = combine_worker
+        combine_result = {"success": False, "message": ""}
+
+        def on_combine_message(success, _chapter_index, message):
+            combine_result["success"] = success
+            combine_result["message"] = message
+
+        def on_thread_finished():
+            # Ссылку обнуляем и объект удаляем только здесь — во встроенном
+            # сигнале finished, который эмитится ПОСЛЕ фактического завершения
+            # потока, в отличие от finished_signal, эмитируемого изнутри run()
+            # ещё до возврата из него. Как и для AudioCombinerWorker (см.
+            # _start_audio_combiner), это исключает "QThread destroyed while
+            # still running" из-за преждевременного обнуления ссылки.
+            if self._parallel_live_combine_worker is combine_worker:
+                self._parallel_live_combine_worker = None
+            if combine_result["success"]:
+                self.on_chapter_done_ui(chapter_index)
+                if temp_dir and os.path.isdir(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+            self._refresh_runtime_controls()
+            combine_worker.deleteLater()
+            self._complete_reading_session(
+                combine_result["message"] or f"Ошибка сборки главы {chapter_index + 1}."
             )
-        except Exception as exc:
-            self._cleanup_parallel_live_state(remove_files=False)
-            return f"Ошибка сборки главы {chapter_index + 1}: {exc}"
+
+        combine_worker.finished_signal.connect(on_combine_message)
+        combine_worker.finished.connect(on_thread_finished)
+        self._refresh_runtime_controls()
+        combine_worker.start()
+        return None
 
     def _launch_parallel_live_workers(self, chapter_index, available_api_keys, requested_workers):
         if not self.chk_mp3.isChecked():
