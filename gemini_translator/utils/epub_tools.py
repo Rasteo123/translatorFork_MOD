@@ -338,7 +338,19 @@ class EpubUpdater:
 
         # --- Шаг 2: Чтение и модификация файлов в памяти ---
         modified_files = {}
-        
+
+        # Все переименования — одним скомпилированным регэкспом за один проход по файлу.
+        # Раньше на каждый файл архива перебирались все переименования (O(глав² × размер главы)):
+        # экспорт книги в 1000 глав блокировал интерфейс на ~12 секунд.
+        rename_pattern = None
+        if filename_replacement_map:
+            rename_pattern = re.compile(
+                "|".join(
+                    re.escape(old_name)
+                    for old_name in sorted(filename_replacement_map, key=len, reverse=True)
+                )
+            )
+
         with zipfile.ZipFile(self.original_epub_path, 'r') as original_zip:
             
             # Список всех файлов для поиска TOC
@@ -356,9 +368,11 @@ class EpubUpdater:
                     is_modified = False
                     
                     # 2.1 Глобальная замена имен файлов (для ссылок)
-                    for old_name, new_name in filename_replacement_map.items():
-                        if old_name in content_str:
-                            content_str = content_str.replace(old_name, new_name)
+                    if rename_pattern is not None:
+                        content_str, replaced_count = rename_pattern.subn(
+                            lambda match: filename_replacement_map[match.group(0)], content_str
+                        )
+                        if replaced_count:
                             is_modified = True
                     
                     # 2.2 Обновление TOC (NCX) и NAV (XHTML)

@@ -2164,7 +2164,15 @@ def split_text_into_chunks(text, target_size, search_window, min_chunk_size):
         # 6. Если "скаут" ничего не нашел или нашел слишком близко, режем по идеальной точке "по-живому"
         if split_pos == -1 or split_pos <= current_pos:
             split_pos = ideal_split_pos
-        
+
+        # 6a. Граница не имеет права откатываться назад: если предыдущий разрез уже
+        # обогнал идеальную точку этого шага, этот разрез пропускаем. Иначе следующий
+        # чанк повторно захватил бы уже отданный кусок текста (перехлёст на стыке).
+        if split_pos <= current_pos:
+            continue
+        if split_pos >= text_len:
+            break
+
         # 7. Отрезаем чанк и обновляем позицию
         chunks.append(text[current_pos:split_pos])
         current_pos = split_pos

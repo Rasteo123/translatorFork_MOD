@@ -301,9 +301,12 @@ def test_persisted_lru_prune_honors_exact_byte_boundary_and_never_leaves_cache_r
         {key: np.array([1.0, index + 1.0, 2.0, 3.0], dtype=np.float32) for index, key in enumerate(keys)}
     )
     assert set(cache.get_many((keys[0],))) == {keys[0]}
-    before = _cache_size(cache_root)
 
     reopened = EmbeddingCache(cache_root)
+    # Журнал добавлений (index.log) сворачивается в index.json при prune; меряем размер
+    # уже свёрнутого кэша, чтобы порог «на байт меньше» требовал вытеснить ровно одну запись.
+    reopened.flush()
+    before = _cache_size(cache_root)
     freed = reopened.prune(before - 1)
     after = _cache_size(cache_root)
     hits = reopened.get_many(keys)

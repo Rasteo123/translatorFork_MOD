@@ -28,6 +28,32 @@ from .base import (
 _INDEX_SCHEMA_VERSION = 2
 _SAFE_PROVIDER_ID = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
+# Имя шарда: либо старый двухсимвольный префикс digest, либо шард одной пачки
+# put_many («b» + хэш набора digest'ов). Пачечные шарды пишутся один раз и никогда
+# не перечитываются-переписываются при добавлении: стоимость put_many не растёт с
+# размером кэша.
+_SHARD_NAME = re.compile(r"(?:[0-9a-f]{2}|b[0-9a-f]{8,32})\Z")
+# Изменения индекса не переписывают index.json целиком: каждая пачка put_many и
+# каждое обновление last_access дописываются одной строкой в журнал index.log
+# (O(пачки) и один fsync). Журнал проигрывается поверх index.json при чтении и
+# сворачивается в новый index.json (компакция), когда вырастает за порог, при
+# prune()/flush() или если базовый файл оказался повреждён. Диск остаётся
+# источником истины: запись видна другим экземплярам и процессам сразу.
+_JOURNAL_COMPACT_LINES = 256
+_JOURNAL_COMPACT_BYTES = 8 * 1024 * 1024
+
+
+class _RootState:
+    """Разделяемое между экземплярами состояние одного корня кэша."""
+
+    __slots__ = ("lock", "index", "fingerprint", "journal_lines", "needs_compaction")
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.index: dict[str, object] | None = None
+        self.fingerprint: tuple[object, object] | None = None
+        self.journal_lines = 0
+        self.needs_compaction = False
 _ENTRY_FIELDS = frozenset(
     {
         "normalized_text",
@@ -187,7 +213,9 @@ def _empty_index() -> dict[str, object]:
     }
 
 
-def _entry_for(key: EmbeddingCacheKey, last_access: int) -> dict[str, object]:
+def _entry_for(
+    key: EmbeddingCacheKey, last_access: int, shard: str | None = None
+) -> dict[str, object]:
     return {
         "normalized_text": key.normalized_text,
         "language": key.language,
@@ -196,9 +224,14 @@ def _entry_for(key: EmbeddingCacheKey, last_access: int) -> dict[str, object]:
         "dimensions": key.dimensions,
         "task_type": key.task_type,
         "preprocessing_identity": key.preprocessing_identity,
-        "shard": key.digest[:2],
+        "shard": key.digest[:2] if shard is None else shard,
         "last_access": last_access,
     }
+
+
+def _batch_shard_name(digests: Sequence[str]) -> str:
+    joined = "|".join(sorted(digests)).encode("ascii")
+    return "b" + hashlib.sha256(joined).hexdigest()[:16]
 
 
 def _dimensionless_entry(key: EmbeddingCacheKey) -> dict[str, object]:
@@ -216,17 +249,19 @@ def _dimensionless_entry(key: EmbeddingCacheKey) -> dict[str, object]:
 class EmbeddingCache:
     """Process-safe local cache whose entire root is safe to discard."""
 
-    _locks_guard = threading.Lock()
-    _locks: dict[str, threading.RLock] = {}
+    _states_guard = threading.Lock()
+    _states: dict[str, _RootState] = {}
 
     def __init__(self, root: str | os.PathLike[str]) -> None:
         if not isinstance(root, (str, os.PathLike)):
             raise TypeError("root must be a filesystem path")
         self.root = Path(root).expanduser().resolve()
         self.index_path = self.root / "index.json"
-        lock_key = os.fspath(self.root)
-        with self._locks_guard:
-            self._lock = self._locks.setdefault(lock_key, threading.RLock())
+        self.journal_path = self.root / "index.log"
+        state_key = os.fspath(self.root)
+        with self._states_guard:
+            self._state = self._states.setdefault(state_key, _RootState())
+        self._lock = self._state.lock
 
     def get_many(
         self, keys: Sequence[EmbeddingCacheKey]
@@ -235,11 +270,99 @@ class EmbeddingCache:
         if not unique:
             return {}
         with self._lock:
-            index = self._load_index_unlocked()
+            index = self._index_unlocked()
             return self._get_many_unlocked(unique, index)
 
     def put_many(self, values: Mapping[EmbeddingCacheKey, np.ndarray]) -> None:
         self._put_many(values, dimensionless=False)
+
+    def flush(self) -> bool:
+        """Сворачивает журнал в index.json (компакция)."""
+        with self._lock:
+            index = self._index_unlocked()
+            if self._state.journal_lines == 0 and not self._state.needs_compaction:
+                return True
+            return self._compact_unlocked(index)
+
+    def close(self) -> None:
+        self.flush()
+
+    # ---- индекс в памяти, синхронизированный с диском ----
+
+    def _fingerprint_unlocked(self) -> tuple[object, object]:
+        def stamp(path: Path) -> object:
+            try:
+                stat = path.stat()
+            except OSError:
+                return None
+            return (stat.st_size, stat.st_mtime_ns, stat.st_ino)
+
+        return (stamp(self.index_path), stamp(self.journal_path))
+
+    def _index_unlocked(self) -> dict[str, object]:
+        """Индекс = index.json + журнал; перечитывается, только если файлы менялись извне."""
+        state = self._state
+        fingerprint = self._fingerprint_unlocked()
+        if state.index is None or state.fingerprint != fingerprint:
+            state.index = self._load_index_unlocked()
+            state.fingerprint = fingerprint
+        return state.index
+
+    def _refresh_fingerprint_unlocked(self) -> None:
+        self._state.fingerprint = self._fingerprint_unlocked()
+
+    def _journal_bytes_unlocked(self) -> int:
+        try:
+            return self.journal_path.stat().st_size
+        except OSError:
+            return 0
+
+    def _record_change_unlocked(self, index: dict[str, object], record: dict[str, object]) -> None:
+        """Фиксирует изменение на диске: строкой журнала или, если пора, компакцией."""
+        state = self._state
+        if (
+            state.needs_compaction
+            or state.journal_lines >= _JOURNAL_COMPACT_LINES
+            or self._journal_bytes_unlocked() >= _JOURNAL_COMPACT_BYTES
+        ):
+            if self._compact_unlocked(index):
+                return
+        if not self._append_journal_unlocked(record):
+            self._compact_unlocked(index)
+
+    def _append_journal_unlocked(self, record: Mapping[str, object]) -> bool:
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            with self.journal_path.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except (OSError, TypeError, ValueError):
+            return False
+        self._state.journal_lines += 1
+        self._refresh_fingerprint_unlocked()
+        return True
+
+    def _compact_unlocked(self, index: dict[str, object]) -> bool:
+        if not self._atomic_write_json_unlocked(index):
+            return False
+        try:
+            self.journal_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        self._state.journal_lines = 0
+        self._state.needs_compaction = False
+        self._refresh_fingerprint_unlocked()
+        return True
 
     def prune(self, max_bytes: int) -> int:
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
@@ -250,7 +373,8 @@ class EmbeddingCache:
         with self._lock:
             before = self._cache_size_unlocked()
             self._cleanup_temps_unlocked()
-            index = self._load_index_unlocked()
+            index = self._index_unlocked()
+            self._compact_unlocked(index)
             entries = index["entries"]
             referenced_shards = {entry["shard"] for entry in entries.values()}
             self._remove_orphan_shards_unlocked(referenced_shards)
@@ -276,8 +400,12 @@ class EmbeddingCache:
 
             if self._cache_size_unlocked() > max_bytes and not entries:
                 self._unlink_unlocked(self.index_path)
+                self._unlink_unlocked(self.journal_path)
                 self._remove_orphan_shards_unlocked(set())
                 self._cleanup_temps_unlocked()
+            self._state.index = index
+            self._state.journal_lines = 0
+            self._refresh_fingerprint_unlocked()
             after = self._cache_size_unlocked()
             if after > max_bytes:
                 raise OSError("embedding cache could not reach the requested byte limit")
@@ -314,29 +442,20 @@ class EmbeddingCache:
             return
 
         with self._lock:
-            index = self._load_index_unlocked()
-            grouped: dict[str, dict[str, np.ndarray]] = {}
-            keys_by_digest: dict[str, EmbeddingCacheKey] = {}
-            for key, vector in prepared.items():
-                grouped.setdefault(key.digest[:2], {})[key.digest] = vector
-                keys_by_digest[key.digest] = key
-
-            written: list[str] = []
-            for shard, additions in grouped.items():
-                existing = self._load_shard_unlocked(shard)
-                merged = {} if existing is None else existing
-                merged.update(additions)
-                if self._atomic_write_shard_unlocked(shard, merged):
-                    written.extend(additions)
-
-            if not written:
+            index = self._index_unlocked()
+            # Вся пачка уходит в один новый шард: одна запись и один fsync на put_many,
+            # без чтения и перезаписи уже накопленных шардов.
+            vectors = {key.digest: vector for key, vector in prepared.items()}
+            shard = _batch_shard_name(list(vectors))
+            if not self._atomic_write_shard_unlocked(shard, vectors):
                 return
-            for digest in written:
-                key = keys_by_digest[digest]
+            new_entries: dict[str, dict[str, object]] = {}
+            new_dimensionless: dict[str, dict[str, object]] = {}
+            for key in prepared:
                 index["access_counter"] += 1
-                index["entries"][digest] = _entry_for(
-                    key, index["access_counter"]
-                )
+                entry = _entry_for(key, index["access_counter"], shard)
+                index["entries"][key.digest] = entry
+                new_entries[key.digest] = entry
                 if dimensionless:
                     alias = _dimensionless_digest(
                         key.normalized_text,
@@ -346,8 +465,18 @@ class EmbeddingCache:
                         key.task_type,
                         key.preprocessing_identity,
                     )
-                    index["dimensionless"][alias] = _dimensionless_entry(key)
-            self._atomic_write_json_unlocked(index)
+                    alias_entry = _dimensionless_entry(key)
+                    index["dimensionless"][alias] = alias_entry
+                    new_dimensionless[alias] = alias_entry
+            self._record_change_unlocked(
+                index,
+                {
+                    "op": "put",
+                    "access_counter": index["access_counter"],
+                    "entries": new_entries,
+                    "dimensionless": new_dimensionless,
+                },
+            )
 
     def _find_dimensionless(
         self,
@@ -368,7 +497,7 @@ class EmbeddingCache:
         )
         texts = tuple(dict.fromkeys(_normalized_text(text) for text in normalized_texts))
         with self._lock:
-            index = self._load_index_unlocked()
+            index = self._index_unlocked()
             keys: list[EmbeddingCacheKey] = []
             dimensions: int | None = None
             for text in texts:
@@ -402,10 +531,12 @@ class EmbeddingCache:
         entries = index["entries"]
         loaded_shards: dict[str, dict[str, np.ndarray] | None] = {}
         hits: dict[EmbeddingCacheKey, np.ndarray] = {}
-        touched = False
+        touched: dict[str, int] = {}
         for key in keys:
             metadata = entries.get(key.digest)
-            if metadata is None or metadata != _entry_for(key, metadata["last_access"]):
+            if metadata is None or metadata != _entry_for(
+                key, metadata["last_access"], metadata.get("shard")
+            ):
                 continue
             shard = metadata["shard"]
             if shard not in loaded_shards:
@@ -421,9 +552,12 @@ class EmbeddingCache:
             metadata["last_access"] = index["access_counter"]
             vector.setflags(write=False)
             hits[key] = vector
-            touched = True
+            touched[key.digest] = index["access_counter"]
         if touched:
-            self._atomic_write_json_unlocked(index)
+            self._record_change_unlocked(
+                index,
+                {"op": "touch", "access_counter": index["access_counter"], "touched": touched},
+            )
         return hits
 
     @staticmethod
@@ -443,15 +577,89 @@ class EmbeddingCache:
         copied.setflags(write=False)
         return copied
 
-    def _load_index_unlocked(self) -> dict[str, object]:
+    @staticmethod
+    def _reject_constant(_value: object) -> object:
+        raise ValueError
+
+    def _read_base_unlocked(self) -> tuple[dict[str, object], bool]:
+        """Возвращает (индекс, повреждён): отсутствующий файл — не повреждение."""
         try:
-            raw = json.loads(
-                self.index_path.read_text(encoding="utf-8"),
-                parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
-            )
-            return self._validate_index(raw)
-        except (OSError, UnicodeError, ValueError, TypeError, KeyError, EmbeddingContractError):
+            text = self.index_path.read_text(encoding="utf-8")
+        except OSError:
+            return _empty_index(), False
+        try:
+            raw = json.loads(text, parse_constant=self._reject_constant)
+            return self._validate_index(raw), False
+        except (UnicodeError, ValueError, TypeError, KeyError, EmbeddingContractError):
+            return _empty_index(), True
+
+    def _read_journal_unlocked(self) -> list[dict[str, object]]:
+        try:
+            text = self.journal_path.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        except UnicodeError:
+            return []
+        records: list[dict[str, object]] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line, parse_constant=self._reject_constant)
+            except (ValueError, TypeError):
+                break  # оборванная запись: хвост журнала игнорируем
+            if not isinstance(record, dict):
+                break
+            records.append(record)
+        return records
+
+    @staticmethod
+    def _apply_journal_record(index: dict[str, object], record: Mapping[str, object]) -> None:
+        operation = record.get("op")
+        if operation == "put":
+            entries = record.get("entries")
+            dimensionless = record.get("dimensionless", {})
+            if not isinstance(entries, dict) or not isinstance(dimensionless, dict):
+                raise ValueError
+            index["entries"].update(entries)
+            index["dimensionless"].update(dimensionless)
+        elif operation == "touch":
+            touched = record.get("touched")
+            if not isinstance(touched, dict):
+                raise ValueError
+            for digest, last_access in touched.items():
+                metadata = index["entries"].get(digest)
+                if metadata is not None:
+                    metadata["last_access"] = last_access
+        else:
+            raise ValueError
+        counter = record.get("access_counter")
+        if isinstance(counter, bool) or not isinstance(counter, int) or counter < 0:
+            raise ValueError
+        index["access_counter"] = max(index["access_counter"], counter)
+
+    def _load_index_unlocked(self) -> dict[str, object]:
+        """index.json плюс проигранный поверх него журнал."""
+        state = self._state
+        index, corrupt = self._read_base_unlocked()
+        state.journal_lines = 0
+        state.needs_compaction = corrupt
+        if corrupt:
+            # Повреждённый базовый файл: кэш считается пустым целиком, журнал не доверяем.
+            return index
+        records = self._read_journal_unlocked()
+        if not records:
+            return index
+        try:
+            for record in records:
+                self._apply_journal_record(index, record)
+            index = self._validate_index(index)
+        except (ValueError, TypeError, KeyError, EmbeddingContractError):
+            state.needs_compaction = True
             return _empty_index()
+        state.journal_lines = len(records)
+        return index
 
     @classmethod
     def _validate_index(cls, raw: object) -> dict[str, object]:
@@ -483,7 +691,8 @@ class EmbeddingCache:
                 isinstance(last_access, bool)
                 or not isinstance(last_access, int)
                 or last_access < 0
-                or metadata["shard"] != digest[:2]
+                or not isinstance(metadata["shard"], str)
+                or not _SHARD_NAME.fullmatch(metadata["shard"])
                 or key.digest != digest
             ):
                 raise ValueError
