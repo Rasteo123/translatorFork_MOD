@@ -212,6 +212,20 @@ class HuggingFaceApiHandler(BaseApiHandler):
                 # Это подавит трейсбек в консоли и отправит ошибку в штатный обработчик ретраев
                 error_msg = self._format_transport_error(e, "Hugging Face")
                 raise NetworkError(error_msg, delay_seconds=self.NETWORK_RETRY_DELAY) from e
+            except (
+                RateLimitExceededError,
+                ContentFilterError,
+                NetworkError,
+                PartialGenerationError,
+                ModelNotFoundError,
+                LocationBlockedError,
+                ValidationFailedError,
+                TemporaryRateLimitError,
+            ) as e:
+                # Доменные исключения пробрасываем как есть, не теряя тип и атрибуты
+                # (partial_text/reason/delay_seconds) -- их ждёт downstream-код
+                # (base.py:_process_exception_and_counters, error_analyzer.py, emerger_tasks.py).
+                raise e
             except Exception as e:
                 traceback.print_exc()
                 raise Exception(f"Критическая ошибка HF: {e}")

@@ -145,8 +145,10 @@ class WorkAsciiChatGptApiHandler(BaseApiHandler):
     ):
         system_instruction = (self.worker.prompt_builder.system_instruction or "").strip() or None
 
+        slot_acquired = False
         try:
             await self._acquire_bridge_request_slot()
+            slot_acquired = True
             await self._ensure_bridge_ready()
             command_payload = {
                 "type": "translate",
@@ -176,10 +178,16 @@ class WorkAsciiChatGptApiHandler(BaseApiHandler):
                 ),
             )
         except asyncio.CancelledError:
+            # Глобальный таймаут (asyncio.wait_for в base.py) или отмена пользователем:
+            # слот обязан вернуться, иначе _active_bridge_calls остаётся занятым навсегда
+            # и следующий запрос при периодическом перезапуске профиля виснет в acquire.
+            if slot_acquired:
+                await self._release_bridge_request_slot(success=False)
             await self._terminate_bridge()
             raise
         except Exception:
-            await self._release_bridge_request_slot(success=False)
+            if slot_acquired:
+                await self._release_bridge_request_slot(success=False)
             raise
 
         if response.get("ok"):

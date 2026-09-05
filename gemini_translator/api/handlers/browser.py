@@ -270,9 +270,14 @@ class BrowserApiHandler(BaseApiHandler):
             self._debug_record_response(last_text, status="ok", extra={"mode": "browser"})
             return last_text
 
+        except OperationCancelledError:
+            # Отмена пользователем ("Стоп") — это не сетевая ошибка, а штатное
+            # прерывание: пробрасываем как есть, не закрывая/пересоздавая
+            # страницу браузера (сессия должна остаться пригодной для следующего запроса).
+            raise
         except Exception as e:
-            # При ошибке закрываем страницу, чтобы в следующий раз начать с чистого листа
-            if self.page: 
+            # При реальной ошибке закрываем страницу, чтобы в следующий раз начать с чистого листа
+            if self.page:
                 await self.page.close()
                 self.page = await self.context.new_page()
             self._debug_record_response(str(e), status="error", extra={"mode": "browser"})

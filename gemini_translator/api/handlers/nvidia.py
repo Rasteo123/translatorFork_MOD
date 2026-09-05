@@ -60,6 +60,22 @@ class NvidiaApiHandler(BaseApiHandler):
         self.worker.model_id = self._model_id_candidates[self._model_id_index]
         return self.worker.model_id
 
+    def _reset_model_id_to_primary(self):
+        """Сбрасывает активную модель к primary перед каждым новым вызовом call_api.
+
+        _model_id_candidates строится один раз в setup_client на весь жизненный
+        цикл воркера (много глав/задач), а _switch_to_next_model_id на 404
+        мутирует worker.model_id перманентно. Без сброса alias-фолбэк одной
+        главы залипает на все последующие главы этой сессии воркера и путает
+        RPD-счётчик (settings_manager.increment_request_count пишет уже под
+        другим model_id). Сброс в начале call_api заставляет каждую новую
+        задачу заново пробовать primary_model_id, сохраняя при этом
+        внутрицикловый фолбэк на alias при повторном 404 в рамках этого вызова.
+        """
+        if getattr(self, "_model_id_candidates", None):
+            self._model_id_index = 0
+            self.worker.model_id = self._model_id_candidates[0]
+
     def _normalize_content(self, content):
         if isinstance(content, str):
             return content
@@ -376,6 +392,7 @@ class NvidiaApiHandler(BaseApiHandler):
         max_output_tokens=None,
     ):
         session = await self._get_or_create_session_internal()
+        self._reset_model_id_to_primary()
 
         headers = {
             "Authorization": f"Bearer {self.worker.api_key}",
