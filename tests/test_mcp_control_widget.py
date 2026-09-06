@@ -229,19 +229,24 @@ class McpControlWidgetTests(unittest.TestCase):
         self.assertEqual(snapshot.detail, "127.0.0.1:6543")
         self.assertEqual(snapshot.connected_clients, 1)
 
-    def test_execute_action_sync_runs_start_then_stop(self):
+    def test_dispatch_action_toggle_runs_start_then_stop(self):
         backend = _ActionBackend()
         widget = McpControlWidget(backend=backend)
         self.addCleanup(widget.close)
 
-        self.app.processEvents()
+        # Дожидаемся, пока завершится возможный boot-probe (singleShot(0) →
+        # _poll_status → refresh_status), иначе наш toggle будет проигнорирован
+        # guard-ом «воркер уже активен» в _dispatch_action.
+        self.assertTrue(self._process_events_until(lambda: widget._worker_thread is None))
 
-        widget._execute_action_sync("toggle")
+        widget._dispatch_action("toggle")
+        self.assertTrue(self._process_events_until(lambda: widget._worker_thread is None))
         self.assertEqual(backend.started, 1)
         self.assertEqual(widget.status_value_label.text(), "Запущен")
         self.assertEqual(widget.action_button.text(), "Остановить")
 
-        widget._execute_action_sync("toggle")
+        widget._dispatch_action("toggle")
+        self.assertTrue(self._process_events_until(lambda: widget._worker_thread is None))
         self.assertEqual(backend.stopped, 1)
         self.assertEqual(widget.status_value_label.text(), "Выключен")
         self.assertEqual(widget.action_button.text(), "Запустить")
@@ -251,7 +256,9 @@ class McpControlWidgetTests(unittest.TestCase):
         widget = McpControlWidget(backend=backend)
         self.addCleanup(widget.close)
 
-        widget._execute_action_sync("toggle")
+        self.assertTrue(self._process_events_until(lambda: widget._worker_thread is None))
+        widget._dispatch_action("toggle")
+        self.assertTrue(self._process_events_until(lambda: widget._worker_thread is None))
         widget._on_app_about_to_quit()
 
         self.assertEqual(backend.started, 1)
@@ -272,7 +279,9 @@ class McpControlWidgetTests(unittest.TestCase):
         backend = _ActionBackend()
         widget = McpControlWidget(backend=backend)
 
-        widget._execute_action_sync("toggle")
+        self.assertTrue(self._process_events_until(lambda: widget._worker_thread is None))
+        widget._dispatch_action("toggle")
+        self.assertTrue(self._process_events_until(lambda: widget._worker_thread is None))
         widget.close()
 
         self.assertEqual(backend.started, 1)

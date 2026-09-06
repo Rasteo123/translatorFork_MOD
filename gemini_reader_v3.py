@@ -123,19 +123,6 @@ try:
 except Exception:
     _text_sort = None
 
-if platform.system() == "Windows":
-    import subprocess
-    # Патч: заставляем все процессы запускаться без окна консоли
-    _orig_popen = subprocess.Popen
-    def _hidden_popen(*args, **kwargs):
-        if 'creationflags' not in kwargs:
-            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-        return _orig_popen(*args, **kwargs)
-    subprocess.Popen = _hidden_popen
-
-
-
-
 
 # --- КОНФИГУРАЦИЯ ---
 MODEL_ID = "gemini-3.1-flash-live-preview" # Legacy default for Live API
@@ -1354,11 +1341,6 @@ def _split_duo_gender_paragraph(paragraph, previous_dialogue_gender=None):
     return [(TTS_SPEAKER_MALE, paragraph)], previous_dialogue_gender
 
 
-def _split_role_paragraph(paragraph):
-    segments, _ = _split_duo_gender_paragraph(paragraph)
-    return segments
-
-
 def _build_live_role_script(raw_text):
     paragraphs = [
         part.strip()
@@ -2097,10 +2079,6 @@ def _load_trimmed_audio_segment(path):
     return _trim_audio_segment_boundaries(segment)
 
 
-def _load_trimmed_mp3_segment(path):
-    return _load_trimmed_audio_segment(path)
-
-
 def _export_trimmed_audio_file(source_path, output_path, output_format=None):
     segment = _load_trimmed_audio_segment(source_path)
     output_format = output_format or _audio_format_from_path(output_path)
@@ -2115,10 +2093,6 @@ def _export_trimmed_audio_file(source_path, output_path, output_format=None):
             except Exception:
                 pass
         raise RuntimeError(f"Не удалось сохранить audio после обрезки пауз: {exc}") from exc
-
-
-def _export_trimmed_mp3_file(source_path, output_path):
-    _export_trimmed_audio_file(source_path, output_path, output_format="mp3")
 
 
 def _normalize_audio_to_mp3(source_path, output_path=None, ffmpeg_path=None):
@@ -2713,9 +2687,6 @@ def _split_live_paragraph(paragraph, max_chars=LIVE_PARAGRAPH_MAX_CHARS):
         chunks.append(" ".join(current))
     return chunks or [paragraph]
 
-
-if platform.system() == "Windows" and "_orig_popen" in globals():
-    subprocess.Popen = _orig_popen
 
 if _loguru_logger is not None:
     logger = _loguru_logger
@@ -4039,14 +4010,6 @@ class GeminiWorker(QThread):
                 return None
 
             def _decode_silently():
-                import subprocess
-                startupinfo = None
-                # Скрываем всплывающие окна консоли на Windows
-                if platform.system() == "Windows":
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    startupinfo.wShowWindow = 0 # SW_HIDE
-
                 fp = io.BytesIO(data_out)
                 try:
                     # Конвертируем ответ в нужный нам формат
@@ -4579,9 +4542,6 @@ class GeminiParallelChapterWorker(GeminiWorker):
                     return False
                 if isinstance(exc, ProjectRateLimitReachedError):
                     self._abort_for_project_quota(str(exc), exc.model_id or self.model_id)
-                    return False
-                if isinstance(exc, RateLimitBudgetError):
-                    self._abort_for_quota_key(str(exc), exc.model_id or self.model_id)
                     return False
                 if _is_invalid_api_key_error(exc):
                     self._abort_for_invalid_key(str(exc))

@@ -77,7 +77,7 @@ class FilterPackagingDialog(QDialog):
         main_layout.addWidget(settings_group)
         
         buttons = QDialogButtonBox()
-        form_list_btn = buttons.addButton("Сформировать список", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton("Сформировать список", QDialogButtonBox.ButtonRole.AcceptRole)
         self.only_filter_btn = buttons.addButton("Оставить только фильтр", QDialogButtonBox.ButtonRole.ActionRole)
         buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
 

@@ -6,7 +6,6 @@ import pytest
 from gemini_translator.qa.capabilities import QaCapabilityKey
 from gemini_translator.qa.models import (
     Action,
-    CandidateKind,
     ChapterMetrics,
     Decision,
     QaModelValidationError,
@@ -66,7 +65,6 @@ def test_chapter_metrics_rejects_negative_capability_duration():
 def test_model_enums_keep_the_persisted_values_explicit():
     """Replacing the typed string enums with arbitrary strings loses schema choices."""
     assert RiskLevel.HIGH.value == "high"
-    assert CandidateKind.POSSIBLE_GAP.value == "possible_gap"
     assert Decision.WARNING.value == "warning"
     assert Action.REPORT_ONLY.value == "report_only"
 

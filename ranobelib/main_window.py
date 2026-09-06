@@ -302,7 +302,6 @@ class RanobeUploaderApp(QMainWindow):
         self.theme_mode_combo.addItem("Авто (как в системе)", "auto")
         self.theme_mode_combo.addItem("Светлая", "light")
         self.theme_mode_combo.addItem("Тёмная", "dark")
-        self.theme_mode_combo.addItem("Своя", "custom")
         self.theme_mode_combo.currentIndexChanged.connect(
             lambda _i: self._on_theme_mode_changed(self.theme_mode_combo.currentData())
         )
@@ -1184,7 +1183,7 @@ class RanobeUploaderApp(QMainWindow):
                 is_dark = theme_manager.system_is_dark(QApplication.instance())
             except ImportError:
                 is_dark = False
-        elif mode in ("dark", "custom"):
+        elif mode == "dark":
             is_dark = True
         else:
             is_dark = False
@@ -2249,7 +2248,6 @@ class RanobeUploaderApp(QMainWindow):
             ch_num = ch.get("number", 0)
             volume = str(ch.get("volume") or self.default_vol_input.text().strip() or "1")
             can_download = ch.get("downloadable", False)
-            ch_id = ch.get("id", "")
 
             item = QListWidgetItem(title)
             item.setData(Qt.ItemDataRole.UserRole, ch)

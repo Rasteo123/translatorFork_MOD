@@ -73,13 +73,6 @@ RANOBELIB_MODULE_NAMES = (
     "workers",
 )
 
-RESTART_INFO = {
-    "is_restarting": False,
-    "epub_path": None,
-    "chapters": [],
-}
-
-
 def patch_ranobelib_login_worker():
     workers_module = importlib.import_module("workers")
     login_worker_class = getattr(workers_module, "LoginWorker", None)
@@ -620,19 +613,6 @@ class ValidatorStartupDialog(QtWidgets.QDialog):
             "Очистка завершена",
             f"Удалено старых файлов перевода: {result['removed']}."
         )
-
-
-def restart_with_new_files(epub_path, chapters):
-    """Готовит приложение к перезапуску с новым набором файлов."""
-    print("Подготовка к перезапуску с новыми файлами…")
-    RESTART_INFO["is_restarting"] = True
-    RESTART_INFO["epub_path"] = epub_path
-    RESTART_INFO["chapters"] = chapters
-
-    app = QtWidgets.QApplication.instance()
-    if app:
-        # Возвращаемся во внешний цикл интерфейса, не завершая общий runtime.
-        app.exit(EXIT_CODE_REBOOT)
 
 
 # Сколько ждём подтверждения, что Qt event loop реально доставил
@@ -1389,7 +1369,6 @@ if __name__ == "__main__":
     while True:
         try:
             shell = MainShell()
-            shell._external_windows = []
             home = HomePage()
             shell.set_home(home)
             home.tool_selected.connect(lambda tool_id, s=shell: open_tool_in_shell(s, tool_id))

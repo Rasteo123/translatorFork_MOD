@@ -202,9 +202,6 @@ class QaJournal:
         ]
         return pd.DataFrame(rows, columns=ChapterMetrics.dataframe_columns())
 
-    def to_frame(self) -> pd.DataFrame:
-        return self.metrics_frame()
-
     def save(self, path: Path) -> None:
         target = Path(path)
         temporary = target.with_name(f".{target.name}.tmp")

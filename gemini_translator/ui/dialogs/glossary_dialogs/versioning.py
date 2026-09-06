@@ -166,8 +166,6 @@ class ChapterSelectorWidget(QWidget):
             item = self.list_widget.item(i)
             if item.isHidden(): continue
 
-            should_process = False
-            
             if mode == 'check_highlighted':
                 if item in selected_items:
                     item.setCheckState(Qt.CheckState.Checked)

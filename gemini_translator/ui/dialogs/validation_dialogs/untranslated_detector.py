@@ -11,7 +11,6 @@ This module provides classes for:
 import re
 import html
 from typing import Set, List, Tuple, Dict, Any
-from bs4 import BeautifulSoup, NavigableString, ProcessingInstruction, Comment, Declaration
 
 from gemini_translator.utils.html_text import extract_visible_text
 from gemini_translator.utils.cjk_ranges import UnicodeRanges
@@ -62,31 +61,6 @@ class HTMLCleaner:
             Plain text extracted from HTML
         """
         return extract_visible_text(html_content)
-
-    @staticmethod
-    def get_body_text(html_content: str) -> str:
-        """
-        Extract text content from the body element only.
-        
-        Args:
-            html_content: Raw HTML content
-            
-        Returns:
-            Text content from body element
-        """
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            body = soup.find('body')
-            
-            if body:
-                # Remove script and style elements
-                for tag in body(['script', 'style']):
-                    tag.decompose()
-                return body.get_text(separator=' ', strip=True)
-            
-            return soup.get_text(separator=' ', strip=True)
-        except Exception:
-            return html_content
 
 
 # =============================================================================
@@ -184,24 +158,6 @@ class WordExceptionMatcher:
             result = pattern.sub(' ', result)
         
         return result
-    
-    def find_phrase_matches(self, text: str) -> List[str]:
-        """
-        Find all phrase exceptions that match in the text.
-        
-        Args:
-            text: Input text to search
-            
-        Returns:
-            List of matched phrases
-        """
-        matches = []
-        
-        for phrase, pattern in self._phrase_patterns:
-            if pattern.search(text):
-                matches.append(phrase)
-        
-        return matches
 
 
 # =============================================================================
@@ -234,10 +190,7 @@ class UntranslatedWordDetector:
     # CJK punctuation marks are common in titles/lists and should not be
     # treated as untranslated text when they appear by themselves.
     CJK_PUNCTUATION_PATTERN = re.compile(f'^[{UnicodeRanges.CJK_SYMBOLS_AND_PUNCTUATION}]+$')
-    
-    # Pattern for detecting any CJK (extended)
-    CJK_EXTENDED_PATTERN = re.compile(UnicodeRanges.ALL_CJK_EXTENDED_PATTERN)
-    
+
     # Pattern for single Latin character (should be ignored - common in ratings/grades)
     SINGLE_LATIN_PATTERN = re.compile(r'^[a-zA-Z]$')
     
@@ -343,36 +296,7 @@ class UntranslatedWordDetector:
             return False
 
         return True
-    
-    def detect_in_text(self, text: str) -> List[str]:
-        """
-        Detect untranslated words in plain text (no HTML processing).
-        
-        Args:
-            text: Plain text to analyze
-            
-        Returns:
-            Sorted list of unique untranslated words
-        """
-        try:
-            # Remove phrase exceptions
-            text_without_phrases = self.exception_matcher.remove_phrase_exceptions(text)
-            
-            # Remove Cyrillic
-            no_cyrillic = self.CYRILLIC_PATTERN.sub(' ', text_without_phrases)
-            
-            # Get pure words
-            pure_words = self.PURE_WORD_PATTERN.sub(' ', no_cyrillic).split()
-            
-            # Filter words
-            untranslated = [w for w in pure_words if self._should_include_word(w)]
-            
-            return sorted(list(set(untranslated)), key=len, reverse=True)
-            
-        except Exception as e:
-            print(f"[UntranslatedWordDetector] Error in detect_in_text: {e}")
-            return []
-    
+
     def detect_mixed_script(self, translated_content: str) -> List[Dict[str, Any]]:
         """
         Detect CJK characters mixed within translated (Cyrillic) text.

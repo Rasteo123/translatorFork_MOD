@@ -640,8 +640,7 @@ class EpubHtmlSelectorDialog(QDialog):
     def _async_stage_3_load_details(self):
         # Скрываем кнопки действий по умолчанию
         self.restore_backup_btn.setVisible(False)
-        self.suspicious_style = None
-    
+
         # Быстрая проверка бэкапа
         backup_path = self.real_epub_path + ".backup"
         if os.path.exists(backup_path):
@@ -2065,7 +2064,7 @@ class TranslatedChaptersManagerDialog(QDialog):
         # Role Destructive -> Красная кнопка (обычно) или слева
         btn_delete_disk = msg_box.addButton("🗑 Удалить файл с диска", QMessageBox.ButtonRole.DestructiveRole)
         # Role Action -> Обычная кнопка действия
-        btn_remove_list = msg_box.addButton("❌ Просто убрать из списка", QMessageBox.ButtonRole.ActionRole)
+        msg_box.addButton("❌ Просто убрать из списка", QMessageBox.ButtonRole.ActionRole)
         # Role Reject -> Escape / Отмена
         btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
         

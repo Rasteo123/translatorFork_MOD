@@ -10,7 +10,6 @@ from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
-from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -23,8 +22,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QMainWindow,
-    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -35,11 +32,9 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
-    QToolBar,
     QVBoxLayout,
     QWidget,
 )
-from .menu_utils import prompt_return_to_menu, return_to_main_menu
 from ...utils.epub_tools import (
     extract_first_epub_heading_text,
     find_opf_path,
@@ -264,54 +259,3 @@ class EPUBConverterThread(QThread):
         content = re.sub(r"xml version='[^']+' encoding='[^']+'?", "", content)
         content = re.sub(r'xmlns="[^"]+"', "", content)
         return content
-
-
-class RulateMarkdownExportWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("EPUB -> Rulate Markdown")
-        self.setMinimumSize(1100, 750)
-        self._returning_to_main_menu = False
-
-        # Lazy import breaks the page<->wrapper import cycle.
-        from gemini_translator.ui.pages.rulate_export_page import RulateExportPage
-
-        self.page = RulateExportPage(self)
-        self.setCentralWidget(self.page)
-
-        toolbar = QToolBar()
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-        act_menu = QAction("В меню", self)
-        act_menu.triggered.connect(self._return_to_menu)
-        toolbar.addAction(act_menu)
-
-    @property
-    def converter_thread(self):
-        return self.page.converter_thread
-
-    def _return_to_menu(self):
-        if self.page.converter_thread and self.page.converter_thread.isRunning():
-            QMessageBox.warning(self, "Подождите", "Сначала дождитесь завершения конвертации.")
-            return
-        self._returning_to_main_menu = True
-        self.close()
-
-    def closeEvent(self, event):
-        if self.page.converter_thread and self.page.converter_thread.isRunning():
-            QMessageBox.warning(self, "Подождите", "Сначала дождитесь завершения конвертации.")
-            event.ignore()
-            return
-
-        if self._returning_to_main_menu:
-            return_to_main_menu()
-            event.accept()
-            return
-
-        action = prompt_return_to_menu(self)
-        if action == "cancel":
-            event.ignore()
-            return
-        if action == "menu":
-            return_to_main_menu()
-        event.accept()

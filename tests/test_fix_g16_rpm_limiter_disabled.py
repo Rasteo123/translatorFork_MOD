@@ -79,10 +79,6 @@ class RPMLimiterDisabledInstanceTests(unittest.TestCase):
         # Не должно бросать AttributeError из-за отсутствующего self.lock.
         limiter.decrease_rpm(percentage=25)
 
-    def test_sync_last_request_time_does_not_raise_on_disabled_limiter(self):
-        limiter = RPMLimiter(0)
-        limiter.sync_last_request_time(123.0)
-
     def test_update_last_request_time_accepts_delay_argument(self):
         limiter = RPMLimiter(0)
         # Реальная сигнатура — update_last_request_time(self, delay=0);

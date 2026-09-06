@@ -665,12 +665,6 @@ def green_keys(settings_manager, provider_id: str, model_id: str) -> tuple[str, 
     return tuple(keys)
 
 
-def first_green_key(settings_manager, provider_id: str, model_id: str) -> str:
-    """One healthy key of a provider, or an empty string when it has none."""
-    keys = green_keys(settings_manager, provider_id, model_id)
-    return keys[0] if keys else ""
-
-
 def build_quality_estimator(qa_settings: QaSettings, paths: "ProjectQaPaths"):
     """Build the optional quality estimator, or return None when it is off.
 

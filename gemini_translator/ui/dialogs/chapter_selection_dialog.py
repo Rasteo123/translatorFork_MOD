@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QLabel, QMessageBox, QLineEdit,
     QGroupBox, QCheckBox, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt
 from typing import List, Dict, Any, Optional, Set
 
 try:
@@ -69,10 +69,8 @@ def invert_checked(list_widget, only_visible: bool = False) -> None:
 
 class ChapterSelectionDialog(QDialog):
     """Диалог для выбора глав из проекта."""
-    
-    selection_changed = pyqtSignal(list)  # список выбранных глав
-    
-    def __init__(self, all_chapters: List[Dict[str, Any]], 
+
+    def __init__(self, all_chapters: List[Dict[str, Any]],
                  previous_selection: Optional[List[str]] = None,
                  parent=None):
         super().__init__(parent)

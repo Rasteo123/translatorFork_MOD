@@ -122,15 +122,6 @@ class NavigationControllerPopTests(unittest.TestCase):
         self.assertEqual(self.nav.depth, 2)
         self.assertIs(self.nav.current_page(), sticky)
 
-    def test_reset_to_home_pops_everything(self):
-        home = RecordingPage("home")
-        self.nav.set_home(home)
-        self.nav.push(RecordingPage("a"))
-        self.nav.push(RecordingPage("b"))
-        self.nav.reset_to_home()
-        self.assertEqual(self.nav.depth, 1)
-        self.assertIs(self.nav.current_page(), home)
-
     def test_popped_page_signals_are_disconnected(self):
         home = RecordingPage("home")
         child_a = RecordingPage("a")
@@ -144,17 +135,3 @@ class NavigationControllerPopTests(unittest.TestCase):
         child_b.request_push.emit(RecordingPage("ghost"))
         self.assertEqual(self.nav.depth, 2)
         self.assertIs(self.nav.current_page(), child_a)
-
-    def test_reset_to_home_stops_at_veto(self):
-        home = RecordingPage("home")
-        a = RecordingPage("a")
-        b = RecordingPage("b", can_leave_value=False)
-        c = RecordingPage("c")
-        self.nav.set_home(home)
-        self.nav.push(a)
-        self.nav.push(b)
-        self.nav.push(c)
-        self.nav.reset_to_home()
-        # c pops; b vetoes -> stop. Remaining: home, a, b.
-        self.assertEqual(self.nav.depth, 3)
-        self.assertIs(self.nav.current_page(), b)

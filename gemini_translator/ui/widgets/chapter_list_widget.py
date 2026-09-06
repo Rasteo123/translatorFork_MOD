@@ -266,11 +266,8 @@ class ChapterListWidget(QWidget):
     Виджет для отображения списка глав/заданий для перевода и управления этим списком.
     """
     # Сигналы для родительского окна
-    clear_list_requested = pyqtSignal()
     remove_selected_requested = pyqtSignal(list)
     duplicate_requested = pyqtSignal(list)
-    filter_untranslated_requested = pyqtSignal()
-    select_failed_requested = pyqtSignal()
     reorder_requested = pyqtSignal(str, list)
     copy_originals_requested = pyqtSignal()
     reanimate_requested = pyqtSignal(list)
@@ -1162,13 +1159,3 @@ class ChapterListWidget(QWidget):
 
         # Принудительно вызываем обновление кнопок, так как режим сессии изменился
         self._on_selection_changed_for_buttons()
-
-    def closeEvent(self, event):
-        """Отписываемся от шины при закрытии/уничтожении виджета."""
-        bus = getattr(self, "bus", None)
-        if bus:
-            try:
-                bus.event_posted.disconnect(self.on_event)
-            except (TypeError, RuntimeError):
-                pass
-        super().closeEvent(event)

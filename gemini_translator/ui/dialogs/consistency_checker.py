@@ -1191,10 +1191,6 @@ class ConsistencyValidatorPage(ShellPage):
         
         return config
 
-    def _restore_shared_sleep_prevention_setting(self):
-        if hasattr(self, 'prevent_sleep_checkbox'):
-            self.prevent_sleep_checkbox.setChecked(load_prevent_sleep_setting(self.settings_manager))
-
     def _save_shared_sleep_prevention_setting(self, enabled: bool):
         save_prevent_sleep_setting(self.settings_manager, enabled)
 
@@ -1815,11 +1811,6 @@ class ConsistencyValidatorPage(ShellPage):
         bg, text = colors.get(problem_type, ('#f5f5f5', '#424242'))
         return self._blend_bg_color(bg), self._blend_text_color(text)
 
-    def _get_type_color(self, problem_type: str) -> QColor:
-        """Возвращает цвет фона для типа проблемы (обратная совместимость)."""
-        bg_color, _ = self._get_type_colors(problem_type)
-        return QColor(bg_color)
-
     def _get_confidence_colors(self, confidence: str) -> tuple:
         """Возвращает (bg_color, text_color) для уровня уверенности."""
         colors = {
@@ -1829,11 +1820,6 @@ class ConsistencyValidatorPage(ShellPage):
         }
         bg, text = colors.get(confidence, ('#f5f5f5', '#424242'))
         return self._blend_bg_color(bg), self._blend_text_color(text)
-
-    def _get_confidence_color(self, confidence: str) -> QColor:
-        """Возвращает цвет фона для уровня уверенности (обратная совместимость)."""
-        bg_color, _ = self._get_confidence_colors(confidence)
-        return QColor(bg_color)
 
     @pyqtSlot(list)
     def on_analysis_finished(self, all_problems):

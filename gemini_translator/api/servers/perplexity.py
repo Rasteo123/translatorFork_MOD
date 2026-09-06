@@ -70,9 +70,6 @@ REQUEST_LOG_FILE = os.path.join(APP_DIR, "perplexity_requests.log")
 
 HOST = CFG.host
 PORT = CFG.port
-CONCURRENT_REQUESTS = CFG.concurrent_requests
-REQUEST_TIMEOUT = CFG.acquire_timeout_s
-USER_AGENT = CFG.user_agent
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
@@ -673,9 +670,6 @@ class FlaskServerThread(threading.Thread):
 
     def get_url(self) -> Optional[str]:
         return f"http://{self._host}:{self._actual_port}" if self._actual_port else None
-
-    def get_port(self) -> Optional[int]:
-        return self._actual_port
 
 # ==================================================================================
 # SERVER INTERFACE IMPL

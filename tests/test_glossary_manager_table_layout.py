@@ -103,10 +103,7 @@ class GlossaryManagerTableLayoutTests(unittest.TestCase):
         )
 
         self.assertEqual(page.table.rowCount(), 125)
-        self.assertEqual(page.total_pages, 1)
         self.assertEqual(page.page_info_label.text(), "Всего: 125")
-        self.assertFalse(page.first_page_button.isVisible())
-        self.assertFalse(page.next_page_button.isVisible())
         self.assertEqual(
             page.table.horizontalScrollBarPolicy(),
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff,

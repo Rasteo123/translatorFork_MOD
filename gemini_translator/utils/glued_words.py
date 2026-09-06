@@ -142,7 +142,6 @@ class GluedWordCandidate:
 @dataclass(frozen=True)
 class _MorphProfile:
     poses: frozenset[str]
-    top_pos: str | None
     top_grammemes: frozenset[str]
     top_score: float
     method_names: tuple[str, ...]
@@ -311,7 +310,6 @@ def _morph_profile(
             for parsed in parses[:8]
             if getattr(getattr(parsed, "tag", None), "POS", None)
         ),
-        top_pos=getattr(top_tag, "POS", None),
         top_grammemes=frozenset(getattr(top_tag, "grammemes", ()) or ()),
         top_score=float(getattr(top, "score", 0.0) or 0.0),
         method_names=tuple(

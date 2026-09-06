@@ -5,13 +5,11 @@
 # ---------------------------------------------------------------------------
 # Этот файл содержит небольшие, но полезные классы и функции общего
 # назначения, используемые в разных частях проекта.
-# - format_size: форматирование размера файла.
 # - TokenCounter: подсчет токенов и оценка стоимости.
 # - ErrorAnalyzer: анализ ошибок API.
 # ---------------------------------------------------------------------------
 
 import math
-import time
 import re
 from typing import Any
 
@@ -132,18 +130,6 @@ except ImportError:
     print("WARNING: beautifulsoup4 library not found. EPUB/HTML processing will be disabled.")
     print("Install it using: pip install beautifulsoup4")
 
-def format_size(size_bytes):
-    """Converts bytes to a human-readable format (KB, MB, GB)."""
-    if size_bytes == 0:
-        return "0 B"
-    size_name = ("B", "KB", "MB", "GB", "TB")
-    i = int(math.floor(math.log(size_bytes, 1024))) if size_bytes > 0 else 0
-    i = min(i, len(size_name) - 1)
-    p = math.pow(1024, i)
-    s = round(size_bytes / p, 2)
-    return f"{s} {size_name[i]}"
-
-
 def format_compact_number(value) -> str:
     """Компактно форматирует число: 1_234 -> '1.2K', 2_500_000 -> '2.5M'.
 
@@ -178,11 +164,6 @@ def format_thousands(value) -> str:
 class TokenCounter:
     """Подсчет токенов для отслеживания использования API"""
     def __init__(self):
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.tokens_per_minute = []
-        self.session_start_time = time.time()
-        self.last_minute_check = time.time()
         self.chapters_stats = []
 
     def estimate_tokens(self, text):
@@ -296,73 +277,9 @@ class TokenCounter:
 ═══════════════════════════════════════════"""
         return report
 
-    def add_request(self, input_text, output_text=None):
-        """Добавляет запрос в статистику"""
-        current_time = time.time()
-        input_tokens = self.estimate_tokens(input_text)
-        output_tokens = self.estimate_tokens(output_text) if output_text else 0
-        self.total_input_tokens += input_tokens
-        self.total_output_tokens += output_tokens
-        self.tokens_per_minute.append((current_time, input_tokens, output_tokens))
-        cutoff_time = current_time - 60
-        self.tokens_per_minute = [(t, i, o) for t, i, o in self.tokens_per_minute if t > cutoff_time]
-        return input_tokens, output_tokens
-
-    def format_statistics(self):
-        """Форматирует собранную статистику по токенам в читаемую строку."""
-        duration_seconds = time.time() - self.session_start_time
-        duration_minutes = duration_seconds / 60
-        total_tokens = self.total_input_tokens + self.total_output_tokens
-        avg_tpm = total_tokens / duration_minutes if duration_minutes > 0 else 0
-        estimated_cost = self.estimate_cost(self.total_input_tokens, self.total_output_tokens)
-        report = f"""
-    ═══════════════════════════════════════════
-    📊 СТАТИСТИКА ТОКЕНОВ СЕССИИ
-    ═══════════════════════════════════════════
-    • Продолжительность: {duration_minutes:.2f} мин.
-    • Входящие токены: {self.total_input_tokens:,.0f}
-    • Исходящие токены: {self.total_output_tokens:,.0f}
-    • ВСЕГО ТОКЕНОВ: {total_tokens:,.0f}
-    • Средняя скорость: {avg_tpm:,.0f} токенов/мин.
-    • Примерная стоимость: ${estimated_cost:.4f}
-    ═══════════════════════════════════════════"""
-        return report.strip()
-
 
 # calculate_potential_output_size: мёртвая копия удалена (cluster-dedup
 # finding-utils-io_design_5-calculate-potential-output-siz). Каноническая
 # реализация — gemini_translator.utils.epub_tools.calculate_potential_output_size
 # (кортеж (total, tags_len), коэффициенты из api_config); именно её
 # импортирует единственный вызывающий код (ui/dialogs/setup.py).
-
-
-def check_value(etalon, value, min_len=None) -> bool:
-    """
-    Универсальный валидатор.
-    Проверяет, что 'value' имеет тот же тип, что и 'etalon'.
-    Если min_len не задан, проверяет на "непустоту".
-    Если min_len задан, проверяет, что длина value >= min_len.
-    Безопасно обрабатывает типы, не имеющие длины.
-    
-    Примеры:
-    check_value([], [1, 2]) -> True
-    check_value([], [1, 2], min_len=3) -> False
-    check_value([], []) -> False
-    check_value("", "abc", min_len=3) -> True
-    check_value(0, 5, min_len=1) -> False (т.к. у int нет len())
-    """
-    # 1. Жесткая проверка типа. Это наша главная защита.
-    if not isinstance(value, type(etalon)):
-        return False
-    
-    # 2. Если min_len не указан, используем простую проверку на "истинность".
-    if min_len is None:
-        return bool(value)
-        
-    # 3. Если min_len указан, используем безопасную проверку длины.
-    try:
-        return len(value) >= min_len
-    except TypeError:
-        # Этот блок сработает, если у 'value' нет метода __len__
-        # (например, для чисел, None и т.д.)
-        return False

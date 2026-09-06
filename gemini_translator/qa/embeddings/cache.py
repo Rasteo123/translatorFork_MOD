@@ -37,7 +37,7 @@ _SHARD_NAME = re.compile(r"(?:[0-9a-f]{2}|b[0-9a-f]{8,32})\Z")
 # каждое обновление last_access дописываются одной строкой в журнал index.log
 # (O(пачки) и один fsync). Журнал проигрывается поверх index.json при чтении и
 # сворачивается в новый index.json (компакция), когда вырастает за порог, при
-# prune()/flush() или если базовый файл оказался повреждён. Диск остаётся
+# flush() или если базовый файл оказался повреждён. Диск остаётся
 # источником истины: запись видна другим экземплярам и процессам сразу.
 _JOURNAL_COMPACT_LINES = 256
 _JOURNAL_COMPACT_BYTES = 8 * 1024 * 1024
@@ -363,53 +363,6 @@ class EmbeddingCache:
         self._state.needs_compaction = False
         self._refresh_fingerprint_unlocked()
         return True
-
-    def prune(self, max_bytes: int) -> int:
-        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
-            raise TypeError("max_bytes must be a nonnegative integer")
-        if max_bytes < 0:
-            raise ValueError("max_bytes must be a nonnegative integer")
-
-        with self._lock:
-            before = self._cache_size_unlocked()
-            self._cleanup_temps_unlocked()
-            index = self._index_unlocked()
-            self._compact_unlocked(index)
-            entries = index["entries"]
-            referenced_shards = {entry["shard"] for entry in entries.values()}
-            self._remove_orphan_shards_unlocked(referenced_shards)
-
-            while self._cache_size_unlocked() > max_bytes and entries:
-                digest = min(
-                    entries,
-                    key=lambda item: (entries[item]["last_access"], item),
-                )
-                shard = entries[digest]["shard"]
-                next_index = self._copy_index(index)
-                del next_index["entries"][digest]
-                next_index["dimensionless"] = {
-                    alias: metadata
-                    for alias, metadata in next_index["dimensionless"].items()
-                    if self._key_from_dimensionless(metadata).digest != digest
-                }
-                if not self._atomic_write_json_unlocked(next_index):
-                    break
-                index = next_index
-                entries = index["entries"]
-                self._rewrite_shard_for_index_unlocked(shard, entries)
-
-            if self._cache_size_unlocked() > max_bytes and not entries:
-                self._unlink_unlocked(self.index_path)
-                self._unlink_unlocked(self.journal_path)
-                self._remove_orphan_shards_unlocked(set())
-                self._cleanup_temps_unlocked()
-            self._state.index = index
-            self._state.journal_lines = 0
-            self._refresh_fingerprint_unlocked()
-            after = self._cache_size_unlocked()
-            if after > max_bytes:
-                raise OSError("embedding cache could not reach the requested byte limit")
-            return max(0, before - after)
 
     @staticmethod
     def _unique_keys(keys: Sequence[EmbeddingCacheKey]) -> tuple[EmbeddingCacheKey, ...]:
@@ -820,66 +773,6 @@ class EmbeddingCache:
         finally:
             if temporary is not None:
                 self._unlink_unlocked(temporary)
-
-    @staticmethod
-    def _copy_index(index: Mapping[str, object]) -> dict[str, object]:
-        return {
-            "schema_version": index["schema_version"],
-            "access_counter": index["access_counter"],
-            "entries": {
-                digest: dict(metadata)
-                for digest, metadata in index["entries"].items()
-            },
-            "dimensionless": {
-                digest: dict(metadata)
-                for digest, metadata in index["dimensionless"].items()
-            },
-        }
-
-    def _rewrite_shard_for_index_unlocked(
-        self, shard: str, entries: Mapping[str, Mapping[str, object]]
-    ) -> None:
-        path = self.root / f"{shard}.npz"
-        retained = {
-            digest
-            for digest, metadata in entries.items()
-            if metadata["shard"] == shard
-        }
-        if not retained:
-            self._unlink_unlocked(path)
-            return
-        vectors = self._load_shard_unlocked(shard)
-        if vectors is None:
-            self._unlink_unlocked(path)
-            return
-        self._atomic_write_shard_unlocked(
-            shard, {digest: vector for digest, vector in vectors.items() if digest in retained}
-        )
-
-    def _remove_orphan_shards_unlocked(self, referenced: set[str]) -> None:
-        if not self.root.exists():
-            return
-        for path in self.root.glob("*.npz"):
-            if path.stem not in referenced:
-                self._unlink_unlocked(path)
-
-    def _cleanup_temps_unlocked(self) -> None:
-        if not self.root.exists():
-            return
-        for path in self.root.glob(".*.tmp"):
-            self._unlink_unlocked(path)
-
-    def _cache_size_unlocked(self) -> int:
-        if not self.root.exists():
-            return 0
-        size = 0
-        for path in self.root.iterdir():
-            try:
-                if path.is_file() or path.is_symlink():
-                    size += path.stat(follow_symlinks=False).st_size
-            except OSError:
-                continue
-        return size
 
     @staticmethod
     def _unlink_unlocked(path: Path) -> None:

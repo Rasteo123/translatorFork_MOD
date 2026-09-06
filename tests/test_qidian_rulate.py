@@ -6,8 +6,6 @@ from PyQt6.QtGui import QImage
 from qidian_rulate.models import QidianBookMetadata
 from qidian_rulate.models import PreparedRulateMetadata, RulateBookDraft
 from qidian_rulate import workers
-from gemini_translator.ui.dialogs import qidian_rulate_creator as creator_module
-from gemini_translator.ui.dialogs.qidian_rulate_creator import QidianRulateCreatorWindow
 from qidian_rulate.workers import (
     CODEX_COVER_MODEL,
     _append_codex_prompt,
@@ -54,7 +52,6 @@ from qidian_rulate.workers import (
     clean_cover_prompt_response,
     normalize_rulate_tags,
     parse_catalog_metadata,
-    parse_prepared_metadata,
     parse_translation_metadata,
     validate_ciweimao_url,
     validate_fanqie_url,
@@ -66,20 +63,6 @@ from qidian_rulate.workers import (
 FANTASY = "\u0444\u044d\u043d\u0442\u0435\u0437\u0438"
 MYSTIC = "\u043c\u0438\u0441\u0442\u0438\u043a\u0430"
 ADVENTURE = "\u043f\u0440\u0438\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f"
-
-
-class _QidianCreatorHarness:
-    _return_to_menu = QidianRulateCreatorWindow._return_to_menu
-
-    def __init__(self, handler=None):
-        self._return_to_menu_handler = handler
-        self.calls = []
-
-    def hide(self):
-        self.calls.append("hide")
-
-    def close(self):
-        self.calls.append("close")
 
 
 class _FillDescriptionHarness:
@@ -355,27 +338,6 @@ def test_rulate_fill_uses_category_page_before_info_page():
     assert RULATE_INFO_URL == "https://tl.rulate.ru/book/0/edit/info#general"
 
 
-def test_qidian_creator_return_to_menu_closes_before_handler():
-    handler_calls = []
-    harness = _QidianCreatorHarness(handler=lambda: handler_calls.append("handler"))
-
-    harness._return_to_menu()
-
-    assert harness.calls == ["hide", "close"]
-    assert handler_calls == ["handler"]
-
-
-def test_qidian_creator_return_to_menu_without_handler_closes_then_reboots(monkeypatch):
-    reboot_calls = []
-    monkeypatch.setattr(creator_module, "return_to_main_menu", lambda: reboot_calls.append("menu"))
-    harness = _QidianCreatorHarness()
-
-    harness._return_to_menu()
-
-    assert harness.calls == ["close"]
-    assert reboot_calls == ["menu"]
-
-
 def test_rulate_description_fill_does_not_insert_cover_url(monkeypatch):
     filled = []
     monkeypatch.setattr(workers, "_fill", lambda page, selector, value: filled.append((selector, value)))
@@ -421,42 +383,6 @@ def test_rulate_description_fill_uses_up_to_7_genres(monkeypatch):
 
     selected_genres = [value for selector, value in selected if selector == "#Book_genres"]
     assert selected_genres == [f"genre-{index}" for index in range(7)]
-
-
-def test_parse_prepared_metadata_strips_json_fence_and_normalizes_lists(monkeypatch):
-    allowed_tags = [
-        "sci-fi",
-        "\u0442\u0430\u0439\u043d\u044b",
-        "\u043c\u0438\u0441\u0442\u0438\u043a\u0430",
-        "\u043f\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u0432 \u0434\u0440\u0443\u0433\u043e\u0439 \u043c\u0438\u0440",
-    ]
-    monkeypatch.setattr(workers, "load_rulate_tags", lambda: allowed_tags)
-    payload = {
-        "english_title": "Otherworldly Inn",
-        "translated_title": "\u0418\u043d\u043e\u043c\u0435\u0440\u043d\u0430\u044f \u0433\u043e\u0441\u0442\u0438\u043d\u0438\u0446\u0430",
-        "translated_description": "\u0422\u0435\u043a\u0441\u0442\n\n\n\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u044f",
-        "genres": [FANTASY.upper(), MYSTIC, "unknown"],
-        "tags": [
-            "SCI-FI",
-            "\u0422\u0430\u0439\u043d\u044b",
-            "\u043d\u0435\u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044e\u0449\u0438\u0439 \u0442\u0435\u0433",
-        ],
-        "cover_prompt": "```text\nA cinematic cover. Typography: The text \"\u0418\u043d\u043e\u043c\u0435\u0440\u043d\u0430\u044f \u0433\u043e\u0441\u0442\u0438\u043d\u0438\u0446\u0430\" written in glowing serif letters. --ar 2:3\n```",
-    }
-    prepared = parse_prepared_metadata(f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```")
-
-    assert prepared.english_title == "Otherworldly Inn"
-    assert prepared.translated_title
-    assert prepared.translated_description == "\u0422\u0435\u043a\u0441\u0442\n\n\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u044f"
-    assert prepared.genres[:3] == [FANTASY, MYSTIC, ADVENTURE]
-    assert prepared.tags[:3] == [
-        "sci-fi",
-        "\u0442\u0430\u0439\u043d\u044b",
-        "\u043c\u0438\u0441\u0442\u0438\u043a\u0430",
-    ]
-    assert prepared.cover_prompt == (
-        "A cinematic cover. Typography: The text \"\u0418\u043d\u043e\u043c\u0435\u0440\u043d\u0430\u044f \u0433\u043e\u0441\u0442\u0438\u043d\u0438\u0446\u0430\" written in glowing serif letters. --ar 2:3"
-    )
 
 
 def test_parse_translation_metadata_ignores_catalog_fields():

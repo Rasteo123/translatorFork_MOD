@@ -123,7 +123,6 @@ def _forget_mcp_worker(thread: QtCore.QThread) -> None:
 
 
 class McpControlWidget(QtWidgets.QFrame):
-    refresh_requested = QtCore.pyqtSignal()
     status_changed = QtCore.pyqtSignal(object)
 
     def __init__(self, parent=None, *, backend=None):
@@ -263,23 +262,6 @@ class McpControlWidget(QtWidgets.QFrame):
             return
         if self._running or self._daemon_info_present():
             self.refresh_status()
-
-    def _execute_action_sync(self, action: str) -> McpStatusSnapshot:
-        was_running = self._running
-        try:
-            if action == "status":
-                snapshot = self.backend.status()
-            elif action == "toggle" and self._running:
-                snapshot = self.backend.stop()
-            elif action == "toggle":
-                snapshot = self.backend.start()
-            else:
-                snapshot = McpStatusSnapshot(running=False, detail="Неизвестное действие", error=str(action))
-        except Exception as exc:
-            snapshot = McpStatusSnapshot(running=False, detail="ошибка MCP", error=str(exc))
-        self.apply_status(snapshot)
-        self._update_stop_on_quit_policy(action, was_running, snapshot)
-        return snapshot
 
     def _update_stop_on_quit_policy(self, action: str, was_running: bool, snapshot: McpStatusSnapshot) -> None:
         if action != "toggle" or snapshot.error:

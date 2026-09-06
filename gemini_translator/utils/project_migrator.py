@@ -160,44 +160,6 @@ class ProjectMigrator:
         except Exception as e:
             return False, f"Не удалось создать файл проекта: {e}"
 
-    def sync_project_with_ui(self, ui_parent=None):
-        """
-        Проверяет проект на "мертвые" и "беспризорные" записи и предлагает их исправить.
-        Возвращает True, если были внесены изменения.
-        """
-        if not self.project_manager:
-            return False
-
-        changes_made = False
-        
-        dead_entries = self.project_manager.validate_map_with_filesystem()
-        if dead_entries:
-            msg_box = QMessageBox(ui_parent)
-            msg_box.setWindowTitle("Синхронизация проекта")
-            msg_box.setIcon(QMessageBox.Icon.Question)
-            msg_box.setText(f"Найдено {len(dead_entries)} отсутствующих файлов в карте проекта. Очистить эти записи?")
-            yes_button = msg_box.addButton("Да, очистить", QMessageBox.ButtonRole.YesRole)
-            no_button = msg_box.addButton("Нет", QMessageBox.ButtonRole.NoRole)
-            msg_box.exec()
-            if msg_box.clickedButton() == yes_button:
-                self.project_manager.cleanup_dead_entries(dead_entries)
-                changes_made = True
-
-        untracked_files = self.project_manager.find_untracked_files(self.original_epub_path)
-        if untracked_files:
-            msg_box = QMessageBox(ui_parent)
-            msg_box.setWindowTitle("Синхронизация проекта")
-            msg_box.setIcon(QMessageBox.Icon.Question)
-            msg_box.setText(f"Найдено {len(untracked_files)} незарегистрированных файлов перевода. Добавить их в карту проекта?")
-            yes_button = msg_box.addButton("Да, добавить", QMessageBox.ButtonRole.YesRole)
-            no_button = msg_box.addButton("Нет", QMessageBox.ButtonRole.NoRole)
-            msg_box.exec()
-            if msg_box.clickedButton() == yes_button:
-                self.project_manager.register_multiple_translations(untracked_files)
-                changes_made = True
-        
-        return changes_made
-
     def rebuild_map_from_structure(self):
         """
         Сканирует проект и воссоздает 'translation_map.json' с нуля.

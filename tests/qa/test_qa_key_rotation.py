@@ -51,6 +51,16 @@ class _Settings:
         return True
 
 
+def _rest(pool: QaKeyPool, key: str, seconds: float) -> None:
+    """Rest a key the way a second refusal in a row does: two strikes, no switch.
+
+    Mirrors what a real 429 does through the pool's own public path, rather
+    than reaching into a test-only backdoor.
+    """
+    pool.note_throttled(key, seconds)
+    pool.note_throttled(key, seconds)
+
+
 def test_qa_takes_the_keys_from_the_end_where_the_workers_are_not():
     """Воркеры берут ключи с начала списка; проверка должна начинать с конца."""
     pool = QaKeyPool(["a", "b", "c"])
@@ -73,7 +83,6 @@ def test_an_exhausted_key_is_never_offered_again():
     pool.mark_exhausted("b")
 
     assert [pool.acquire() for _ in range(3)] == ["a", "a", "a"]
-    assert pool.remaining == 1
 
 
 def test_a_pool_with_nothing_left_says_so():
@@ -88,10 +97,10 @@ def test_a_paused_key_comes_back_when_its_time_is_up():
     """Пауза по 429 — на столько, на сколько попросил сервис, и ни секундой дольше."""
     clock = _Clock()
     pool = QaKeyPool(["a", "b"], clock=clock)
-    pool.pause("b", 30)
+    _rest(pool, "b", 30)
 
     assert pool.acquire() == "a"
-    pool.pause("a", 10)
+    _rest(pool, "a", 10)
     assert pool.acquire() is None
     assert pool.seconds_until_available() == pytest.approx(10)
 
@@ -100,7 +109,7 @@ def test_a_paused_key_comes_back_when_its_time_is_up():
     clock.now += 20
     # "b" is back, but "a" works and a working key is kept.
     assert pool.acquire() == "a"
-    pool.pause("a", 5)
+    _rest(pool, "a", 5)
     assert pool.acquire() == "b"
 
 
@@ -202,7 +211,7 @@ def test_an_exhausted_key_is_replaced_within_the_same_request():
     assert _ask(handler) == '{"issues": []}'
     assert [item.key for item in made] == ["b", "a"]
     assert all(item.closed for item in made)
-    assert pool.remaining == 1
+    assert pool.acquire() == "a"  # "b" was exhausted, "a" is all that is left
     assert any("исчерпан" in message for message in messages)
 
 
@@ -299,7 +308,7 @@ def test_other_errors_pass_through_untouched_and_still_close_the_session():
         _ask(handler)
 
     assert made[0].closed is True
-    assert pool.remaining == 1
+    assert pool.acquire() == "a"  # untouched by an error that is not the pool's concern
 
 
 # --- the storm ----------------------------------------------------------------
@@ -316,10 +325,10 @@ def test_when_several_keys_are_throttled_at_once_the_whole_pool_rests():
     clock = _Clock()
     pool = QaKeyPool(["a", "b", "c", "d", "e"], clock=clock)
 
-    pool.pause("e", 60)
-    pool.pause("d", 60)
+    _rest(pool, "e", 60)
+    _rest(pool, "d", 60)
     assert pool.acquire() == "c"
-    pool.pause("c", 60)
+    _rest(pool, "c", 60)
 
     assert pool.acquire() is None
     assert pool.seconds_until_available() == pytest.approx(60)

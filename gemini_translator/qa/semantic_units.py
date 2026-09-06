@@ -15,7 +15,7 @@ import unicodedata
 from razdel import sentenize
 
 from .capabilities import QaCapabilitySettings
-from .models import SemanticInlineSpan, SemanticUnit, SemanticWindow
+from .models import SemanticInlineSpan, SemanticUnit
 
 
 class SemanticUnitExtractionError(ValueError):
@@ -211,45 +211,6 @@ class SemanticUnitExtractor:
                 )
                 ordinal += 1
         return tuple(units)
-
-    def windows(
-        self, units: Sequence[SemanticUnit], max_size: int = 3
-    ) -> tuple[SemanticWindow, ...]:
-        """Create all contiguous window sizes, never joining units across documents."""
-        if isinstance(max_size, bool) or not isinstance(max_size, int) or max_size < 1:
-            raise ValueError("max_size must be an integer greater than zero")
-
-        grouped: dict[str, list[SemanticUnit]] = {}
-        seen_unit_ids: set[str] = set()
-        seen_ordinals_by_document: dict[str, set[int]] = {}
-        for unit in units:
-            if not isinstance(unit, SemanticUnit):
-                raise ValueError("units must contain SemanticUnit values")
-            unit.validate()
-            if unit.unit_id in seen_unit_ids:
-                raise ValueError("duplicate unit_id")
-            seen_unit_ids.add(unit.unit_id)
-            document_ordinals = seen_ordinals_by_document.setdefault(
-                unit.document_id, set()
-            )
-            if unit.ordinal in document_ordinals:
-                raise ValueError("duplicate ordinal within document")
-            document_ordinals.add(unit.ordinal)
-            grouped.setdefault(unit.document_id, []).append(unit)
-
-        windows: list[SemanticWindow] = []
-        for document_units in grouped.values():
-            ordered_units = sorted(document_units, key=lambda unit: unit.ordinal)
-            for start in range(len(ordered_units)):
-                for size in range(1, min(max_size, len(ordered_units) - start) + 1):
-                    window_units = ordered_units[start : start + size]
-                    windows.append(
-                        SemanticWindow(
-                            unit_ids=tuple(unit.unit_id for unit in window_units),
-                            text=" ".join(unit.text for unit in window_units),
-                        )
-                    )
-        return tuple(windows)
 
     @classmethod
     def _validate_payload(cls, payload: object) -> tuple[str, list[Mapping[str, object]]]:

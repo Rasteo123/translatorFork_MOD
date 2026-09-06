@@ -391,7 +391,6 @@ _LOCAL_MODEL_DISCOVERY_DISABLE_ENV = "GT_DISABLE_LOCAL_MODEL_DISCOVERY"
 # --- ПАРАМЕТРЫ РАСЧЕТА ТОКЕНОВ И РАЗМЕРОВ ---
 CHARS_PER_ASCII_TOKEN = 4.0
 CHARS_PER_CYRILLIC_TOKEN = 2.2
-UNIFIED_INPUT_CHARS_PER_TOKEN = CHARS_PER_ASCII_TOKEN
 MODEL_OUTPUT_SAFETY_MARGIN = 0.95
 ALPHABETIC_EXPANSION_FACTOR = 1.6
 CJK_EXPANSION_FACTOR = 3.5
@@ -1167,9 +1166,6 @@ def api_providers_view():
 def default_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_PROMPT
-def default_basic_translation_prompt():
-    _ensure_configs_initialized()
-    return _DEFAULT_BASIC_TRANSLATION_PROMPT
 def builtin_translation_prompt_variants():
     _ensure_configs_initialized()
     variants = {
@@ -1620,15 +1616,10 @@ def default_reset_policy(): return {"type": "rolling", "duration_hours": 24}
 def default_model_name(): return "Gemini 2.5 Flash Preview"
 def max_retries(): return 1
 def retry_delay_seconds(): return 25
-def rate_limit_delay_seconds(): return 60
-def api_timeout_seconds(): return 600
 def default_max_output_tokens(): return 8192
-def chunk_target_size(): return 30000
-def input_character_limit_for_chunk(): return 900_000
 def chunk_search_window(): return 500
 def min_chunk_size(): return 500
 def min_forced_chunk_size(): return 250
-def chunk_html_source(): return True
 
 
 # Subprocess-spawning handler classes (Playwright browser, Node bridge).

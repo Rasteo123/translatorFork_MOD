@@ -1,6 +1,5 @@
 import weakref  # <<< ИЗМЕНЕНИЕ 1: Добавлен импорт
 from PyQt6 import QtWidgets, QtCore, QtGui
-from PyQt6.QtWidgets import QSizePolicy, QTableWidget
 from PyQt6.QtCore import Qt, pyqtSignal
 
 
@@ -161,47 +160,3 @@ class SmartTextEdit(ExpandingTextEdit):
             # В остальных случаях обрабатываем нажатие как обычно
             super().keyPressEvent(event)
 
-
-
-class SingleRowTableWidget(QTableWidget):
-    """
-    Специализированная таблица, которая всегда состоит из одной строки и
-    корректно сообщает компоновщику свой истинный, минимально необходимый размер,
-    динамически подстраиваясь под высоту контента.
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setRowCount(1)
-        
-        # --- ИЗМЕНЕНИЕ 1: Более строгая политика ---
-        # Policy.Fixed говорит: "Моя высота - это ТОЧНО мой sizeHint. Не растягивать!"
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Подключаемся к сигналу изменения размера хедера, чтобы реагировать на перенос слов
-        self.horizontalHeader().sectionResized.connect(lambda: self.resizeRowToContents(0))
-
-
-    def sizeHint(self) -> QtCore.QSize:
-        """Переопределяем, чтобы сообщить идеальный размер."""
-        total_height = 0
-        if self.horizontalHeader().isVisible():
-            total_height += self.horizontalHeader().height()
-        
-        if self.rowCount() > 0:
-            # Учитываем высоту строки, которую установил делегат
-            total_height += self.rowHeight(0)
-        
-        total_height += self.frameWidth() * 2
-
-        return QtCore.QSize(super().sizeHint().width(), total_height)
-
-    # --- ИЗМЕНЕНИЕ 2: "Недостающее звено" ---
-    def resizeRowToContents(self, row: int):
-        """
-        Переопределяем стандартный метод. Сначала выполняем стандартное действие,
-        а затем принудительно сообщаем компоновщику, что наш общий размер изменился.
-        """
-        super().resizeRowToContents(row)
-        # Вот он, ключевой вызов!
-        self.updateGeometry()

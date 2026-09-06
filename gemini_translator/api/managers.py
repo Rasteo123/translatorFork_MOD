@@ -101,18 +101,6 @@ class ApiKeyManager:
                 self.exhausted_keys.add(key)
                 print(f"[API KEY] Ключ …{key[-4:]} помечен как исчерпанный")
 
-    
-    def has_idle_keys(self) -> bool:
-        """
-        ОТВЕЧАЕТ НА ВОПРОС: "Есть ли у нас свободные 'руки' для новой работы прямо сейчас?"
-        
-        Проверяет, есть ли хотя бы один ключ, который не активен, не на паузе и не исчерпан.
-        Используется для принятия решения о запуске нового воркера или замене уволенного.
-        """
-        with self.lock:
-            unavailable_keys = self.exhausted_keys | self.paused_keys | self.active_keys
-            return len(unavailable_keys) < len(self.api_keys)
-
     def has_non_exhausted_keys(self) -> bool:
         """
         ОТВЕЧАЕТ НА ВОПРОС: "Есть ли вообще надежда на продолжение сессии?"

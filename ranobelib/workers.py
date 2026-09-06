@@ -129,40 +129,6 @@ def _launch_persistent_chromium_context(
     )
 
 
-def _has_saved_ranobelib_auth(profile_dir) -> tuple[bool, str | None]:
-    try:
-        with sync_playwright() as p:
-            context = _launch_persistent_chromium_context(
-                p,
-                user_data_dir=str(profile_dir),
-                headless=True,
-                viewport={"width": 1280, "height": 900},
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto("https://ranobelib.me", wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(1200)
-                auth_detected = page.evaluate(
-                    """() => {
-                        try {
-                            const raw = localStorage.getItem("auth");
-                            if (!raw) {
-                                return false;
-                            }
-                            const parsed = JSON.parse(raw);
-                            return !!(parsed && parsed.token && parsed.token.access_token);
-                        } catch (error) {
-                            return false;
-                        }
-                    }"""
-                )
-                return bool(auth_detected), None
-            finally:
-                context.close()
-    except Exception as error:
-        return False, str(error)
-
-
 def _collapse_rulate_spaces(value: str | None) -> str:
     return re.sub(r"[ \t\r\f\v]+", " ", str(value or "")).strip()
 

@@ -85,8 +85,7 @@ class EpubAnalyzer:
         """
         self.epub_path = epub_path
         self.chapters_list = chapters_list
-        self._zipfile = None
-    
+
     def analyze(self) -> List[Dict[str, Any]]:
         """
         Perform full EPUB analysis.

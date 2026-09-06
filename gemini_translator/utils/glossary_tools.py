@@ -77,10 +77,6 @@ class ContextManager:
         self.use_dynamic_glossary = False
         self.similarity_map = None # <-- НОВЫЙ АТРИБУТ ДЛЯ КАРТЫ СВЯЗЕЙ
 
-        # Константы
-        self.min_term_length = 3
-        self.min_term_length_cjk = 1
-
         try:
             from ..utils.language_tools import ChineseTextProcessor, GlossaryLogic
             self.chinese_processor = ChineseTextProcessor()
@@ -140,19 +136,6 @@ class ContextManager:
             self.version_map = settings['project_manager'].load_version_map()
         else:
             self.version_map = {}
-
-
-    def get_glossary_as_json_str(self):
-        """Возвращает глоссарий как отформатированную JSON строку."""
-        return json.dumps(self.global_glossary, ensure_ascii=False, indent=4)
-
-    def set_glossary_from_json_str(self, json_str):
-        """Обновляет глоссарий из JSON строки."""
-        try:
-            self.global_glossary = json.loads(json_str)
-            return True
-        except json.JSONDecodeError:
-            return False
 
     def prepare_html_for_translation(self, html_content, log_callback=None):
         """
@@ -712,8 +695,6 @@ class TaskPreparer:
         final_payloads = []
         with open(self.epub_path, 'rb') as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
             for chapter_file in chapter_list:
-                real_size = self.real_chapter_sizes.get(chapter_file, 0)
-
                 if chapter_file not in needs_chunking:
                     final_payloads.append(plain_payload(chapter_file))
                     continue

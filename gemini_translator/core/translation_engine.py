@@ -177,7 +177,6 @@ class TranslationEngine(QObject):
             'start_session_requested',
             'manual_stop_requested',
             'soft_stop_requested',
-            'soft_stop_requested_v1_legacy',
             'temporary_limit_warning_received',
             'api_connection_healthy',
             'fatal_error',
@@ -395,17 +394,6 @@ class TranslationEngine(QObject):
             self._check_if_session_finished()
             return
 
-        if event_name == 'soft_stop_requested_v1_legacy':
-            if self.task_manager:
-                # ВЫЗЫВАЕМ НОВЫЙ МЕТОД "ЗАМОРОЗКИ"
-                held_count = self.task_manager.hold_all_pending_tasks()
-                if held_count > 0:
-                    self._post_event('log_message', {
-                        'message': f"Плавная остановка: {held_count} задач 'заморожено'. Ожидание завершения активных воркеров..."
-                    })
-                # Отправляем "пульс", чтобы UI обновился и показал "замороженные" задачи
-            return
-    
         # Обработка "красных" и "желтых" карточек
         if event_name == 'temporary_limit_warning_received' and 'worker' in source:
             now = time.time()
@@ -1071,7 +1059,7 @@ class TranslationEngine(QObject):
         finally:
             self._release_power_inhibitor()
         
-        self._end_session_event(reason, self.session_id)
+        self._end_session_event(reason)
         if not self.summary_shown_for_session:
             self.show_summary_data()
 
@@ -1085,7 +1073,7 @@ class TranslationEngine(QObject):
         self.session_id = None
         self.is_starting = False # <-- Сбрасываем и этот флаг тоже
         
-    def _end_session_event(self, reason: str, session_id_event=None):
+    def _end_session_event(self, reason: str):
         self._post_event('session_finished', {
             'reason': reason,
             "session_id_log": self.session_id,
@@ -1352,7 +1340,7 @@ class TranslationEngine(QObject):
                     self._post_event('log_message', {'message': f"[MANAGER] ♻️ Ротация: Запускаю свежую замену для ключа …{key_to_launch[-4:]}, пока старый воркер завершается."})
                     
                     # ХИТРОСТЬ: Удаляем сразу, запускаем сразу. Таймер не нужен.
-                    old_future = self.active_workers_map.pop(self.keys_map.get(key_to_launch))
+                    self.active_workers_map.pop(self.keys_map.get(key_to_launch))
                     self.shutting_down_workers.discard(self.keys_map.get(key_to_launch))
                     self._launch_worker(key_to_launch)
                     return True

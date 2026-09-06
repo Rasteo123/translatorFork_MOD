@@ -78,13 +78,6 @@ class RPMLimiter:
             self.rpm_limit = max(1, self.rpm_limit - max(1, reduction)) # Уменьшаем минимум на 1
             self.interval = 60.0 / self.rpm_limit
     
-    def set_rpm(self, new_rpm):
-        """Принудительно устанавливает новое значение RPM."""
-        with self.lock:
-            if new_rpm > 0:
-                self.rpm_limit = new_rpm
-                self.interval = 60.0 / self.rpm_limit
-    
     def update_last_request_time(self, delay=0):
         """
         Устанавливает "точку отсчета" так, чтобы следующий запрос
@@ -99,12 +92,3 @@ class RPMLimiter:
             # "Обманываем" лимитер, говоря ему, что последний запрос был сделан
             # ровно `interval` секунд назад от желаемого времени следующего запуска.
             self.last_request_time = next_allowed_time - self.interval
-
-    def sync_last_request_time(self, timestamp):
-        """
-        Принудительно устанавливает время последнего запроса.
-        Используется для синхронизации с внешним источником времени.
-        """
-        with self.lock:
-            self.last_request_time = timestamp
-

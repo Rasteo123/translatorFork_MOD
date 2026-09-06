@@ -50,21 +50,6 @@ def _span(inline_id="i-1", source_start=0, source_end=5, unit_start=0, unit_end=
     )
 
 
-def _unit(unit_id="u-1", ordinal=0, document_id="doc"):
-    return SemanticUnit(
-        unit_id=unit_id,
-        document_id=document_id,
-        block_id="b-1",
-        ordinal=ordinal,
-        text="Hello",
-        normalized_text="hello",
-        source_start=0,
-        source_end=5,
-        kind="paragraph",
-        inline_spans=(_span(),),
-    )
-
-
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])
 def test_fixture_cases_extract_expected_text_and_parent_block(case):
     """Dropping a literary segmentation rule or block identity breaks this contract."""
@@ -236,61 +221,6 @@ def test_segmenter_choice_changes_cache_identity_and_unit_ids_not_epub_text():
     assert [unit.text for unit in razdel_units] == [unit.text for unit in legacy_units]
     assert [unit.unit_id for unit in razdel_units] != [unit.unit_id for unit in legacy_units]
     assert razdel.preprocessing_identity != legacy.preprocessing_identity
-
-
-def test_windows_include_all_contiguous_sizes_grouped_by_document():
-    """Joining units across a chapter boundary or skipping a window would corrupt alignment."""
-    extractor = SemanticUnitExtractor(QaCapabilitySettings())
-    document_one = extractor.extract(
-        {
-            "document_id": "chapter-one",
-            "blocks": [
-                {"id": "b-one", "tag": "p", "role": "paragraph", "inlines": [
-                    {"id": "i-one", "type": "text", "text": "One. Two. Three."}
-                ]}
-            ],
-        },
-        "en",
-    )
-    document_two = extractor.extract(
-        {
-            "document_id": "chapter-two",
-            "blocks": [
-                {"id": "b-two", "tag": "p", "role": "paragraph", "inlines": [
-                    {"id": "i-two", "type": "text", "text": "Four. Five."}
-                ]}
-            ],
-        },
-        "en",
-    )
-
-    windows = extractor.windows(document_one + document_two, max_size=3)
-
-    assert [window.text for window in windows] == [
-        "One.", "One. Two.", "One. Two. Three.",
-        "Two.", "Two. Three.", "Three.",
-        "Four.", "Four. Five.", "Five.",
-    ]
-    assert all("Three. Four." not in window.text for window in windows)
-
-
-def test_windows_reject_a_non_positive_max_size():
-    """Accepting an empty window size would silently produce an invalid alignment input."""
-    with pytest.raises(ValueError, match="max_size"):
-        SemanticUnitExtractor(QaCapabilitySettings()).windows((), max_size=0)
-
-
-@pytest.mark.parametrize(
-    "units, error",
-    [
-        ((_unit("u-shared", 0), _unit("u-shared", 1)), "unit_id"),
-        ((_unit("u-first", 0), _unit("u-second", 0)), "ordinal"),
-    ],
-)
-def test_windows_reject_duplicate_ids_and_ordinals_within_a_document(units, error):
-    """Ambiguous window ordering or identity must fail before alignment starts."""
-    with pytest.raises(ValueError, match=error):
-        SemanticUnitExtractor(QaCapabilitySettings()).windows(units)
 
 
 @pytest.mark.parametrize(

@@ -219,7 +219,6 @@ class QoderApiHandler(BaseApiHandler):
             f"Исчерпан лимит Qoder ({window}). Сброс примерно через {delay} сек."
         )
         error.retry_after_seconds = delay
-        error.qoder_rate_limit_type = window
         raise error
 
     def _raise_result_error(self, result, assistant_error=None):

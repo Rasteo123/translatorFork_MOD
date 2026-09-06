@@ -82,7 +82,6 @@ class UpdateState(enum.Enum):
     IDLE = "idle"
     CHECKING = "checking"
     DOWNLOADING = "downloading"
-    VERIFYING = "verifying"
     PREPARING = "preparing"
     EXITING = "exiting"
 
@@ -336,7 +335,6 @@ class UpdateChecker(QThread):
 
     def __init__(self, parent=None, *, manual=False, session_factory=build_updater_session):
         super().__init__(parent)
-        self._manual = manual
         self._session_factory = session_factory
 
     def run(self):

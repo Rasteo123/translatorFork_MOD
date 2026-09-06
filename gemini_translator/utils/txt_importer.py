@@ -243,7 +243,6 @@ class TxtChapterAnalyzer:
     """
     def __init__(self, text_content):
         self.lines = text_content.splitlines()
-        self.total_char_count = len(text_content)
         # Пре-расчет длин строк (с учетом \n, которого нет в splitlines)
         self.line_lengths = [len(l) + 1 for l in self.lines] 
 
@@ -479,7 +478,6 @@ class TxtChapterAnalyzer:
             return []
 
         indent_pattern = re.compile(r'^\s*[\u3000\s]{1,2}')
-        current_char_idx = 0
         
         # Предварительный расчет смещений символов для каждой строки (чтобы не считать в цикле)
         # char_offsets[i] = индекс символа начала строки i
@@ -624,20 +622,6 @@ class TxtChapterAnalyzer:
             'max_snippet': max_chap['content_snippet'],
             'avg': total_len / len(valid_chapters_info)
         }
-    
-    def split_into_chapters(self, marker_word=None, context=None, custom_regex=None) -> list:
-        # Этот метод больше не используется напрямую Wizard'ом во второй фазе, 
-        # но оставлен для совместимости или быстрой генерации.
-        chapters_lines, titles = self._split_by_marker(marker_word, context, custom_regex)
-        chapters_data = []
-        for title, lines in zip(titles, chapters_lines):
-            content = "".join(lines)
-            if content.strip():
-                chapters_data.append((title, content))
-        return chapters_data
-
-
-
 
 
 class ChapterViewerDialog(QDialog):

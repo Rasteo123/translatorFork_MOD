@@ -22,7 +22,6 @@ class ResidueAnalyzerPage(ShellPage):
     Версия 11.0: Финальная унификация UI.
     """
     page_title = "Анализ остатков"
-    create_new_term_requested = pyqtSignal(dict)
     result_ready = pyqtSignal(bool)
 
     def __init__(self, residue_map, original_glossary_list, settings_manager, parent=None):

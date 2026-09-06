@@ -209,21 +209,19 @@ class PatientLock:
     def register_vip_thread(cls, thread_id):
         cls._vip_threads.add(thread_id)
 
-    def __init__(self, timeout=30.0, global_timeout=20.0):
+    def __init__(self, timeout=30.0):
         self._mutex = threading.RLock()
         self._cond = threading.Condition(self._mutex)
-        
+
         self._owner = None
         self._waiters = deque()
-        
+
         self._timeout = timeout
-        self._global_timeout = global_timeout
-        
+
         self._owner_ts = None
         self._owner_stack = None
-        
+
         self._current_leader = None
-        self._leader_misses = 0
 
     def _take_ownership(self, thread_id):
         """
@@ -1013,16 +1011,6 @@ def _patched_qmessagebox_critical(parent, title, text):
             shared_state["running"] = False
         if 'heartbeat_timer' in locals():
             heartbeat_timer.stop()
-
-def get_original(name: str):
-    """
-    Публичный, безопасный интерфейс для доступа к оригинальным,
-    непатченным функциям, сохраненным в словаре _original.
-    """
-    return _original.get(name)
-
-
-
 
 def apply():
     if hasattr(builtins, '_os_patched'): return

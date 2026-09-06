@@ -1403,20 +1403,11 @@ class KeyManagementWidget(QWidget):
     def set_session_mode(self, is_session_active):
         """Переводит виджет в режим активной сессии (блокирует элементы управления)."""
         self._is_session_active = is_session_active
-        from PyQt6.QtWidgets import QPushButton, QLineEdit, QComboBox, QAbstractItemView
-        
+        from PyQt6.QtWidgets import QPushButton, QLineEdit, QComboBox
+
         for widget in self.findChildren(QPushButton):
             widget.setEnabled(not is_session_active)
         for widget in self.findChildren(QLineEdit):
             widget.setEnabled(not is_session_active)
         for widget in self.findChildren(QComboBox):
             widget.setEnabled(not is_session_active)
-            
-        if hasattr(self, 'key_table'):
-            if is_session_active:
-                if not hasattr(self, '_original_edit_triggers'):
-                    self._original_edit_triggers = self.key_table.editTriggers()
-                self.key_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-            else:
-                if hasattr(self, '_original_edit_triggers'):
-                    self.key_table.setEditTriggers(self._original_edit_triggers)

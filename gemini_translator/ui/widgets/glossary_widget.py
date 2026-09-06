@@ -6,7 +6,6 @@ import tempfile
 
 import re
 import traceback
-import zipfile
 import time
 
 from PyQt6 import QtWidgets
@@ -1412,21 +1411,6 @@ class GlossaryCleanupDialog(QDialog):
                         if len(parts) > 1:
                             self.candidates_slashes.add(ident_key)
 
-            # 2. Анализ заголовков (если есть EPUB)
-            # if self.epub_path and os.path.exists(self.epub_path):
-                # epub_cache = {}
-                # try:
-                    # self._analyze_epub_structure(epub_cache)
-                    # for entry in self.glossary_data:
-                        # term = entry.get('original', '').strip()
-                        # rus = entry.get('rus', '')
-                        # ident_key = (entry.get('original', ''), rus)
-                        
-                        # if self._should_remove_as_header(term, epub_cache):
-                            # self.candidates_headers.add(ident_key)
-                # except Exception as e:
-                    # print(f"[Analysis Error] {e}")
-
             # 3. Обновление UI
             self._update_checkboxes()
             self.btn_apply.setEnabled(True)
@@ -1523,71 +1507,3 @@ class GlossaryCleanupDialog(QDialog):
             new_list.append(new_entry)
             
         return new_list, stat_formatted + stat_removed
-
-    # --- Методы анализа EPUB ---
-    def _analyze_epub_structure(self, cache_dict):
-        ignore_patterns = ['toc', 'nav', 'cover', 'style', 'css']
-        with zipfile.ZipFile(self.epub_path, 'r') as zf:
-            for filename in zf.namelist():
-                if not filename.endswith(('.html', '.xhtml', '.htm')): continue
-                if any(pat in filename.lower() for pat in ignore_patterns): continue
-                try:
-                    raw_content = zf.read(filename).decode('utf-8', 'ignore')
-                    # H1 / Title
-                    h1s = re.findall(r'<h1.*?>(.*?)</h1>', raw_content, re.IGNORECASE | re.DOTALL)
-                    titles = re.findall(r'<title.*?>(.*?)</title>', raw_content, re.IGNORECASE | re.DOTALL)
-                    clean_h1s = [re.sub(r'<[^>]+>', '', h).strip() for h in h1s]
-                    clean_titles = [re.sub(r'<[^>]+>', '', t).strip() for t in titles]
-                    
-                    # Чистый текст для анализа длины
-                    no_script = re.sub(r'<(script|style).*?>.*?</\1>', '', raw_content, flags=re.DOTALL | re.IGNORECASE)
-                    blocks_replaced = re.sub(r'</?(p|div|br|h\d|li).*?>', '\n', no_script)
-                    text_only = re.sub(r'<[^>]+>', '', blocks_replaced)
-                    lines = [line.strip() for line in text_only.split('\n') if line.strip()]
-
-                    cache_dict[filename] = {
-                        'lines': lines,
-                        'h1s': set(clean_h1s),
-                        'titles': set(clean_titles)
-                    }
-                except Exception: pass
-
-    def _should_remove_as_header(self, term, cache_dict):
-        if not term or len(term) < 2: return False
-        term_lower = term.lower()
-        found_count = 0
-        last_data = None
-        
-        for fname, data in cache_dict.items():
-            found_in_file = False
-            for line in data['lines']:
-                if term_lower in line.lower():
-                    found_in_file = True
-                    break
-            if found_in_file:
-                found_count += 1
-                last_data = data
-            if found_count > 1: return False 
-
-        if found_count == 0: return False
-        
-        # Только в 1 файле. Проверяем контекст.
-        is_header = False
-        for h in last_data['h1s']:
-            if term_lower in h.lower(): is_header = True; break
-        if not is_header:
-            for t in last_data['titles']:
-                if term_lower in t.lower(): is_header = True; break
-        
-        if not is_header: return False 
-
-        # Проверка на нарратив
-        term_len = len(term)
-        for line in last_data['lines']:
-            if term_lower in line.lower():
-                line_len = len(line)
-                diff = abs(line_len - term_len)
-                if diff / term_len > 0.3: # Если строка на 30% длиннее термина
-                    return False 
-        
-        return True

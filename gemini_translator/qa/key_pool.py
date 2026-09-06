@@ -79,12 +79,6 @@ class QaKeyPool:
     def __len__(self) -> int:
         return len(self._keys)
 
-    @property
-    def remaining(self) -> int:
-        """How many keys the service has not yet declared spent."""
-        with self._lock:
-            return sum(1 for key in self._keys if key not in self._exhausted)
-
     def acquire(self) -> str | None:
         """Return the key to ask next, or None when nothing may be asked now.
 
@@ -167,11 +161,6 @@ class QaKeyPool:
                 marker(key, self._model_id)
             except Exception:  # noqa: BLE001 - the settings are not the pool's to break
                 return
-
-    def pause(self, key: str, seconds: float) -> None:
-        """Rest a key for as long as the service asked, and no longer."""
-        with self._lock:
-            self._pause_locked(key, seconds, self._clock())
 
     def seconds_until_available(self) -> float | None:
         """How long until some key may be asked, or None when none ever will be."""

@@ -67,19 +67,12 @@ UPPERCASE_CHARS = f'{UPPERCASE_RU}{UPPERCASE_EN}'
 # Все буквы любого регистра
 ALL_LETTER_CHARS = f'{LOWERCASE_CHARS}{UPPERCASE_CHARS}'
 
-TAGS_FOR_NEW_LINE = [
-    "</p>", "</div>", "</h1>", "</h2>", "</h3>", "</h4>", "</h5>", "</h6>",
-    "</li>", "</blockquote>", "</pre>", "</tr>", "</th>", "</td>"
-]
-
 SPLIT_DASH = r'\s*</p>\s*<p[^>]*>\s*' # 'r' можно ставить до или после 'f'
 TAG_STRIPPER = re.compile(r'<[^>]+>')
 
 CJK_UNSPACED_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff]')
 SPACED_SCRIPTS_RE = re.compile(r'[a-zA-Zа-яА-Я\uac00-\ud7a3]')
 
-BR_HR_PATTERN = re.compile(r'<(br|hr)\s*/?>', flags=re.IGNORECASE)
-NEWLINES_PATTERN = re.compile(r'(\s*\n\s*){3,}')
 PUNCTUATION_CLEANUP_PATTERN = re.compile(r'[?!]{2,}')
 CLEANUP_PATTERN = re.compile(
     # Находим необязательные пробелы до запятой
@@ -328,27 +321,10 @@ P_ATTR_SEARCH = re.compile(r'<p(\s+[^>]*?)?>', re.IGNORECASE)
 RAW_AMPERSAND_PATTERN = re.compile(r'&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#\d+|#x[0-9a-fA-F]+);)')
 
 # --- MARKDOWN CLEANUP PATTERNS ---
-# 1. Проверка на сепаратор: строка состоит ТОЛЬКО из звезд, пробелов и тире
+# Проверка на сепаратор: строка состоит ТОЛЬКО из звезд, пробелов и тире
 IS_SEPARATOR_PATTERN = re.compile(r'^[\s*—–−_+=#-]+$')
 
-# 2. Поиск текстового контента между тегами: (>)(контент)(<)
-TEXT_NODE_PATTERN = re.compile(r'(>)([^<]+)(<)')
-
-# 3. Валидные Markdown пары
-MD_BOLD_ITALIC_PATTERN = re.compile(r'(?<!\*)\*\*\*([^\*\n]+?)\*\*\*(?!\*)')
-MD_BOLD_PATTERN = re.compile(r'(?<!\*)\*\*([^\*\n]+?)\*\*(?!\*)')
-MD_ITALIC_PATTERN = re.compile(r'(?<!\*)\*([^\*\n]+?)\*(?!\*)')
-
-# 4. Мусорные звезды (одиночки на границах)
-# Удаляем звезды, если у них есть пробел (или граница строки) хотя бы с одной стороны.
-# (?<!\S) - слева пустота или пробел.
-# (?!\S)  - справа пустота или пробел.
-MD_GARBAGE_STARS_PATTERN = re.compile(r'(?<!\S)\*+|\*+(?!\S)')
-# ---------------------------------------------------------------
-
-# 1. Анализ НАЧАЛА абзаца
-START_DASH_PATTERN = re.compile(fr'^(\s*(?:<[^>]+>\s*)*)([{DASH_CHARS}]+)')
-# 2. Токенизация и проход
+# Токенизация и проход
 TOKEN_PATTERN = re.compile(
     fr'(\0B_TAG_\d+\0)|([{ALL_QUOTES}])|([{DASH_CHARS}]+)'
     .replace('{DASH_CHARS}', DASH_CHARS)
@@ -381,10 +357,6 @@ END_COMMA_FIX_PATTERN = re.compile(fr',\s*(?=[»“"”]*\s*</p>)')
 # Отсутствие знака препинания в конце абзаца (Буква/Цифра -> Кавычка -> </p>)
 # Исключает ситуации, когда знак уже есть.
 MISSING_DOT_PATTERN = re.compile(fr'(?<=[{ALL_LETTER_CHARS}0-9])(?=[»“"”]*\s*</p>)')
-
-# Находит " это" (с пробелом перед ним) и границей слова после.
-# Регистр неважен (ЭТО, это, Это).
-ETO_LOOKAHEAD_PATTERN = re.compile(r'^\s*это\b', re.IGNORECASE)
 
 # Соединяет диалог, разорванный после знака препинания.
 # Включает логику: Точка -> Запятая, Троеточие -> Троеточие.
@@ -2768,15 +2740,8 @@ def create_glossary_span(original: str, rus: str) -> str:
     safe_translation = html.escape(rus)
     
     return f'<span class="glossary-term" title="{safe_original}">{safe_translation}</span>'
-   
-   
-# Паттерн находит:
-# Группа 1: Экранированные скобки {{ или }}
-# Группа 2: Валидный плейсхолдер {ключ} (захватывая ключ в группу 3)
-# Группа 4: Одиночные { или }
-FORMAT_PATTERN = re.compile(r"(\{\{|\}\})|(\{([a-zA-Z_][a-zA-Z0-9_]*)\})|([\{\}])")
-    
-    
+
+
 def safe_format(template_string: str, **kwargs) -> str:
     """
     Безопасно форматирует строку.

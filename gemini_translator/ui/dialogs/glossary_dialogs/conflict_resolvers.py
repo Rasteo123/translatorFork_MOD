@@ -348,42 +348,6 @@ class ComplexOverlapResolverPage(ShellPage):
                 note_item.setText(note_text)
                 self.sub_terms_table.resizeRowToContents(row)
     
-    # --- ИЗМЕНЕНИЕ: Логика сохранения обновлена для чтения из QTableWidgetItem ---
-    def _save_current_changes(self):
-        if not hasattr(self, 'current_term') or not self.current_term: return
-        orig_term = self.current_term
-        if orig_term not in self.deleted_terms and hasattr(self, 'main_term_edit'):
-            new_term = self.main_term_edit.text().strip()
-            new_trans = self.main_trans_edit.text().strip()
-            new_note = self.main_note_edit.text().strip()
-            
-            original_data = self.original_glossary.get(orig_term, {})
-            if (orig_term != new_term or 
-                original_data.get('rus', '') != new_trans or
-                original_data.get('note', '') != new_note):
-                self.pending_changes[orig_term] = (new_term, {"rus": new_trans, "note": new_note})
-            elif orig_term in self.pending_changes:
-                del self.pending_changes[orig_term]
-        
-        if hasattr(self, 'sub_terms_table'):
-            for i in range(self.sub_terms_table.rowCount()):
-                sub_orig_term_item = self.sub_terms_table.item(i, 0)
-                if not sub_orig_term_item: continue
-                sub_orig_term = sub_orig_term_item.data(Qt.ItemDataRole.UserRole)
-                if sub_orig_term in self.deleted_terms: continue
-                
-                sub_new_term = self.sub_terms_table.item(i, 0).text().strip()
-                sub_new_trans = self.sub_terms_table.item(i, 1).text().strip()
-                sub_new_note = self.sub_terms_table.item(i, 2).text().strip()
-
-                sub_original_data = self.original_glossary.get(sub_orig_term, {})
-                if (sub_orig_term != sub_new_term or 
-                    sub_original_data.get('rus', '') != sub_new_trans or
-                    sub_original_data.get('note', '') != sub_new_note):
-                    self.pending_changes[sub_orig_term] = (sub_new_term, {"rus": sub_new_trans, "note": sub_new_note})
-                elif sub_orig_term in self.pending_changes:
-                    del self.pending_changes[sub_orig_term]
-
     def on_group_changed(self, current, previous):
         self.checked_checkbox.blockSignals(True)
         if current:
@@ -879,39 +843,8 @@ class ReverseConflictResolverPage(ShellPage):
         """Обновляет состояние галочки при клике на элемент."""
         self.checked_checkbox.setChecked(item.text() in self.checked_items)
 
-    def _save_current_changes(self):
-        if not hasattr(self, 'complete_table') or not self.complete_table: return
-        
-        for i in range(self.complete_table.rowCount()):
-            # ИЗМЕНЕНИЕ: ID теперь в столбце 0
-            original_item = self.complete_table.item(i, 0)
-            if not original_item: continue
-            
-            original_id_tuple = original_item.data(Qt.ItemDataRole.UserRole)
-            if original_id_tuple in self.deleted_entries: continue
-            
-            new_data = {
-                # ИЗМЕНЕНИЕ: Считываем данные из колонок 0, 1, 2
-                "original": self.complete_table.item(i, 0).text(),
-                "rus": self.complete_table.item(i, 1).text(),
-                "note": self.complete_table.item(i, 2).text()
-            }
-            
-            original_entry = self.entry_map[original_id_tuple]
-            last_known_data = self.pending_changes.get(original_id_tuple, original_entry)
-
-            if new_data['original'] != last_known_data.get('original', '') or \
-               new_data['rus'] != last_known_data.get('rus', '') or \
-               new_data['note'] != last_known_data.get('note', ''):
-                updated_entry = last_known_data.copy()
-                updated_entry.update(new_data)
-                self.pending_changes[original_id_tuple] = updated_entry
-            elif original_id_tuple in self.pending_changes:
-                if self.pending_changes[original_id_tuple] == original_entry:
-                    del self.pending_changes[original_id_tuple]
-
     def on_group_changed(self, current, previous):
-        
+
         self.checked_checkbox.blockSignals(True)
         if current:
             self.checked_checkbox.setChecked(current.text() in self.checked_items)

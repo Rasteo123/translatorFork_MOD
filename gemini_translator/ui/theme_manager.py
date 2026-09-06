@@ -262,15 +262,6 @@ def save_glass(settings_manager, on: bool) -> None:
         pass
 
 
-def apply_window_glass(widget) -> bool:
-    """Attach the macOS vibrancy backdrop to a single top-level window."""
-    try:
-        from .platform import macos_vibrancy
-        return macos_vibrancy.apply_vibrancy(widget)
-    except Exception:
-        return False
-
-
 def _apply_vibrancy_to_top_levels(app, use_glass: bool) -> None:
     try:
         from .platform import macos_vibrancy

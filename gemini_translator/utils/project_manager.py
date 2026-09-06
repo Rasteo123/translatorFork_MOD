@@ -141,10 +141,6 @@ class TranslationProjectManager:
             json.dump(data_to_save, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(tmp_path, self.map_file_path)
 
-    def _save_internal(self, data_to_save):
-        with self.lock:
-            self._save_unsafe(data_to_save)
-
     def _save_unsafe(self, data_to_save):
         """Внутренний метод, вызывается, когда блокировка уже установлена.
 
@@ -926,12 +922,6 @@ class TranslationProjectManager:
     def load_user_problem_terms(self) -> list:
         with self.lock:
             return self._load_user_problem_terms_unsafe()
-
-    def save_user_problem_terms(self, items: list):
-        with self.lock:
-            os.makedirs(os.path.dirname(self.user_problem_terms_path), exist_ok=True)
-            with open(self.user_problem_terms_path, 'w', encoding='utf-8') as f:
-                json.dump(items, f, ensure_ascii=False, indent=2)
 
     def upsert_user_problem_terms(self, new_items: list):
         with self.lock:

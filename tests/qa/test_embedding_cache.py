@@ -110,10 +110,6 @@ def _key(
     )
 
 
-def _cache_size(root: Path) -> int:
-    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-
-
 def test_full_and_partial_hits_only_embed_unique_missing_texts_in_first_seen_order(tmp_path):
     """Refetching hits or duplicate misses would waste network calls and reorder provider input."""
     upstream = _CountingProvider()
@@ -282,65 +278,6 @@ def test_unwritable_cache_root_does_not_hide_a_valid_upstream_result(tmp_path):
     assert result.vectors.shape == (1, 4)
     assert len(upstream.requests) == 1
     assert root.read_text(encoding="utf-8") == "occupied by a file"
-
-
-def test_persisted_lru_prune_honors_exact_byte_boundary_and_never_leaves_cache_root(tmp_path):
-    """An in-memory or broad cleanup policy could evict the wrong entry or delete project data."""
-    project_root = tmp_path / "project"
-    cache_root = project_root / "translation_qa_embedding_cache"
-    journal = project_root / "translation_qa.json"
-    backup = project_root / "translation_qa_backups" / "chapter.xhtml"
-    chapter = project_root / "chapters" / "one.xhtml"
-    for path in (journal, backup, chapter):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(path.name, encoding="utf-8")
-
-    cache = EmbeddingCache(cache_root)
-    keys = [_key(f"text-{index}") for index in range(3)]
-    cache.put_many(
-        {key: np.array([1.0, index + 1.0, 2.0, 3.0], dtype=np.float32) for index, key in enumerate(keys)}
-    )
-    assert set(cache.get_many((keys[0],))) == {keys[0]}
-
-    reopened = EmbeddingCache(cache_root)
-    # Журнал добавлений (index.log) сворачивается в index.json при prune; меряем размер
-    # уже свёрнутого кэша, чтобы порог «на байт меньше» требовал вытеснить ровно одну запись.
-    reopened.flush()
-    before = _cache_size(cache_root)
-    freed = reopened.prune(before - 1)
-    after = _cache_size(cache_root)
-    hits = reopened.get_many(keys)
-
-    assert freed == before - after
-    assert after <= before - 1
-    assert keys[1] not in hits
-    assert keys[0] in hits and keys[2] in hits
-    assert journal.read_text(encoding="utf-8") == journal.name
-    assert backup.read_text(encoding="utf-8") == backup.name
-    assert chapter.read_text(encoding="utf-8") == chapter.name
-    for invalid_limit in (-1, True, 1.5):
-        with pytest.raises((TypeError, ValueError)):
-            reopened.prune(invalid_limit)
-
-
-def test_prune_reports_atomic_write_failure_instead_of_claiming_the_limit(tmp_path, monkeypatch):
-    """Returning normally above max_bytes would make the strict pruning contract false."""
-    root = tmp_path / "cache"
-    cache = EmbeddingCache(root)
-    key = _key("retained")
-    cache.put_many({key: np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)})
-    before = _cache_size(root)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            cache_module.os,
-            "replace",
-            lambda _source, _target: (_ for _ in ()).throw(OSError()),
-        )
-        with pytest.raises(OSError, match="byte limit"):
-            cache.prune(before - 1)
-
-    assert key in cache.get_many((key,))
 
 
 def test_project_manager_places_embedding_cache_in_dedicated_project_subdirectory(tmp_path):

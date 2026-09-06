@@ -741,7 +741,6 @@ class TranslationOptionsWidget(QGroupBox):
     def _on_mode_changed(self, *_args, emit_signal=True):
         sender = self.sender()
         is_batch = self.batch_checkbox.isChecked()
-        is_chunk = self.chunking_checkbox.isChecked()
 
         self.batch_checkbox.blockSignals(True)
         self.chunking_checkbox.blockSignals(True)

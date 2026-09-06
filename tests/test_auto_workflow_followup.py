@@ -262,7 +262,6 @@ class _ActiveTimerStub:
 
 class _AutoRatioHarness:
     _get_effective_auto_short_ratio_limit = InitialSetupDialog._get_effective_auto_short_ratio_limit
-    _auto_result_uses_cjk_ratio = InitialSetupDialog._auto_result_uses_cjk_ratio
     _auto_original_chapter_has_cjk = InitialSetupDialog._auto_original_chapter_has_cjk
 
     def __init__(self, selected_file=None):

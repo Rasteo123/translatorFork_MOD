@@ -98,7 +98,7 @@ class ImporterWizardDialog(QDialog):
         file_content = self.initial_data
         
         # Шаг 1: Используем новый устойчивый парсер
-        parsed_data, error_info = self._resilient_json_parse(file_content)
+        parsed_data, _ = self._resilient_json_parse(file_content)
 
         # Шаг 2: Анализируем результат парсера
         if parsed_data is not None:

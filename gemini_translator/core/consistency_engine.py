@@ -2677,10 +2677,6 @@ class ConsistencyEngine(QObject):
         }
         return filtered
 
-    def get_problems_for_chapter(self, chapter_name: str) -> List[Dict[str, Any]]:
-        """Возвращает список проблем для конкретной главы."""
-        return self.chapter_problems_map.get(chapter_name, [])
-
     def get_glossary_summary(self) -> Dict[str, Any]:
         """Возвращает текущее состояние глоссария сессии."""
         return self.glossary_session.to_dict()

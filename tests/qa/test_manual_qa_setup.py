@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from gemini_translator.qa.assembly import (
-    first_green_key,
     green_keys,
     resolve_manual_qa_model,
 )
@@ -133,7 +132,7 @@ def test_the_first_healthy_key_of_the_provider_is_used():
         blocked=[("g-1", "gemini-3.7-flash")],
     )
 
-    assert first_green_key(manager, "gemini", "gemini-3.7-flash") == "g-2"
+    assert green_keys(manager, "gemini", "gemini-3.7-flash")[0] == "g-2"
 
 
 def test_every_healthy_key_of_the_provider_is_offered_for_rotation():
@@ -155,9 +154,9 @@ def test_a_provider_with_only_exhausted_keys_offers_none():
         keys=_keys(("g-1", "gemini")), blocked=[("g-1", "gemini-3.7-flash")]
     )
 
-    assert first_green_key(manager, "gemini", "gemini-3.7-flash") == ""
-    assert first_green_key(manager, "", "gemini-3.7-flash") == ""
-    assert first_green_key(None, "gemini", "gemini-3.7-flash") == ""
+    assert green_keys(manager, "gemini", "gemini-3.7-flash") == ()
+    assert green_keys(manager, "", "gemini-3.7-flash") == ()
+    assert green_keys(None, "gemini", "gemini-3.7-flash") == ()
 
 
 def test_an_unreadable_key_status_does_not_hide_the_key():
@@ -167,4 +166,4 @@ def test_an_unreadable_key_status_does_not_hide_the_key():
 
     manager = _Partial(keys=_keys(("g-1", "gemini")))
 
-    assert first_green_key(manager, "gemini", "gemini-3.7-flash") == "g-1"
+    assert green_keys(manager, "gemini", "gemini-3.7-flash") == ("g-1",)

@@ -199,14 +199,6 @@ class NavigationController(QtCore.QObject):
         self.stack_changed.emit()
         return True
 
-    def reset_to_home(self) -> None:
-        """Pop pages until only the home page remains.
-
-        Stops at the first page whose ``can_leave()`` vetoes leaving.
-        """
-        while self.pop():
-            pass
-
 
 class MainShell(QtWidgets.QMainWindow):
     """The single persistent window for the translator-side tools.

@@ -661,17 +661,6 @@ class TranslationQualityDialog(QDialog):
             )
         )
 
-    def set_cometkiwi_status(self, model_status=None, last_duration_seconds=None) -> None:
-        """Show what is installed and how long the last run actually took.
-
-        The card never installs anything by itself: a checkbox with no runner,
-        no weights, or an unread licence says so and leaves the setting alone.
-        """
-        self._cometkiwi_model_status = model_status
-        if last_duration_seconds is not None:
-            self._cometkiwi_last_seconds = last_duration_seconds
-        self._refresh_setup_warnings()
-
     def _on_selection_changed(self, *_args) -> None:
         chapter_id = self.selected_chapter_id()
         row = self.table_model.row_at(

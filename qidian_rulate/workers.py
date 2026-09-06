@@ -92,7 +92,6 @@ TOMATO_EXE_PATTERNS = (
 _TOMATO_AUTOSTART_PROCESS: subprocess.Popen | None = None
 _TOMATO_AUTOSTART_CLEANUP_REGISTERED = False
 
-QIDIAN_DESCRIPTION_HEADER = "作品简介"
 QIDIAN_DESCRIPTION_HEADERS = {
     "作品简介",
     "内容简介",
@@ -487,12 +486,6 @@ def _image_dimensions(image_data: bytes) -> tuple[int, int]:
     return image.width(), image.height()
 
 
-def _format_image_size(image_data: bytes) -> str:
-    width, height = _image_dimensions(image_data)
-    dimensions = f"{width}x{height}" if width and height else "unknown size"
-    return f"{dimensions}, {len(image_data) / 1024:.1f} KB"
-
-
 def _dedupe_urls(urls: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -808,19 +801,6 @@ def parse_catalog_metadata(raw_response: str) -> PreparedRulateMetadata:
         genres=genres,
         tags=tags,
         cover_prompt=clean_cover_prompt_response(payload.get("cover_prompt")),
-    )
-
-
-def parse_prepared_metadata(raw_response: str) -> PreparedRulateMetadata:
-    payload = _parse_json_response(raw_response)
-    catalog = parse_catalog_metadata(json.dumps(payload, ensure_ascii=False))
-    return PreparedRulateMetadata(
-        english_title=_clean_text(payload.get("english_title")),
-        translated_title=_clean_text(payload.get("translated_title")),
-        translated_description=_clean_multiline(payload.get("translated_description")),
-        genres=catalog.genres,
-        tags=catalog.tags,
-        cover_prompt=catalog.cover_prompt,
     )
 
 

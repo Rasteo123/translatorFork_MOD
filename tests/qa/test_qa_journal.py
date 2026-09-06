@@ -71,7 +71,6 @@ def test_journal_round_trip_uses_v2_json_and_dataframe_schema(tmp_path):
     assert list(restored.metrics_frame().columns) == list(
         ChapterMetrics.dataframe_columns()
     )
-    assert restored.to_frame().equals(restored.metrics_frame())
 
 
 @pytest.mark.parametrize(

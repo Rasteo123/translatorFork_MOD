@@ -172,7 +172,6 @@ def _coerce_sort_number(value, default):
 
 
 QA_GATE_SCHEMA_VERSION = 1
-QA_ACTIVE_STATUSES = ('pending', 'in_progress', 'held', 'qa_pending', 'qa_blocked')
 QA_OUTCOME_KINDS = frozenset({'completed', 'high_unresolved', 'deferred', 'cancelled'})
 
 
@@ -2330,22 +2329,6 @@ class ChapterQueueManager(QObject):
         self._safe_request_ui_update()
         return True
     
-    def update_many(self, task_ids: list[uuid.UUID], new_status: str = None, new_priority: int = None):
-        if not task_ids: return
-        task_id_strs = [str(tid) for tid in task_ids]
-        updates, params = [], []
-        if new_status is not None: updates.append("status = ?"); params.append(new_status)
-        if new_priority is not None: updates.append("priority = ?"); params.append(new_priority)
-        if not updates: return
-        placeholders = ','.join('?' for _ in task_id_strs)
-        query = f"UPDATE tasks SET {', '.join(updates)} WHERE task_id IN ({placeholders})"
-        final_params = tuple(params + task_id_strs)
-        
-        with self._get_write_conn() as conn:
-            conn.execute(query, final_params)
-        
-        self._safe_request_ui_update()
-
     def has_pending_tasks(self) -> bool:
         """
         Проверяет, есть ли задачи в очереди или активна ли управляемая сессия.

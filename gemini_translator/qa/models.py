@@ -81,25 +81,8 @@ class RiskLevel(StrEnum):
     FAILED = "failed"
 
 
-class CandidateKind(StrEnum):
-    LENGTH_ANOMALY = "length_anomaly"
-    POSSIBLE_GAP = "possible_gap"
-    GLOSSARY_CONFLICT = "glossary_conflict"
-    UNTRANSLATED_FRAGMENT = "untranslated_fragment"
-    LANGUAGE_ISSUE = "language_issue"
-    SYNTAX_ISSUE = "syntax_issue"
-    SEMANTIC_GAP = "semantic_gap"
-    HALLUCINATED_ADDITION = "hallucinated_addition"
-
-
 class Decision(StrEnum):
-    NO_GAP = "no_gap"
-    MISSING_CONTENT = "missing_content"
-    COVERED = "covered"
-    INTENTIONAL_FOREIGN = "intentional_foreign"
     AMBIGUOUS = "ambiguous"
-    ENTAILED = "entailed"
-    PARAPHRASE = "paraphrase"
     HALLUCINATED_ADDITION = "hallucinated_addition"
     REPAIR_REJECTED = "repair_rejected"
     FIXED = "fixed"

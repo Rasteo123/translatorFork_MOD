@@ -122,11 +122,6 @@ REGEX_COMMAS = re.compile(r'[,\uff0c\u3001\u060c]')
 # \u061b : Арабская точка с запятой ؛
 REGEX_COLONS_SEMIS = re.compile(r'[:;\uff1a\uff1b\u061b]')
 
-USER_PROBLEM_TERM_LABELS = {
-    'system': 'Системная',
-    'user': 'Пользовательская',
-}
-
 def _normalize_problem_term_text(raw_fragment):
     if not raw_fragment:
         return ""
@@ -1581,19 +1576,6 @@ class ValidationThread(QThread):
     progress_update = pyqtSignal(str, int, int)
     analysis_finished = pyqtSignal(int, int)
 
-    
-    ERROR_PRIORITIES = {
-        "Недоперевод": 1,
-        "Повтор": 2,
-        "Нарушение XML-структуры": 3,
-        "Структурная ошибка": 4,
-        "Большой абзац": 5,
-        "Восстановлено изображение": 6,
-        "Откл": 7, # <-- Изменено название ключа
-        "Длина": 8,
-        "Ошибка парсинга": 99
-    }
-    
     def __init__(self, translated_folder, original_epub_path, checks_config, word_exceptions_set, project_manager, files_to_scan=None):
         super().__init__()
         self.translated_folder = translated_folder
@@ -2672,7 +2654,6 @@ class TranslationValidatorPage(ShellPage):
         ordered_originals, _ = get_epub_chapter_order(self.original_epub_path, return_method=True)
         row_pos = 0
         
-        from ...api import config as api_config
         was_sorting_enabled = self.table_results.isSortingEnabled()
         self.table_results.setSortingEnabled(False)
         self.table_results.setUpdatesEnabled(False)
@@ -3200,10 +3181,6 @@ class TranslationValidatorPage(ShellPage):
         self.btn_mark_ok = QPushButton("✅ Пометить как готовый"); self.btn_mark_ok.clicked.connect(lambda: self.mark_selected_rows('mark_ok'))
         self.btn_retry_selected = QPushButton("🔄 Пометить к переотправке"); self.btn_retry_selected.clicked.connect(lambda: self.mark_selected_rows('retry')); self.btn_retry_selected.setVisible(self.retry_is_available)
         self.btn_reset_marks = QPushButton("🚫 Снять пометки"); self.btn_reset_marks.clicked.connect(self.reset_selected_marks)
-        self.btn_show_editor_tab = QPushButton("Редактор")
-        self.btn_show_editor_tab.clicked.connect(self._show_editor_tab)
-        self.btn_show_editor_tab.setEnabled(False)
-        self.btn_show_editor_tab.setVisible(False)
         self.btn_prev_item = QPushButton("↑"); self.btn_prev_item.setFixedSize(28, 28); self.btn_prev_item.clicked.connect(self._go_to_previous_item); self.btn_prev_item.setEnabled(False)
         self.btn_next_item = QPushButton("↓"); self.btn_next_item.setFixedSize(28, 28); self.btn_next_item.clicked.connect(self._go_to_next_item); self.btn_next_item.setEnabled(False)
         for btn in [self.btn_mark_delete, self.btn_mark_ok, self.btn_retry_selected, self.btn_reset_marks, self.btn_prev_item, self.btn_next_item]:
@@ -3961,7 +3938,6 @@ class TranslationValidatorPage(ShellPage):
             ratio_min, ratio_max = self._get_current_ratio_bounds()
         
         max_paragraph_limit = self.max_paragraph_spinbox.value()
-        simplification_limit = self.simplification_threshold_spinbox.value() / 100.0
         repeats_limit = self.repeating_chars_spinbox.value()
         
         # Определяем, какие проверки вообще включены
@@ -4558,18 +4534,10 @@ class TranslationValidatorPage(ShellPage):
         self.btn_fix_untranslated.setEnabled(False)
         exceptions_set = self._get_effective_word_exceptions()
         
+        # ValidationThread реально читает только 'revalidate_ok' — остальные пороги
+        # применяются позже, в UI (_calculate_status_for_data), по текущим значениям спинбоксов.
         config = {
-            'check_structure': True, 
-            'check_length_ratio': True,
-            'show_all': self.check_show_all.isChecked(),
             'revalidate_ok': self.check_revalidate_ok.isChecked(),
-            'check_simplification': True,
-            'check_untranslated': True,
-            'check_paragraph_size': True,
-            'max_paragraph_size': self.max_paragraph_spinbox.value(),
-            'simplification_threshold': self.simplification_threshold_spinbox.value() / 100.0,
-            'check_repeating_chars': True,
-            'repeating_chars_threshold': self.repeating_chars_spinbox.value()
         }
         
         # Запуск потока только для targets
@@ -4917,7 +4885,6 @@ class TranslationValidatorPage(ShellPage):
         """
         try:
             # --- ИЗМЕНЕНИЕ: Используем универсальный список суффиксов ---
-            from ...api import config as api_config
             
             for f in os.listdir(self.translated_folder):
                 for suffix in api_config.all_translated_suffixes():
@@ -4937,8 +4904,6 @@ class TranslationValidatorPage(ShellPage):
         QApplication.processEvents()
         if self._is_destroyed():
             return
-
-        from ...api import config as api_config
 
         known_problem_internal_paths = {data['internal_html_path'] for data in self.results_data.values()}
         processed_count = 0
@@ -5162,8 +5127,6 @@ class TranslationValidatorPage(ShellPage):
         
         selected_items = self.table_results.selectedItems()
         selected_rows = list(set(item.row() for item in selected_items))
-        if hasattr(self, 'btn_show_editor_tab'):
-            self.btn_show_editor_tab.setEnabled(bool(selected_rows))
         self._update_translation_find_replace_state()
 
         # … (остальной код метода без изменений) …
@@ -5310,8 +5273,6 @@ class TranslationValidatorPage(ShellPage):
         if not self.project_manager:
             QMessageBox.warning(self, "Критическая ошибка", "Менеджер проекта не инициализирован.")
             return
-
-        from ...api import config as api_config
 
         # 1. Собираем ID (пути) файлов, которые нужно обработать.
         paths_to_process = set()

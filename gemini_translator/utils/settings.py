@@ -680,10 +680,6 @@ class SettingsManager(QObject):
         with self.file_lock:
             return [item['key'] for item in self._cache.get('api_keys_with_status', [])]
 
-    def save_api_keys(self, keys_list):
-        key_statuses = [{"key": key, "provider": "gemini", "status_by_model": {}} for key in keys_list]
-        return self.save_key_statuses(key_statuses)
-
     def save_ui_state(self, ui_state_dict):
         with self.file_lock:
             self._cache.update(ui_state_dict)
@@ -737,17 +733,6 @@ class SettingsManager(QObject):
 
     def get_custom_prompt(self): return self._generic_loader('custom_prompt', '')
     def save_custom_prompt(self, prompt): return self._generic_saver('custom_prompt', prompt)
-    def get_custom_provider_models(self):
-        with self.file_lock:
-            return deepcopy(self._cache.get("custom_provider_models", {}))
-
-    def save_custom_provider_models(self, custom_provider_models):
-        normalized = api_config.set_custom_provider_models(custom_provider_models)
-        with self.file_lock:
-            self._cache["custom_provider_models"] = deepcopy(normalized)
-            self._save_to_disk_unsafe()
-        return True
-
     def add_custom_provider_model(self, provider_id, display_name, model_config):
         with self.file_lock:
             custom_models = deepcopy(self._cache.get("custom_provider_models", {}))

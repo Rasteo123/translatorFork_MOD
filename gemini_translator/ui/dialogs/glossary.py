@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel,
     QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
     QFileDialog, QMessageBox, QWidget, QHBoxLayout, QComboBox,
-    QSplitter, QStyle, QGroupBox, QAbstractItemView, QGridLayout, QToolButton
+    QSplitter, QStyle, QGroupBox, QAbstractItemView, QGridLayout
 )
 
 # --- Импорты из модулей проекта ---
@@ -718,23 +718,9 @@ class GlossaryManagerPage(ShellPage):
 
         pagination_layout.addStretch() # Распорка слева от пагинации
         
-        self.first_page_button = QPushButton("<< В начало"); self.first_page_button.clicked.connect(self._go_to_first_page)
-        self.prev_page_button = QPushButton("< Назад"); self.prev_page_button.clicked.connect(self._go_to_prev_page)
         self.page_info_label = QLabel("Всего: 0"); self.page_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.next_page_button = QPushButton("Вперед >"); self.next_page_button.clicked.connect(self._go_to_next_page)
-        self.last_page_button = QPushButton("В конец >>"); self.last_page_button.clicked.connect(self._go_to_last_page)
-        self.page_navigation_controls = [
-            self.first_page_button,
-            self.prev_page_button,
-            self.next_page_button,
-            self.last_page_button,
-        ]
-        for button in self.page_navigation_controls:
-            button.setVisible(False)
-        
-        pagination_layout.addWidget(self.first_page_button); pagination_layout.addWidget(self.prev_page_button)
-        pagination_layout.addWidget(self.page_info_label); pagination_layout.addWidget(self.next_page_button); pagination_layout.addWidget(self.last_page_button); 
-        
+        pagination_layout.addWidget(self.page_info_label)
+
         pagination_layout.addStretch() # Распорка справа от пагинации
         
         # --- КНОПКА СОРТИРОВКИ (СПРАВА) ---
@@ -954,13 +940,6 @@ class GlossaryManagerPage(ShellPage):
         if hasattr(self, 'wait_dialog') and self.wait_dialog:
             self.wait_dialog.close(); self.wait_dialog = None
             
-    @pyqtSlot(dict)
-    def _on_create_new_term_requested(self, new_entry_data):
-        """Слот, который принимает сигнал от диалога и создает новый термин."""
-        self._add_new_term(new_entry_data=new_entry_data)
-        QMessageBox.information(self, "Термин создан", 
-            f"Новый термин '{new_entry_data.get('original')}' добавлен в конец списка и готов к редактированию.")
-    
     def _add_new_term(self, new_entry_data=None):
         """
         "DB-driven" добавление. Вставляет термин в БД, затем переходит
@@ -1189,10 +1168,6 @@ class GlossaryManagerPage(ShellPage):
     # --- НОВЫЕ МЕТОДЫ: СИСТЕМА ПАГИНАЦИИ И ЗАГРУЗКИ ДАННЫХ ---
     # ---------------------------------------------------------------------------
     
-    @property
-    def total_pages(self) -> int:
-        return 1
-
     def _get_sort_clause(self) -> str:
         """Возвращает строку для SQL-запроса ORDER BY."""
         column_map = {0: 'original', 1: 'rus', 2: 'note', 3: 'timestamp'}
@@ -1443,31 +1418,8 @@ class GlossaryManagerPage(ShellPage):
 
 
     def _update_pagination_controls(self):
-        """Обновляет состояние кнопок и текста навигации."""
+        """Обновляет текст сводки количества терминов."""
         self.page_info_label.setText(f"Всего: {self.total_items}")
-
-        for button in getattr(self, "page_navigation_controls", ()):
-            button.setEnabled(False)
-
-    def _go_to_first_page(self):
-        self.table.setCurrentItem(None)
-        self.current_page = 0
-        self._load_current_page()
-
-    def _go_to_prev_page(self):
-        self.table.setCurrentItem(None)
-        self.current_page = 0
-        self._load_current_page()
-
-    def _go_to_next_page(self):
-        self.table.setCurrentItem(None)
-        self.current_page = 0
-        self._load_current_page()
-
-    def _go_to_last_page(self):
-        self.table.setCurrentItem(None)
-        self.current_page = 0
-        self._load_current_page()
 
     def _find_page_for_id(self, db_id: str) -> int:
         # Единый вертикальный список — страница всегда одна.
@@ -1500,18 +1452,6 @@ class GlossaryManagerPage(ShellPage):
         else:
             self._highlight_timer = None
             print("Progressive highlighting finished.")
-    
-    def _reset_analysis_state(self):
-        """
-        Полностью сбрасывает все результаты анализа.
-        """
-        self.direct_conflicts.clear()
-        self.reverse_issues.clear()
-        self.overlap_groups.clear()
-        self.inverted_overlaps.clear()
-        self.conflicting_term_keys.clear()
-        self.is_analysis_dirty = True
-        self._update_analysis_ui()
     
     def _invalidate_analysis_for_terms(self, affected_terms: set):
         """
@@ -1722,7 +1662,6 @@ class GlossaryManagerPage(ShellPage):
             self.number = next((g for g in grammemes_set if g in {'sing', 'plur'}), None)
             self.gender = next((g for g in grammemes_set if g in {'masc', 'femn', 'neut'}), None)
             self.POS = next((g for g in grammemes_set if g.isupper()), None)
-            self.animacy = next((g for g in grammemes_set if g in {'anim', 'inan'}), None)
         def __contains__(self, grammeme): return grammeme in self.grammemes
         def __str__(self): return ",".join(sorted(list(self.grammemes)))
 
@@ -1829,41 +1768,7 @@ class GlossaryManagerPage(ShellPage):
         'ADVB': {   'NOUN':-5.0, 'ADJF': 15.0,'VERB': 25.0, 'INFN': 25.0, 'PRTF': 15.0, 'NUMR':-10.0, 'ADVB': 10.0, 'PRCL': 8.0   },
         'PRCL': {   'NOUN':-5.0, 'ADJF':-5.0, 'VERB': 15.0, 'INFN': 15.0, 'PRTF':-5.0,  'NUMR':-10.0, 'ADVB': 8.0,  'PRCL':-5.0   },
     }
-    
-    PUNCTUATION_MATRIX = {
-        # Ключ: знак препинания. Значение: "квадратная" матрица {POS_до: {POS_после: балл}}
-        ',': {
-            'NOUN': {'NOUN': 12.0, 'NPRO': -5.0,  'ADJF': 14.0, 'PRTF': 14.0, 'VERB': -5.0,  'NUMR': -5.0},
-            'NPRO': {'NOUN': -5.0,  'NPRO': 12.0, 'ADJF': 14.0, 'PRTF': 14.0, 'VERB': -5.0,  'NUMR': -5.0},
-            'ADJF': {'NOUN': 13.0, 'NPRO': 13.0, 'ADJF': 12.0, 'PRTF': 11.0, 'VERB': -5.0,  'NUMR': -5.0},
-            'PRTF': {'NOUN': 13.0, 'NPRO': 13.0, 'ADJF': 11.0, 'PRTF': 12.0, 'VERB': -5.0,  'NUMR': -5.0},
-            'VERB': {'NOUN': -5.0,  'NPRO': -5.0,  'ADJF': -5.0,  'PRTF': -5.0,  'VERB': 12.0, 'NUMR': -5.0},
-            'NUMR': {'NOUN': -5.0,  'NPRO': -5.0,  'ADJF': -5.0,  'PRTF': -5.0,  'VERB': -5.0,  'NUMR': 12.0}, # Однородные числительные
-        },
-        
-        ';': {
-            # Точка с запятой обычно разделяет более крупные, независимые блоки.
-            # Поэтому связи здесь слабее, чем у запятой.
-            'NOUN': {'NOUN': 8.0, 'NPRO': -5.0, 'ADJF': 5.0,  'PRTF': 5.0,  'VERB': -5.0, 'NUMR': -5.0},
-            'NPRO': {'NOUN': -5.0, 'NPRO': 8.0, 'ADJF': 5.0,  'PRTF': 5.0,  'VERB': -5.0, 'NUMR': -5.0},
-            'ADJF': {'NOUN': 4.0,  'NPRO': 4.0,  'ADJF': 8.0,  'PRTF': 7.0,  'VERB': -5.0, 'NUMR': -5.0},
-            'PRTF': {'NOUN': 4.0,  'NPRO': 4.0,  'ADJF': 7.0,  'PRTF': 8.0,  'VERB': -5.0, 'NUMR': -5.0},
-            'VERB': {'NOUN': -5.0, 'NPRO': -5.0, 'ADJF': -5.0, 'PRTF': -5.0, 'VERB': 8.0,  'NUMR': -5.0},
-            'NUMR': {'NOUN': -5.0, 'NPRO': -5.0, 'ADJF': -5.0, 'PRTF': -5.0, 'VERB': -5.0, 'NUMR': 8.0},
-        },
-        
-        ':': {
-            # Двоеточие вводит пояснение. Связь несимметрична.
-            'NOUN': {'NOUN': 10.0, 'NPRO': 10.0, 'ADJF': 10.0, 'PRTF': 10.0, 'VERB': 10.0, 'NUMR': 10.0}, # Пояснение к существительному
-            # остальные строки в основном будут с низкими баллами
-            'NPRO': {'NOUN': -5.0, 'NPRO': -5.0, 'ADJF': -5.0, 'PRTF': -5.0, 'VERB': -5.0, 'NUMR': -5.0},
-            'ADJF': {'NOUN': -5.0, 'NPRO': -5.0, 'ADJF': -5.0, 'PRTF': -5.0, 'VERB': -5.0, 'NUMR': -5.0},
-            'PRTF': {'NOUN': -5.0, 'NPRO': -5.0, 'ADJF': -5.0, 'PRTF': -5.0, 'VERB': -5.0, 'NUMR': -5.0},
-            'VERB': {'NOUN': -5.0, 'NPRO': -5.0, 'ADJF': -5.0, 'PRTF': -5.0, 'VERB': -5.0, 'NUMR': -5.0},
-            'NUMR': {'NOUN': -5.0, 'NPRO': -5.0, 'ADJF': -5.0, 'PRTF': -5.0, 'VERB': -5.0, 'NUMR': -5.0},
-        }
-    }
-    
+
     def _get_pos_priority(self, parse):
         tag = parse.tag
         if 'NOUN' in tag: pos_prio = 1.0
@@ -2220,7 +2125,7 @@ class GlossaryManagerPage(ShellPage):
             return "Не удалось проанализировать фразу."
         
         # Находим победителя по энергии
-        best_energy, best_molecule, best_combo, best_resolved_molecule = max(molecules_with_energy, key=lambda item: item[0])
+        best_energy, _best_molecule, best_combo, best_resolved_molecule = max(molecules_with_energy, key=lambda item: item[0])
         
         # --- блок вывода ---
         if debug: 
@@ -2953,17 +2858,6 @@ class GlossaryManagerPage(ShellPage):
                 
         self.conflicting_term_keys = set(self.conflict_map.keys())
     
-    def _std_icon(self, pixmap):
-        """Кэш стандартных иконок: style().standardIcon на каждую кнопку
-        каждой строки — ~0.2мс × тысячи вызовов при заполнении таблицы."""
-        cache = getattr(self, '_std_icon_cache', None)
-        if cache is None:
-            cache = self._std_icon_cache = {}
-        icon = cache.get(pixmap)
-        if icon is None:
-            icon = cache[pixmap] = self.style().standardIcon(pixmap)
-        return icon
-
     def _create_row_buttons(self, row, item_dict):
         """Записывает состав кнопок строки в данные item'ов колонок 3/4 —
         рисует их GlossaryActionDelegate, виджеты не создаются."""
@@ -3102,40 +2996,6 @@ class GlossaryManagerPage(ShellPage):
                 delegate.invalidate_cache()
                 self.table.viewport().update()
         super().changeEvent(event)
-
-    def _configure_table_action_button(self, button: QToolButton, extra_style: str = ""):
-        button.setFixedSize(self.TABLE_ACTION_BUTTON_SIZE)
-        button.setIconSize(self.TABLE_ACTION_ICON_SIZE)
-        button.setAutoRaise(True)
-        button.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        # Строка стиля одинакова для всех кнопок с одним extra_style —
-        # собираем один раз на страницу, а не на каждую кнопку каждой строки.
-        style_cache = getattr(self, '_action_btn_style_cache', None)
-        if style_cache is None:
-            style_cache = self._action_btn_style_cache = {}
-        stylesheet = style_cache.get(extra_style)
-        if stylesheet is None:
-            stylesheet = style_cache[extra_style] = (
-                "QToolButton {"
-                "background: transparent;"
-                "border: 1px solid transparent;"
-                "border-radius: 6px;"
-                "padding: 0px;"
-                f"min-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
-                f"max-width: {self.TABLE_ACTION_BUTTON_SIZE.width()}px;"
-                f"min-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
-                f"max-height: {self.TABLE_ACTION_BUTTON_SIZE.height()}px;"
-                f"{extra_style}"
-                "}"
-                "QToolButton:hover {"
-                f"background-color: {theme_manager.color('accent_hover_soft')};"
-                f"border-color: {theme_manager.color('border_strong')};"
-                "}"
-            )
-        button.setStyleSheet(stylesheet)
 
     def _action_column_width_for_buttons(self, button_count: int) -> int:
         if button_count <= 0:

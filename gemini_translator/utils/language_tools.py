@@ -1198,7 +1198,6 @@ class GlossaryLogic:
         # --- Шаг 3: Оценка кандидатов ---
         # Порог для переводов должен учитывать штраф.
         # Если final=90, то (Trans - 5) >= 90 => Trans >= 95.
-        trans_threshold_needed = final_threshold + 5 
 
         for term1_orig, term2_orig in all_candidate_pairs:
             d1 = term_data.get(term1_orig)
@@ -1294,45 +1293,6 @@ class GlossaryLogic:
             prev_row = curr_row
         return 1.0 - (prev_row[n] / m)
 
-    
-    def find_lcs_substring_sequence(self, a, b):
-        """
-        ФИНАЛЬНАЯ ВЕРСИЯ. Находит самую длинную общую непрерывную подстроку.
-        АВТОМАТИЧЕСКИ определяет, нужно ли применять CJK стоп-слова,
-        анализируя входные токены.
-        """
-        stop_words_to_use = set()
-        # Эвристика: если хотя бы один из токенов содержит CJK, применяем фильтр.
-        # Проверяем только первые несколько токенов для скорости.
-        combined_sample = a[:5] + b[:5]
-        if any(LanguageDetector.is_cjk_text(token) for token in combined_sample):
-            stop_words_to_use = CJK_STOP_WORDS
-    
-        # Фильтруем входные списки токенов от стоп-слов, если это необходимо
-        filtered_a = [token for token in a if token not in stop_words_to_use]
-        filtered_b = [token for token in b if token not in stop_words_to_use]
-    
-        m, n = len(filtered_a), len(filtered_b)
-        dp = [[0 for _ in range(n + 1)] for _ in range(m + 1)]
-        
-        max_len = 0
-        end_pos_a = 0
-        
-        for i in range(1, m + 1):
-            for j in range(1, n + 1):
-                if filtered_a[i - 1] == filtered_b[j - 1]:
-                    dp[i][j] = dp[i - 1][j - 1] + 1
-                    if dp[i][j] > max_len:
-                        max_len = dp[i][j]
-                        end_pos_a = i
-                else:
-                    dp[i][j] = 0
-        
-        if max_len > 0:
-            return filtered_a[end_pos_a - max_len : end_pos_a]
-        else:
-            return []
-    
     def _calculate_bag_of_chars_similarity(self, s1, s2):
         """Вычисляет композиционную похожесть по мешку символов."""
         if not s1 and not s2: return 1.0

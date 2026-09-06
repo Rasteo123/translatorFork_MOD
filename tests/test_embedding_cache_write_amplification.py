@@ -85,11 +85,3 @@ def test_read_hits_do_not_rewrite_index(tmp_path, disk_spy):
         hits = fresh.get_many(list(batch))
         assert len(hits) == 16
     assert disk_spy["index_writes"] == writes_after_flush, "попадание в кэш не должно переписывать индекс"
-
-
-def test_prune_sees_unflushed_entries(tmp_path):
-    cache = EmbeddingCache(tmp_path / "emb")
-    cache.put_many({_key(n): _vector(n) for n in range(4)})
-    freed = cache.prune(max_bytes=10**9)
-    assert freed == 0
-    assert set(cache.get_many([_key(n) for n in range(4)])) == {_key(n) for n in range(4)}

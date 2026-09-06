@@ -149,7 +149,7 @@ class GeminiApiHandler(BaseApiHandler):
                     )
                     if debug:
                         print(f"--- GEMINI DEBUG ERROR RESPONSE ---\n{raw_error_text}\n-----------------------------------")
-                    await self._handle_error_response(response, None)
+                    await self._handle_error_response(response)
 
                 # --- ВЕТКА 1: ПРОФЕССИОНАЛЬНЫЙ СТРИМИНГ ---
                 if use_stream:
@@ -283,7 +283,7 @@ class GeminiApiHandler(BaseApiHandler):
             traceback.print_exc()
             raise Exception(f"Критическая ошибка при работе с Gemini REST API: {e}")
      
-    async def _handle_error_response(self, response, response_json_arg):
+    async def _handle_error_response(self, response):
         # 1. Получаем тело ошибки максимально надежно
         error_dict = {}
         error_text_raw = ""

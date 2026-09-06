@@ -32,10 +32,6 @@ def default_daemon_port() -> int:
     return port
 
 
-def jobs_dir(state_dir: Path | None = None) -> Path:
-    return (state_dir or default_state_dir()) / "jobs"
-
-
 def clients_dir(state_dir: Path | None = None) -> Path:
     return (state_dir or default_state_dir()) / "clients"
 

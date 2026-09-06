@@ -103,7 +103,7 @@ def test_project_suspension_stops_instead_of_trying_remaining_keys(status, strea
                 classifier._raise_for_stream_error({'message': 'Project has been suspended', 'status': 'UNAUTHENTICATED'})
             response = Response()
             response.status = status
-            await classifier._handle_error_response(response, None)
+            await classifier._handle_error_response(response)
 
     handler = RotatingQaHandler(
         QaKeyPool(['fake-a', 'fake-b', 'fake-c', 'fake-d'], clock=clock), Handler,

@@ -6,7 +6,7 @@ from pathlib import Path
 import traceback
 from typing import Any
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui
 
 from ...api import config as api_config
 from ...benchmark.runner import BenchmarkRunner
@@ -55,19 +55,3 @@ class BenchmarkRunWorker(QtCore.QThread):
             self.finished_ok.emit(report)
         except Exception:
             self.failed.emit(traceback.format_exc())
-
-
-class PromptBenchmarkDialog(QtWidgets.QDialog):
-    """PyQt interface for editing and running prompt/model benchmark configs."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Бенчмарк промптов и моделей")
-        self.setMinimumSize(1180, 780)
-
-        from gemini_translator.ui.pages.benchmark_page import PromptBenchmarkPage
-
-        self.page = PromptBenchmarkPage(self)
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.page)

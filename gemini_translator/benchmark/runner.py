@@ -697,7 +697,3 @@ def render_markdown_summary(report: dict[str, Any]) -> str:
             )
 
     return "\n".join(lines) + "\n"
-
-
-def run_benchmark(config_path: str | os.PathLike, **kwargs) -> dict[str, Any]:
-    return BenchmarkRunner(config_path, **kwargs).run()

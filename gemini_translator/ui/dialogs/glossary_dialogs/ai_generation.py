@@ -218,34 +218,7 @@ class SequentialTaskProvider(QObject):
             lambda: self._post_event('start_session_requested', {'settings': settings})
         )
 
-    
-    def _get_request_data_snapshot(self, settings):
-        """Создает 'снимок' списков временных меток для всех ключей сессии."""
-        snapshot = {}
-        model_id = settings.get('model_config', {}).get('id')
-        if not model_id:
-            return {}
-            
-        for key in self.session_keys:
-            key_info = self.settings_manager.get_key_info(key)
-            if key_info:
-                # Используем новый метод из SettingsManager
-                snapshot[key] = self.settings_manager.get_request_timestamps(key_info, model_id)
-        return snapshot
 
-    def _get_request_counts_snapshot(self, settings):
-        """Создает 'снимок' текущих счетчиков запросов для всех ключей сессии."""
-        counts = {}
-        model_id = settings.get('model_config', {}).get('id')
-        if not model_id:
-            return {}
-            
-        for key in self.session_keys:
-            key_info = self.settings_manager.get_key_info(key)
-            if key_info:
-                counts[key] = self.settings_manager.get_request_count(key_info, model_id)
-        return counts
-    
     @pyqtSlot(dict)
     def on_event(self, event: dict):
         if not self._is_running: return
@@ -264,11 +237,11 @@ class SequentialTaskProvider(QObject):
                 task_id, task_payload = task_info
                 if task_payload[0] == 'glossary_batch_task' and self._task_in_flight == task_id:
                 # Наша задача выполнена! Запускаем обработку.
-                    self._on_batch_finished(event)
+                    self._on_batch_finished()
 
 
 
-    def _on_batch_finished(self, finish_event):
+    def _on_batch_finished(self):
         if not self._task_in_flight:
             return
         self._task_in_flight = None
@@ -380,7 +353,6 @@ class GenerationSessionPage(ShellPage):
         self.project_manager = project_manager
 
         self.orchestrator = None
-        self.recovery_file_path = None
         self.is_session_active = False
         self.is_soft_stopping = False
         self.force_exit_on_interrupt = False
@@ -1471,37 +1443,6 @@ class GenerationSessionPage(ShellPage):
         session_capacity = self._get_available_session_capacity()
         self.instances_spin.setMaximum(session_capacity if session_capacity > 0 else 1)
     
-    def _update_task_status_in_list(self, task_tuple, status):
-        """
-        Находит строку с задачей в списке и обновляет ее статус и цвет.
-        Теперь это ЕДИНЫЙ источник для всех статусов в этом диалоге.
-        """
-        table = self.chapter_list_widget.table
-        for row in range(table.rowCount()):
-            item = table.item(row, 0)
-            if item and item.data(QtCore.Qt.ItemDataRole.UserRole) == task_tuple:
-                status_item = table.item(row, 1)
-                if not status_item:
-                    status_item = QTableWidgetItem()
-                    table.setItem(row, 1, status_item)
-    
-                # Ваше изменение для консистентности UI
-                status_map = {
-                    'success': ("✅ Сгенерировано", "#2ECC71"),
-                    'error': ("❌ Ошибка", "#E74C3C"),
-                    'filtered': ("🛡️ Фильтр", "#9B59B6"),
-                    'held': ("Заморожено", "#7F8C8D"),
-                    'pending': ("⏳ Ожидание", self.palette().color(QtGui.QPalette.ColorRole.Text).name())
-                }
-                display_text, color_hex = status_map.get(status, ("?", "#FFFFFF"))
-    
-                status_item.setText(display_text)
-                
-                brush = QtGui.QBrush(QtGui.QColor(color_hex))
-                if item: item.setForeground(brush)
-                status_item.setForeground(brush)
-                break
-                
     def _check_and_sync_active_session(self):
         """
         Принудительно проверяет наличие активной сессии в глобальном состоянии (EventBus/Engine).
@@ -1570,7 +1511,7 @@ class GenerationSessionPage(ShellPage):
         msg_box.setText(f"Найден файл восстановления (версия {os.path.basename(valid_candidate_path)}).")
         msg_box.setInformativeText("Хотите восстановить все настройки, прогресс и продолжить с того места, где остановились?")
         resume_btn = msg_box.addButton("Да, восстановить сессию", QMessageBox.ButtonRole.YesRole)
-        restart_btn = msg_box.addButton("Нет, начать заново", QMessageBox.ButtonRole.NoRole)
+        msg_box.addButton("Нет, начать заново", QMessageBox.ButtonRole.NoRole)
         msg_box.exec()
         
         if msg_box.clickedButton() == resume_btn:
@@ -1867,29 +1808,6 @@ class GenerationSessionPage(ShellPage):
     
     
     
-    def _update_dependent_widgets(self):
-        """
-        Централизованно обновляет виджеты, зависящие от списка ГЛАВ,
-        такие как CJK-опции.
-        """
-        if not self.html_files:
-            self.model_settings_widget.update_cjk_options_availability(enabled=False)
-            return
-            
-        is_any_cjk = False
-        try:
-            with zipfile.ZipFile(self.epub_path, 'r') as zf:
-                # Проверяем до 3 глав из списка self.html_files
-                for chapter_path in self.html_files[:3]:
-                    content = zf.read(chapter_path).decode('utf-8', 'ignore')
-                    if LanguageDetector.is_cjk_text(content):
-                        is_any_cjk = True
-                        break
-            self.model_settings_widget.update_cjk_options_availability(enabled=True, is_cjk_recommended=is_any_cjk)
-        except Exception as e:
-            print(f"[WARN] Не удалось определить CJK для генерации глоссария: {e}")
-            self.model_settings_widget.update_cjk_options_availability(enabled=True, error=True)
-
     def _reselect_chapters_for_glossary(self):
         """Открывает диалог выбора глав для генерации глоссария."""
         if not self.epub_path:
@@ -2371,10 +2289,6 @@ class GenerationSessionPage(ShellPage):
         )
         self.prompt_widget.load_last_session_state()
         return self.prompt_widget
-
-    def _load_data(self):
-        self.key_widget.provider_combo.currentIndexChanged.emit(0)
-        self._update_start_button_state()
 
     def _update_start_button_state(self):
         """
@@ -2969,11 +2883,6 @@ class GenerationSessionPage(ShellPage):
         return settings
 
 
-    @pyqtSlot(list)
-    def _on_engine_state_update(self, current_glossary_state):
-        self.glossary_widget.set_glossary(current_glossary_state)
-        self._perform_safe_recovery_save()
-    
     @pyqtSlot()
     def _on_session_finished(self):
         """
@@ -3004,82 +2913,6 @@ class GenerationSessionPage(ShellPage):
         QtCore.QMetaObject.invokeMethod(self, "_finalize_session_state", QtCore.Qt.ConnectionType.QueuedConnection)
     
         
-    @pyqtSlot(dict)
-    def _on_generation_finished(self, data: dict):
-        """
-        Обрабатывает РЕЗУЛЬТАТ от оркестратора.
-        Содержит всю специфическую логику этого диалога.
-        """
-        final_glossary_from_engine = data.get('glossary')
-        was_cancelled = data.get('was_cancelled', False)
-
-        # Оркестратор больше не нужен, он свою работу сделал
-        if self.orchestrator:
-            self.orchestrator.setParent(None)
-            self.orchestrator.deleteLater()
-            self.orchestrator = None
-        
-        # --- Сценарий 1: Успешное штатное завершение ---
-        if not was_cancelled:
-            self.final_glossary = final_glossary_from_engine
-            
-            # 1. Сначала обновляем данные в виджете (так как _perform_safe_recovery_save берет данные оттуда)
-            self.glossary_widget.set_glossary(self.final_glossary)
-            
-            # 2. Вместо удаления — делаем ФИНАЛЬНЫЙ СНАПШОТ.
-            # Теперь, если пока пользователь пьет чай и смотрит на результаты, вырубится свет,
-            # при следующем запуске он увидит полностью готовый результат.
-            # Удаление произойдет только в методе accept() (кнопка "Применить").
-            self._perform_safe_recovery_save()
-            
-            from gemini_translator.ui.notifications import NotificationManager
-            NotificationManager.show("Глоссарий", "Генерация глоссария завершена.")
-            
-            return
-    
-        # --- Сценарий 2: Прерывание сессии ---
-        # Пытаемся найти хоть какой-то файл восстановления
-        candidates = self._get_recovery_candidates()
-        
-        if candidates:
-            # Берем самый свежий
-            best_candidate_path = candidates[0][1]
-            try:
-                with open(best_candidate_path, 'r', encoding='utf-8') as f:
-                    recovery_data = json.load(f)
-                
-                recovered_glossary = recovery_data.get("progress", {}).get("glossary", [])
-                recovered_chapters = set(recovery_data.get("progress", {}).get("processed_chapters", []))
-                
-                # Здесь мы файлы НЕ удаляем, вдруг пользователь нажмет "Нет, отбросить" в диалоге ниже,
-                # а потом передумает и перезапустит программу. Пусть файлы живут до явного решения.
-
-                if recovered_glossary:
-                    msg_box = QMessageBox(self)
-                    msg_box.setWindowTitle("Процесс прерван")
-                    msg_box.setText(f"Удалось сохранить {len(recovered_glossary)} терминов и прогресс по {len(recovered_chapters)} главам.")
-                    msg_box.setInformativeText("Хотите применить эти промежуточные результаты?")
-                    yes_btn = msg_box.addButton("Да, применить", QMessageBox.ButtonRole.YesRole)
-                    no_btn = msg_box.addButton("Нет, отбросить", QMessageBox.ButtonRole.NoRole)
-                    msg_box.exec()
-                    
-                    if msg_box.clickedButton() == yes_btn:
-                        self.final_glossary = recovered_glossary
-                        self.glossary_widget.set_glossary(self.final_glossary)
-                        # Обновляем UI и делаем сейв текущего состояния
-                        self._redraw_task_list_and_update_map()
-                        self._perform_safe_recovery_save()
-            except Exception as e:
-                QMessageBox.warning(self, "Ошибка восстановления", f"Процесс был прерван, но не удалось прочитать файл восстановления: {e}")
-        
-        elif was_cancelled:
-             QMessageBox.warning(self, "Прервано", "Процесс генерации был прерван. Промежуточные данные не применены.")
-
-        # Если диалог должен был закрыться, но сессия прервана,
-        # вызываем accept(), чтобы передать то, что успели накопить.
-        if self.force_exit_on_interrupt:
-            self.accept()
-    
     def _create_recovery_snapshot(self):
         """Собирает все данные для сохранения в файл восстановления."""
         # Теперь мы просто берем полный глоссарий из виджета
@@ -3110,13 +2943,6 @@ class GenerationSessionPage(ShellPage):
         del self._log_session_id
             
     
-    def _update_filter_button_state(self):
-        """Обновляет состояние кнопки 'Убрать сгенерированные'."""
-        if hasattr(self, 'remove_generated_btn'):
-            # Запрашиваем актуальное состояние из БД
-            processed_chapters = self._get_all_processed_chapters()
-            self.remove_generated_btn.setEnabled(bool(processed_chapters))
-            
     def _set_ui_active(self, active: bool):
         """
         Управляет состоянием всего UI в зависимости от того, активна ли сессия.

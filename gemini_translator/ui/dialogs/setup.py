@@ -54,13 +54,12 @@ from ...utils.epub_tools import (
     extract_number_from_path,
     calculate_potential_output_size,
     estimate_epub_chapter_input_size,
-    estimate_epub_chapter_input_tokens,
     get_epub_chapter_sizes_with_cache,
     get_epub_chapter_order,
     normalize_task_size_unit,
     TASK_SIZE_UNIT_CHARS,
 )
-from ...utils.helpers import TokenCounter, safe_int
+from ...utils.helpers import safe_int
 from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
 from ...utils.project_manager import TranslationProjectManager
 from ...utils.power_inhibitor import (
@@ -348,7 +347,6 @@ class ChapterTextPreviewDialog(QDialog):
         chapter_path: str,
         text_content: str,
         parent=None,
-        render_html: bool = False,
         path_caption: str | None = None,
     ):
         super().__init__(parent)
@@ -440,7 +438,6 @@ class InitialSetupPage(ShellPage):
         self._task_queue_needs_rebuild = False
         self.local_set = False
         self.cpu_performance_index = None
-        self.is_fuzzy_disabled_by_system = False
         self.global_settings = None
 
         self.initial_glossary_state = []
@@ -1587,64 +1584,6 @@ class InitialSetupPage(ShellPage):
         dialog = GeoBlockDialog(self)
         exec_dialog(self, dialog)
 
-    def create_glossary_tab(self, tabs_group):
-        # 1. Создаем экземпляр нашего виджета, передавая ему settings_manager
-        self.glossary_widget = GlossaryWidget(self, settings_manager=self.settings_manager)
-        self.glossary_widget.set_project_path(self.output_folder)
-
-        # 3. Добавляем его как вкладку
-        tabs_group.addTab(self.glossary_widget, "Глоссарий и Контекст Проекта")
-
-
-    def save_ui_state(self, ui_state_dict):
-        """
-        Загружает текущие настройки, обновляет их значениями из UI
-        и сохраняет обратно в файл. Это безопасный способ обновить
-        только те настройки, которыми управляет UI.
-        """
-        with self.file_lock:
-            settings = self.load_settings()
-
-            # Обновляем только те ключи, которые приходят из UI
-            # (используем префикс 'last_', как в save_last_settings)
-            settings['last_model'] = ui_state_dict.get('model')
-            settings['last_temperature'] = ui_state_dict.get('temperature')
-            settings['last_temperature_override_enabled'] = ui_state_dict.get('temperature_override_enabled', False)
-            settings['last_concurrent_requests'] = ui_state_dict.get('rpm_limit')
-            settings['last_chunking'] = ui_state_dict.get('chunking')
-            settings['last_dynamic_glossary'] = ui_state_dict.get('dynamic_glossary')
-            settings['last_system_instruction'] = ui_state_dict.get('use_system_instruction')
-            settings['last_thinking_enabled'] = ui_state_dict.get('thinking_enabled')
-            settings['last_thinking_budget'] = ui_state_dict.get('thinking_budget')
-            settings['last_use_json_epub_pipeline'] = ui_state_dict.get('use_json_epub_pipeline')
-
-            # Также сохраняем последние использованные пресеты
-            if 'last_prompt_preset' in ui_state_dict:
-                settings['last_prompt_preset'] = ui_state_dict['last_prompt_preset']
-            if 'custom_prompt' in ui_state_dict:
-                settings['custom_prompt'] = ui_state_dict['custom_prompt']
-
-            # Сохраняем обновленный словарь
-            return self.save_settings(settings)
-
-    def create_prompt_tab(self, tabs_group):
-        # 1. Создаем экземпляр нашего виджета с полной конфигурацией
-        self.preset_widget = PresetWidget(
-            parent=self,
-            preset_name="Промпт",
-            default_prompt_func=api_config.default_prompt,
-            load_presets_func=self.settings_manager.load_named_prompts,
-            save_presets_func=self.settings_manager.save_named_prompts,
-            get_last_text_func=self.settings_manager.get_custom_prompt,
-            get_last_preset_func=self.settings_manager.get_last_prompt_preset_name,
-            save_last_preset_func=self.settings_manager.save_last_prompt_preset_name,
-            builtin_presets_func=api_config.builtin_translation_prompt_variants
-        )
-        self.preset_widget.load_last_session_state()
-        # 3. Добавляем его как вкладку
-        tabs_group.addTab(self.preset_widget, "Промпт (опционально)")
-
-
     def _update_recommendations(self):
         """
         Централизованно обновляет рекомендации по размеру задачи.
@@ -1678,19 +1617,6 @@ class InitialSetupPage(ShellPage):
             uses_cjk=uses_cjk,
             current_model_settings=self.model_settings_widget.get_settings(),
         )
-
-
-    def _update_distribution_info(self):
-        num_chapters = len(self.html_files)
-        if num_chapters == 0: self.distribution_label.setText("Сначала выберите главы."); return
-        num_instances = self.instances_spin.value()
-        if num_instances > num_chapters: self.distribution_label.setText(f"<font color='orange'><b>Предупреждение:</b> Обработчиков ({num_instances}) больше, чем заданий ({num_chapters}).</font>"); return
-        base, extra = num_chapters // num_instances, num_chapters % num_instances
-
-        avg_chapters = math.ceil(num_chapters / num_instances)
-
-        text = f"≈ {avg_chapters} глав / обработчик"
-        self.distribution_label.setText(text)
 
 
     def _build_chapter_size_map_for_task_unit(self, chapters, settings_or_unit=None):
@@ -2055,7 +1981,7 @@ class InitialSetupPage(ShellPage):
 
         btn_skip_all = msg_box.addButton("Пропустить все переведенные", QMessageBox.ButtonRole.ActionRole)
         btn_skip_validated = msg_box.addButton("Пропустить только 'готовые'", QMessageBox.ButtonRole.ActionRole)
-        btn_keep_all = msg_box.addButton("Оставить все как есть", QMessageBox.ButtonRole.AcceptRole)
+        msg_box.addButton("Оставить все как есть", QMessageBox.ButtonRole.AcceptRole)
 
         msg_box.exec()
         clicked_button = msg_box.clickedButton()
@@ -2067,7 +1993,7 @@ class InitialSetupPage(ShellPage):
         # Если нажата "Оставить все", ничего не делаем
 
 
-    def _handle_project_initialization(self, select_mode=True):
+    def _handle_project_initialization(self):
         """
         Главный оркестратор. Вызывается, когда и файл, и папка, и главы заданы.
         Файловые операции запускаются в фоне, чтобы главное окно не зависало.
@@ -2829,7 +2755,6 @@ class InitialSetupPage(ShellPage):
             chapter_path=preview_path,
             text_content=preview_content,
             parent=self,
-            render_html=True,
             path_caption=(
                 f"Источник: итоговый файл проекта ({suffix_label})\n"
                 f"{preview_path}\n\n"
@@ -4406,15 +4331,6 @@ class InitialSetupPage(ShellPage):
                              f"между запросами (~{interval:.2f} сек.), поэтому он не будет 'тормозить' перевод.")
             label.setStyleSheet(f"color: {theme_manager.color('success')}; font-size: 10px; font-weight: bold;")
 
-    def _process_project_folder(self, folder):
-        """
-        Центральный, но теперь УПРОЩЕННЫЙ метод для обработки папки проекта.
-        Синхронизация и миграция теперь делегированы EpubHtmlSelectorDialog.
-        """
-        # Просто загружаем глоссарий проекта, если он есть.
-        self._load_project_glossary(folder)
-
-
     def _open_epub_builder_standalone(self):
         """
         Открывает сборщик EPUB, используя уже выбранные файл и папку.
@@ -4453,12 +4369,6 @@ class InitialSetupPage(ShellPage):
     def _get_effective_auto_short_ratio_limit(self, auto_settings: dict | None, result_data: dict | None = None):
         return auto_workflow_helpers.effective_auto_short_ratio_limit(
             auto_settings,
-            result_data,
-            chapter_has_cjk=self._auto_original_chapter_has_cjk,
-        )
-
-    def _auto_result_uses_cjk_ratio(self, result_data: dict | None) -> bool:
-        return auto_workflow_helpers.auto_result_uses_cjk_ratio(
             result_data,
             chapter_has_cjk=self._auto_original_chapter_has_cjk,
         )
@@ -4759,30 +4669,6 @@ class InitialSetupPage(ShellPage):
             QtCore.QTimer.singleShot(10, lambda: self.task_manager.set_pending_tasks([]))
         else:
             from ...utils.glossary_tools import TaskPreparer
-            import zipfile
-            import os
-
-            cached_sizes = get_epub_chapter_sizes_with_cache(self.project_manager, self.selected_file)
-            real_chapter_sizes = {
-                chapter: int(cached_sizes.get(chapter, 0) or 0)
-                for chapter in set(source_chapters)
-            }
-            missing_size_chapters = [chapter for chapter, size in real_chapter_sizes.items() if size <= 0]
-
-            if missing_size_chapters:
-                try:
-                    with open(self.selected_file, 'rb') as epub_file, zipfile.ZipFile(epub_file, 'r') as zf:
-                        for chapter in missing_size_chapters:
-                            real_chapter_sizes[chapter] = estimate_epub_chapter_input_tokens(
-                                zf.read(chapter).decode('utf-8', 'ignore')
-                            )
-                except Exception as e:
-                    QtWidgets.QMessageBox.critical(
-                        self,
-                        "Ошибка обработки EPUB",
-                        f"Не удалось прочитать EPUB для расчёта размеров глав.\n\n{e}"
-                    )
-                    return
 
             settings = self.get_settings()
             if isinstance(translation_options_override, dict):
@@ -5189,19 +5075,6 @@ class InitialSetupPage(ShellPage):
 
     def _build_filter_redirect_payloads(self, chapters: list[str], settings: dict) -> list:
         from ...utils.glossary_tools import TaskPreparer
-
-        cached_sizes = get_epub_chapter_sizes_with_cache(self.project_manager, self.selected_file)
-        real_chapter_sizes = {
-            chapter: int(cached_sizes.get(chapter, 0) or 0)
-            for chapter in set(chapters)
-        }
-        missing_size_chapters = [chapter for chapter, size in real_chapter_sizes.items() if size <= 0]
-        if missing_size_chapters:
-            with open(self.selected_file, 'rb') as epub_file, zipfile.ZipFile(epub_file, 'r') as zf:
-                for chapter in missing_size_chapters:
-                    real_chapter_sizes[chapter] = estimate_epub_chapter_input_tokens(
-                        zf.read(chapter).decode('utf-8', 'ignore')
-                    )
 
         real_chapter_sizes = self._build_chapter_size_map_for_task_unit(chapters, settings)
         preparer = TaskPreparer(settings, real_chapter_sizes)
@@ -6631,7 +6504,6 @@ class InitialSetupPage(ShellPage):
             })
 
             # 3. Запускаем сессию (остальное без изменений)
-            self.dry_run_start_time = time.perf_counter()
             self._post_event(name='start_session_requested', data={'settings': dry_run_settings})
 
             self.dry_run_btn.setText("Обработка…")
@@ -6662,62 +6534,6 @@ class InitialSetupPage(ShellPage):
     # --------------------------------------------------------------------
     # ОСТАЛЬНЫЕ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (общие для обоих режимов)
     # --------------------------------------------------------------------
-
-    def estimate_tokens(self):
-        """Оценивает количество токенов для выбранных глав"""
-        if not self.selected_file or not self.html_files:
-            QMessageBox.warning(self, "Ошибка", "Сначала выберите файл и главы")
-            return
-        counter = TokenCounter()
-        prompt_text = self.custom_prompt_edit.toPlainText() or " "
-
-        # Собираем данные из новой таблицы глоссария в одну строку,
-        # чтобы симулировать текстовое представление для подсчета токенов.
-        glossary_lines = []
-        for row in range(self.glossary_table.rowCount()):
-            original_item = self.glossary_table.item(row, 0)
-            translation_item = self.glossary_table.item(row, 1)
-
-            original = original_item.text().strip() if original_item else ""
-            rus = translation_item.text().strip() if translation_item else ""
-
-            if original and rus:
-                glossary_lines.append(f"{original} = {rus}")
-
-        glossary_text = "\n".join(glossary_lines)
-
-        try:
-            with zipfile.ZipFile(self.selected_file, 'r') as epub_zip:
-                for html_file in self.html_files[:10]:
-                    try:
-                        html_content = epub_zip.read(html_file).decode('utf-8', errors='ignore')
-                        counter.add_chapter_stats(
-                            chapter_name=os.path.basename(html_file),
-                            html_size=len(html_content),
-                            prompt_size=len(prompt_text),
-                            glossary_size=len(glossary_text),
-                            estimated_output=len(html_content)
-                        )
-                    except Exception as e:
-                        print(f"Ошибка при оценке главы {html_file}: {e}")
-            if counter.chapters_stats:
-                report = counter.get_estimation_report(num_windows=len(self.api_keys))
-                dialog = QDialog(self)
-                dialog.setWindowTitle("Оценка токенов")
-                dialog.setMinimumSize(600, 500)
-                layout = QVBoxLayout(dialog)
-                text_edit = QTextEdit()
-                text_edit.setReadOnly(True)
-                text_edit.setFont(QtGui.QFont("Consolas", 10))
-                text_edit.setPlainText(report)
-                close_btn = QPushButton("Закрыть")
-                close_btn.clicked.connect(dialog.accept)
-                layout.addWidget(text_edit)
-                layout.addWidget(close_btn)
-                exec_dialog(self, dialog)
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось оценить токены: {e}")
-
 
     @QtCore.pyqtSlot()
     def _on_project_data_changed(self, offer_snapshot_restore=True, rebuild_tasks=True):

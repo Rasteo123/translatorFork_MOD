@@ -1079,9 +1079,7 @@ def compare_epubs_for_swap(old_epub_path, new_epub_path):
             
             old_chapters = get_epub_chapter_order(old_epub_path)
             new_chapters = get_epub_chapter_order(new_epub_path)
-            
-            new_chapters_set = set(new_chapters)
-            
+
             for path in new_chapters:
                 if path not in old_chapters:
                     results[path] = 'new'
@@ -1113,32 +1111,3 @@ def compare_epubs_for_swap(old_epub_path, new_epub_path):
         return None
         
     return results
-
-
-def export_epub_to_json(epub_path, json_path=None):
-    """
-    Конвертирует EPUB в промежуточную JSON-модель книги.
-    Если указан json_path, сохраняет модель на диск.
-    """
-    from .epub_json import epub_to_json_model, save_json_model
-
-    book_model = epub_to_json_model(epub_path)
-    if json_path:
-        save_json_model(book_model, json_path)
-    return book_model
-
-
-def build_epub_from_json(book_json, output_path):
-    """
-    Собирает EPUB обратно из JSON-модели.
-    book_json может быть как путем к JSON-файлу, так и уже загруженным словарем.
-    """
-    from .epub_json import json_model_to_epub, load_json_model
-
-    if isinstance(book_json, (str, os.PathLike)):
-        book_model = load_json_model(book_json)
-    else:
-        book_model = book_json
-
-    json_model_to_epub(book_model, output_path)
-    return output_path

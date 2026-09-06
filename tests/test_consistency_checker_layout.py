@@ -60,7 +60,6 @@ class _SpinBoxStub:
 
 class _ConsistencySettingsHarness:
     _get_current_config = ConsistencyValidatorDialog._get_current_config
-    _restore_shared_sleep_prevention_setting = ConsistencyValidatorDialog._restore_shared_sleep_prevention_setting
     _save_shared_sleep_prevention_setting = ConsistencyValidatorDialog._save_shared_sleep_prevention_setting
 
     def __init__(self, full_session=None):
@@ -123,13 +122,6 @@ class ConsistencyCheckerLayoutTests(unittest.TestCase):
             settings_left_tabs.minimumWidth(),
             page.key_management_widget.minimumSizeHint().width(),
         )
-
-    def test_consistency_restores_shared_sleep_prevention_checkbox(self):
-        harness = _ConsistencySettingsHarness({PREVENT_SLEEP_SETTING_KEY: True})
-
-        harness._restore_shared_sleep_prevention_setting()
-
-        self.assertTrue(harness.prevent_sleep_checkbox.isChecked())
 
     def test_consistency_saves_shared_sleep_prevention_checkbox(self):
         harness = _ConsistencySettingsHarness({"model": "kept-model"})

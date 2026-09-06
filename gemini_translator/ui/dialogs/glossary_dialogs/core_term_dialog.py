@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QPushButton, QDialogButtonBox, QLabel,
     QWidget, QGroupBox, QHBoxLayout, QGridLayout, QTableWidget, QHeaderView,
     QTableWidgetItem, QMessageBox, QListWidget, QListWidgetItem, QSplitter,
-    QComboBox, QLineEdit, QButtonGroup, QStackedWidget, QStyle,
+    QComboBox, QLineEdit, QButtonGroup, QStyle,
     QStyledItemDelegate,
 )
 from PyQt6.QtCore import Qt
@@ -216,49 +216,6 @@ class CoreTermAnalyzerPage(ShellPage):
             if lcs_tuple:
                 self._display_group_for_editing(lcs_tuple)
 
-    def _create_right_panel(self):
-        """Создает правую панель с переключателем состояний (до/после анализа)."""
-        right_panel = QWidget()
-        self.right_layout = QVBoxLayout(right_panel)
-        self.right_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.right_stack = QStackedWidget()
-
-        # Состояние 0: Приглашение к анализу
-        pre_analysis_widget = QWidget()
-        pre_analysis_layout = QVBoxLayout(pre_analysis_widget)
-        pre_analysis_layout.addStretch(1)
-        info_label = QLabel(
-            "Этот инструмент находит термины, состоящие из очень популярных частей.\n"
-            "Они могут быть как 'ключевой сутью' вашего глоссария, так и 'шумом'.\n\n"
-            "Нажмите кнопку ниже, чтобы начать анализ."
-        )
-        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_label.setWordWrap(True)
-        self.start_analysis_button = QPushButton("🚀 Начать анализ")
-        self.start_analysis_button.clicked.connect(self._run_analysis)
-        pre_analysis_layout.addWidget(info_label)
-        pre_analysis_layout.addWidget(self.start_analysis_button, 0, Qt.AlignmentFlag.AlignHCenter)
-        pre_analysis_layout.addStretch(1)
-
-        # Состояние 1: Панель редактирования (пока пустая, будет заполняться)
-        self.editor_panel = QWidget()
-
-        self.right_stack.addWidget(pre_analysis_widget)
-        self.right_stack.addWidget(self.editor_panel)
-
-        self.right_layout.addWidget(self.right_stack)
-
-        # Основные кнопки OK/Cancel
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Принять изменения")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
-        buttons.accepted.connect(self.accept_changes)
-        buttons.rejected.connect(self.reject)
-        self.right_layout.addWidget(buttons)
-
-        return right_panel
-
     def _prepare_analysis_data(self):
         """
         Подготовка данных V3.0 (Thin Client):
@@ -383,30 +340,6 @@ class CoreTermAnalyzerPage(ShellPage):
             if data['pattern_exists_as_term'] and data['pattern_translation']:
                 list_item.setData(PATTERN_TRANSLATION_ROLE, f"→ {data['pattern_translation']}")
 
-    def _save_new_pattern_as_term(self):
-        """Сохраняет данные из 'Редактора Паттерна' как новый термин."""
-        pattern_str = self.pattern_original_edit.text()
-        rus = self.pattern_translation_edit.toPlainText().strip()
-        note = self.pattern_note_edit.toPlainText().strip()
-
-        if not rus:
-            QMessageBox.warning(self, "Пустой перевод", "Поле 'Перевод' не может быть пустым.")
-            return
-
-        # Добавляем в pending_changes
-        self.pending_changes[pattern_str] = (pattern_str, {'rus': rus, 'note': note})
-
-        # Обновляем состояние в analysis_data, чтобы UI отреагировал
-        self.analysis_data[self.current_lcs_tuple]['pattern_exists_as_term'] = True
-        self.analysis_data[self.current_lcs_tuple]['pattern_translation'] = rus
-
-        # Перерисовываем UI, чтобы кнопка исчезла, а поля стали обычными редакторами
-        self._display_group_for_editing(self.current_lcs_tuple)
-        self._populate_left_list() # Обновляем левый список, чтобы там тоже появился перевод
-
-        QMessageBox.information(self, "Готово", f"Термин '{pattern_str}' будет добавлен при применении изменений.")
-
-
     def _apply_mass_edit(self):
         """Применяет find/replace с regex к видимым строкам в таблице."""
         find_re = self.re_find_edit.text()
@@ -439,16 +372,6 @@ class CoreTermAnalyzerPage(ShellPage):
                         changes_count += 1
 
         QMessageBox.information(self, "Готово", f"Выполнено замен: {changes_count}.")
-
-    def _on_pattern_selected(self, current_item: QListWidgetItem, previous_item: QListWidgetItem):
-        """Слот, вызываемый при выборе ПАТТЕРНА в левом списке."""
-        if not current_item:
-            return
-
-        lcs_tuple = current_item.data(Qt.ItemDataRole.UserRole)
-        if lcs_tuple != self.current_lcs_tuple:
-            self.current_lcs_tuple = lcs_tuple
-            self._display_group_for_editing(lcs_tuple)
 
     def _display_group_for_editing(self, lcs_tuple):
         """
