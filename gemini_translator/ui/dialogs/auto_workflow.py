@@ -16,20 +16,6 @@ from ...utils.power_inhibitor import PREVENT_SLEEP_SETTING_KEY, PowerInhibitor
 from ...utils.translation_versions import select_target_translation_version
 
 
-def choose_preferred_translation_rel_path(versions: dict) -> str | None:
-    """Совместимость с ui/dialogs/setup.py, который импортирует это имя, но
-    нигде его не вызывает (мёртвый импорт вне зоны ответственности этой
-    правки). Реальный выбор версии перевода главы теперь идёт через
-    канонический select_target_translation_version (см.
-    load_project_chapters_for_consistency ниже); эта обёртка оставлена
-    только ради обратной совместимости импорта и не используется в этом
-    модуле."""
-    if not isinstance(versions, dict) or not versions:
-        return None
-    rel_path, _is_validated = select_target_translation_version(versions, "")
-    return rel_path
-
-
 def load_project_chapters_for_consistency(
     project_manager,
     *,

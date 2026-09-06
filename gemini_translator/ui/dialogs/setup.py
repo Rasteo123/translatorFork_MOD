@@ -102,7 +102,6 @@ from .glossary import ImporterWizardDialog
 from ..shell import ShellPage
 from .auto_workflow import (
     AutoConsistencyWorker,
-    choose_preferred_translation_rel_path,
     load_project_chapters_for_consistency,
 )
 from datetime import datetime

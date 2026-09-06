@@ -295,18 +295,6 @@ def test_semantic_unit_rejects_adjacent_spans_with_the_same_inline_id():
         )
 
 
-def test_semantic_window_rejects_empty_or_duplicate_unit_ids():
-    """A window without unique unit identities cannot be aligned deterministically."""
-    from gemini_translator.qa.models import SemanticWindow
-
-    with pytest.raises(QaModelValidationError):
-        SemanticWindow(unit_ids=(), text="text")
-    with pytest.raises(QaModelValidationError):
-        SemanticWindow(unit_ids=("u-1", "u-1"), text="text")
-    with pytest.raises(QaModelValidationError):
-        SemanticWindow(unit_ids=("u-1",), text="")
-
-
 @pytest.mark.parametrize(
     "payload",
     [

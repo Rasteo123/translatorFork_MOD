@@ -225,26 +225,6 @@ class SemanticUnit:
 
 
 @dataclass(frozen=True, slots=True)
-class SemanticWindow:
-    """A deterministic contiguous view over one document's semantic units."""
-
-    unit_ids: tuple[str, ...]
-    text: str
-
-    def __post_init__(self) -> None:
-        self.validate()
-
-    def validate(self) -> None:
-        if not isinstance(self.unit_ids, tuple) or not self.unit_ids:
-            raise QaModelValidationError("unit_ids must be a nonempty tuple")
-        for unit_id in self.unit_ids:
-            _require_nonempty_string(unit_id, "unit_id")
-        if len(set(self.unit_ids)) != len(self.unit_ids):
-            raise QaModelValidationError("unit_ids must be unique")
-        _require_nonempty_string(self.text, "text")
-
-
-@dataclass(frozen=True, slots=True)
 class ChapterMetrics:
     chapter_id: str
     source_language: str
