@@ -1,15 +1,19 @@
 """In-memory, language-aware chapter length analysis for a translated book."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import StrEnum
 import math
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 import numpy as np
-import pandas as pd
 
 from .models import ChapterMetrics
 from .ratio_profiles import get_ratio_profile
+
+if TYPE_CHECKING:  # pragma: no cover - import kept out of the startup path
+    import pandas as pd
 
 
 MIN_BASELINE_SOURCE_CHARS = 500
@@ -56,6 +60,10 @@ class BookMetricsAnalyzer:
 
     def analyze(self, metrics: Iterable[ChapterMetrics]) -> pd.DataFrame:
         """Return an in-memory metrics frame with normalized base ISO languages."""
+        # Imported lazily: a session that never runs the book-level QA pass
+        # never pays pandas's startup cost.
+        import pandas as pd
+
         rows = [metric.to_dict() for metric in metrics]
         frame = pd.DataFrame(rows, columns=ChapterMetrics.dataframe_columns())
         if frame.empty:
@@ -73,6 +81,8 @@ class BookMetricsAnalyzer:
         self, frame: pd.DataFrame, chapter_id: str
     ) -> BookRatioBaseline:
         """Return the robust eligible baseline for ``chapter_id``'s language pair."""
+        import pandas as pd
+
         chapter = _chapter_row(frame, chapter_id)
         source_language = _base_language(chapter["source_language"])
         target_language = _base_language(chapter["target_language"])
@@ -201,6 +211,8 @@ def eligible_baseline_size(
 
 
 def _eligible_baseline_mask(frame: pd.DataFrame) -> pd.Series:
+    import pandas as pd
+
     content_kind = frame["content_kind"].astype("string")
     source_chars = pd.to_numeric(frame["source_chars"], errors="coerce")
     risk_level = frame["risk_level"].astype("string")

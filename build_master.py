@@ -33,7 +33,10 @@ ADDITIONAL_DATA = [
     ('tools\\tomato', 'tools\\tomato'),
 ]
 
-EXCLUDE_DIRS = {'venv', '.venv', 'env', '.git', '__pycache__', 'dist', 'build'}
+EXCLUDE_DIRS = {
+    'venv', '.venv', 'env', '.git', '__pycache__', 'dist', 'build',
+    'tests', 'tools', '.worktrees', '.claude',
+}
 PROJECT_MODULES = {
     'gemini_translator',
     'gemini_reader_v3',
@@ -51,7 +54,15 @@ PROJECT_MODULES = {
     'utils',
     'workers',
 }
-DEV_MODULES = {'pyinstaller', 'pyinstaller-hooks-contrib'}
+DEV_MODULES = {
+    'pyinstaller', 'pyinstaller-hooks-contrib',
+    'PyInstaller', 'pytest', 'pytest-qt', 'ruff',
+}
+# Опциональные ML-зависимости, используемые только вспомогательными
+# скриптами/офлайн-инструментами (не рантаймом приложения) — не должны
+# попадать в requirements.txt/requirements-translator-only.txt при
+# автогенерации, даже если их импорт где-то обнаружен сканером.
+OPTIONAL_ML_PACKAGES = {'onnxruntime', 'tokenizers', 'navec', 'slovnet', 'comet'}
 DATA_FILE_EXTENSIONS = {'.txt', '.json', '.ico', '.css', '.html', '.js'}
 # RanobeLib загружается из bundled source-файлов, поэтому PyInstaller
 # не видит его import playwright.sync_api во время анализа main.py.
@@ -76,7 +87,6 @@ MANUALLY_PACKAGED_PACKAGES = {'playwright'}
 IMPORT_TO_PACKAGE_MAP = {
     'socks': 'PySocks',
     'opencc': 'opencc-python-reimplemented',
-    'Levenshtein': 'python-Levenshtein',
     'jwt': 'pyjwt',
     'bs4': 'beautifulsoup4',
     'docx': 'python-docx',
@@ -84,7 +94,6 @@ IMPORT_TO_PACKAGE_MAP = {
     'edge_tts': 'edge-tts',
     'google': 'google-genai',
     'pyaudio': 'PyAudio',
-    'pymorphy2': 'pymorphy3',
     'qoder_agent_sdk': 'qoder-agent-sdk',
     'recognizers_text': 'recognizers-text',
     'recognizers_number': 'recognizers-text-number',
@@ -97,18 +106,17 @@ ESSENTIAL_PACKAGES = {
     'playwright',
     'python-docx',
     'EbookLib',
-    'nltk',
     'PyAudio',
     'pydub',
     'edge-tts',
     'google-genai',
-    'loguru',
     'websockets',
     'soupsieve',
     'urllib3',
     'numpy',
     'pandas',
     'razdel',
+    'tzdata',
 }
 FORCED_VERSIONS = {
     'cryptography': '>=48.0.1',
@@ -116,7 +124,6 @@ FORCED_VERSIONS = {
     'idna': '>=3.15',
     'pydantic': '>=2.0.0',
     'qoder-agent-sdk': '>=1.0.8',
-    'setuptools': '<81',
     'soupsieve': '>=2.8.4',
     'urllib3': '>=2.7.0',
     'numpy': '>=2.0,<3',
@@ -304,7 +311,7 @@ def apply_package_mapping(dependencies):
 
 def update_requirements_file(dependencies):
     print(f"\n--- Этап 4: Обновление '{OUTPUT_REQUIREMENTS_FILE}' ---")
-    filtered_deps = dependencies - DEV_MODULES - CONFLICTING_PACKAGES_TO_REMOVE
+    filtered_deps = dependencies - DEV_MODULES - CONFLICTING_PACKAGES_TO_REMOVE - OPTIONAL_ML_PACKAGES
     final_dependencies = set()
     for dep in filtered_deps:
         dep_lower = dep.lower()

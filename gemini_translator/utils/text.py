@@ -539,10 +539,16 @@ def cleanup_replacer(match: re.Match) -> str:
 
 
 def is_well_formed_xml(content: str, validate=False) -> bool:
-    """Проверяет, является ли строка валидным XML, используя строгий парсер lxml.etree."""
+    """Проверяет, является ли строка валидным XML, используя строгий парсер lxml.etree.
+
+    Контент здесь — недоверенный EPUB-текст (из исходника или от модели),
+    поэтому парсер явно запрещает резолвинг внешних сущностей и сетевые
+    обращения (защита от XXE/SSRF при разборе DOCTYPE).
+    """
     try:
         # etree.fromstring выбрасывает исключение при малейшем нарушении структуры XML
-        etree.fromstring(content.encode('utf-8'))
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        etree.fromstring(content.encode('utf-8'), parser=parser)
         if validate:
             return True, None
         return True

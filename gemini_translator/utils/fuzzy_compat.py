@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Fuzzy-скоринг: rapidfuzz (C++), при его отсутствии — fuzzywuzzy.
+"""Fuzzy-скоринг: rapidfuzz (C++) — единственный бэкенд.
 
 Контракт — байт-в-байт совместимость с fuzzywuzzy при установленном
 python-Levenshtein (под неё откалиброваны пороги Stage-3 глоссария и
-consistency checker), поэтому rapidfuzz-ветка воспроизводит две неочевидные
-особенности fuzzywuzzy:
+consistency checker), поэтому rapidfuzz-реализация воспроизводит две
+неочевидные особенности fuzzywuzzy:
 
 1. token_set_ratio по умолчанию работает с force_ascii=True: перед обработкой
    из строк удаляются символы Latin-1 (коды 128..255, например é/ü). Кириллицу
@@ -61,32 +61,20 @@ try:
         )))
 
 except ImportError:
-    try:
-        from fuzzywuzzy import fuzz as _fw_fuzz
+    FUZZY_BACKEND = None
+    FUZZ_AVAILABLE = False
 
-        FUZZY_BACKEND = "fuzzywuzzy"
-        FUZZ_AVAILABLE = True
+    def ratio(s1, s2) -> int:
+        raise RuntimeError(
+            "Нет fuzzy-бэкенда: установите rapidfuzz (pip install rapidfuzz)."
+        )
 
-        ratio = _fw_fuzz.ratio
-        token_set_ratio = _fw_fuzz.token_set_ratio
-        # full_process fuzzywuzzy идемпотентен на предочищенном входе.
-        token_set_ratio_preclean = _fw_fuzz.token_set_ratio
+    def token_set_ratio(s1, s2) -> int:
+        raise RuntimeError(
+            "Нет fuzzy-бэкенда: установите rapidfuzz (pip install rapidfuzz)."
+        )
 
-    except ImportError:
-        FUZZY_BACKEND = None
-        FUZZ_AVAILABLE = False
-
-        def ratio(s1, s2) -> int:
-            raise RuntimeError(
-                "Нет fuzzy-бэкенда: установите rapidfuzz (или fuzzywuzzy)."
-            )
-
-        def token_set_ratio(s1, s2) -> int:
-            raise RuntimeError(
-                "Нет fuzzy-бэкенда: установите rapidfuzz (или fuzzywuzzy)."
-            )
-
-        def token_set_ratio_preclean(s1, s2) -> int:
-            raise RuntimeError(
-                "Нет fuzzy-бэкенда: установите rapidfuzz (или fuzzywuzzy)."
-            )
+    def token_set_ratio_preclean(s1, s2) -> int:
+        raise RuntimeError(
+            "Нет fuzzy-бэкенда: установите rapidfuzz (pip install rapidfuzz)."
+        )

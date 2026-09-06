@@ -4,7 +4,6 @@ from io import BytesIO
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import fs
 from PyQt6 import QtWidgets
 
 import os_patch
@@ -14,7 +13,7 @@ from gemini_translator.ui.dialogs import epub as epub_dialog
 def test_isolated_memfs_copy_does_not_share_queue_resource(tmp_path, monkeypatch):
     source = tmp_path / "book.epub"
     source.write_bytes(b"epub-data")
-    mem_fs = fs.open_fs("mem://")
+    mem_fs = os_patch.MiniMemFS()
     monkeypatch.setattr(os_patch, "_get_or_create_mem_fs", lambda: mem_fs)
 
     try:
@@ -48,7 +47,7 @@ def _epub_bytes(chapter_count):
 def test_shared_memfs_copy_refreshes_when_epub_at_same_path_is_replaced(tmp_path, monkeypatch):
     source = tmp_path / "book.epub"
     source.write_bytes(_epub_bytes(499))
-    mem_fs = fs.open_fs("mem://")
+    mem_fs = os_patch.MiniMemFS()
     monkeypatch.setattr(os_patch, "_get_or_create_mem_fs", lambda: mem_fs)
 
     try:
@@ -68,7 +67,7 @@ def test_shared_memfs_copy_refreshes_when_epub_at_same_path_is_replaced(tmp_path
 def test_shared_memfs_copy_repairs_truncated_cached_bytes(tmp_path, monkeypatch):
     source = tmp_path / "book.epub"
     source.write_bytes(_epub_bytes(500))
-    mem_fs = fs.open_fs("mem://")
+    mem_fs = os_patch.MiniMemFS()
     monkeypatch.setattr(os_patch, "_get_or_create_mem_fs", lambda: mem_fs)
 
     try:
@@ -88,7 +87,7 @@ def test_shared_memfs_copy_repairs_truncated_cached_bytes(tmp_path, monkeypatch)
 def test_shared_memfs_copy_reuses_unchanged_source(tmp_path, monkeypatch):
     source = tmp_path / "book.epub"
     source.write_bytes(_epub_bytes(500))
-    mem_fs = fs.open_fs("mem://")
+    mem_fs = os_patch.MiniMemFS()
     monkeypatch.setattr(os_patch, "_get_or_create_mem_fs", lambda: mem_fs)
 
     try:

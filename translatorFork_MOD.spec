@@ -17,7 +17,6 @@ datas = [('config', 'config'), ('gemini_translator/config/translation_qa_prompts
 datas += collect_data_files('PyQt6')
 datas += collect_data_files('certifi')
 datas += collect_data_files('docx')
-datas += collect_data_files('emoji')
 datas += collect_data_files('jieba')
 datas += collect_data_files('lxml')
 datas += collect_data_files('werkzeug')

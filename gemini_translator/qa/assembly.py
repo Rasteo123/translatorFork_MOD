@@ -990,6 +990,14 @@ def aiohttp_session_factory(proxy_settings=None):
     translating through the application's SOCKS tunnel used to run its QA
     embeddings directly, so a geo-blocked network silently degraded every
     chapter to limited mode while the translation itself kept working.
+
+    trust_env=False (matches api.base's translation session and
+    utils.updater.build_updater_session): the app's own proxy_settings are the
+    single source of truth for where traffic goes. Honoring OS-level
+    HTTP_PROXY/HTTPS_PROXY on top of that would let QA silently take a
+    different network path than translation whenever the environment happens
+    to have those variables set (CI, corporate boxes) without the user having
+    configured a proxy in the app.
     """
     proxy_url = proxy_url_from_settings(proxy_settings)
 
@@ -1010,7 +1018,7 @@ def aiohttp_session_factory(proxy_settings=None):
                 connector = None
         if connector is None:
             connector = aiohttp.TCPConnector(ssl=create_ssl_context())
-        return aiohttp.ClientSession(trust_env=True, connector=connector)
+        return aiohttp.ClientSession(trust_env=False, connector=connector)
 
     return factory
 

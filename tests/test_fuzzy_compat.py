@@ -9,12 +9,23 @@ consistency checker откалибрована под них. Ключевые �
 - пустые строки и строки, пустеющие после препроцессинга (пунктуация).
 """
 
+import importlib
 import random
+import sys
 import unittest
-
-from fuzzywuzzy import fuzz as legacy_fuzz
+from unittest import mock
 
 from gemini_translator.utils import fuzzy_compat
+
+try:
+    from fuzzywuzzy import fuzz as legacy_fuzz
+except ImportError:
+    legacy_fuzz = None
+
+requires_legacy_fuzzywuzzy = unittest.skipIf(
+    legacy_fuzz is None,
+    "fuzzywuzzy — только эталон для корпусного теста (requirements-dev.txt)",
+)
 
 
 def _mutated_pairs(seed=20260809, count=120):
@@ -91,6 +102,7 @@ class FuzzyCompatTests(unittest.TestCase):
         self.assertEqual(fuzzy_compat.FUZZY_BACKEND, "rapidfuzz")
         self.assertTrue(fuzzy_compat.FUZZ_AVAILABLE)
 
+    @requires_legacy_fuzzywuzzy
     def test_ratio_matches_fuzzywuzzy_on_corpus(self):
         for s1, s2 in CORPUS:
             with self.subTest(s1=s1, s2=s2):
@@ -99,6 +111,7 @@ class FuzzyCompatTests(unittest.TestCase):
                     legacy_fuzz.ratio(s1, s2),
                 )
 
+    @requires_legacy_fuzzywuzzy
     def test_token_set_ratio_matches_fuzzywuzzy_on_corpus(self):
         for s1, s2 in CORPUS:
             with self.subTest(s1=s1, s2=s2):
@@ -107,6 +120,7 @@ class FuzzyCompatTests(unittest.TestCase):
                     legacy_fuzz.token_set_ratio(s1, s2),
                 )
 
+    @requires_legacy_fuzzywuzzy
     def test_preclean_matches_full_path_on_precleaned_input(self):
         """token_set_ratio_preclean применим только к строкам после
         universal_cleaner (\\W+→' ', lower, strip) — на них он обязан давать
@@ -126,6 +140,27 @@ class FuzzyCompatTests(unittest.TestCase):
         self.assertIsInstance(
             fuzzy_compat.token_set_ratio("старейшина мо", "мо великий"), int
         )
+
+    def test_no_fuzzywuzzy_fallback_when_rapidfuzz_missing(self):
+        """rapidfuzz — единственный бэкенд: если его нет, прослойка обязана
+        падать с понятным RuntimeError, а НЕ тихо переезжать на fuzzywuzzy —
+        даже когда сам пакет fuzzywuzzy установлен в окружении (как здесь,
+        ради корпусного эталона выше)."""
+        try:
+            with mock.patch.dict(sys.modules, {"rapidfuzz": None}):
+                reloaded = importlib.reload(fuzzy_compat)
+                self.assertIsNone(reloaded.FUZZY_BACKEND)
+                self.assertFalse(reloaded.FUZZ_AVAILABLE)
+                with self.assertRaises(RuntimeError):
+                    reloaded.ratio("a", "b")
+                with self.assertRaises(RuntimeError):
+                    reloaded.token_set_ratio("a", "b")
+                with self.assertRaises(RuntimeError):
+                    reloaded.token_set_ratio_preclean("a", "b")
+        finally:
+            # rapidfuzz снова доступен (mock.patch.dict откатил sys.modules) —
+            # возвращаем модуль в боевое состояние для остальных тестов файла.
+            importlib.reload(fuzzy_compat)
 
 
 if __name__ == "__main__":

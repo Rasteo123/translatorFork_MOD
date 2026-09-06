@@ -13,13 +13,6 @@ from ..overlay_host import exec_dialog
 from .delegate_utils import PixmapCache
 from ...utils.helpers import format_thousands
 
-try:
-    import Levenshtein
-    LEVENSHTEIN_AVAILABLE = True
-except ImportError:
-    LEVENSHTEIN_AVAILABLE = False
-
-
 TASK_TABLE_ROW_HEIGHT = 40
 REORDER_BUTTON_SIZE = 24
 STATUS_COLUMN_WIDTH = 136

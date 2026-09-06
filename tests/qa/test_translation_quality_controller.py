@@ -391,3 +391,52 @@ def test_a_duration_is_spelled_the_way_a_waiting_person_reads_it():
     assert _humanize_seconds(100) == "2 мин"
     assert _humanize_seconds(3700) == "1 ч 01 мин"
     assert _humanize_seconds(-5) == "0 с"
+
+
+def test_embedding_probe_forwards_app_proxy_settings(qt_app, monkeypatch):
+    """Проба «Проверить подключение» должна ходить через тот же прокси
+    приложения, что и боевой QA-прогон: с trust_env=False у сессии другого
+    источника прокси больше нет, и проба без proxy_settings уходила напрямую."""
+    from gemini_translator.qa import assembly
+    from gemini_translator.qa.settings import QaSettings
+    from gemini_translator.ui.dialogs.validation_dialogs.translation_quality_controller import (
+        _probe_embedding,
+    )
+
+    seen = []
+
+    def fake_factory(proxy_settings=None):
+        seen.append(proxy_settings)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(assembly, "aiohttp_session_factory", fake_factory)
+    proxy = {"enabled": True, "type": "SOCKS5", "host": "127.0.0.1", "port": "1080"}
+
+    message = _probe_embedding(QaSettings(embedding_provider="gemini"), proxy_settings=proxy)
+
+    assert seen == [proxy]
+    assert "не настроен" in message
+
+
+def test_current_proxy_settings_come_from_the_app_settings_manager():
+    from gemini_translator.ui.dialogs.validation_dialogs.translation_quality_controller import (
+        _current_proxy_settings,
+    )
+
+    proxy = {"enabled": True, "type": "HTTP", "host": "proxy.local", "port": "3128"}
+
+    class _Manager:
+        def load_proxy_settings(self):
+            return dict(proxy)
+
+    class _App:
+        def get_settings_manager(self):
+            return _Manager()
+
+    class _BrokenApp:
+        def get_settings_manager(self):
+            raise RuntimeError("settings unavailable")
+
+    assert _current_proxy_settings(_App()) == proxy
+    assert _current_proxy_settings(object()) is None
+    assert _current_proxy_settings(_BrokenApp()) is None

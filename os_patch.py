@@ -16,7 +16,9 @@ ARCHITECTURE NOTE: TRANSPARENT FILE SYSTEM PROXY (ROUTER PATTERN)
 просто принимая виртуальные пути.
 """
 
+import io
 import os
+import posixpath
 import re
 import sys
 import asyncio
@@ -26,27 +28,11 @@ import traceback
 import shutil
 import uuid
 import random
-import warnings
 
-# Suppress known third-party pkg_resources deprecation warnings from PyFilesystem2.
-for _warning_category in (UserWarning, DeprecationWarning):
-    warnings.filterwarnings(
-        "ignore",
-        message=r"pkg_resources is deprecated as an API\..*",
-        category=_warning_category,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Deprecated call to `pkg_resources\.declare_namespace\('fs(?:\.[^']+)?'\)`\.",
-        category=_warning_category,
-    )
-
-import fs
 import zipfile
 import sqlite3
 import time
 from collections import deque
-from fs import path as fs_path
 from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import QTimer
 
@@ -127,6 +113,326 @@ _global_notifier = None
 _memfs_copy_lock = threading.RLock()
 _memfs_source_signatures = {}
 
+class MemFSResourceNotFound(Exception):
+    """Аналог fs.errors.ResourceNotFound для собственной in-memory ФС."""
+
+
+class MemFSClosedError(Exception):
+    """Аналог fs.errors.FilesystemClosed: операция после close()."""
+
+
+class _MemFSFile(io.RawIOBase):
+    """
+    Файловый хендл поверх РАЗДЕЛЯЕМОГО io.BytesIO, который хранится в словаре
+    владеющей MiniMemFS — как _MemoryFile в fs.memoryfs. Несколько хендлов,
+    открытых на один и тот же путь, работают с ОДНИМ и тем же буфером байт;
+    независим только курсор чтения/записи (self._pos) каждого конкретного
+    хендла. Это принципиально отличается от "снимок при open() + запись
+    обратно при close()": здесь close() НЕ пишет ничего в словарь — байты уже
+    лежат там (в разделяемом буфере), пока хендл был открыт.
+
+    Из этого следует наблюдаемое (и проверенное характеризационными тестами)
+    поведение, совпадающее с fs.MemoryFS:
+      - writebytes()/новый openbin('w') на тот же путь, сделанные пока
+        существует ДРУГОЙ, ранее открытый хендл на чтение того же пути, не
+        откатываются обратно при закрытии этого read-хендла;
+      - remove() удалённого файла не "воскресает" из-за close() хендла,
+        открытого на чтение до удаления (буфер этого хендла просто
+        осиротевает — он больше не привязан к словарю);
+      - два одновременно открытых write-хендла на один путь видят записи
+        друг друга сразу, а не "побеждает закрывшийся последним".
+    """
+
+    def __init__(self, owner: "MiniMemFS", internal_path: str, shared: io.BytesIO, mode: str):
+        super().__init__()
+        self._owner = owner
+        self._internal_path = internal_path
+        self._shared = shared
+        self._lock = owner._lock
+        self._writable = any(c in mode for c in ("w", "a", "x", "+"))
+        self._readable = ("+" in mode) or not self._writable
+        self._pos = 0
+        with self._lock:
+            if any(c in mode for c in ("w", "x")):
+                shared.seek(0)
+                shared.truncate()
+            if "a" in mode:
+                self._pos = shared.seek(0, io.SEEK_END)
+
+    def readable(self) -> bool:
+        return self._readable
+
+    def writable(self) -> bool:
+        return self._writable
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, b):
+        if not self._readable:
+            raise io.UnsupportedOperation("not readable")
+        with self._lock:
+            self._shared.seek(self._pos)
+            data = self._shared.read(len(b))
+            n = len(data)
+            b[:n] = data
+            self._pos = self._shared.tell()
+            return n
+
+    def read(self, size: int | None = -1) -> bytes:
+        if not self._readable:
+            raise io.UnsupportedOperation("not readable")
+        with self._lock:
+            self._shared.seek(self._pos)
+            data = self._shared.read() if (size is None or size < 0) else self._shared.read(size)
+            self._pos = self._shared.tell()
+            return data
+
+    def readall(self) -> bytes:
+        return self.read(-1)
+
+    def write(self, b) -> int:
+        if not self._writable:
+            raise io.UnsupportedOperation("not writable")
+        with self._lock:
+            self._shared.seek(self._pos)
+            n = self._shared.write(b)
+            self._pos = self._shared.tell()
+            return n
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        with self._lock:
+            self._shared.seek(self._pos)
+            new_pos = self._shared.seek(offset, whence)
+            self._pos = new_pos
+            return new_pos
+
+    def tell(self) -> int:
+        return self._pos
+
+    def truncate(self, size: int | None = None) -> int:
+        if not self._writable:
+            raise io.UnsupportedOperation("not writable")
+        with self._lock:
+            self._shared.seek(self._pos)
+            result = self._shared.truncate() if size is None else self._shared.truncate(size)
+            self._pos = self._shared.tell()
+            return result
+
+
+class MiniMemFS:
+    """
+    Минимальная замена fs.memoryfs.MemoryFS: dict путь(posix, абсолютный) ->
+    io.BytesIO (РАЗДЕЛЯЕМЫЙ буфер байт, а не снимок), поверх которого
+    выдаются файловые хендлы (_MemFSFile). Реализует ровно тот срез API,
+    которым пользуется os_patch (и только этот срез): exists, isdir, isfile,
+    listdir, makedirs, remove, move, open, openbin, writebytes,
+    getinfo(...).size, close. Директории — явные записи в отдельном
+    множестве (совпадает с наблюдаемым поведением fs.MemoryFS: move() не
+    создаёт родительскую директорию назначения неявно; writebytes()/openbin
+    в write-режимах на отсутствующем родителе поднимают ResourceNotFound, а
+    не создают его неявно).
+    """
+
+    def __init__(self):
+        self._files: dict[str, io.BytesIO] = {}
+        self._dirs: set[str] = {"/"}
+        self._lock = threading.RLock()
+        self._closed = False
+
+    @staticmethod
+    def _norm(path: str) -> str:
+        return posixpath.normpath("/" + str(path).lstrip("/"))
+
+    @staticmethod
+    def _parent_dirs(path: str):
+        parent = posixpath.dirname(path)
+        while parent and parent != "/":
+            yield parent
+            parent = posixpath.dirname(parent)
+        yield "/"
+
+    def _register_parents(self, path: str) -> None:
+        for parent in self._parent_dirs(path):
+            self._dirs.add(parent)
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise MemFSClosedError("MiniMemFS уже закрыта (close() был вызван)")
+
+    def _require_parent_dir(self, path: str) -> None:
+        parent = posixpath.dirname(path)
+        if not parent:
+            parent = "/"
+        if parent not in self._dirs:
+            raise MemFSResourceNotFound(path)
+
+    def exists(self, path: str) -> bool:
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            return p in self._files or p in self._dirs
+
+    def isdir(self, path: str) -> bool:
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            return p in self._dirs
+
+    def isfile(self, path: str) -> bool:
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            return p in self._files
+
+    def listdir(self, path: str):
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            if p not in self._dirs:
+                raise MemFSResourceNotFound(path)
+            prefix = p if p == "/" else p + "/"
+            names = set()
+            for existing in (*self._files, *self._dirs):
+                if existing == p or not existing.startswith(prefix):
+                    continue
+                names.add(existing[len(prefix):].split("/", 1)[0])
+            return sorted(names)
+
+    def makedirs(self, path: str, recreate: bool = False, *args, **kwargs):
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            if p in self._dirs and not recreate:
+                raise FileExistsError(f"Directory already exists in memfs: '{path}'")
+            self._dirs.add(p)
+            self._register_parents(p)
+
+    def remove(self, path: str):
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            if p not in self._files:
+                raise MemFSResourceNotFound(path)
+            # Уже открытые хендлы на этот путь держат прямую ссылку на свой
+            # io.BytesIO и продолжают с ним работать (осиротевший буфер) —
+            # словарь просто перестаёт на него указывать, как у fs.MemoryFS
+            # (remove() отвязывает запись каталога, а не трогает уже открытые
+            # файловые объекты).
+            del self._files[p]
+
+    def move(self, src_path: str, dst_path: str):
+        src = self._norm(src_path)
+        dst = self._norm(dst_path)
+        with self._lock:
+            self._check_open()
+            if src not in self._files:
+                raise MemFSResourceNotFound(src_path)
+            dst_parent = posixpath.dirname(dst)
+            if dst_parent not in self._dirs and dst_parent != "":
+                raise MemFSResourceNotFound(dst_path)
+            buf = self._files.pop(src)
+            self._files[dst] = buf
+
+    def writebytes(self, path: str, data: bytes):
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            self._require_parent_dir(p)
+            buf = self._files.get(p)
+            if buf is None:
+                self._files[p] = io.BytesIO(bytes(data))
+            else:
+                buf.seek(0)
+                buf.truncate()
+                buf.write(bytes(data))
+
+    def getinfo(self, path: str, namespaces=None):
+        p = self._norm(path)
+        with self._lock:
+            self._check_open()
+            buf = self._files.get(p)
+            if buf is None:
+                raise MemFSResourceNotFound(path)
+            size = buf.getbuffer().nbytes
+        return _MemFSInfo(size=size)
+
+    def openbin(self, path: str, mode: str = "r"):
+        return self._open_handle(path, mode)
+
+    def open(self, path: str, mode: str = "r", encoding: str | None = None, newline: str = ""):
+        # newline="" (а не None) — как fs.base.FS.open(): переводы строк НЕ
+        # транслируются. С newline=None (умолчание io.TextIOWrapper) на
+        # Windows-CI запись '\n' превратилась бы в os.linesep ('\r\n'),
+        # чего fs не делал (см. характеризационный тест на CRLF round-trip).
+        bin_mode = mode.replace("t", "")
+        handle = self._open_handle(path, bin_mode)
+        if handle.readable() and handle.writable():
+            buffered = io.BufferedRandom(handle)
+        elif handle.writable():
+            buffered = io.BufferedWriter(handle)
+        else:
+            buffered = io.BufferedReader(handle)
+        return io.TextIOWrapper(buffered, encoding=encoding or "utf-8", newline=newline)
+
+    def _open_handle(self, path: str, mode: str) -> _MemFSFile:
+        p = self._norm(path)
+        is_write_like = any(flag in mode for flag in ("w", "a", "x", "+"))
+        with self._lock:
+            self._check_open()
+            if is_write_like:
+                buf = self._files.get(p)
+                if "x" in mode and buf is not None:
+                    raise FileExistsError(f"File already exists in memfs: '{path}'")
+                self._require_parent_dir(p)
+                if buf is None:
+                    buf = io.BytesIO()
+                    self._files[p] = buf
+            else:
+                buf = self._files.get(p)
+                if buf is None:
+                    raise MemFSResourceNotFound(path)
+            # Создание _MemFSFile (truncate/seek-to-end) само берёт self._lock
+            # (RLock — реентрантно), поэтому конструируем его всё ещё внутри
+            # внешнего with, чтобы конкурентный writebytes/remove не мог
+            # вклиниться между выбором буфера и настройкой курсора хендла.
+            return _MemFSFile(self, p, buf, mode)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            self._files.clear()
+            self._dirs = {"/"}
+
+
+class _MemFSInfo:
+    """Лёгкая замена fs.info.Info: нужен только атрибут .size."""
+
+    __slots__ = ("size",)
+
+    def __init__(self, size: int):
+        self.size = size
+
+
+# Явный список функций os.path, которые проксируются на mem://-пути.
+# Раньше это делалось через getattr(fs.path, name) (getattr-магия, тянувшая
+# внутрь произвольные атрибуты fs.path). Теперь — только posixpath-функции,
+# которые реально используются на виртуальных путях в этой кодовой базе;
+# всё остальное явно не поддерживается (AttributeError), а не имитируется
+# приблизительно похожей, но иначе себя ведущей функцией (relpath у fs.path
+# работал не как posixpath.relpath — см. характеризационные тесты).
+_MEM_PATH_FUNCS = {
+    "abspath": posixpath.abspath,
+    "basename": posixpath.basename,
+    "dirname": posixpath.dirname,
+    "isabs": posixpath.isabs,
+    "join": posixpath.join,
+    "normpath": posixpath.normpath,
+    "split": posixpath.split,
+    "splitext": posixpath.splitext,
+}
+
+
 # --- КОД ВСПОМОГАТЕЛЬНЫХ ФУНКЦИЙ ---
 def _parse_path(path):
     if isinstance(path, str) and path.startswith(VIRTUAL_PREFIX):
@@ -147,7 +453,7 @@ def _get_or_create_mem_fs():
     app = QtWidgets.QApplication.instance()
     if not hasattr(app, 'mem_fs'):
         print("--- [OS_PATCH] Открытие виртуальной файловой системы... ---")
-        app.mem_fs = fs.open_fs('mem://')
+        app.mem_fs = MiniMemFS()
         import atexit
         atexit.register(_safe_memfs_cleanup)
     return app.mem_fs
@@ -177,7 +483,11 @@ class HybridPath:
                     return mem_fs.isdir(internal_path)
                 if name == 'isfile':
                     return mem_fs.isfile(internal_path)
-                func = getattr(fs_path, name)
+                func = _MEM_PATH_FUNCS.get(name)
+                if func is None:
+                    raise AttributeError(
+                        f"os.path.{name} не поддерживается для mem://-путей"
+                    )
                 result = func(internal_path, *args, **kwargs)
                 if name in ('join', 'normpath', 'abspath') and isinstance(result, str):
                     if result.startswith('/'): result = result[1:]
@@ -516,7 +826,7 @@ def _patched_open(file, mode='r', *args, **kwargs):
             if 'b' in mode: return mem_fs.openbin(internal_path, mode)
             encoding = kwargs.get('encoding', 'utf-8')
             return mem_fs.open(internal_path, mode, encoding=encoding)
-        except fs.errors.ResourceNotFound:
+        except MemFSResourceNotFound:
              raise FileNotFoundError(f"No such file in memfs: '{file}'")
 
     # --- "Терпеливое" открытие реальных файлов ---

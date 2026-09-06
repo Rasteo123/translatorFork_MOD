@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Общий ленивый доступ к морфологии (pymorphy3/pymorphy2) и прогрев jieba.
+"""Общий ленивый доступ к морфологии (pymorphy3) и прогрев jieba.
 
 Словари pymorphy — ~35МБ кучи и ~секунда на построение, jieba — ещё ~18МБ.
 Раньше pymorphy строился при импорте glossary.py (то есть при старте GUI),
@@ -18,9 +18,7 @@ jieba грелся безусловно в main.py, а glued_words строил 
 import importlib.util
 import threading
 
-PYMORPHY_AVAILABLE = bool(
-    importlib.util.find_spec("pymorphy3") or importlib.util.find_spec("pymorphy2")
-)
+PYMORPHY_AVAILABLE = bool(importlib.util.find_spec("pymorphy3"))
 
 _morph_analyzer = None
 _MORPH_BUILD_LOCK = threading.Lock()
@@ -48,12 +46,7 @@ def get_morph_analyzer():
                 _morph_analyzer = pymorphy3.MorphAnalyzer(lang='ru')
                 print("INFO: Используется библиотека pymorphy3.")
             except Exception:
-                try:
-                    import pymorphy2
-                    _morph_analyzer = pymorphy2.MorphAnalyzer()
-                    print("INFO: Используется библиотека pymorphy2 (рекомендуется обновиться до pymorphy3).")
-                except Exception:
-                    PYMORPHY_AVAILABLE = False
+                PYMORPHY_AVAILABLE = False
     return _morph_analyzer
 
 

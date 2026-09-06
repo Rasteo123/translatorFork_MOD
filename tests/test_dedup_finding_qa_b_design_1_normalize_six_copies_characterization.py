@@ -11,7 +11,7 @@ copies before the refactor collapses them onto
 
 from __future__ import annotations
 
-from gemini_translator.qa import addition_detector, glossary_audit
+from gemini_translator.qa import addition_detector, glossary_audit, glossary_terms
 from gemini_translator.qa.llm import CancellationToken, QaModelSelection
 from gemini_translator.qa.models import AlignmentSpan, CandidateContext, GapCandidate
 from gemini_translator.qa.text_normalize import normalize_for_comparison
@@ -82,8 +82,8 @@ def test_glossary_normalize_policy_text_delegates_to_canonical_helper() -> None:
     # _normalize_policy_text must stay byte-for-byte identical to _normalize
     # minus the glossary-only ё->е fold and quote-stripping, so both glossary
     # normalizers share one canonical tail instead of drifting independently.
-    assert glossary_audit._normalize_policy_text("a″b") == "a''b"
-    assert glossary_audit._normalize_policy_text("Ёлка") == "ёлка"
+    assert glossary_terms._normalize_policy_text("a″b") == "a''b"
+    assert glossary_terms._normalize_policy_text("Ёлка") == "ёлка"
 
 
 def _build_addition_context(target_text: str, minimum_addition_chars: int):

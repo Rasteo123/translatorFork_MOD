@@ -16,7 +16,7 @@ from ..utils.epub_json import (
 )
 from ..utils.text import validate_html_structure
 from .capabilities import QaCapabilitySettings
-from .glossary_audit import glossary_violation_reason
+from .glossary_terms import glossary_violation_reason
 from .models import (
     QaModelValidationError,
     RelevantGlossaryTerm,

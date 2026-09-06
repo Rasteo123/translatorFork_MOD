@@ -2,9 +2,10 @@ import tempfile
 import unittest
 import zipfile
 import os
+import posixpath
+import types
 from pathlib import Path
 
-from fs import path as fs_path
 
 from gemini_translator.utils.language_tools import GlossaryRegexService
 from gemini_translator.utils.term_frequency_tools import (
@@ -12,6 +13,22 @@ from gemini_translator.utils.term_frequency_tools import (
     calculate_term_frequency_payload,
     get_epub_signature,
 )
+
+
+def _path_module_without_normcase():
+    """Модуль путей без normcase — как HybridPath из os_patch поверх mem://.
+
+    Раньше роль такого модуля играл fs.path (PyFilesystem2); пакет fs из
+    рантайма убран, а свойство «нет normcase» воспроизводится напрямую."""
+    module = types.ModuleType("path_without_normcase")
+    for name in dir(posixpath):
+        if name.startswith("_") or name == "normcase":
+            continue
+        setattr(module, name, getattr(posixpath, name))
+    return module
+
+
+fs_path = _path_module_without_normcase()
 
 
 def _write_epub(path, chapters):

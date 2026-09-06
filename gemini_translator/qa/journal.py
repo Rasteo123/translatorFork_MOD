@@ -7,9 +7,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable, Mapping
-
-import pandas as pd
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from .models import (
     ChapterMetrics,
@@ -18,6 +16,9 @@ from .models import (
     QaJournalEntry,
     QaModelValidationError,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - import kept out of the startup path
+    import pandas as pd
 
 
 class QaJournalError(ValueError):
@@ -197,6 +198,10 @@ class QaJournal:
             self.append_repair(repair)
 
     def metrics_frame(self) -> pd.DataFrame:
+        # Imported lazily: a session that never exports a metrics report
+        # never pays pandas's startup cost.
+        import pandas as pd
+
         rows = [
             self.metrics[chapter_id].to_dict() for chapter_id in sorted(self.metrics)
         ]

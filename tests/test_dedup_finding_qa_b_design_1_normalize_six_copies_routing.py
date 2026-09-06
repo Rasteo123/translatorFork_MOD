@@ -20,6 +20,7 @@ from gemini_translator.qa import (
     addition_detector,
     foreign_text_filter,
     glossary_audit,
+    glossary_terms,
     repair_validator,
     structural_repair,
 )
@@ -168,9 +169,13 @@ def test_glossary_audit_normalize_routes_through_canonical(
 def test_glossary_audit_normalize_policy_text_routes_through_canonical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # _normalize_policy_text lives in glossary_terms.py (moved there so that
+    # importing it does not also import pandas) and closes over that
+    # module's own `normalize_for_comparison` binding, so the patch target
+    # must be glossary_terms, not glossary_audit.
     calls, fake = _recording_fake()
-    monkeypatch.setattr(glossary_audit, "normalize_for_comparison", fake)
+    monkeypatch.setattr(glossary_terms, "normalize_for_comparison", fake)
 
-    glossary_audit._normalize_policy_text("hello")
+    glossary_terms._normalize_policy_text("hello")
 
     assert calls, "expected _normalize_policy_text to normalize via the canonical helper"

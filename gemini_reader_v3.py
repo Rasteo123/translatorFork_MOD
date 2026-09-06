@@ -55,9 +55,9 @@ except ImportError:
     Document = None
 
 try:
-    import nltk
+    from razdel import sentenize as _razdel_sentenize
 except ImportError:
-    nltk = None
+    _razdel_sentenize = None
 
 try:
     import pyaudio
@@ -81,11 +81,6 @@ try:
 except ImportError:
     genai = None
     genai_types = None
-
-try:
-    from loguru import logger as _loguru_logger
-except ImportError:
-    _loguru_logger = None
 
 try:
     from gemini_translator.api import config as reader_api_config
@@ -490,7 +485,7 @@ class LogSignal(QObject):
 log_fifo = LogSignal()
 
 def custom_log_handler(message):
-    """Глобальный обработчик для перехвата сообщений из loguru и отправки в GUI"""
+    """Обработчик логов для отправки отфильтрованных сообщений в GUI."""
     try:
         record = message.record
         msg = record["message"]
@@ -2600,25 +2595,50 @@ class ProjectDailyRequestLimiter:
             return self._get_local_count_locked(model_id, api_key)
 
 
+_CYRILLIC_CHAR_RE = re.compile(r"[Ѐ-ӿ]")
+_LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
+
+
+def _is_russian_text(text):
+    # Cheap heuristic, not a real language detector: routes text to razdel
+    # only when it looks predominantly Russian. It counts characters, not
+    # words, so a Russian paragraph dense with Latin names/terms (or a
+    # mixed-script paragraph in general) can fall back to the plain regex
+    # tokenizer instead of razdel. That is an accepted, deliberate trade-off
+    # (see the sentence-tokenizer characterization tests for the
+    # mixed-script boundary case) rather than an oversight.
+    if not text:
+        return False
+    cyrillic_count = len(_CYRILLIC_CHAR_RE.findall(text))
+    if cyrillic_count == 0:
+        return False
+    latin_count = len(_LATIN_CHAR_RE.findall(text))
+    return cyrillic_count > latin_count
+
+
 def _sentence_tokenize(text):
     fallback_sentences = [
         part.strip()
         for part in re.split(r"(?<=[.!?])\s+|\n+", text)
         if part.strip()
     ]
-    if nltk is None:
+    if _razdel_sentenize is None or not _is_russian_text(text):
         return fallback_sentences
 
     try:
-        return nltk.sent_tokenize(text)
-    except LookupError:
-        if os.environ.get("GEMINI_READER_ALLOW_NLTK_DOWNLOAD") == "1":
-            try:
-                nltk.download("punkt", quiet=True)
-                return nltk.sent_tokenize(text)
-            except Exception:
-                return fallback_sentences
-        return fallback_sentences
+        # razdel.sentenize only splits on sentence punctuation, not on line
+        # breaks, so feed it one line at a time to keep the legacy behaviour
+        # of also breaking on "\n+" (headings, list items, unpunctuated
+        # dialogue lines, verse) instead of merging whole paragraphs into a
+        # single oversized "sentence".
+        razdel_sentences = [
+            substring.text.strip()
+            for line in re.split(r"\n+", text)
+            if line.strip()
+            for substring in _razdel_sentenize(line)
+            if substring.text.strip()
+        ]
+        return razdel_sentences or fallback_sentences
     except Exception:
         return fallback_sentences
 
@@ -2688,18 +2708,13 @@ def _split_live_paragraph(paragraph, max_chars=LIVE_PARAGRAPH_MAX_CHARS):
     return chunks or [paragraph]
 
 
-if _loguru_logger is not None:
-    logger = _loguru_logger
-    logger.remove()
-    logger.add(custom_log_handler, level="INFO")
-else:
-    logger = logging.getLogger("gemini_reader")
-    if not getattr(logger, "_gemini_reader_configured", False):
-        logger.setLevel(logging.INFO)
-        logger.handlers.clear()
-        logger.addHandler(_GuiLoggingHandler())
-        logger.propagate = False
-        logger._gemini_reader_configured = True
+logger = logging.getLogger("gemini_reader")
+if not getattr(logger, "_gemini_reader_configured", False):
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.addHandler(_GuiLoggingHandler())
+    logger.propagate = False
+    logger._gemini_reader_configured = True
 
 # --- ПОДГОТОВКА ТЕКСТА ---
 def _is_supported_reader_book_path(path):

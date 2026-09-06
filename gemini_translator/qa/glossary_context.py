@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-from .glossary_audit import match_glossary_policies
+from .glossary_terms import match_glossary_policies
 from .models import (
     GlossaryPolicy,
     GlossaryRule,

@@ -255,8 +255,14 @@ class TranslationQualityController(QObject):
             return
         self.status_changed.emit("Проверяем подключение…")
 
+        # Прокси приложения читаем здесь, в GUI-потоке: SettingsManager не
+        # предназначен для чтения из фонового потока, а проба обязана ходить тем
+        # же маршрутом, что и боевой QA-прогон (trust_env=False у сессии —
+        # другого источника прокси нет).
+        proxy_settings = _current_proxy_settings()
+
         def run() -> None:
-            message = _probe_embedding(qa_settings)
+            message = _probe_embedding(qa_settings, proxy_settings=proxy_settings)
             self.status_changed.emit(message)
 
         threading.Thread(target=run, name="qa-embedding-probe", daemon=True).start()
@@ -402,14 +408,33 @@ class TranslationQualityController(QObject):
         self.busy_changed.emit(self._busy)
 
 
-def _probe_embedding(qa_settings) -> str:
+def _current_proxy_settings(app=None):
+    """Прокси приложения для пробы — тот же источник, что и у боевого QA-прогона.
+
+    None, если приложение не предоставляет менеджер настроек (тесты, CLI).
+    ``app`` подставляется в тестах; по умолчанию — текущий QCoreApplication."""
+    if app is None:
+        from PyQt6.QtCore import QCoreApplication
+
+        app = QCoreApplication.instance()
+    getter = getattr(app, "get_settings_manager", None)
+    if not callable(getter):
+        return None
+    try:
+        loader = getattr(getter(), "load_proxy_settings", None)
+        return loader() if callable(loader) else None
+    except Exception:  # noqa: BLE001 - проба не должна падать из-за настроек
+        return None
+
+
+def _probe_embedding(qa_settings, proxy_settings=None) -> str:
     """Return a human-readable verdict about the configured embedding provider."""
-    from ....qa.assembly import aiohttp_session_factory, build_embedding_provider
+    from ....qa import assembly
     from ....qa.embeddings.base import EmbeddingRequest
 
     try:
-        provider = build_embedding_provider(
-            qa_settings, aiohttp_session_factory(), {}
+        provider = assembly.build_embedding_provider(
+            qa_settings, assembly.aiohttp_session_factory(proxy_settings), {}
         )
     except Exception as error:  # noqa: BLE001 - the user needs the reason, not a trace
         return f"Провайдер не настроен: {error}"

@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import math
-
-import numpy as np
+from typing import TYPE_CHECKING
 
 from .models import (
     AlignmentConfig,
@@ -17,6 +16,9 @@ from .models import (
     QaModelValidationError,
     SemanticUnit,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - import kept out of the startup path
+    import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +185,8 @@ class MonotonicAligner:
         paragraphs answers the same question and a lost paragraph is one
         sample among many, so it barely moves it.
         """
+        import numpy as np
+
         if (
             paragraphs is not None
             and len(paragraphs.source) >= self.config.robust_ratio_min_blocks
@@ -214,6 +218,8 @@ class MonotonicAligner:
         a stable distance below it.  The distance is read against the chapter's
         own median, so no absolute similarity threshold is baked in.
         """
+
+        import numpy as np
 
         if self.config.orphan_penalty <= 0.0 or self.config.orphan_drop <= 0.0:
             return (0.0,) * len(units)
@@ -269,6 +275,8 @@ class MonotonicAligner:
         size: int,
         cache: dict[tuple[int, int, int], np.ndarray | None],
     ) -> np.ndarray | None:
+        import numpy as np
+
         key = (id(data), start, size)
         if key in cache:
             return cache[key]
@@ -289,6 +297,8 @@ class MonotonicAligner:
     def _similarity(
         self, source, source_start, source_size, target, target_start, target_size, cache
     ) -> float | None:
+        import numpy as np
+
         source_vector = self._span_vector(source, source_start, source_size, cache)
         target_vector = self._span_vector(target, target_start, target_size, cache)
         if source_vector is None or target_vector is None:
@@ -347,6 +357,8 @@ class _ParagraphView:
         source_chars: tuple[int, ...],
         target_chars: tuple[int, ...],
     ) -> "_ParagraphView | None":
+        import numpy as np
+
         source_blocks = _block_vectors(source, source_chars)
         target_blocks = _block_vectors(target, target_chars)
         if not source_blocks or not target_blocks:
@@ -374,6 +386,8 @@ class _Block:
 
 def _block_vectors(data: EmbeddedUnits, chars: tuple[int, ...]) -> tuple[_Block, ...]:
     """Pool units into the blocks a reader sees as paragraphs."""
+    import numpy as np
+
     blocks: list[_Block] = []
     start = 0
     for index in range(1, len(data.units) + 1):

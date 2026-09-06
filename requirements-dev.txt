@@ -1,3 +1,5 @@
+fuzzywuzzy
 pytest
 pytest-qt
+python-Levenshtein
 ruff

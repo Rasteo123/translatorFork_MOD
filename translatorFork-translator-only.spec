@@ -27,7 +27,6 @@ datas = [
 datas += collect_data_files('PyQt6')
 datas += collect_data_files('certifi')
 datas += collect_data_files('docx')
-datas += collect_data_files('emoji')
 datas += collect_data_files('jieba')
 datas += collect_data_files('lxml')
 datas += collect_data_files('qoder_agent_sdk')
@@ -43,8 +42,6 @@ a = Analysis(
         'PyQt6.sip',
         'docx',
         'pypdf',
-        'google.genai',
-        'google.genai.types',
         *LAZY_HANDLER_HIDDEN_IMPORTS,
         *QA_RUNTIME_HIDDEN_IMPORTS,
     ],

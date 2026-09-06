@@ -4,12 +4,7 @@ from bs4 import BeautifulSoup
 from PyQt6 import QtCore
 from PyQt6.QtCore import pyqtSignal, QThread
 from num2words import num2words
-import emoji
-if not hasattr(emoji, 'UNICODE_EMOJI'):
-    emoji.UNICODE_EMOJI = {} 
-
-from recognizers_text import Culture
-from recognizers_number import recognize_number
+from gemini_translator.utils.recognizers_shim import Culture, recognize_number
 
 class NumeralsExtractionWorker(QtCore.QThread):
     finished = pyqtSignal(list, str) 

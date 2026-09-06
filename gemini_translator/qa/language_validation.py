@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import re
 
 from ..utils.epub_json import build_translation_payload
-from .glossary_audit import contains_term_forms
+from .glossary_terms import contains_term_forms
 from .llm.completion import CancellationToken, QaCompletionClient, QaModelSelection
 from .llm.schemas import LanguageIssue
 from .models import GlossaryPolicy, QaModelValidationError, RelevantGlossaryTerm

@@ -5,10 +5,7 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QStyle
 from PyQt6.QtGui import QIcon
 
-try:
-    from loguru import logger
-except ImportError:
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 class NotificationManager:
     _tray_icon = None

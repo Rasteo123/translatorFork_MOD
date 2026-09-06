@@ -41,12 +41,6 @@ except ImportError:
     BeautifulSoup = None
     BS4_AVAILABLE = False
 
-try:
-    import Levenshtein
-    LEVENSHTEIN_AVAILABLE = True
-except ImportError:
-    LEVENSHTEIN_AVAILABLE = False
-    
 # --- Импорты из нашего проекта ---
 from gemini_translator.ui import theme_manager
 from gemini_translator.ui.wait_dialogs import show_when_slow

@@ -25,7 +25,7 @@ from .models import (
     RelevantGlossaryTerm,
     VerifiedCandidate,
 )
-from .glossary_audit import glossary_violation_reason
+from .glossary_terms import glossary_violation_reason
 from .semantic_units import flatten_visible_text
 from .structural_repair import REPAIR_MARKER_ATTRIBUTE, RepairValidation
 from .text_normalize import normalize_for_comparison

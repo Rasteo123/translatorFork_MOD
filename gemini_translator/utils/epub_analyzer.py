@@ -26,13 +26,9 @@ except ImportError:
     Tag = None
     NavigableString = None
 
-# Number recognizers (optional)
-try:
-    from recognizers_text import Culture
-    from recognizers_number import recognize_number
-    RECOGNIZERS_AVAILABLE = True
-except ImportError:
-    RECOGNIZERS_AVAILABLE = False
+# Number recognizers (optional) — общий шим совместимости emoji/recognizers-text,
+# см. gemini_translator/utils/recognizers_shim.py
+from .recognizers_shim import Culture, recognize_number, RECOGNIZERS_AVAILABLE
 
 
 class EpubAnalyzer:
@@ -200,19 +196,25 @@ class EpubAnalyzer:
         mismatches = []
         
         cultures = [Culture.English, Culture.Chinese, Culture.Japanese]
-        
+        # recognizers-text-number возвращает resolution['value'] как СТРОКУ
+        # (например '5'), а target_number приходит как int из имени файла.
+        # Сравнивать нужно в одном типе, иначе `val != target_number` истинно
+        # всегда и каждая корректно пронумерованная глава ложно считается
+        # рассинхронизированной.
+        target_str = str(target_number)
+
         for culture in cultures:
             try:
                 results = recognize_number(header_text, culture)
                 for res in results:
                     if 'value' in res.resolution:
-                        val = res.resolution['value']
-                        
+                        val = str(res.resolution['value'])
+
                         # Check if the target number is NOT in the recognized numbers
-                        all_nums = [r.resolution['value'] for r in results 
+                        all_nums = [str(r.resolution['value']) for r in results
                                    if 'value' in r.resolution]
-                        
-                        if val != target_number and target_number not in all_nums:
+
+                        if val != target_str and target_str not in all_nums:
                             mismatches.append({
                                 'type': 'num_mismatch',
                                 'file': chapter_name,

@@ -6,12 +6,7 @@ from datetime import datetime, timedelta, timezone
 from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import QObject, pyqtSlot, pyqtSignal
 import threading
-
-try:
-    import pytz
-    PYTZ_AVAILABLE = True
-except ImportError:
-    PYTZ_AVAILABLE = False
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..api import config as api_config
 from .text_sanitize import sanitize_path_segment
@@ -21,6 +16,18 @@ SETTINGS_DIR_ENV = "GT_SETTINGS_DIR"
 DEFAULT_SETTINGS_DIRNAME = ".epub_translator"
 PROFILE_SETTINGS_DIRNAME = "profiles"
 _DEFAULT_PROFILE_ALIASES = {"", "default", "global", "main"}
+
+# Неизвестные таймзоны в reset_policy встречаются в хот-пути (таймер обслуживания
+# лимитов раз в 5с на каждый ключ/модель, перерисовка UI, выбор ключа в QA/воркерах).
+# Печатаем предупреждение один раз на имя зоны за процесс, а не на каждый вызов.
+_WARNED_UNKNOWN_TIMEZONES = set()
+
+
+def _warn_unknown_timezone_once(zone_name, message):
+    if zone_name in _WARNED_UNKNOWN_TIMEZONES:
+        return
+    _WARNED_UNKNOWN_TIMEZONES.add(zone_name)
+    print(message)
 
 
 def normalize_settings_profile(profile) -> str:
@@ -442,7 +449,7 @@ class SettingsManager(QObject):
             key_info['status_by_model'][model_id] = {"exhausted_at": None, "exhausted_level": 0, "requests": []}
         return key_info['status_by_model'][model_id]
 
-    def is_key_limit_active(self, key_info, model_id):
+    def is_key_limit_active(self, key_info, model_id, now_utc=None):
         if not model_id: return False
         model_status = self._get_status_for_model(key_info, model_id)
         timestamp = model_status.get("exhausted_at")
@@ -451,16 +458,23 @@ class SettingsManager(QObject):
         provider = key_info.get("provider", "default")
         policy = api_config.api_providers_view().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
         exhausted_time_utc = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        now_utc = datetime.now(timezone.utc)
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
         if policy["type"] == "rolling":
             return now_utc < exhausted_time_utc + timedelta(hours=policy["duration_hours"])
-        elif policy["type"] == "daily" and PYTZ_AVAILABLE:
+        elif policy["type"] == "daily":
             try:
-                tz = pytz.timezone(policy["timezone"])
+                tz = ZoneInfo(policy["timezone"])
                 now_in_tz = now_utc.astimezone(tz)
                 last_reset = now_in_tz.replace(hour=policy.get("reset_hour",0), minute=policy.get("reset_minute",1), second=0, microsecond=0)
                 if last_reset > now_in_tz: last_reset -= timedelta(days=1)
                 return exhausted_time_utc.astimezone(tz) > last_reset
+            except ZoneInfoNotFoundError:
+                _warn_unknown_timezone_once(
+                    policy.get('timezone'),
+                    f"[WARN] Неизвестная таймзона '{policy.get('timezone')}' в reset_policy, используется деградация до 24ч",
+                )
+                return now_utc < exhausted_time_utc + timedelta(hours=24)
             except Exception: return now_utc < exhausted_time_utc + timedelta(hours=24)
         else: return now_utc < exhausted_time_utc + timedelta(hours=24)
     
@@ -471,7 +485,7 @@ class SettingsManager(QObject):
                     return key_info.copy()
         return None
 
-    def get_key_reset_time_str(self, key_info, model_id):
+    def get_key_reset_time_str(self, key_info, model_id, now_utc=None):
         if not model_id: return "Модель не выбрана"
         model_status = self._get_status_for_model(key_info, model_id)
         timestamp = model_status.get("exhausted_at")
@@ -479,16 +493,24 @@ class SettingsManager(QObject):
         provider = key_info.get("provider", "default")
         policy = api_config.api_providers_view().get(provider, {}).get('reset_policy', api_config.default_reset_policy())
         exhausted_time_utc = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
         reset_time_utc = None
         if policy["type"] == "rolling":
             reset_time_utc = exhausted_time_utc + timedelta(hours=policy["duration_hours"])
-        elif policy["type"] == "daily" and PYTZ_AVAILABLE:
+        elif policy["type"] == "daily":
             try:
-                tz = pytz.timezone(policy["timezone"])
-                now_in_tz = datetime.now(tz)
+                tz = ZoneInfo(policy["timezone"])
+                now_in_tz = now_utc.astimezone(tz)
                 next_reset_in_tz = now_in_tz.replace(hour=policy.get("reset_hour", 0), minute=policy.get("reset_minute", 1), second=0, microsecond=0)
                 if next_reset_in_tz <= now_in_tz: next_reset_in_tz += timedelta(days=1)
                 reset_time_utc = next_reset_in_tz.astimezone(timezone.utc)
+            except ZoneInfoNotFoundError as e:
+                _warn_unknown_timezone_once(
+                    policy.get('timezone'),
+                    f"[WARN] Неизвестная таймзона в reset_policy ({e}), используется деградация до 24ч",
+                )
+                reset_time_utc = exhausted_time_utc + timedelta(hours=24)
             except Exception as e:
                 print(f"[ERROR] Ошибка расчета времени для ключа (daily policy): {e}")
                 reset_time_utc = exhausted_time_utc + timedelta(hours=24)
@@ -518,9 +540,9 @@ class SettingsManager(QObject):
             cutoff = now_ts - (int(policy.get('duration_hours', 24)) * 3600)
             return sorted(ts for ts in normalized_timestamps if ts > cutoff)
 
-        if policy['type'] == 'daily' and PYTZ_AVAILABLE:
+        if policy['type'] == 'daily':
             try:
-                tz = pytz.timezone(policy["timezone"])
+                tz = ZoneInfo(policy["timezone"])
                 now_in_tz = datetime.fromtimestamp(now_ts, tz=timezone.utc).astimezone(tz)
                 last_reset = now_in_tz.replace(
                     hour=policy.get("reset_hour", 0),
@@ -532,6 +554,11 @@ class SettingsManager(QObject):
                     last_reset -= timedelta(days=1)
                 cutoff = int(last_reset.timestamp())
                 return sorted(ts for ts in normalized_timestamps if ts > cutoff)
+            except ZoneInfoNotFoundError:
+                _warn_unknown_timezone_once(
+                    policy.get('timezone'),
+                    f"[WARN] Неизвестная таймзона '{policy.get('timezone')}' в reset_policy, используется деградация до 24ч",
+                )
             except Exception:
                 pass
 

@@ -21,12 +21,9 @@ from .language_tools import LanguageDetector
 # внутри _refresh_toc_table — единственного места использования.
 
 
-try:
-    from recognizers_text import Culture
-    from recognizers_number import recognize_number
-    HAS_RECOGNIZERS = True
-except ImportError:
-    HAS_RECOGNIZERS = False
+# Общий шим совместимости emoji/recognizers-text, см.
+# gemini_translator/utils/recognizers_shim.py
+from .recognizers_shim import Culture, recognize_number, RECOGNIZERS_AVAILABLE as HAS_RECOGNIZERS
 
 
 CJK_CHAPTER_NUMBER_REGEX = r'[0-9零一二三四五六七八九十百千万两]+'
@@ -157,8 +154,13 @@ def smart_replace_number_in_title(title, new_number_int):
             # Находим самое левое вхождение
             leftmost = min(results, key=lambda x: x.start)
             start = leftmost.start
-            end = leftmost.end
-            return title[:start] + str(new_number_int) + title[end:]
+            # ВАЖНО: у recognizers-text-number ModelResult.end — индекс
+            # ПОСЛЕДНЕГО символа найденного числа (включительно), а не
+            # exclusive-конец среза. Резать нужно по длине leftmost.text,
+            # иначе последний символ числа остаётся в результате
+            # ('Глава 5' -> 'Глава 95' вместо 'Глава 9').
+            end_exclusive = start + len(leftmost.text)
+            return title[:start] + str(new_number_int) + title[end_exclusive:]
 
     # --- 3. FALLBACK: ОБЫЧНЫЕ ЦИФРЫ ---
     # Если библиотека не подключена или ничего не нашла (например "Chapter One" без библиотеки)

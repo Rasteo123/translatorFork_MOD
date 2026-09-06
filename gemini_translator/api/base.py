@@ -52,8 +52,22 @@ except ImportError:
 
 try:
     import socks
-    from aiohttp_socks import ProxyConnector, ProxyType
-    PROXY_ERRORS = (socks.ProxyError, socks.GeneralProxyError, socks.ProxyConnectionError)
+    from aiohttp_socks import (
+        ProxyConnector,
+        ProxyType,
+        ProxyError as _AiohttpSocksProxyError,
+        ProxyConnectionError as _AiohttpSocksProxyConnectionError,
+        ProxyTimeoutError as _AiohttpSocksProxyTimeoutError,
+    )
+    # aiohttp_socks оборачивает исключения python_socks в СВОИ собственные
+    # классы (aiohttp_socks/_errors.py), которые наследуют напрямую Exception,
+    # а не OSError — в отличие от python_socks.Proxy*Error. Без них отказ
+    # SOCKS-прокси на async-пути (ProxyConnector) не попадал под
+    # классификацию NetworkError ниже и улетал наружу голым `raise e`.
+    PROXY_ERRORS = (
+        socks.ProxyError, socks.GeneralProxyError, socks.ProxyConnectionError,
+        _AiohttpSocksProxyError, _AiohttpSocksProxyConnectionError, _AiohttpSocksProxyTimeoutError,
+    )
 except (ImportError, AttributeError):
     socks = None
     ProxyConnector = None
@@ -210,7 +224,12 @@ class BaseApiHandler:
         timeout = aiohttp.ClientTimeout(total=api_timeout)
         # No explicit loop=: ClientSession binds to asyncio.get_running_loop(),
         # so the session and its connector always share the loop running this call.
-        self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        # trust_env=False (явно): единственный источник прокси — proxy_settings
+        # приложения (см. _build_connector выше и qa/assembly.aiohttp_session_factory),
+        # переменные окружения HTTP_PROXY/HTTPS_PROXY (trust_env читает только их и
+        # ~/.netrc, не системный прокси Windows/macOS) не должны молча подменять маршрут —
+        # тот же принцип, что и в utils/updater.build_updater_session.
+        self._session = aiohttp.ClientSession(timeout=timeout, connector=connector, trust_env=False)
         self._session_proxy_signature = desired_proxy_signature
         self._session_timeout = api_timeout
         self._session_ssl_context_signature = desired_ssl_context_signature
@@ -620,7 +639,9 @@ class BaseApiHandler:
         # ЛОГИКА СБРОСА СЕССИИ
         # Если это NetworkError или ошибка aiohttp, сбрасываем сессию,
         # так как коннектор может быть в "битом" состоянии.
-        is_aiohttp_error = isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError))
+        # PROXY_ERRORS (aiohttp_socks) — те же «транспортные» сбои: после них коннектор
+        # тоже может остаться битым, а по тексту их не всегда видно.
+        is_aiohttp_error = isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError) + tuple(PROXY_ERRORS))
         # Проверяем также по тексту ошибки, если она завернута
         error_text = str(e).lower()
         is_disconnect = "disconnected" in error_text or "connection" in error_text or "closed" in error_text
