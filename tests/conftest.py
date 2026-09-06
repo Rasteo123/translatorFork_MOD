@@ -20,6 +20,18 @@ if not _settings_dir:
     _settings_dir = tempfile.mkdtemp(prefix="gt-test-settings-")
     os.environ["GT_TEST_SETTINGS_DIR"] = _settings_dir
 
+if os.name == "nt":
+    # На Windows abort() из C-кода (qFatal в Qt и т.п.) по умолчанию уходит в
+    # fail-fast (код 0xC0000409) без единой строки в логе. Снимаем флаги
+    # _WRITE_ABORT_MSG|_CALL_REPORTFAULT: тогда abort() поднимает SIGABRT, и
+    # faulthandler pytest печатает стеки всех потоков в run_checks.log.
+    try:
+        import ctypes
+
+        ctypes.cdll.ucrtbase._set_abort_behavior(0, 3)
+    except Exception:
+        pass
+
 from PyQt6 import QtCore  # noqa: E402  (после QT_QPA_PLATFORM)
 
 _NativeQSettings = QtCore.QSettings

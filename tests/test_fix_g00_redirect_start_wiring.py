@@ -44,6 +44,23 @@ def _make_main_queue(bus):
     return task_manager, anchor
 
 
+def _wait_for_cleanup_worker(app, task_manager, timeout=5.0):
+    """_handle_session_finished_background работает в отдельном QThread —
+    дожидаемся его завершения, обрабатывая события (как это делает GUI).
+    На медленном Windows-раннере поток стартует позже, чем главный поток
+    доходит до assert — без ожидания статусы читаются до «спасения»."""
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.processEvents()
+        worker = getattr(task_manager, '_cleanup_worker', None)
+        if worker is not None and not worker.isRunning():
+            return
+        time.sleep(0.02)
+    app.processEvents()
+
+
 def _statuses(task_manager):
     with task_manager._light_read_conn() as conn:
         return [row['status'] for row in conn.execute("SELECT status FROM tasks")]
@@ -220,15 +237,10 @@ class RealStartParallelFilterRedirectWiringTests(unittest.TestCase):
             'session_id': 'main',
             'data': {'reason': 'ok'},
         })
-        import time
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            self.app.processEvents()
-            worker = getattr(redirect_tm, '_cleanup_worker', None)
-            if worker is None or not worker.isRunning():
-                break
-            time.sleep(0.02)
-        self.app.processEvents()
+        # Спасение зависших задач ОСНОВНОЙ очереди идёт в её собственном
+        # фоновом воркере — ждём именно его, а не воркер redirect-очереди
+        # (у той на чужой финиш воркер вообще не стартует).
+        _wait_for_cleanup_worker(self.app, self.main_tm)
 
         self.assertEqual(
             _statuses(redirect_tm), ["in_progress"],
@@ -255,14 +267,7 @@ class RealStartParallelFilterRedirectWiringTests(unittest.TestCase):
                 'background_run_id': run_id,
             },
         })
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            self.app.processEvents()
-            worker = getattr(redirect_tm, '_cleanup_worker', None)
-            if worker is None or not worker.isRunning():
-                break
-            time.sleep(0.02)
-        self.app.processEvents()
+        _wait_for_cleanup_worker(self.app, redirect_tm)
         self.assertEqual(
             _statuses(redirect_tm), ["pending"],
             "Финиш СВОЕГО фонового прогона (через боевую подписку "
