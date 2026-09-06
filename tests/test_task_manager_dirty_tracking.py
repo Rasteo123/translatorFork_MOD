@@ -99,6 +99,9 @@ class TriggerCacheUpdateTests(unittest.TestCase):
             _cache_update_worker=None,
             _in_flight_snapshot=None,
             _started_workers=[],
+            # _trigger_cache_update подключает finished к связанному методу
+            # менеджера (а не к лямбде) — у заглушки он должен существовать.
+            _on_cache_worker_finished=lambda: None,
         )
 
         class _FakeWorker:

@@ -241,6 +241,10 @@ class ChapterQueueManager(QObject):
     * Read: Мгновенные снапшоты (backup) в локальную память потока для UI,
       что обеспечивает неблокирующее чтение без конкуренции с воркерами.
     """
+
+    # Сколько ошибок фонового обновления кэша подряд терпим, прежде чем
+    # перестать перезапускать таймер самостоятельно (см. _recover_failed_worker).
+    _CACHE_UPDATE_MAX_CONSECUTIVE_FAILURES = 3
     
     _ui_update_requested = pyqtSignal()
     def __init__(self, event_bus=None, db_uri: str | None = None, main_connection=None):
@@ -273,6 +277,7 @@ class ChapterQueueManager(QObject):
         self._ui_state_list_cache = []
         self._is_updating_cache = False
         self._cache_update_worker = None
+        self._cache_failure_streak = 0
 
         # Dirty-tracking state for active-session energy reduction.
         # _dirty_state_lock guards _dirty_task_ids and _structural_dirty only.
@@ -1815,9 +1820,17 @@ class ChapterQueueManager(QObject):
         self._in_flight_snapshot = snapshot
         self._is_updating_cache = True
         worker = TaskDBWorker(self._get_ui_state_list_background, snapshot)
-        worker.finished.connect(lambda: self._on_cache_updated(worker))
+        # Связанный метод (а не лямбда): Qt привязывает соединение к получателю,
+        # и после удаления менеджера сигнал уже никуда не доставляется.
+        worker.finished.connect(self._on_cache_worker_finished)
         self._cache_update_worker = worker
         worker.start()
+
+    def _on_cache_worker_finished(self):
+        worker = self._cache_update_worker
+        if worker is None:
+            return
+        self._on_cache_updated(worker)
 
     def get_ui_state_list(self) -> list:
         """Основной метод для UI. Возвращает кэш."""
@@ -1886,6 +1899,7 @@ class ChapterQueueManager(QObject):
             })
 
         self._last_cache_update_ns = time.monotonic_ns()
+        self._cache_failure_streak = 0
         self._is_updating_cache = False
         self._cache_update_worker = None
         self._in_flight_snapshot = None
@@ -1899,6 +1913,23 @@ class ChapterQueueManager(QObject):
             if snapshot:
                 for tid in snapshot["ids"]:
                     self._dirty_task_ids.add(tid)
+        streak = getattr(self, "_cache_failure_streak", 0) + 1
+        self._cache_failure_streak = streak
+        limit = getattr(
+            self,
+            "_CACHE_UPDATE_MAX_CONSECUTIVE_FAILURES",
+            ChapterQueueManager._CACHE_UPDATE_MAX_CONSECUTIVE_FAILURES,
+        )
+        if streak >= limit:
+            # Сломанная БД (файл пропал, in-memory база закрыта): без предела
+            # ретраев менеджер крутил бы таймер → воркер → ошибка каждые 100 мс.
+            # Dirty-состояние сохранено — следующий notify_* запустит новую попытку.
+            if streak == limit:
+                print(
+                    "[TaskManager] Обновление кэша задач приостановлено после "
+                    f"{streak} ошибок подряд; возобновится при следующем изменении очереди."
+                )
+            return
         self._update_timer.start()
 
     def _restart_timer_if_dirty(self):
@@ -2936,12 +2967,38 @@ class ChapterQueueManager(QObject):
             if disk_conn: disk_conn.close()
 
 class TaskDBWorker(QThread):
+    """Фоновый поток для чтения БД очереди.
+
+    Пока поток работает, объект удерживается реестром класса (см. ``start``):
+    иначе менеджер, собранный сборщиком мусора с живым воркером, утянул бы за
+    собой и C++-объект QThread («Destroyed while thread is still running»)."""
+
+    _inflight: set = set()
+
     def __init__(self, target_func, *args, **kwargs):
         super().__init__()
         self.target_func = target_func
         self.args = args
         self.kwargs = kwargs
         self.result = None
+        self._registered = False
+
+    @classmethod
+    def inflight(cls) -> frozenset:
+        return frozenset(cls._inflight)
+
+    def start(self, *args, **kwargs):
+        if not self._registered:
+            self._registered = True
+            TaskDBWorker._inflight.add(self)
+            self.finished.connect(self._release)
+        super().start(*args, **kwargs)
+
+    def _release(self):
+        # finished доставляется очередью в поток-владелец уже после выхода из run();
+        # wait() здесь мгновенный и гарантирует, что ОС-поток присоединён.
+        self.wait(5000)
+        TaskDBWorker._inflight.discard(self)
 
     def run(self):
         try:
