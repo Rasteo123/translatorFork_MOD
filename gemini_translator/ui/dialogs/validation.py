@@ -11,9 +11,18 @@ import importlib
 from bs4 import BeautifulSoup, NavigableString, ProcessingInstruction, Comment, Declaration
 import shutil
 from datetime import datetime
+from ...core import auto_workflow_helpers
+from ...utils import cjk_ranges
+from ...utils.document_importer import set_all_checked
 from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path
 from ...utils.language_tools import LanguageDetector
-from ..wait_dialogs import show_when_slow
+from ..widgets.table_utils import NumericSortItem
+from ..widgets.regex_syntax_highlighter import (
+    HTML_PALETTE_DARK,
+    HtmlSyntaxHighlighter,
+    RuleBasedSyntaxHighlighter,
+)
+from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 from ...utils.validation_cache import (
     build_detector_signature,
     build_file_fingerprint,
@@ -24,14 +33,15 @@ from ...utils.validation_cache import (
     restore_result_data,
 )
 from ...utils.text import (
+    _create_structural_fingerprint,
     find_stray_angle_bracket_snippets,
     find_unwrapped_body_text_snippets,
     is_well_formed_xml,
     repair_ai_html_artifacts,
 )
 from ...utils.glued_words import repair_glued_russian_words_in_html
-from ...utils.project_migrator import ProjectMigrator
 from ...utils.translation_versions import (
+    VALIDATED_SUFFIX,
     select_target_translation_version,
 )
 from ...qa.ratio_profiles import validation_ratio_presets
@@ -44,17 +54,18 @@ from PyQt6.QtWidgets import (
     QGridLayout, QProgressDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QUrl, QRegularExpression
-from PyQt6.QtGui import QDesktopServices, QColor, QBrush, QSyntaxHighlighter, QTextCharFormat, QFont, QTextCursor
+from PyQt6.QtGui import QDesktopServices, QColor, QBrush, QTextCharFormat, QFont, QTextCursor
 from PyQt6 import QtCore, QtGui, QtWidgets, sip
 
 
-from ..widgets.preset_widget import PresetWidget
 from ..shell import ShellPage
 from ...api import config as api_config
 from gemini_translator.ui import theme_manager
+from .epub import run_project_migrator_sync
 from .validation_dialogs import UntranslatedWordDetector
 from .validation_dialogs.content_lru import ContentLru
 from ..overlay_host import exec_dialog
+from .word_exceptions_dialog import open_word_exceptions_manager
 from .validation_dialogs.untranslated_fixer_dialog import (
     AITranslationDialog,
     UntranslatedFixerDialog,
@@ -329,24 +340,23 @@ class LargeTextInputDialog(QDialog):
     def get_text(self):
         return self.text_edit.toPlainText()
         
-class SortableChapterItem(QTableWidgetItem):
+class SortableChapterItem(NumericSortItem):
     """
     Кастомный элемент таблицы, который использует централизованную функцию
-    для извлечения числового ключа сортировки.
+    для извлечения числового ключа сортировки из internal_path (а не из
+    отображаемого текста ячейки). require_same_type=True сохраняет прежнюю
+    защиту: при сравнении с ячейкой другого типа — откат на текстовое
+    сравнение, а не попытка извлечь internal_path из чужого объекта.
     """
     def __init__(self, display_text, sort_key_path):
-        super().__init__(display_text)
+        super().__init__(
+            display_text,
+            key_fn=extract_number_from_path,
+            require_same_type=True,
+            same_type_as=SortableChapterItem,
+        )
         self.internal_path = sort_key_path
         # Мы больше не храним sort_value, так как __lt__ будет вычислять его на лету
-
-    def __lt__(self, other):
-        """
-        Переопределяем оператор "меньше чем" (<), который используется для сортировки.
-        """
-        if isinstance(other, SortableChapterItem):
-            # Вызываем универсальную функцию для обоих элементов
-            return extract_number_from_path(self) < extract_number_from_path(other)
-        return super().__lt__(other)
 
 class ChapterStatusDelegate(QtWidgets.QStyledItemDelegate):
     """
@@ -1258,13 +1268,9 @@ class AIRepairReviewPage(ShellPage):
         self.apply_button.setEnabled(selected > 0)
 
     def _set_all_checked(self, checked: bool):
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         self._populating_table = True
         try:
-            for row in range(self.table.rowCount()):
-                item = self.table.item(row, 0)
-                if item:
-                    item.setCheckState(state)
+            set_all_checked(self.table, checked)
         finally:
             self._populating_table = False
         self._update_selection_summary()
@@ -1375,12 +1381,11 @@ class AIRepairReviewPage(ShellPage):
         self.result_ready.emit(False)
 
 
-class _AIRepairReviewDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(AIRepairReviewPage, name)
-
-
-class AIRepairReviewDialog(QDialog, metaclass=_AIRepairReviewDialogMeta):
+class AIRepairReviewDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(AIRepairReviewPage),
+):
     """Modal wrapper hosting AIRepairReviewPage for the legacy exec() API."""
 
     def __init__(self, candidates, parent=None):
@@ -1394,12 +1399,6 @@ class AIRepairReviewDialog(QDialog, metaclass=_AIRepairReviewDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()
@@ -1536,60 +1535,13 @@ class StructureErrorsDialog(QDialog):
         details_layout.addStretch(1)
 
 
-class HtmlHighlighter(QSyntaxHighlighter):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.highlightingRules = []
-
-        # Набор правил для подсветки
-        # Теги (<p>, <body>)
-        tagFormat = QTextCharFormat()
-        tagFormat.setForeground(QColor("#569CD6"))  # Более стандартный синий для тегов
-        self.highlightingRules.append((QRegularExpression(r"</?\w+"), tagFormat))
-        self.highlightingRules.append((QRegularExpression(r"[<>]"), tagFormat))
-
-
-        # Атрибуты (class, href)
-        attributeFormat = QTextCharFormat()
-        attributeFormat.setForeground(QColor("#9CDCFE"))  # Светло-голубой для атрибутов
-        self.highlightingRules.append((QRegularExpression(r'\s+([\w\-.:]+)\s*='), attributeFormat))
-
-        # Значения атрибутов ("my-class")
-        stringFormat = QTextCharFormat()
-        stringFormat.setForeground(QColor("#CE9178"))  # Оранжевый для строк
-        self.highlightingRules.append((QRegularExpression(r'"[^"]*"'), stringFormat))
-        self.highlightingRules.append((QRegularExpression(r"'[^']*'"), stringFormat))
-
-        # Комментарии <!-- ... -->
-        commentFormat = QTextCharFormat()
-        commentFormat.setForeground(QColor("#6A9955"))  # Зеленый для комментариев
-        commentFormat.setFontItalic(True)
-        self.highlightingRules.append((QRegularExpression(r"<!--.*?-->"), commentFormat))
-
-
-
-        # DOCTYPE
-        doctypeFormat = QTextCharFormat()
-        doctypeFormat.setForeground(QColor("#4EC9B0")) # Бирюзовый
-        self.highlightingRules.append((QRegularExpression(r'<!DOCTYPE[^>]+>', QRegularExpression.PatternOption.CaseInsensitiveOption), doctypeFormat))
-
-    def highlightBlock(self, text):
-        for pattern, format in self.highlightingRules:
-            iterator = pattern.globalMatch(text)
-            while iterator.hasNext():
-                match = iterator.next()
-                self.setFormat(match.capturedStart(), match.capturedLength(), format)
-
-class PunctuationHighlighter(QSyntaxHighlighter):
+class PunctuationHighlighter(RuleBasedSyntaxHighlighter):
     """
     Подсвечивает ключевые знаки препинания в отформатированном тексте
     для быстрой проверки правильности оформления диалогов и мыслей.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        self.highlightingRules = []
 
         # Правило для длинных тире (прямая речь) - яркий, хорошо читаемый цвет
         dialogue_format = QTextCharFormat()
@@ -1613,20 +1565,14 @@ class PunctuationHighlighter(QSyntaxHighlighter):
         dash_format.setForeground(QColor("#D8BFD8")) # Светлая Лаванда (Thistle)
         self.highlightingRules.append((QRegularExpression("[-–]"), dash_format))
 
-    def highlightBlock(self, text):
-        # Применяем все правила к текущему блоку текста
-        for pattern, format in self.highlightingRules:
-            iterator = pattern.globalMatch(text)
-            while iterator.hasNext():
-                match = iterator.next()
-                self.setFormat(match.capturedStart(), match.capturedLength(), format)
+def _pipe_prefix_numeric_key(item):
+    """Ключ для колонки 'Длина': текст вида '150 | доп.инфо'."""
+    return float(item.text().split('|')[0].strip())
 
-class NumericTableWidgetItem(QTableWidgetItem):
-    def __lt__(self, other):
-        try:
-            return float(self.text().split('|')[0].strip()) < float(other.text().split('|')[0].strip())
-        except (ValueError, IndexError):
-            return super().__lt__(other)
+
+class NumericTableWidgetItem(NumericSortItem):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, key_fn=_pipe_prefix_numeric_key, **kwargs)
 
 
 # --- Поток для анализа ---
@@ -1713,7 +1659,7 @@ class ValidationThread(QThread):
             # Fingerprints
             soup_orig = BeautifulSoup(original_content, 'html.parser')
             soup_trans = BeautifulSoup(translated_content, 'html.parser')
-            orig_fp, trans_fp = self._create_structural_fingerprint(soup_orig), self._create_structural_fingerprint(soup_trans)
+            orig_fp, trans_fp = _create_structural_fingerprint(soup_orig), _create_structural_fingerprint(soup_trans)
 
             for h in set(orig_fp['headings'].keys()) | set(trans_fp['headings'].keys()):
                 if orig_fp['headings'].get(h, 0) != trans_fp['headings'].get(h, 0):
@@ -1816,18 +1762,15 @@ class ValidationThread(QThread):
                 result_data['repeat_data'] = best_repeat_candidate # <-- СЫРОЕ ДАННОЕ: ('a', 15, True)
 
             # --- 6. Недоперевод ---
+            # finding-ui-dialogs-validation_design_1-untranslated-detection-triplic:
+            # единственный источник детекции -- канонический UntranslatedWordDetector.
+            # Раньше здесь же дублировался тот же проход собственным regex'ом с
+            # более слабым порогом (len<2) и узким CJK-диапазоном -- это давало
+            # ложные срабатывания на 2-буквенных латинских словах и расходилось
+            # с тем, что реально флагует детектор.
             if text_trans:
-                # Тут логика сложная, поэтому список слов собираем сразу, 
-                # но фильтровать его наличие будем в UI
                 untranslated_words_to_highlight = []
-                single_word_exceptions = {w for w in self.word_exceptions if ' ' not in w}
-                phrase_exceptions = [p for p in self.word_exceptions if ' ' in p]; phrase_exceptions.sort(key=len, reverse=True)
 
-                temp_text_trans = text_trans
-                for phrase in phrase_exceptions:
-                    pattern = r'\b' + re.escape(phrase) + r'\b'
-                    temp_text_trans = re.sub(pattern, ' ', temp_text_trans, flags=re.IGNORECASE)
-                
                 try:
                     detector = self._detector
                     if detector is None:
@@ -1841,17 +1784,6 @@ class ValidationThread(QThread):
                         )
                 except Exception as detect_error:
                     print(f"[Validator WARN] UntranslatedWordDetector error: {detect_error}")
-
-                no_cyrillic_text = re.sub(r'[а-яА-ЯёЁ]+', ' ', temp_text_trans)
-                pure_residue_text = re.sub(r'[\W\d_]+', ' ', no_cyrillic_text)
-                
-                for word in pure_residue_text.split():
-                    is_cjk = re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', word)
-                    if len(word) < 2 and not is_cjk: continue
-                    if len(word) == 1 and re.fullmatch(r'[a-zA-Z]', word): continue
-                    if re.fullmatch(r'^[A-Sa-s][+-]?$', word): continue
-                    if word.lower() not in single_word_exceptions:
-                        untranslated_words_to_highlight.append(word)
 
                 if untranslated_words_to_highlight:
                     result_data['untranslated_words'] = sorted(list(set(untranslated_words_to_highlight)), key=len, reverse=True)
@@ -1919,12 +1851,6 @@ class ValidationThread(QThread):
         punct += len(REGEX_COLONS_SEMIS.findall(text))
 
         return digits, punct
-    
-    def _create_structural_fingerprint(self, soup):
-        fp = {'headings': {}, 'images': len(soup.find_all('img')), 'links': len(soup.find_all('a')), 'lists': len(soup.find_all(['ol', 'ul']))}
-        for h_tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-            fp['headings'][h_tag.name] = fp['headings'].get(h_tag.name, 0) + 1
-        return fp
     
     def _calculate_combined_deviation(self, orig_p, trans_p, dig_o, dig_t, punct_o, punct_t):
         """
@@ -2038,8 +1964,8 @@ class ValidationThread(QThread):
                         # Подгрузка validated версии для сравнения (если есть)
                         all_versions = project_manager.get_versions_for_original(internal_html_path)
                         validated_content = None
-                        if '_validated.html' in all_versions:
-                            v_path = os.path.join(self.translated_folder, all_versions['_validated.html'])
+                        if VALIDATED_SUFFIX in all_versions:
+                            v_path = os.path.join(self.translated_folder, all_versions[VALIDATED_SUFFIX])
                             if os.path.exists(v_path):
                                 with open(v_path, 'r', encoding='utf-8') as f:
                                     validated_content = f.read()
@@ -2077,6 +2003,17 @@ class ValidationThread(QThread):
     
     def stop(self):
         self._is_running = False
+
+# finding-ui-dialogs-validation_design_1-untranslated-detection-triplic:
+# build_detector_signature (utils/validation_cache.py) hashes only the
+# exceptions set. Bump this marker whenever the untranslated-word DETECTION
+# RULES themselves change (not just the exceptions), so is_snapshot_compatible
+# correctly rejects a validation-cache snapshot computed under the old rules
+# even when the EPUB and exceptions are unchanged. Without this, chapters
+# restored from a stale snapshot and chapters recalculated under new rules
+# would silently disagree within the same results table.
+UNTRANSLATED_DETECTOR_RULES_MARKER = "__untranslated_rules_v2__"
+
 
 # --- Главное окно диалога ---
 class TranslationValidatorPage(ShellPage):
@@ -2150,8 +2087,16 @@ class TranslationValidatorPage(ShellPage):
         self.initUI()
         
         # Настройка "раскрасчиков"
-        self.html_highlighter_orig = HtmlHighlighter(self.view_original.document())
-        self.html_highlighter_trans = HtmlHighlighter(self.view_translated.document())
+        self.html_highlighter_orig = HtmlSyntaxHighlighter(
+            self.view_original.document(),
+            palette=HTML_PALETTE_DARK,
+            highlight_partial_markup=True,
+        )
+        self.html_highlighter_trans = HtmlSyntaxHighlighter(
+            self.view_translated.document(),
+            palette=HTML_PALETTE_DARK,
+            highlight_partial_markup=True,
+        )
         self.punctuation_highlighter_orig = PunctuationHighlighter(self.view_original.document())
         self.punctuation_highlighter_trans = PunctuationHighlighter(self.view_translated.document())
         self._update_highlighters() # Вызываем один раз для установки начального состояния
@@ -2422,7 +2367,9 @@ class TranslationValidatorPage(ShellPage):
 
     def _load_validation_snapshot_state(self):
         self.current_epub_fingerprint = build_file_fingerprint(self.original_epub_path)
-        self.current_detector_signature = build_detector_signature(self._get_effective_word_exceptions())
+        self.current_detector_signature = build_detector_signature(
+            set(self._get_effective_word_exceptions()) | {UNTRANSLATED_DETECTOR_RULES_MARKER}
+        )
 
         if not self.project_manager:
             self.validation_snapshot_entries = {}
@@ -4214,43 +4161,8 @@ class TranslationValidatorPage(ShellPage):
         self.lbl_status.setText(f"Отображено записей: {visible_rows}")
       
     def _open_exceptions_manager(self):
-        if not self.settings_manager:
-            QMessageBox.warning(self, "Ошибка", "Менеджер настроек не инициализирован.")
-            return
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Менеджер списков слов-исключений")
-        dialog.setMinimumSize(700, 500)
-        layout = QVBoxLayout(dialog)
-
-        # Создаем и настраиваем PresetWidget для нашей задачи
-        # --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
-        exceptions_widget = PresetWidget(
-            parent=dialog,
-            preset_name="Список исключений", # <-- Указываем имя
-            default_prompt_func=api_config.default_word_exceptions,
-            load_presets_func=self.settings_manager.load_word_exceptions_presets,
-            save_presets_func=self.settings_manager.save_word_exceptions_presets,
-            get_last_text_func=self.settings_manager.get_last_word_exceptions_text
-        )
-        exceptions_widget.load_last_session_state()
-        layout.addWidget(exceptions_widget)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        ok_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
-        ok_button.setText("Принять и закрыть")
-        
-        cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
-        cancel_button.setText("Отмена")
-        
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if exec_dialog(self, dialog) == QDialog.DialogCode.Accepted:
-            # --- Сохраняем и имя пресета, и текст ---
-            exceptions_widget.save_last_session_state()
-            self.settings_manager.save_last_word_exceptions_text(exceptions_widget.get_prompt())
+        prompt = open_word_exceptions_manager(self, self.settings_manager)
+        if prompt is not None:
             self._load_validation_snapshot_state()
             self._refresh_previous_problem_paths()
             self._update_analyze_button_state()
@@ -4362,26 +4274,13 @@ class TranslationValidatorPage(ShellPage):
         if not self.project_manager:
             return
 
-        from ...utils.project_migrator import ProjectMigrator, SyncThread
+        run_project_migrator_sync(
+            self, self.project_manager, self.translated_folder, self.original_epub_path,
+            "Синхронизация", "Идет анализ проекта…\nПожалуйста, подождите.",
+            self._on_validator_sync_finished,
+        )
 
-        self.wait_dialog = QMessageBox(self)
-        self.wait_dialog.setWindowTitle("Синхронизация")
-        self.wait_dialog.setText("Идет анализ проекта…\nПожалуйста, подождите.")
-        self.wait_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
-        self.wait_dialog.setModal(True)
-        
-        migrator = ProjectMigrator(self.translated_folder, self.original_epub_path, self.project_manager)
-        
-        # --- ИЗМЕНЕНИЕ: Передаем `self` в качестве родителя для QMessageBox ---
-        self.sync_thread = SyncThread(migrator, parent_widget=self)
-        
-        # --- ИЗМЕНЕНИЕ: Подключаем только финальный сигнал ---
-        self.sync_thread.finished_sync.connect(self._on_validator_sync_finished)
 
-        self.sync_thread.start()
-        show_when_slow(self.wait_dialog)
-        
-    
     def _on_validator_sync_finished(self, is_project_ready, message):
         if hasattr(self, 'wait_dialog') and self.wait_dialog:
             self.wait_dialog.accept()
@@ -4928,7 +4827,10 @@ class TranslationValidatorPage(ShellPage):
                 for chapter_path in chapters_to_scan:
                     content = epub_zip.read(chapter_path).decode('utf-8', 'ignore')
                     # Используем регулярку для быстрого подсчета всех CJK символов
-                    cjk_chars_in_chapter = re.findall(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', content)
+                    # cluster-32 dedup: диапазон теперь один источник истины --
+                    # gemini_translator.utils.cjk_ranges.CORE_CJK_CHAR_RE (то же
+                    # самое множество символов, что и раньше).
+                    cjk_chars_in_chapter = cjk_ranges.CORE_CJK_CHAR_RE.findall(content)
                     cjk_char_count += len(cjk_chars_in_chapter)
                     
                     if cjk_char_count >= 100:
@@ -5037,8 +4939,7 @@ class TranslationValidatorPage(ShellPage):
             return
 
         from ...api import config as api_config
-        VALIDATED_SUFFIX = "_validated.html"
-        
+
         known_problem_internal_paths = {data['internal_html_path'] for data in self.results_data.values()}
         processed_count = 0
         errors = []
@@ -5285,9 +5186,9 @@ class TranslationValidatorPage(ShellPage):
         # --- НАЧАЛО КЛЮЧЕВОГО ИЗМЕНЕНИЯ ---
         data = self.results_data.get(row, {})
         # Проверяем, не является ли текущий файл сам по себе "готовым"
-        is_current_file_the_validated_one = data.get('path', '').endswith('_validated.html')
+        is_current_file_the_validated_one = data.get('path', '').endswith(VALIDATED_SUFFIX)
         versions = self.project_manager.get_versions_for_original(data.get('internal_html_path')) if self.project_manager else {}
-        has_validated_version = '_validated.html' in (versions or {})
+        has_validated_version = VALIDATED_SUFFIX in (versions or {})
         
         # Кнопку показываем, только если есть готовая версия И мы смотрим НЕ на нее
         should_show_button = has_validated_version and not is_current_file_the_validated_one
@@ -5410,9 +5311,8 @@ class TranslationValidatorPage(ShellPage):
             QMessageBox.warning(self, "Критическая ошибка", "Менеджер проекта не инициализирован.")
             return
 
-        VALIDATED_SUFFIX = "_validated.html"
         from ...api import config as api_config
-        
+
         # 1. Собираем ID (пути) файлов, которые нужно обработать.
         paths_to_process = set()
         actions_map = {} # path -> status
@@ -5671,7 +5571,7 @@ class TranslationValidatorPage(ShellPage):
             validated_content = self.validated_content_cache[internal_path]
         elif self.project_manager:
             versions = self.project_manager.get_versions_for_original(internal_path) or {}
-            validated_rel_path = versions.get('_validated.html')
+            validated_rel_path = versions.get(VALIDATED_SUFFIX)
             if validated_rel_path:
                 validated_path = os.path.join(self.translated_folder, validated_rel_path)
                 validated_content = self._read_text_file(validated_path) or ""
@@ -5906,13 +5806,18 @@ class TranslationValidatorPage(ShellPage):
         return exceptions_set
 
     def _recalculate_untranslated_words_for_rows(self, affected_rows):
+        # finding-ui-dialogs-validation_design_1-untranslated-detection-triplic:
+        # используем тот же канонический UntranslatedWordDetector, что и
+        # ValidationThread._analyze_html_content, вместо собственного прохода
+        # (BeautifulSoup.get_text + узкий regex, порог len<2, без фильтра
+        # рейтингов/одиночных латинских букв) -- он расходился с первичным
+        # анализом и пропускал часть того, что детектор считает недопереводом
+        # (например, CJK Ext-A символы).
         if not affected_rows:
             return
 
         word_exceptions = self._build_current_untranslated_exceptions()
-        single_word_exceptions = {w for w in word_exceptions if ' ' not in w}
-        phrase_exceptions = [p for p in word_exceptions if ' ' in p]
-        phrase_exceptions.sort(key=len, reverse=True)
+        detector = UntranslatedWordDetector(word_exceptions)
 
         for row_idx in affected_rows:
             result_data = self.results_data.get(row_idx)
@@ -5924,33 +5829,10 @@ class TranslationValidatorPage(ShellPage):
                 result_data.pop('untranslated_words', None)
                 continue
 
-            text_trans = BeautifulSoup(translated_html, 'html.parser').get_text(" ")
-            if not text_trans:
-                result_data.pop('untranslated_words', None)
-                continue
+            untranslated_words = detector.detect(translated_html)
 
-            temp_text_trans = text_trans
-            for phrase in phrase_exceptions:
-                pattern = r'\b' + re.escape(phrase) + r'\b'
-                temp_text_trans = re.sub(pattern, ' ', temp_text_trans, flags=re.IGNORECASE)
-
-            no_cyrillic_text = re.sub(r'[а-яА-ЯёЁ]+', ' ', temp_text_trans)
-            pure_residue_text = re.sub(r'[\W\d_]+', ' ', no_cyrillic_text)
-
-            untranslated_words_to_highlight = []
-            for word in pure_residue_text.split():
-                is_cjk = re.search(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]', word)
-                if len(word) < 2 and not is_cjk:
-                    continue
-                if word.lower() not in single_word_exceptions:
-                    untranslated_words_to_highlight.append(word)
-
-            if untranslated_words_to_highlight:
-                result_data['untranslated_words'] = sorted(
-                    list(set(untranslated_words_to_highlight)),
-                    key=len,
-                    reverse=True,
-                )
+            if untranslated_words:
+                result_data['untranslated_words'] = untranslated_words
             else:
                 result_data.pop('untranslated_words', None)
 
@@ -6095,10 +5977,7 @@ class TranslationValidatorPage(ShellPage):
 
     @staticmethod
     def _truncate_auto_trace_text(text, limit: int = 4000):
-        normalized = str(text or "").strip()
-        if len(normalized) <= limit:
-            return normalized
-        return normalized[: max(0, limit - 16)].rstrip() + "\n...[truncated]..."
+        return auto_workflow_helpers.truncate_auto_trace_text(text, limit=limit)
 
     def _format_auto_untranslated_trace_details(
         self,
@@ -6507,16 +6386,15 @@ class TranslationValidatorPage(ShellPage):
         return True
 
 
-class _ValidatorDialogMeta(type(QDialog)):
-    """Metaclass that delegates unknown class-level attribute lookups to
-    TranslationValidatorPage, so that tests which borrow unbound methods via
-    ``TranslationValidatorDialog._some_method`` keep working after the rename."""
-
-    def __getattr__(cls, name):
-        return getattr(TranslationValidatorPage, name)
-
-
-class TranslationValidatorDialog(QDialog, metaclass=_ValidatorDialogMeta):
+class TranslationValidatorDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    # make_page_delegating_meta delegates unknown class-level attribute
+    # lookups to TranslationValidatorPage, so that tests which borrow
+    # unbound methods via ``TranslationValidatorDialog._some_method`` keep
+    # working after the rename.
+    metaclass=make_page_delegating_meta(TranslationValidatorPage),
+):
     """Thin window wrapper hosting TranslationValidatorPage (preserves the old API)."""
 
     def __init__(self, translated_folder, original_epub_path, parent=None, retry_enabled=True, project_manager=None):
@@ -6541,14 +6419,6 @@ class TranslationValidatorDialog(QDialog, metaclass=_ValidatorDialogMeta):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.page)
         self.page.request_back.connect(self.accept)
-
-    def __getattr__(self, name):
-        # Delegate unknown attributes to the page so old callers/tests
-        # (e.g. dialog.check_show_all) keep working transparently.
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         # MOVED VERBATIM from the old dialog, with self.<x> -> self.page.<x>

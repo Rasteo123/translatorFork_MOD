@@ -39,6 +39,7 @@ from gemini_translator.utils.power_inhibitor import (
 )
 from gemini_translator.utils.settings import SettingsManager
 from gemini_translator.core.task_manager import TaskDBWorker
+from gemini_translator.ui.dialogs._shared import session_and_tasks
 from gemini_translator.core.glossary_pipeline import (
     PIPELINE_STATUS_CANCELLED,
     PIPELINE_STATUS_FAILED,
@@ -60,7 +61,7 @@ from gemini_translator.core.glossary_pipeline import (
 from gemini_translator.ui.widgets.common_widgets import NoScrollSpinBox
 from gemini_translator.core.worker_helpers.rpm_limiter import RPMLimiter
 from gemini_translator.utils.text import prettify_html_for_ai
-from ..menu_utils import post_session_separator
+from ..menu_utils import post_session_separator, PageDialogProxyMixin, make_page_delegating_meta
 from .numbers_master import NumeralsExtractionWorker
 from ...widgets.overlay_tab_widget import install_tab_fade
 
@@ -1459,17 +1460,10 @@ class GenerationSessionPage(ShellPage):
         self._update_start_button_state()
 
     def _get_available_session_capacity(self) -> int:
-        provider_id = self.key_widget.get_selected_provider()
-        active_sessions = len(self.key_widget.get_active_keys())
-        can_start_ai_session = getattr(self.key_widget, "can_start_ai_session", None)
-        if active_sessions <= 0 and callable(can_start_ai_session) and can_start_ai_session():
-            return 1
-        if active_sessions <= 0:
-            return 0
-        provider_limit = api_config.provider_max_instances(provider_id)
-        if provider_limit is None or provider_limit <= 0:
-            provider_limit = active_sessions
-        return min(active_sessions, provider_limit)
+        return session_and_tasks.get_available_session_capacity(
+            self.key_widget,
+            getattr(self, 'model_settings_widget', None),
+        )
 
     def _update_instances_spinbox_limit(self):
         if not hasattr(self, 'instances_spin'):
@@ -1924,18 +1918,9 @@ class GenerationSessionPage(ShellPage):
         if not (self.engine and self.task_manager):
             return
 
-        target_method = None
-        args = []
-
-        if action in ['top', 'bottom', 'up', 'down']:
-            target_method = self.task_manager.reorder_tasks
-            args = [action, task_ids]
-        elif action == 'remove':
-            target_method = self.task_manager.remove_tasks
-            args = [task_ids]
-        elif action == 'duplicate':
-            target_method = self.task_manager.duplicate_tasks
-            args = [task_ids]
+        target_method, args = session_and_tasks.resolve_task_action(
+            self.task_manager, action, task_ids, support_batch_split=False,
+        )
 
         if not target_method:
             return
@@ -2247,11 +2232,10 @@ class GenerationSessionPage(ShellPage):
         self.prevent_sleep_checkbox.setChecked(load_prevent_sleep_setting(self.settings_manager))
         main_settings_layout.addWidget(self.prevent_sleep_checkbox)
 
-        from PyQt6.QtCore import QSettings
+        from gemini_translator.ui.notifications import NotificationManager
         self.cb_notifications = QCheckBox("Звуковые и системные уведомления")
-        settings = QSettings("SiberianTeam", "TranslatorFork")
-        self.cb_notifications.setChecked(settings.value("notifications_enabled", True, type=bool))
-        self.cb_notifications.toggled.connect(self._on_notifications_toggled)
+        self.cb_notifications.setChecked(NotificationManager.is_enabled())
+        self.cb_notifications.toggled.connect(NotificationManager.set_enabled)
         main_settings_layout.addWidget(self.cb_notifications)
 
         # Распорка
@@ -2339,12 +2323,6 @@ class GenerationSessionPage(ShellPage):
         scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         scroll_area.setWidget(settings_container)
         return scroll_area
-
-    def _on_notifications_toggled(self, checked):
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("SiberianTeam", "TranslatorFork")
-        settings.setValue("notifications_enabled", checked)
-
 
     def _create_results_tab(self):
         """Создает вкладку с результатами и логом внутри сплиттера."""
@@ -3339,12 +3317,11 @@ class GenerationSessionPage(ShellPage):
         event.ignore()
 
 
-class _GenerationSessionDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(GenerationSessionPage, name)
-
-
-class GenerationSessionDialog(QDialog, metaclass=_GenerationSessionDialogMeta):
+class GenerationSessionDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(GenerationSessionPage),
+):
     """Modal wrapper hosting GenerationSessionPage for the legacy exec() API."""
 
     generation_finished = pyqtSignal(list, set)
@@ -3390,12 +3367,6 @@ class GenerationSessionDialog(QDialog, metaclass=_GenerationSessionDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def __setattr__(self, name, value):
         page = self.__dict__.get("page")

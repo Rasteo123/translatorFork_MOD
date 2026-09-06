@@ -22,7 +22,8 @@ from gemini_translator.api.errors import (
     ValidationFailedError,
 )
 from gemini_translator.api.factory import get_api_handler_class
-from gemini_translator.utils.helpers import estimate_gemini_tokens
+from gemini_translator.core.handler_cleanup import cleanup_provider_handler
+from gemini_translator.utils.helpers import estimate_gemini_tokens, safe_int
 
 
 TRANSLATION_TASK_TYPES = {"epub", "epub_batch", "epub_chunk", "raw_text_translation"}
@@ -119,17 +120,6 @@ class _ProviderWorkerProxy:
 
     def __getattr__(self, name):
         return getattr(self._base_worker, name)
-
-
-def _safe_int(value: Any, default: int, minimum: int = 0, maximum: int | None = None) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = default
-    parsed = max(minimum, parsed)
-    if maximum is not None:
-        parsed = min(maximum, parsed)
-    return parsed
 
 
 def _safe_float(value: Any) -> float | None:
@@ -333,7 +323,7 @@ def _normalize_pass_specs(worker) -> list[dict[str, Any]]:
         if variants:
             return variants
 
-    count = _safe_int(
+    count = safe_int(
         getattr(worker, "multi_pass_count", getattr(worker, "multi_pass_chapter_count", 3)),
         default=3,
         minimum=1,
@@ -388,7 +378,7 @@ def _build_attempts(worker) -> list[ProviderAttempt]:
         provider_specs.insert(0, _primary_provider_spec(worker))
 
     pass_specs = _normalize_pass_specs(worker) if multi_pass_enabled else [{"label": "single"}]
-    max_attempts = _safe_int(getattr(worker, "translation_orchestration_max_attempts", 8), 8, minimum=1, maximum=32)
+    max_attempts = safe_int(getattr(worker, "translation_orchestration_max_attempts", 8), 8, minimum=1, maximum=32)
 
     attempts: list[ProviderAttempt] = []
     seen = set()
@@ -499,18 +489,6 @@ async def _maybe_await(value):
     return value
 
 
-async def _cleanup_handler(handler) -> None:
-    cleanup = getattr(handler, "_close_thread_session_internal", None)
-    if not callable(cleanup):
-        return
-    try:
-        result = cleanup()
-        if inspect.isawaitable(result):
-            await result
-    except Exception:
-        return
-
-
 async def _run_attempt(worker, attempt: ProviderAttempt, prompt: str, log_prefix: str, call_kwargs: dict) -> ProviderAttemptResult:
     provider_info = _provider_info(attempt.provider_id)
     if not provider_info:
@@ -547,7 +525,7 @@ async def _run_attempt(worker, attempt: ProviderAttempt, prompt: str, log_prefix
         )
     finally:
         if handler is not None:
-            await _cleanup_handler(handler)
+            await cleanup_provider_handler(handler)
 
 
 def _score_result(result: ProviderAttemptResult) -> int:

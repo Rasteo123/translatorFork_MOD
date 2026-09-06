@@ -17,6 +17,7 @@ ARCHITECTURE NOTE: TRANSPARENT FILE SYSTEM PROXY (ROUTER PATTERN)
 """
 
 import os
+import re
 import sys
 import asyncio
 import builtins
@@ -103,13 +104,11 @@ class DeadlockNotifier(QtCore.QObject):
             close_btn = msg.addButton("Закрыть", QtWidgets.QMessageBox.ButtonRole.RejectRole)
             msg.setDefaultButton(close_btn)
             
-            # 4. Логика копирования
-            def copy_action():
-                QtWidgets.QApplication.clipboard().setText(text)
-                copy_btn.setText("Скопировано!")
-                copy_btn.setEnabled(False)
-            
-            copy_btn.clicked.connect(copy_action)
+            # 4. Логика копирования (общий хелпер, см. attach_copy_feedback
+            # ниже в этом файле — та же логика используется в
+            # _patched_qmessagebox_critical и main.run_emergency_viewer,
+            # см. cluster-58/cluster-67).
+            attach_copy_feedback(copy_btn, msg, lambda: text)
 
             # 5. Делаем окно "поверх всех", чтобы пользователь точно заметил проблему
             msg.setWindowFlags(msg.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint)
@@ -425,6 +424,87 @@ class PatientSQLiteConnection(sqlite3.Connection):
                 else:
                     raise
 
+# "lock"/"locked" как самостоятельное слово (границы слова), но не как суффикс
+# имени файла вида "*.lock" — например, в "No such file or directory:
+# 'session.lock'" точка перед словом означает, что это часть пути/имени
+# файла, а не сообщение о реальной блокировке (в отличие от "generic lock
+# detected" или "file is locked", где слову предшествует пробел/начало
+# строки). \b само по себе уже исключает "Block device required" — там
+# "lock" не является отдельным словом.
+_LOCK_WORD_RE = re.compile(r"(?<!\.)\block(?:ed)?\b")
+
+
+def _is_transient_io_error(exc: BaseException) -> bool:
+    """
+    Единая классификация "временной" ошибки блокировки файла (антивирус,
+    индексатор, другой процесс держит хендл), для которой имеет смысл
+    подождать и повторить операцию, а не сдаваться сразу.
+
+    Каноническая версия, вынесенная из четырёх независимо разошедшихся копий
+    (см. finding root-entry/design/9-os-patch-retry-logic-triplicat):
+    объединяет текстовые маркеры ("used by another process", "sharing
+    violation", "lock"/"locked" как целое слово) и errno из {13 (Permission
+    Denied), 32 (в т.ч. WinError 32 — файл занят другим процессом), 16
+    (EBUSY — "Device or resource busy")}.
+    """
+    error_str = str(exc).lower()
+    errno_val = getattr(exc, "errno", None)
+    return (
+        "used by another process" in error_str
+        or "sharing violation" in error_str
+        or bool(_LOCK_WORD_RE.search(error_str))
+        or errno_val in (13, 32, 16)
+    )
+
+
+def _retry_on_transient_io_error(
+    func,
+    *,
+    max_retries: int,
+    base_delay: float,
+    is_transient=None,
+    on_retry=None,
+):
+    """
+    Общий "терпеливый" ретрай на блокировку файла для реальной (не mem://)
+    файловой системы. Вызывает `func()` до `max_retries` раз.
+
+    Между попытками ждёт `base_delay * (номер_попытки, считая с 1)`, но
+    только если ошибка прошла `is_transient` — иначе пробрасывает немедленно.
+    На последней попытке пробрасывает в любом случае. `on_retry(attempt,
+    wait_time, exc)`, если задан, вызывается перед сном (используется
+    вызывающими для лога прогресса в их собственном формате).
+
+    `is_transient=None` (по умолчанию) резолвится в модульный глобал
+    `_is_transient_io_error` В МОМЕНТ ВЫЗОВА, а не при определении этой
+    функции — так подмена os_patch._is_transient_io_error (monkeypatch в
+    тестах, как везде в этом модуле) реально влияет на поведение.
+    """
+    predicate = is_transient if is_transient is not None else _is_transient_io_error
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except (IOError, PermissionError, OSError) as e:
+            last_exception = e
+
+            if attempt == max_retries - 1:
+                raise e
+
+            if not predicate(e):
+                raise e
+
+            wait_time = base_delay * (attempt + 1)
+            if on_retry is not None:
+                on_retry(attempt, wait_time, e)
+            time.sleep(wait_time)
+
+    # Этот код выполнится, только если цикл закончится без return
+    # (теоретически невозможно из-за raise внутри цикла).
+    if last_exception:
+        raise last_exception
+
+
 def _patched_open(file, mode='r', *args, **kwargs):
     is_virtual, mem_fs, internal_path = _parse_path(file)
     if is_virtual:
@@ -435,53 +515,32 @@ def _patched_open(file, mode='r', *args, **kwargs):
         except fs.errors.ResourceNotFound:
              raise FileNotFoundError(f"No such file in memfs: '{file}'")
 
-    # --- НАЧАЛО НОВОЙ ЛОГИКИ: "Терпеливое" открытие реальных файлов ---
+    # --- "Терпеливое" открытие реальных файлов ---
     MAX_RETRIES = 5
-    RETRY_DELAY_SECONDS = 0.25 # Начинаем с 0.25, потом растем
-    last_exception = None
+    RETRY_DELAY_SECONDS = 0.25  # Начинаем с 0.25, потом растем
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            # Пытаемся открыть файл, используя оригинальную, непатченную функцию
-            return _original["open"](file, mode, *args, **kwargs)
-        except (IOError, PermissionError, OSError) as e:
-            last_exception = e
-            
-            # Проверяем, не пытаемся ли мы открыть папку как файл (это фатально, ретраить бесполезно)
-            if isinstance(e, PermissionError) and os.path.isdir(file):
-                raise e
+    def _open_once():
+        # Пытаемся открыть файл, используя оригинальную, непатченную функцию
+        return _original["open"](file, mode, *args, **kwargs)
 
-            # Анализ ошибки
-            error_str = str(e).lower()
-            
-            # Список признаков временной блокировки
-            # 13 = Permission Denied (часто бывает при блокировке антивирусом на запись)
-            errno_val = getattr(e, 'errno', None)
-            is_permission_denied = (errno_val == 13)
-            
-            is_locking_error = (
-                "used by another process" in error_str 
-                or "sharing violation" in error_str 
-                or "lock" in error_str
-                or is_permission_denied # <--- ВАЖНО: Добавляем общий PermissionDenied в список ретраев
-            )
-            
-            # Если это последняя попытка, или ошибка не похожа на блокировку - сдаемся
-            if attempt == MAX_RETRIES - 1:
-                raise e
-            
-            if is_locking_error:
-                wait_time = RETRY_DELAY_SECONDS * (attempt + 1)
-                print(f"[OS_PATCH:open] Файл '{os.path.basename(str(file))}' недоступен (Errno: {errno_val}). Повтор {attempt + 1}/{MAX_RETRIES} через {wait_time}с...")
-                time.sleep(wait_time)
-                continue # Переходим к следующей попытке
-            else:
-                # Если ошибка какая-то экзотическая - пробрасываем сразу
-                raise e
-    
-    # Этот код выполнится, только если цикл закончится без return (теоретически невозможно из-за raise)
-    if last_exception:
-        raise last_exception
+    def _is_transient(e):
+        # Проверяем, не пытаемся ли мы открыть папку как файл
+        # (это фатально, ретраить бесполезно).
+        if isinstance(e, PermissionError) and os.path.isdir(file):
+            return False
+        return _is_transient_io_error(e)
+
+    def _on_retry(attempt, wait_time, e):
+        errno_val = getattr(e, 'errno', None)
+        print(f"[OS_PATCH:open] Файл '{os.path.basename(str(file))}' недоступен (Errno: {errno_val}). Повтор {attempt + 1}/{MAX_RETRIES} через {wait_time}с...")
+
+    return _retry_on_transient_io_error(
+        _open_once,
+        max_retries=MAX_RETRIES,
+        base_delay=RETRY_DELAY_SECONDS,
+        is_transient=_is_transient,
+        on_retry=_on_retry,
+    )
 
 def _patched_exists(path):
     is_virtual, mem_fs, internal_path = _parse_path(path)
@@ -504,12 +563,12 @@ def _patched_remove(path):
     
     # --- ТЕРПЕЛИВОЕ УДАЛЕНИЕ ---
     MAX_RETRIES = 5
-    for attempt in range(MAX_RETRIES):
-        try:
-            return _original["remove"](path)
-        except (OSError, PermissionError) as e:
-            if attempt == MAX_RETRIES - 1: raise e
-            time.sleep(0.2 * (attempt + 1))
+    RETRY_DELAY_SECONDS = 0.2
+    return _retry_on_transient_io_error(
+        lambda: _original["remove"](path),
+        max_retries=MAX_RETRIES,
+        base_delay=RETRY_DELAY_SECONDS,
+    )
 
 def _patched_isdir(path):
     is_virtual, mem_fs, internal_path = _parse_path(path)
@@ -530,20 +589,18 @@ def _patched_rename(src, dst):
     
     elif not src_is_virtual and not dst_is_virtual:
         # --- ТЕРПЕЛИВОЕ ПЕРЕИМЕНОВАНИЕ (NATIVE) ---
-        MAX_RETRIES = 7 # Для переименования даем чуть больше попыток
-        for attempt in range(MAX_RETRIES):
-            try:
-                return _original["rename"](src, dst)
-            except (OSError, PermissionError) as e:
-                # Если ошибка WinError 32 (занято) или 13 (доступ запрещен)
-                error_str = str(e).lower()
-                if "used by another process" in error_str or "sharing violation" in error_str or e.errno in (13, 32):
-                    if attempt == MAX_RETRIES - 1: raise e
-                    wait_time = 0.25 * (attempt + 1)
-                    print(f"[OS_PATCH:rename] Файл занят, повтор {attempt+1}/{MAX_RETRIES} через {wait_time}с...")
-                    time.sleep(wait_time)
-                else:
-                    raise e
+        MAX_RETRIES = 7  # Для переименования даем чуть больше попыток
+        RETRY_DELAY_SECONDS = 0.25
+
+        def _on_retry(attempt, wait_time, e):
+            print(f"[OS_PATCH:rename] Файл занят, повтор {attempt + 1}/{MAX_RETRIES} через {wait_time}с...")
+
+        return _retry_on_transient_io_error(
+            lambda: _original["rename"](src, dst),
+            max_retries=MAX_RETRIES,
+            base_delay=RETRY_DELAY_SECONDS,
+            on_retry=_on_retry,
+        )
     else:
         # Смешанный режим (Move между RAM и Disk)
         try:
@@ -573,19 +630,16 @@ def _patched_replace(src, dst):
     if not src_is_virtual and not dst_is_virtual:
         # --- ТЕРПЕЛИВАЯ АТОМАРНАЯ ЗАМЕНА (NATIVE) ---
         MAX_RETRIES = 7
-        for attempt in range(MAX_RETRIES):
-            try:
-                return _original["replace"](src, dst)
-            except (OSError, PermissionError) as e:
-                error_str = str(e).lower()
-                if "used by another process" in error_str or "sharing violation" in error_str or e.errno in (13, 32):
-                    if attempt == MAX_RETRIES - 1:
-                        raise e
-                    wait_time = 0.25 * (attempt + 1)
-                    print(f"[OS_PATCH:replace] Файл занят, повтор {attempt+1}/{MAX_RETRIES} через {wait_time}с...")
-                    time.sleep(wait_time)
-                else:
-                    raise e
+
+        def _on_retry(attempt, wait_time, e):
+            print(f"[OS_PATCH:replace] Файл занят, повтор {attempt + 1}/{MAX_RETRIES} через {wait_time}с...")
+
+        return _retry_on_transient_io_error(
+            lambda: _original["replace"](src, dst),
+            max_retries=MAX_RETRIES,
+            base_delay=0.25,
+            on_retry=_on_retry,
+        )
 
     # mem:// и смешанные (mem<->диск) пути — поведение как раньше.
     return _patched_rename(src, dst)
@@ -814,6 +868,55 @@ def _force_console_and_print(title, text):
                 except:
                     pass
 
+def attach_copy_feedback(
+    button,
+    owner,
+    get_text,
+    *,
+    copied_label: str = "Скопировано!",
+    idle_label: str | None = None,
+    duration_ms: int = 2000,
+):
+    """
+    Единая логика кнопки «Скопировать»: по клику копирует текст (результат
+    `get_text()`) в буфер обмена, временно меняет подпись кнопки на
+    `copied_label` и блокирует её, затем возвращает исходную подпись
+    (`idle_label`, по умолчанию — текст кнопки на момент вызова) и снова
+    включает кнопку через `duration_ms` миллисекунд.
+
+    Таймер сброса кэшируется на `owner` (обычно диалог/окно-владелец кнопки)
+    через атрибут `_copy_reset_timer`, чтобы повторные клики до истечения
+    таймаута просто перезапускали отсчёт, а не плодили новые QTimer.
+
+    Было продублировано между main.py (run_emergency_viewer) и os_patch.py
+    (_patched_qmessagebox_critical) — см. cluster-58.
+    """
+    if idle_label is None:
+        idle_label = button.text()
+
+    def _on_click():
+        QtWidgets.QApplication.clipboard().setText(get_text())
+        button.setText(copied_label)
+        button.setEnabled(False)
+
+        reset_timer = getattr(owner, "_copy_reset_timer", None)
+        if reset_timer is None:
+            reset_timer = QTimer(owner)
+            reset_timer.setSingleShot(True)
+
+            def _reset_copy_button():
+                button.setText(idle_label)
+                button.setEnabled(True)
+
+            reset_timer.timeout.connect(_reset_copy_button)
+            owner._copy_reset_timer = reset_timer
+
+        reset_timer.start(duration_ms)
+
+    button.clicked.connect(_on_click)
+    return _on_click
+
+
 def _patched_qmessagebox_critical(parent, title, text):
     """
     Критическое окно с защитой от 'Error Storm' (шторм ошибок) и зависания GUI.
@@ -867,27 +970,8 @@ def _patched_qmessagebox_critical(parent, title, text):
         kill_btn = msg_box.addButton("Kill Process", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
         msg_box.setDefaultButton(close_btn)
         
-        # 3. Логика копирования
-        def copy_action():
-            QtWidgets.QApplication.clipboard().setText(text)
-            copy_btn.setText("Скопировано!")
-            copy_btn.setEnabled(False)
-            reset_timer = getattr(msg_box, "_copy_reset_timer", None)
-            if reset_timer is None:
-                reset_timer = QTimer(msg_box)
-                reset_timer.setSingleShot(True)
-
-                def reset_copy_button():
-                    copy_btn.setText("Скопировать ошибку")
-                    copy_btn.setEnabled(True)
-
-                reset_timer.timeout.connect(reset_copy_button)
-                msg_box._copy_reset_timer = reset_timer
-
-            reset_timer.start(2000)
-            return
-        
-        copy_btn.clicked.connect(copy_action)
+        # 3. Логика копирования (общий хелпер, см. attach_copy_feedback)
+        attach_copy_feedback(copy_btn, msg_box, lambda: text)
         kill_btn.clicked.connect(lambda: os._exit(1))
         
         # 4. WATCHDOG (Сторожевой пес) - защита от зависания самого GUI

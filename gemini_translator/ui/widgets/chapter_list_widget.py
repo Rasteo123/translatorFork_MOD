@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt
 import uuid # Добавляем импорт
 from ..overlay_host import exec_dialog
+from .delegate_utils import PixmapCache
+from ...utils.helpers import format_thousands
 
 try:
     import Levenshtein
@@ -69,7 +71,7 @@ class ReorderArrowDelegate(QtWidgets.QStyledItemDelegate):
         self._template.setObjectName("reorderButton")
         self._template.setFixedSize(REORDER_BUTTON_SIZE, REORDER_BUTTON_SIZE)
         self._template.hide()
-        self._pixmaps = {}
+        self._pixmap_cache = PixmapCache()
         self.hovered = (-1, None)  # (row, 'up'|'down') — стрелка под курсором
         self.pressed = (-1, None)  # (row, 'up'|'down') — зажатая стрелка
 
@@ -89,7 +91,7 @@ class ReorderArrowDelegate(QtWidgets.QStyledItemDelegate):
 
     def invalidate_cache(self):
         """Сбрасывает кэш pixmap'ов (нужно при смене темы/палитры/шрифта)."""
-        self._pixmaps.clear()
+        self._pixmap_cache.invalidate()
 
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
@@ -104,11 +106,9 @@ class ReorderArrowDelegate(QtWidgets.QStyledItemDelegate):
     def _pixmap(self, action, hovered, pressed, enabled):
         dpr = self._table.devicePixelRatioF()
         key = (action, hovered, pressed, enabled, round(dpr * 100))
-        pixmap = self._pixmaps.get(key)
-        if pixmap is None:
-            pixmap = self._render_template(action, hovered, pressed, enabled, dpr)
-            self._pixmaps[key] = pixmap
-        return pixmap
+        return self._pixmap_cache.get_or_render(
+            key, lambda: self._render_template(action, hovered, pressed, enabled, dpr)
+        )
 
     def _render_template(self, action, hovered, pressed, enabled, dpr):
         btn = self._template
@@ -304,7 +304,7 @@ class ChapterListWidget(QWidget):
             value = 0
         if value <= 0:
             return ""
-        return f"{value:,}".replace(",", " ")
+        return format_thousands(value)
 
     def _char_count_for_chapter(self, chapter_path) -> int:
         if not self._show_chapter_char_count:

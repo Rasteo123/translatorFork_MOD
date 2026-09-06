@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from .menu_utils import prompt_return_to_menu, return_to_main_menu
+from ...utils.epub_tools import find_opf_path
 
 
 RULATE_HEADER_RE = re.compile(
@@ -420,21 +421,6 @@ def _get_package_namespace(root):
     return "http://www.idpf.org/2007/opf"
 
 
-def _find_opf_path(epub_zip):
-    try:
-        container_root = SafeET.fromstring(epub_zip.read("META-INF/container.xml"))
-        for elem in container_root.iter():
-            if elem.tag.endswith("rootfile"):
-                return elem.attrib.get("full-path")
-    except Exception:
-        pass
-
-    for name in epub_zip.namelist():
-        if name.lower().endswith(".opf"):
-            return name
-    raise FileNotFoundError("Не удалось найти content.opf внутри EPUB.")
-
-
 def split_epub_file(input_path, output_path, settings, log_callback=None, progress_callback=None):
     def log(message):
         if log_callback:
@@ -443,7 +429,7 @@ def split_epub_file(input_path, output_path, settings, log_callback=None, progre
     stats = SplitStats()
 
     with zipfile.ZipFile(input_path, "r") as zin:
-        opf_path = _find_opf_path(zin)
+        opf_path = find_opf_path(zin)
         opf_dir = posixpath.dirname(opf_path)
         opf_root = SafeET.fromstring(zin.read(opf_path))
         ns_uri = _get_package_namespace(opf_root)

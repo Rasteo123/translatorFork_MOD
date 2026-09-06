@@ -6,7 +6,6 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PyQt6 import sip
 from PyQt6.QtCore import QDateTime, QObject, QSettings, QThread, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
@@ -82,17 +81,9 @@ from qidian_rulate.workers import (
     QidianFetchWorker,
     validate_source_url,
 )
+from gemini_translator.utils import qt_utils
 
 SCHEDULE_LIMIT_DAYS = 60
-
-
-def _qt_object_is_alive(obj) -> bool:
-    if obj is None:
-        return False
-    try:
-        return not sip.isdeleted(obj)
-    except TypeError:
-        return True
 
 
 def calculate_fit_interval_minutes(
@@ -1531,22 +1522,22 @@ class RanobeUploaderApp(QMainWindow):
         if not self._append_log(level, message):
             return
         dlg = self._process_dialogs.get(key)
-        if _qt_object_is_alive(dlg):
+        if qt_utils.qt_object_is_alive(dlg):
             dlg.append_log(level, message)
 
     def _process_progress(self, key: str, value: int):
-        if getattr(self, "_closing", False) or not _qt_object_is_alive(self):
+        if getattr(self, "_closing", False) or not qt_utils.qt_object_is_alive(self):
             return
         self.progress_bar.setValue(value)
         dlg = self._process_dialogs.get(key)
-        if _qt_object_is_alive(dlg):
+        if qt_utils.qt_object_is_alive(dlg):
             dlg.set_progress(value)
 
     def _finish_process_dialog(self, key: str):
-        if getattr(self, "_closing", False) or not _qt_object_is_alive(self):
+        if getattr(self, "_closing", False) or not qt_utils.qt_object_is_alive(self):
             return
         dlg = self._process_dialogs.get(key)
-        if _qt_object_is_alive(dlg):
+        if qt_utils.qt_object_is_alive(dlg):
             dlg.mark_finished()
 
     # ── Логирование ──
@@ -1559,11 +1550,11 @@ class RanobeUploaderApp(QMainWindow):
         else:
             logging.info(message)
 
-        if getattr(self, "_closing", False) or not _qt_object_is_alive(self):
+        if getattr(self, "_closing", False) or not qt_utils.qt_object_is_alive(self):
             return False
 
         log_area = getattr(self, "log_area", None)
-        if not _qt_object_is_alive(log_area):
+        if not qt_utils.qt_object_is_alive(log_area):
             return False
 
         ts = datetime.now().strftime("%H:%M:%S")
@@ -2629,34 +2620,22 @@ class RanobeUploaderApp(QMainWindow):
     # ── Управление списком глав ──
 
     def _select_all(self):
-        self.chapters_list_widget.setUpdatesEnabled(False)
-        try:
-            for i in range(self.chapters_list_widget.count()):
-                self.chapters_list_widget.item(i).setCheckState(Qt.CheckState.Checked)
-        finally:
-            self.chapters_list_widget.setUpdatesEnabled(True)
+        # cluster-61: список поддерживает фильтр по подстроке (search_input →
+        # _filter_chapters, скрывает элементы через isHidden) — only_visible=True
+        # не даёт «Выбрать все» задевать отфильтрованные (скрытые) главы.
+        from gemini_translator.ui.dialogs import chapter_selection_dialog as selection_utils
+
+        selection_utils.set_checked_all(self.chapters_list_widget, True, only_visible=True)
 
     def _deselect_all(self):
-        self.chapters_list_widget.setUpdatesEnabled(False)
-        try:
-            for i in range(self.chapters_list_widget.count()):
-                self.chapters_list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
-        finally:
-            self.chapters_list_widget.setUpdatesEnabled(True)
+        from gemini_translator.ui.dialogs import chapter_selection_dialog as selection_utils
+
+        selection_utils.set_checked_all(self.chapters_list_widget, False, only_visible=False)
 
     def _invert_selection(self):
-        self.chapters_list_widget.setUpdatesEnabled(False)
-        try:
-            for i in range(self.chapters_list_widget.count()):
-                item = self.chapters_list_widget.item(i)
-                new_state = (
-                    Qt.CheckState.Unchecked
-                    if item.checkState() == Qt.CheckState.Checked
-                    else Qt.CheckState.Checked
-                )
-                item.setCheckState(new_state)
-        finally:
-            self.chapters_list_widget.setUpdatesEnabled(True)
+        from gemini_translator.ui.dialogs import chapter_selection_dialog as selection_utils
+
+        selection_utils.invert_checked(self.chapters_list_widget, only_visible=True)
 
     def _on_item_clicked(self, item):
         row = self.chapters_list_widget.row(item)
@@ -2837,7 +2816,7 @@ class RanobeUploaderApp(QMainWindow):
         # может успеть эмитить ETA уже после того, как окно закрыто и lbl_eta удалён.
         self.worker.eta_signal.connect(
             lambda s: self.lbl_eta.setText(f"ETA: {s}")
-            if _qt_object_is_alive(getattr(self, "lbl_eta", None))
+            if qt_utils.qt_object_is_alive(getattr(self, "lbl_eta", None))
             else None
         )
         self.worker.finished_signal.connect(self._on_upload_finished)

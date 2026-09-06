@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 import inspect
 
+from ..utils.helpers import safe_int
 from .llm.completion import QaModelSelection
 
 
@@ -68,24 +69,24 @@ class QaHandlerWorker:
         self.workascii_workspace_name = str(
             settings.get("workascii_workspace_name", "") or ""
         ).strip()
-        self.workascii_workspace_index = _safe_int(
+        self.workascii_workspace_index = safe_int(
             settings.get("workascii_workspace_index", 1), 1, 1
         )
-        self.workascii_timeout_sec = _safe_int(
+        self.workascii_timeout_sec = safe_int(
             settings.get("workascii_timeout_sec", 1800), 1800, 60
         )
         self.workascii_headless = bool(settings.get("workascii_headless", False))
         self.workascii_profile_template_dir = str(
             settings.get("workascii_profile_template_dir", "") or ""
         ).strip()
-        self.workascii_refresh_every_requests = _safe_int(
+        self.workascii_refresh_every_requests = safe_int(
             settings.get("workascii_refresh_every_requests", 0), 0, 0
         )
         self.debug_logging_enabled = bool(settings.get("debug_logging_enabled", False))
         self.debug_operation_filters = str(
             settings.get("debug_operation_filters", "") or ""
         ).strip()
-        self.debug_max_log_mb = _safe_int(settings.get("debug_max_log_mb", 128), 128, 1)
+        self.debug_max_log_mb = safe_int(settings.get("debug_max_log_mb", 128), 128, 1)
         self.prompt_builder = _QaPromptBuilder()
         self._cancellation = cancellation
         self._log = log
@@ -333,11 +334,3 @@ def _model_config(provider_config: Mapping[str, object], model_name: str) -> dic
                 resolved.setdefault("id", model_name)
                 return resolved
     return {"id": model_name}
-
-
-def _safe_int(value: object, default: int, minimum: int) -> int:
-    try:
-        parsed = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        parsed = default
-    return max(minimum, parsed)

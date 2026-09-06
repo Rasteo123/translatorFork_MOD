@@ -12,11 +12,29 @@ except ImportError:
 
 class NotificationManager:
     _tray_icon = None
+    _SETTINGS_ORG = "SiberianTeam"
+    _SETTINGS_APP = "TranslatorFork"
+    _SETTINGS_KEY = "notifications_enabled"
+
+    @classmethod
+    def is_enabled(cls) -> bool:
+        """Единая точка чтения флага notifications_enabled из QSettings."""
+        settings = QSettings(cls._SETTINGS_ORG, cls._SETTINGS_APP)
+        return bool(settings.value(cls._SETTINGS_KEY, True, type=bool))
+
+    @classmethod
+    def set_enabled(cls, enabled: bool) -> None:
+        """Единая точка записи флага notifications_enabled в QSettings.
+
+        Сигнатура (bool) позволяет подключать её напрямую к QCheckBox.toggled
+        без приватного слота-обёртки в каждом диалоге.
+        """
+        settings = QSettings(cls._SETTINGS_ORG, cls._SETTINGS_APP)
+        settings.setValue(cls._SETTINGS_KEY, bool(enabled))
 
     @classmethod
     def show(cls, title: str, message: str):
-        settings = QSettings("SiberianTeam", "TranslatorFork")
-        if not settings.value("notifications_enabled", True, type=bool):
+        if not cls.is_enabled():
             return
 
         if sys.platform == 'darwin':

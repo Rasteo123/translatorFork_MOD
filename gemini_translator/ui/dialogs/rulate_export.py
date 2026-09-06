@@ -5,10 +5,8 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from defusedxml import ElementTree as SafeET
 from html import unescape
 from pathlib import Path
-from urllib.parse import unquote
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
@@ -42,89 +40,23 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from .menu_utils import prompt_return_to_menu, return_to_main_menu
-from ...utils.epub_tools import extract_first_epub_heading_text, normalize_epub_chapter_heading_to_h1
+from ...utils.epub_tools import (
+    extract_first_epub_heading_text,
+    find_opf_path,
+    normalize_epub_chapter_heading_to_h1,
+    read_spine_html_order,
+)
 
 
 class SimpleEpubReader:
     def __init__(self, filepath):
         self.filepath = filepath
         self.zf = zipfile.ZipFile(filepath, "r")
-        self.opf_path = self._find_opf_path()
+        self.opf_path = find_opf_path(self.zf)
         self.opf_dir = os.path.dirname(self.opf_path)
-        self.spine_ids = []
-        self.manifest = {}
-        self._parse_opf()
-
-    def _find_opf_path(self):
-        try:
-            with self.zf.open("META-INF/container.xml") as f:
-                tree = SafeET.parse(f)
-                root = tree.getroot()
-                for elem in root.iter():
-                    if elem.tag.endswith("rootfile"):
-                        return elem.get("full-path")
-        except Exception:
-            pass
-
-        for name in self.zf.namelist():
-            if name.endswith(".opf"):
-                return name
-        raise Exception("Не найден OPF-файл (структура книги повреждена или нестандартна)")
-
-    def _parse_opf(self):
-        with self.zf.open(self.opf_path) as f:
-            tree = SafeET.parse(f)
-            root = tree.getroot()
-
-            for elem in root.iter():
-                if elem.tag.endswith("manifest"):
-                    for item in elem:
-                        if item.tag.endswith("item"):
-                            res_id = item.get("id")
-                            href = item.get("href")
-                            if res_id and href:
-                                self.manifest[res_id] = unquote(href)
-
-            for elem in root.iter():
-                if elem.tag.endswith("spine"):
-                    for itemref in elem:
-                        if itemref.tag.endswith("itemref"):
-                            idref = itemref.get("idref")
-                            if idref:
-                                self.spine_ids.append(idref)
 
     def get_ordered_html_files(self):
-        ordered_files = []
-
-        for spine_id in self.spine_ids:
-            if spine_id not in self.manifest:
-                continue
-
-            href = self.manifest[spine_id]
-            full_path = f"{self.opf_dir}/{href}" if self.opf_dir else href
-            full_path = full_path.replace("\\", "/")
-
-            parts = full_path.split("/")
-            normalized_parts = []
-            for part in parts:
-                if part == "..":
-                    if normalized_parts:
-                        normalized_parts.pop()
-                elif part != ".":
-                    normalized_parts.append(part)
-            clean_path = "/".join(normalized_parts)
-
-            if clean_path in self.zf.namelist():
-                ordered_files.append(clean_path)
-                continue
-
-            basename = os.path.basename(clean_path)
-            for name in self.zf.namelist():
-                if name.endswith(basename):
-                    ordered_files.append(name)
-                    break
-
-        return ordered_files
+        return read_spine_html_order(self.zf)
 
     def read_file(self, filename):
         with self.zf.open(filename) as f:

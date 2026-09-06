@@ -18,7 +18,13 @@ from typing import Any
 
 import numpy as np
 
-from .base import EmbeddingBatch, EmbeddingContractError, EmbeddingRequest, validate_and_normalize_batch
+from .base import (
+    EmbeddingBatch,
+    EmbeddingContractError,
+    EmbeddingRequest,
+    _positive_finite_timeout,
+    validate_and_normalize_batch,
+)
 from .factory import (
     EmbeddingHttpError,
     EmbeddingResponseError,
@@ -35,15 +41,6 @@ _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta"
 MAX_KEY_ROTATIONS = 12
 # The service refuses more than this many items in one batch request.
 MAX_BATCH_REQUESTS = 100
-
-
-def _positive_finite_timeout(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
-    timeout = float(value)
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
-    return timeout
 
 
 def _model_resource(value: object) -> str:

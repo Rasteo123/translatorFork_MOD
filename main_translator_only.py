@@ -28,80 +28,12 @@ import main as app_main  # noqa: E402
 
 
 def _bootstrap_application():
-    app_main.prepare_console_streams()
-    app_main.configure_settings_scope_from_argv(sys.argv)
-    sys.excepthook = app_main.global_excepthook
+    """Тонкая обёртка над общим bootstrap'ом main.py (translator-only режим).
 
-    import threading
-
-    main_id = threading.get_ident()
-    print(f"\n[SYSTEM] MAIN UI THREAD ID: {main_id}\n")
-    app_main.os_patch.PatientLock.register_vip_thread(main_id)
-
-    app = app_main.ApplicationWithContext(sys.argv)
-    
-    # --- ЛОКАЛИЗАЦИЯ СТАНДАРТНЫХ ЭЛЕМЕНТОВ QT ---
-    from PyQt6.QtCore import QTranslator, QLibraryInfo
-    qtbase_translator = QTranslator(app)
-    qt_translations_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
-    if qtbase_translator.load("qtbase_ru", qt_translations_path):
-        app.installTranslator(qtbase_translator)
-    qt_translator = QTranslator(app)
-    if qt_translator.load("qt_ru", qt_translations_path):
-        app.installTranslator(qt_translator)
-
-    app_main.install_window_title_branding(app)
-    # Тема применяется в apply_saved_app_theme ниже (после settings_manager),
-    # без раннего тёмного дефолта — иначе светлая/авто-тема даёт тёмную вспышку.
-
-    if sys.platform == "win32":
-        app_main.asyncio.set_event_loop_policy(app_main.asyncio.WindowsSelectorEventLoopPolicy())
-
-    app_main.initialize_global_resources(app)
-    app_main.os_patch.apply()
-    app_main.api_config.initialize_configs()
-
-    print("[INFO] Initializing translator-only application services...")
-
-    app.event_bus = app_main.EventBus()
-    app.initialize_managers()
-    app.settings_manager = app.get_settings_manager()
-    app_main.apply_saved_app_theme(app, app.settings_manager)
-    app_main.install_selection_translator(app)
-    app.task_manager = app_main.ChapterQueueManager(event_bus=app.event_bus)
-    app.global_version = app_main.APP_VERSION
-    app.proxy_controller = app_main.GlobalProxyController(app.event_bus)
-    proxy_settings = app.settings_manager.load_proxy_settings()
-    app.proxy_controller.apply_settings(proxy_settings)
-
-    temp_folder = os.path.join(os.path.expanduser("~"), ".epub_translator_temp")
-    os.makedirs(temp_folder, exist_ok=True)
-    app.context_manager = app_main.ContextManager(temp_folder)
-    app.server_manager = app_main.ServerManager(app.event_bus)
-
-    print("[INFO] Initializing TranslationEngine...")
-    app.engine = app_main.TranslationEngine(task_manager=app.task_manager)
-    app.engine_thread = app_main.QtCore.QThread(app)
-    app.engine.moveToThread(app.engine_thread)
-    app.engine_thread.finished.connect(app.engine.deleteLater)
-    app.engine_thread.start()
-
-    print("[OK] TranslationEngine started in background thread.")
-    app_main.QtCore.QMetaObject.invokeMethod(
-        app.engine,
-        "log_thread_identity",
-        app_main.QtCore.Qt.ConnectionType.QueuedConnection,
-    )
-
-    try:
-        import jieba
-
-        print("[INFO] Warming up jieba dictionary...")
-        jieba.lcut("прогрев", cut_all=False)
-    except (ImportError, Exception) as error:
-        print(f"[WARN] Could not warm up jieba dictionary: {error}")
-
-    return app
+    Оставлена как отдельное имя, потому что tests/test_main_translator_only_shutdown.py
+    подменяет её через mock.patch.object.
+    """
+    return app_main.bootstrap_application(sys.argv, translator_only=True)
 
 
 def _create_translator_window():

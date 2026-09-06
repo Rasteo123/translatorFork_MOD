@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Protocol
 
 import numpy as np
@@ -22,6 +23,15 @@ def _positive_int(value: object, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise EmbeddingContractError(f"{field_name} must be a positive integer")
     return value
+
+
+def _positive_finite_timeout(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
+    return timeout
 
 
 def _base_language(value: object) -> str:

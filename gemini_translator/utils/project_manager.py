@@ -217,30 +217,82 @@ class TranslationProjectManager:
             self.data[path1][version_suffix] = path2
             self._schedule_flush_unsafe()
 
+    def _version_map_file_path(self):
+        return os.path.join(self.project_folder, 'glossary_versions.json')
+
+    def _load_version_map_unsafe(self):
+        """Вызывается, когда self.lock уже удержан (или не нужен)."""
+        version_file = self._version_map_file_path()
+        if os.path.exists(version_file):
+            try:
+                with open(version_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
+    def _write_version_map_unsafe(self, version_map):
+        """Атомарная запись карты версий: tmp-файл + os.replace (под
+        self.lock) — падение записи не оставляет обрезанный/битый файл,
+        который load_version_map иначе прочитал бы как {}, молча потеряв
+        всю карту версий терминов."""
+        version_file = self._version_map_file_path()
+        tmp_path = version_file + '.tmp'
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(version_map, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, version_file)
+        except Exception as e:
+            print(f"[ProjectManager] Ошибка сохранения версий: {e}")
+            raise
+
     def load_version_map(self):
         """
         Загружает карту версий терминов (glossary_versions.json).
         Возвращает dict: { 'Original Term': [ {scope: [], override: {}}, ... ] }
         """
-        version_file = os.path.join(self.project_folder, 'glossary_versions.json')
         with self.lock:
-            if os.path.exists(version_file):
-                try:
-                    with open(version_file, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                except Exception:
-                    return {}
-            return {}
+            return self._load_version_map_unsafe()
 
     def save_version_map(self, version_map):
-        """Сохраняет карту версий."""
-        version_file = os.path.join(self.project_folder, 'glossary_versions.json')
+        """Сохраняет карту версий целиком.
+
+        Ошибка записи логируется и пробрасывается вызывающему коду —
+        единственный вызывающий (TermVersioningDialog) показывает её
+        пользователю через QMessageBox, поэтому тихое проглатывание
+        здесь сделало бы сбой сохранения версий термина незаметным.
+
+        Перезаписывает ВЕСЬ файл переданным словарём — если между чтением
+        и этим вызовом карту менял кто-то ещё, его правки будут потеряны.
+        Для правки одного термина без этого риска используйте
+        update_term_versions()."""
         with self.lock:
-            try:
-                with open(version_file, 'w', encoding='utf-8') as f:
-                    json.dump(version_map, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                print(f"[ProjectManager] Ошибка сохранения версий: {e}")
+            self._write_version_map_unsafe(version_map)
+
+    def update_term_versions(self, term, rules):
+        """Атомарно перечитывает карту версий, заменяет записи одного
+        термина и сохраняет — read-modify-write под ОДНИМ удержанием
+        self.lock, а не read (в конструкторе диалога) + write (полным
+        устаревшим снимком) по отдельности.
+
+        Закрывает окно lost update: если конструктор TermVersioningDialog
+        прочитал карту, а до его сохранения кто-то ещё (второй открытый
+        диалог версий, воркер перевода и т.п.) успел изменить карту через
+        этот же project_manager, тот вклад не будет затёрт устаревшим
+        снимком диалога.
+
+        rules == [] или None удаляет термин из карты (как раньше делал
+        TermVersioningDialog._save_all_versions).
+
+        Возвращает получившуюся полную карту версий."""
+        with self.lock:
+            current = self._load_version_map_unsafe()
+            if rules:
+                current[term] = rules
+            else:
+                current.pop(term, None)
+            self._write_version_map_unsafe(current)
+            return current
     
     def remove_translation(self, original_internal_path, version_suffix):
         """Атомарно удаляет одну версию перевода."""

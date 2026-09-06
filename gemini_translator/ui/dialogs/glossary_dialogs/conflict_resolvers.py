@@ -15,6 +15,7 @@ from PyQt6.QtGui import QColor
 from gemini_translator.ui.widgets.common_widgets import NoScrollComboBox
 from gemini_translator.ui.shell import ShellPage
 from .custom_widgets import ExpandingTextEditDelegate, SmartTextEdit
+from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 
 # --- Аннотация типа для избежания циклического импорта ---
 from typing import TYPE_CHECKING
@@ -613,12 +614,11 @@ class ComplexOverlapResolverPage(ShellPage):
         return patch_list
 
 
-class _ComplexOverlapResolverDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(ComplexOverlapResolverPage, name)
-
-
-class ComplexOverlapResolverDialog(QDialog, metaclass=_ComplexOverlapResolverDialogMeta):
+class ComplexOverlapResolverDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(ComplexOverlapResolverPage),
+):
     """Modal wrapper hosting ComplexOverlapResolverPage for the legacy exec() API."""
 
     def __init__(self, overlap_groups, inverted_groups, original_glossary, pymorphy_available, parent=None):
@@ -638,12 +638,6 @@ class ComplexOverlapResolverDialog(QDialog, metaclass=_ComplexOverlapResolverDia
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()
@@ -1162,12 +1156,11 @@ class ReverseConflictResolverPage(ShellPage):
         return patch_list
 
 
-class _ReverseConflictResolverDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(ReverseConflictResolverPage, name)
-
-
-class ReverseConflictResolverDialog(QDialog, metaclass=_ReverseConflictResolverDialogMeta):
+class ReverseConflictResolverDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(ReverseConflictResolverPage),
+):
     """Modal wrapper hosting ReverseConflictResolverPage for the legacy exec() API."""
 
     def __init__(self, reverse_issues, original_glossary, parent=None, morph=None):
@@ -1181,12 +1174,6 @@ class ReverseConflictResolverDialog(QDialog, metaclass=_ReverseConflictResolverD
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()

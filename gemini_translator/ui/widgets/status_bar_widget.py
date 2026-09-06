@@ -4,6 +4,7 @@ from collections import Counter
 
 from PyQt6 import QtCore, QtWidgets
 from gemini_translator.ui import theme_manager
+from ...utils.helpers import format_compact_number
 
 
 STATUS_FLUSH_INTERVAL_MS = 1500
@@ -248,24 +249,12 @@ class StatusBarWidget(QtWidgets.QWidget):
         self.color_bar_layout.setStretch(3, self.error_count)
         self.color_bar_layout.setStretch(4, remaining_count)
 
-    @staticmethod
-    def _format_compact_number(value: int) -> str:
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = 0
-        if value >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M"
-        if value >= 1_000:
-            return f"{value / 1_000:.1f}K"
-        return str(value)
-
     def _format_token_usage_suffix(self) -> str:
         if self.total_tokens_used <= 0:
             return ""
-        total = self._format_compact_number(self.total_tokens_used)
-        input_tokens = self._format_compact_number(self.input_tokens_used)
-        output_tokens = self._format_compact_number(self.output_tokens_used)
+        total = format_compact_number(self.total_tokens_used)
+        input_tokens = format_compact_number(self.input_tokens_used)
+        output_tokens = format_compact_number(self.output_tokens_used)
         return f" | Токены: ~{total} (вх. {input_tokens} / вых. {output_tokens})"
 
     def show_message(self, message: str, temporary: bool = True, duration_ms: int = 3000):

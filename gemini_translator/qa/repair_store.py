@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 
+from ..utils.io_utils import atomic_write_bytes
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _METADATA_VERSION = "translation_qa_repair_store.v1"
@@ -351,12 +352,3 @@ def _read_json(path: Path) -> object | None:
         raise RepairStoreError("repair metadata is not valid JSON") from exc
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Replace ``path`` with ``data`` so a crash never leaves a partial file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    with open(temporary, "wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)

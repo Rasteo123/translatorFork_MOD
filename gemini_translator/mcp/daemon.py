@@ -34,7 +34,7 @@ from .jobs import (
     tail_log,
     utc_now,
 )
-from .paths import daemon_file, ensure_state_dirs, validate_job_id
+from .paths import build_base_url, daemon_file, ensure_state_dirs, validate_job_id
 from .worker import cancel_process, run_job
 
 TOKEN_HEADER = "X-Translator-MCP-Token"
@@ -126,8 +126,7 @@ class McpDaemon:
 
     @property
     def base_url(self) -> str:
-        host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
-        return f"http://{host}:{self.port}"
+        return build_base_url(self.host, self.port)
 
     def start_in_thread(self) -> None:
         self._ensure_server()

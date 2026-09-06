@@ -1,13 +1,17 @@
 import os
 import unittest
-from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6 import QtWidgets
 
-import gemini_translator.ui.dialogs.epub as epub_module
-from gemini_translator.ui.dialogs.epub import EpubHtmlSelectorDialog
+# cluster-41 dedup: EpubHtmlSelectorDialog._extract_h1_title дублировал
+# gemini_translator.utils.epub_tools._extract_first_epub_heading_text_regex
+# и был удалён; подсказка заголовка теперь строится напрямую канонической
+# функцией (см. tests/test_dedup_cluster_41_characterization.py и
+# tests/test_dedup_cluster_41_routing.py для полного покрытия расхождений
+# между копиями и маршрутизации вызова).
+from gemini_translator.utils.epub_tools import _extract_first_epub_heading_text_regex
 
 
 class ExtractH1TitleTests(unittest.TestCase):
@@ -16,7 +20,7 @@ class ExtractH1TitleTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     def _extract(self, html):
-        return EpubHtmlSelectorDialog._extract_h1_title(html)
+        return _extract_first_epub_heading_text_regex(html)
 
     def test_plain_title(self):
         self.assertEqual(self._extract("<html><body><h1>Глава 1</h1></body></html>"),
@@ -24,7 +28,10 @@ class ExtractH1TitleTests(unittest.TestCase):
 
     def test_nested_tags_and_attributes(self):
         html = '<h1 class="chapter"><span>Глава</span> <em>2</em>: Начало</h1>'
-        self.assertEqual(self._extract(html), "Глава 2: Начало")
+        # Каноническая функция заменяет внутренние теги на пробел (а не на ""),
+        # чтобы не склеивать соседний текст без разделителя — отсюда пробел
+        # перед ":" по сравнению со старой копией _extract_h1_title.
+        self.assertEqual(self._extract(html), "Глава 2 : Начало")
 
     def test_entities_and_br(self):
         html = "<h1>Глава&nbsp;3<br/>Продолжение &amp; конец</h1>"
@@ -38,18 +45,6 @@ class ExtractH1TitleTests(unittest.TestCase):
         self.assertEqual(self._extract("<html><body><p>текст</p></body></html>"), "")
         self.assertEqual(self._extract(""), "")
         self.assertEqual(self._extract(None), "")
-
-    def test_does_not_parse_whole_document_with_beautifulsoup(self):
-        """Полный BS4-парсинг каждой главы стоил ~3 мс × число глав (секунды
-        на большой книге) только ради подсказки — заголовок должен извлекаться
-        регулярным выражением."""
-        def _boom(*args, **kwargs):
-            raise AssertionError("BeautifulSoup must not be used for h1 titles")
-
-        with mock.patch.object(epub_module, "BeautifulSoup", _boom):
-            self.assertEqual(
-                self._extract("<html><body><h1>Глава 5</h1></body></html>"),
-                "Глава 5")
 
 
 if __name__ == "__main__":

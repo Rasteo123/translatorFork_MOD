@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 from ...api import config as api_config
 from ...core.consistency_engine import FAST_PROOFREAD_MODE
 from ...utils.epub_tools import TASK_SIZE_UNIT_CHARS, TASK_SIZE_UNIT_TOKENS, normalize_task_size_unit
+from ...utils.helpers import format_thousands
 from ...utils.settings import SettingsManager
 from .common_widgets import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from gemini_translator.ui import theme_manager
@@ -779,11 +780,6 @@ class AutoTranslateWidget(QWidget):
         if not self._is_loading:
             self._on_any_setting_changed()
 
-    def _format_number(self, value: int | float | None) -> str:
-        if value is None:
-            return "0"
-        return f"{int(value):,}".replace(",", " ")
-
     def _estimate_batch_chars_from_tokens(self, token_count: int):
         if token_count <= 0:
             return None, None
@@ -841,21 +837,21 @@ class AutoTranslateWidget(QWidget):
         if batch_tokens > 0:
             estimated_chars, profile_name = self._estimate_batch_chars_from_tokens(batch_tokens)
             batch_text = (
-                f"Лимит пакета: ~{self._format_number(batch_tokens)} входных токенов "
-                f"(≈ {self._format_number(estimated_chars)} символов, профиль: {profile_name})."
+                f"Лимит пакета: ~{format_thousands(batch_tokens)} входных токенов "
+                f"(≈ {format_thousands(estimated_chars)} символов, профиль: {profile_name})."
             )
         elif self._current_task_size_limit > 0:
             batch_text = (
                 "Лимит пакета: как в общих настройках "
-                f"({self._format_number(self._current_task_size_limit)} символов)."
+                f"({format_thousands(self._current_task_size_limit)} символов)."
             )
         else:
             batch_text = "Лимит пакета: как в общих настройках."
 
         if batch_tokens > 0:
             batch_text = (
-                f"Batch limit: ~{self._format_number(batch_tokens)} input tokens "
-                f"(task limit: {self._format_number(estimated_chars)} Gemini tokens, profile: {profile_name})."
+                f"Batch limit: ~{format_thousands(batch_tokens)} input tokens "
+                f"(task limit: {format_thousands(estimated_chars)} Gemini tokens, profile: {profile_name})."
             )
         elif self._current_task_size_limit > 0:
             inherited_unit = (
@@ -865,7 +861,7 @@ class AutoTranslateWidget(QWidget):
             )
             batch_text = (
                 "Batch limit: inherited from common settings "
-                f"({self._format_number(self._current_task_size_limit)} {inherited_unit})."
+                f"({format_thousands(self._current_task_size_limit)} {inherited_unit})."
             )
         chapter_limit = int(self.batch_chapters_spin.value())
         if chapter_limit > 0:

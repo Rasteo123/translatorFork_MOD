@@ -16,6 +16,7 @@ from PyQt6.QtCore import Qt
 # Импортируем виджеты из их нового местоположения
 from .custom_widgets import ExpandingTextEditDelegate
 from ...shell import ShellPage
+from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 
 # --- Аннотация типа для избежания циклического импорта ---
 from typing import TYPE_CHECKING
@@ -1031,12 +1032,11 @@ class CoreTermAnalyzerPage(ShellPage):
             QtCore.QTimer.singleShot(50, self._async_prepare_data_and_populate)
 
 
-class _CoreTermAnalyzerDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(CoreTermAnalyzerPage, name)
-
-
-class CoreTermAnalyzerDialog(QDialog, metaclass=_CoreTermAnalyzerDialogMeta):
+class CoreTermAnalyzerDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(CoreTermAnalyzerPage),
+):
     """Modal wrapper hosting CoreTermAnalyzerPage for the legacy exec() API."""
 
     def __init__(self, original_glossary_list, logic, analysis_results, pymorphy_available, parent=None):
@@ -1056,12 +1056,6 @@ class CoreTermAnalyzerDialog(QDialog, metaclass=_CoreTermAnalyzerDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()

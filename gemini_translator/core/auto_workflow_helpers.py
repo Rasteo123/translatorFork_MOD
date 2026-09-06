@@ -4,9 +4,12 @@ import os
 import re
 from typing import Any
 
+from ..utils import cjk_ranges
 
 AUTO_CJK_SHORT_RATIO_LIMIT = 2.80
-AUTO_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
+# cluster-32 dedup: диапазон (Unified без Ext-A + кана + хангыль) теперь
+# живёт в gemini_translator.utils.cjk_ranges.CORE_CJK_CHAR_RE -- то же самое
+# множество символов, что и раньше в AUTO_CJK_CHAR_RE, один источник истины.
 
 
 def _extract_number_from_path(path: Any):
@@ -21,7 +24,7 @@ def _extract_number_from_path(path: Any):
 
 
 def text_has_cjk(text: Any) -> bool:
-    return isinstance(text, str) and bool(AUTO_CJK_CHAR_RE.search(text))
+    return isinstance(text, str) and bool(cjk_ranges.CORE_CJK_CHAR_RE.search(text))
 
 
 def auto_result_uses_cjk_ratio(result_data: Any, chapter_has_cjk=None) -> bool:
@@ -85,14 +88,16 @@ def build_sequential_chapter_chains(chapters: Any, split_count: Any) -> list[lis
     return chains
 
 
-def extract_chapters_from_payload(payload: Any) -> list[str]:
+def extract_chapters_from_payload(payload: Any, *, include_glossary_batch: bool = False) -> list[str]:
     if not payload:
         return []
 
     task_type = payload[0]
     if task_type in ("epub", "epub_chunk") and len(payload) > 2:
         return [payload[2]]
-    if task_type == "epub_batch" and len(payload) > 2:
+
+    batch_task_types = ("epub_batch", "glossary_batch_task") if include_glossary_batch else ("epub_batch",)
+    if task_type in batch_task_types and len(payload) > 2:
         return list(payload[2])
     return []
 

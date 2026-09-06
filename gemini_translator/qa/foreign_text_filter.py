@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 import re
-import unicodedata
 
 from .glossary_audit import match_glossary_policies
 from .models import (
@@ -19,6 +18,7 @@ from .models import (
     GlossaryRule,
     QaModelValidationError,
 )
+from .text_normalize import normalize_for_comparison
 
 
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
@@ -275,12 +275,8 @@ def _ordered_unique(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _normalize(value: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip().casefold()
-
-
 def _meaningful(value: str) -> str:
-    return _normalize(value).strip(_WRAPPER_CHARACTERS).strip()
+    return normalize_for_comparison(value).strip(_WRAPPER_CHARACTERS).strip()
 
 
 def _same_meaningful_text(left: str, right: str) -> bool:
@@ -336,7 +332,7 @@ def _glossary_conflict_reasons(
 ) -> tuple[str, ...]:
     by_term: dict[str, list[GlossaryPolicyMatch]] = {}
     for match in matches:
-        by_term.setdefault(_normalize(match.term), []).append(match)
+        by_term.setdefault(normalize_for_comparison(match.term), []).append(match)
     reasons: list[str] = []
     for term_matches in by_term.values():
         policies = tuple(
@@ -345,9 +341,9 @@ def _glossary_conflict_reasons(
         if len(policies) > 1:
             display = min(
                 (match.term for match in term_matches),
-                key=lambda term: (_normalize(term), term),
+                key=lambda term: (normalize_for_comparison(term), term),
             )
             reasons.append(
                 f"glossary_policy_conflict:{display}:{','.join(policies)}"
             )
-    return tuple(sorted(reasons, key=lambda reason: (_normalize(reason), reason)))
+    return tuple(sorted(reasons, key=lambda reason: (normalize_for_comparison(reason), reason)))

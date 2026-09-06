@@ -30,6 +30,7 @@ from gemini_translator.api import config as api_config
 from gemini_translator.api.errors import NetworkError, OperationCancelledError, TemporaryRateLimitError
 from gemini_translator.api.factory import get_api_handler_class
 
+from . import playwright_launcher
 from .models import (
     DEFAULT_RULATE_TELEGRAM_LINK,
     DEFAULT_RULATE_VK_LINK,
@@ -252,53 +253,12 @@ def normalize_rulate_tags(value) -> list[str]:
     )
 
 
-def configure_playwright_runtime() -> None:
-    if sys.platform == "win32" and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
-        try:
-            current_policy = asyncio.get_event_loop_policy()
-        except Exception:
-            current_policy = None
-        if not isinstance(current_policy, asyncio.WindowsProactorEventLoopPolicy):
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-    resolved_paths = {
-        "PLAYWRIGHT_BROWSERS_PATH": api_config.find_playwright_browsers_path(),
-        "PLAYWRIGHT_NODEJS_PATH": api_config.find_node_executable(),
-        "PLAYWRIGHT_PACKAGE_ROOT": api_config.find_playwright_package_root(),
-    }
-    for env_name, resolved_path in resolved_paths.items():
-        if not resolved_path:
-            continue
-        path_obj = Path(resolved_path)
-        if path_obj.exists():
-            os.environ[env_name] = str(path_obj)
-
-
-def _playwright_browser_install_hint() -> str:
-    python_executable = sys.executable or "python"
-    return (
-        "Playwright не нашел совместимый Chromium. "
-        f"Установите браузер командой: \"{python_executable}\" -m playwright install chromium"
-    )
-
-
-def _is_browser_missing_error(error: Exception) -> bool:
-    text = str(error).lower()
-    return (
-        "executable doesn't exist" in text
-        or "playwright install" in text
-        or "browserType.launch" in text and "executable" in text
-        or "chromium distribution" in text and "not found" in text
-    )
-
-
-def _candidate_browser_cache_roots() -> list[Path]:
-    roots: list[Path] = []
-    for env_name in ("PLAYWRIGHT_BROWSERS_PATH",):
-        env_value = os.environ.get(env_name)
-        if env_value:
-            roots.append(Path(env_value))
-
+# Playwright Chromium launcher: каноническая реализация вынесена в
+# qidian_rulate/playwright_launcher.py (cluster-57 dedup). Здесь остаются
+# только тонкие обёртки с site-specific extra_roots (api_config-пути) - их
+# имена сохранены для обратной совместимости с существующими тестами.
+def _qidian_extra_cache_roots() -> list:
+    extra_roots = []
     try:
         executable_dir = api_config.get_executable_dir()
     except Exception:
@@ -307,135 +267,36 @@ def _candidate_browser_cache_roots() -> list[Path]:
         dev_root = api_config.get_dev_project_root()
     except Exception:
         dev_root = None
-
-    module_root = Path(__file__).resolve().parents[1]
-    for base in (module_root, executable_dir, dev_root, Path.cwd()):
+    for base in (executable_dir, dev_root):
         if base:
-            roots.append(Path(base) / "playwright_runtime" / "ms-playwright")
-
-    localappdata = os.environ.get("LOCALAPPDATA")
-    if localappdata:
-        roots.append(Path(localappdata) / "ms-playwright")
-
-    unique = []
-    seen = set()
-    for root in roots:
-        try:
-            resolved = root.resolve()
-        except Exception:
-            resolved = root
-        key = str(resolved).lower()
-        if key not in seen and resolved.exists() and resolved.is_dir():
-            seen.add(key)
-            unique.append(resolved)
-    return unique
+            extra_roots.append(base)
+    return extra_roots
 
 
-def _revision_from_path(path: Path) -> int:
-    match = re.search(r"chromium-(\d+)", str(path))
-    if not match:
-        return -1
-    return int(match.group(1))
-
-
-def _find_cached_chromium_executable() -> Path | None:
-    candidates: list[Path] = []
-    for root in _candidate_browser_cache_roots():
-        candidates.extend(root.glob("chromium-*/chrome-win*/chrome.exe"))
-    existing = [candidate for candidate in candidates if candidate.exists() and candidate.is_file()]
-    if not existing:
-        return None
-    return max(existing, key=_revision_from_path)
+def _is_browser_missing_error(error: Exception) -> bool:
+    return playwright_launcher.is_browser_missing_error(error)
 
 
 def _launch_chromium(playwright, *, headless: bool, log_callback=None):
-    try:
-        return playwright.chromium.launch(
-            headless=headless,
-            args=BROWSER_ARGS,
-        )
-    except Exception as error:
-        if not _is_browser_missing_error(error):
-            raise
-        if log_callback:
-            log_callback("WARNING", "Playwright Chromium не найден, пробую fallback-браузер.")
-
-    cached_executable = _find_cached_chromium_executable()
-    if cached_executable:
-        try:
-            if log_callback:
-                log_callback("INFO", f"Playwright: запускаю Chromium из {cached_executable}.")
-            return playwright.chromium.launch(
-                executable_path=str(cached_executable),
-                headless=headless,
-                args=BROWSER_ARGS,
-            )
-        except Exception as error:
-            if log_callback:
-                log_callback("WARNING", f"Кэшированный Chromium не запустился: {error}")
-
-    for channel in ("chrome", "msedge"):
-        try:
-            if log_callback:
-                log_callback("INFO", f"Playwright: пробую системный браузер {channel}.")
-            return playwright.chromium.launch(
-                channel=channel,
-                headless=headless,
-                args=BROWSER_ARGS,
-            )
-        except Exception as error:
-            if log_callback:
-                log_callback("WARNING", f"Системный браузер {channel} не запустился: {error}")
-
-    raise RuntimeError(_playwright_browser_install_hint())
+    return playwright_launcher.launch_chromium(
+        playwright,
+        headless=headless,
+        args=BROWSER_ARGS,
+        extra_roots=_qidian_extra_cache_roots(),
+        log_callback=log_callback,
+    )
 
 
-def _launch_persistent_chromium_context(playwright, *, user_data_dir: str, viewport: dict, log_callback=None):
-    try:
-        return playwright.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            headless=False,
-            viewport=viewport,
-            args=BROWSER_ARGS,
-        )
-    except Exception as error:
-        if not _is_browser_missing_error(error):
-            raise
-        if log_callback:
-            log_callback("WARNING", "Playwright Chromium не найден, пробую fallback-браузер.")
-
-    cached_executable = _find_cached_chromium_executable()
-    if cached_executable:
-        try:
-            if log_callback:
-                log_callback("INFO", f"Playwright: запускаю Chromium из {cached_executable}.")
-            return playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                executable_path=str(cached_executable),
-                headless=False,
-                viewport=viewport,
-                args=BROWSER_ARGS,
-            )
-        except Exception as error:
-            if log_callback:
-                log_callback("WARNING", f"Кэшированный Chromium не запустился: {error}")
-
-    for channel in ("chrome", "msedge"):
-        try:
-            if log_callback:
-                log_callback("INFO", f"Playwright: пробую системный браузер {channel}.")
-            return playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                channel=channel,
-                headless=False,
-                viewport=viewport,
-                args=BROWSER_ARGS,
-            )
-        except Exception as error:
-            if log_callback:
-                log_callback("WARNING", f"Системный браузер {channel} не запустился: {error}")
-
-    raise RuntimeError(_playwright_browser_install_hint())
+def _launch_persistent_chromium_context(playwright, *, user_data_dir: str, viewport: dict | None = None, headless: bool = False, log_callback=None):
+    return playwright_launcher.launch_persistent_chromium_context(
+        playwright,
+        user_data_dir=user_data_dir,
+        args=BROWSER_ARGS,
+        viewport=viewport,
+        headless=headless,
+        extra_roots=_qidian_extra_cache_roots(),
+        log_callback=log_callback,
+    )
 
 
 def _clean_text(value: str | None) -> str:
@@ -1702,7 +1563,7 @@ class QidianFetchWorker(QThread):
                     "или https://www.ciweimao.com/book/100441110"
                 )
 
-            configure_playwright_runtime()
+            api_config.configure_playwright_runtime()
             from playwright.sync_api import sync_playwright
 
             source = _source_name(self.qidian_url)
@@ -1809,7 +1670,7 @@ class RulateLoginWorker(QThread):
 
     def run(self) -> None:
         try:
-            configure_playwright_runtime()
+            api_config.configure_playwright_runtime()
             from playwright.sync_api import sync_playwright
 
             self.log_signal.emit("INFO", "Rulate: открываю браузер для входа.")
@@ -1849,7 +1710,7 @@ def _fetch_qidian_cover_context(
     original_description: str = "",
     log_callback=None,
 ) -> tuple[str, str]:
-    configure_playwright_runtime()
+    api_config.configure_playwright_runtime()
     from playwright.sync_api import sync_playwright
 
     def log(level: str, message: str) -> None:
@@ -1949,7 +1810,7 @@ def _fetch_fanqie_cover_context(
         log("SUCCESS", "Fanqie: получено глав для контекста обложки через Tomato.")
         return tomato_chapters, description
 
-    configure_playwright_runtime()
+    api_config.configure_playwright_runtime()
     from playwright.sync_api import sync_playwright
 
     chapters = []
@@ -2041,7 +1902,7 @@ def _fetch_ciweimao_cover_context(
     original_description: str = "",
     log_callback=None,
 ) -> tuple[str, str]:
-    configure_playwright_runtime()
+    api_config.configure_playwright_runtime()
     from playwright.sync_api import sync_playwright
 
     def log(level: str, message: str) -> None:
@@ -2969,7 +2830,7 @@ class RulateFillWorker(QThread):
 
     def run(self) -> None:
         try:
-            configure_playwright_runtime()
+            api_config.configure_playwright_runtime()
             from playwright.sync_api import sync_playwright
 
             self.log("INFO", "Rulate: открываю форму создания книги...")

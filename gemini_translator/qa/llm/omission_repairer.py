@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import re
-import unicodedata
 
 from ..glossary_audit import glossary_violation_reason
 from ..models import (
@@ -15,6 +14,7 @@ from ..models import (
     RelevantGlossaryTerm,
     VerifiedCandidate,
 )
+from ..text_normalize import normalize_for_comparison
 from .completion import CancellationToken, QaCompletionClient, QaModelSelection
 from .json_response import QaResponseSchemaError
 from .prompts import PromptConfigurationError, escaped, load_prompt_template, render_prompt
@@ -172,9 +172,9 @@ def _rejection_detail(
         return "markdown_fence"
     if _HTML_DOCUMENT_RE.search(fragment):
         return "html_document"
-    normalized_fragment = _normalize(fragment)
+    normalized_fragment = normalize_for_comparison(fragment)
     for anchor in (context.target_before, context.target_after):
-        normalized_anchor = _normalize(anchor)
+        normalized_anchor = normalize_for_comparison(anchor)
         if (
             len(normalized_anchor) >= _MIN_ANCHOR_ECHO_CHARS
             and normalized_anchor in normalized_fragment
@@ -184,13 +184,13 @@ def _rejection_detail(
         *(request.target_window_before if request else ()),
         *(request.target_window_after if request else ()),
     ):
-        normalized_sentence = _normalize(sentence)
+        normalized_sentence = normalize_for_comparison(sentence)
         if (
             len(normalized_sentence) >= _MIN_WINDOW_ECHO_CHARS
             and normalized_sentence in normalized_fragment
         ):
             return "window_echo"
-    normalized_source = _normalize(context.source_text)
+    normalized_source = normalize_for_comparison(context.source_text)
     if (
         len(normalized_source) >= _MIN_SOURCE_ECHO_CHARS
         and normalized_source in normalized_fragment
@@ -200,10 +200,6 @@ def _rejection_detail(
     if glossary_reason:
         return glossary_reason
     return ""
-
-
-def _normalize(value: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip().casefold()
 
 
 def _build_prompt(

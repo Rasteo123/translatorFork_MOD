@@ -118,6 +118,11 @@ try:
 except Exception:
     SettingsManager = None
 
+try:
+    from gemini_translator.utils import text_sort as _text_sort
+except Exception:
+    _text_sort = None
+
 if platform.system() == "Windows":
     import subprocess
     # Патч: заставляем все процессы запускаться без окна консоли
@@ -2753,10 +2758,6 @@ def _reader_normalize_epub_html(content):
     return normalize_epub_chapter_heading_to_h1(content)
 
 
-def _reader_natural_sort_key(value):
-    return [int(token) if token.isdigit() else token.lower() for token in re.split(r"(\d+)", value)]
-
-
 def _reader_paragraphs_to_html(paragraphs):
     html_parts = []
     for paragraph in paragraphs:
@@ -2809,6 +2810,8 @@ def _reader_parse_epub_chapters(filepath):
 def _reader_parse_zip_docx_chapters(filepath):
     if Document is None:
         raise RuntimeError("Для импорта ZIP(DOCX) требуется пакет python-docx.")
+    if _text_sort is None:
+        raise RuntimeError("Для импорта ZIP(DOCX) требуется модуль gemini_translator.utils.text_sort.")
 
     chapters = []
     with zipfile.ZipFile(filepath, "r") as archive:
@@ -2818,7 +2821,7 @@ def _reader_parse_zip_docx_chapters(filepath):
                 for name in archive.namelist()
                 if name.lower().endswith(".docx") and not os.path.basename(name).startswith("~")
             ],
-            key=_reader_natural_sort_key,
+            key=_text_sort.natural_sort_key,
         )
         for index, name in enumerate(docx_files, start=1):
             doc = Document(io.BytesIO(archive.read(name)))
@@ -8280,22 +8283,43 @@ class MainWindow(QMainWindow):
             allow_edge_fallback=self.chk_edge_fallback.isChecked(),
         )
 
-    def _start_replacement_worker_if_possible(self):
+    def _start_replacement_worker_if_possible(self, excluded_worker_id=None):
+        """Строит и запускает replacement-воркер, если это допустимо.
+
+        ``excluded_worker_id`` нужен вызывающим, у которых воркер, который
+        предстоит заменить, ещё физически числится в ``self.workers`` (как,
+        например, ``_on_quota_worker_key`` — реальное удаление произойдёт
+        позже, когда придёт нативный сигнал ``QThread.finished``). Такой
+        воркер исключается из подсчёта занятых слотов, чтобы лимит
+        ``_active_worker_target_count`` не блокировал замену умирающего
+        воркера самим собой.
+
+        Возвращает использованный API-ключ (непустая строка) при успехе,
+        либо ``""``, если замена не была запущена.
+        """
         if getattr(self, "_stop_requested", False):
-            return False
+            return ""
         if self._active_manager_queue is None or self._active_manager_queue.qsize() <= 0:
-            return False
+            return ""
         if self._project_quota_message:
-            return False
+            return ""
         if self._parallel_live_state is not None and self._parallel_live_state.get("cancelled"):
-            return False
-        if len(self.workers) >= self._active_worker_target_count():
-            return False
+            return ""
+        if excluded_worker_id is None:
+            active_worker_count = len(self.workers)
+        else:
+            active_worker_count = sum(
+                1
+                for worker in self.workers
+                if getattr(worker, "worker_id", None) != excluded_worker_id
+            )
+        if active_worker_count >= self._active_worker_target_count():
+            return ""
 
         required_model_ids = self._active_required_model_ids()
         replacement_keys = self._replacement_api_keys(required_model_ids)
         if not replacement_keys:
-            return False
+            return ""
 
         worker_id = self._next_replacement_worker_id()
         api_key = replacement_keys[0]
@@ -8325,14 +8349,18 @@ class MainWindow(QMainWindow):
             self.worker_widgets.pop(worker_id, None)
             row.setParent(None)
             logger.warning(f"Не удалось запустить replacement-воркер: {exc}")
-            return False
+            return ""
 
+        # Стартовая пауза (stagger) нужна только для изначального пакета
+        # воркеров, чтобы не бомбардировать API одновременно; replacement
+        # запускается посреди сессии и должен начать работу немедленно.
+        worker.start_stagger_index = 0
         self.workers.append(worker)
         worker.start()
         self.statusBar().showMessage(
             f"Ключ {_mask_api_key(api_key)} взят как замена; оставшаяся очередь продолжена."
         )
-        return True
+        return api_key
 
     def _on_worker_finished(self, worker_id):
         self._flush_worker_progress()
@@ -8399,91 +8427,6 @@ class MainWindow(QMainWindow):
             f"Отключён невалидный API-ключ {masked_key}; {chapter_label} возвращена в очередь."
         )
 
-    def _next_worker_id(self):
-        used_ids = {
-            int(worker_id)
-            for worker_id in self.worker_widgets.keys()
-            if isinstance(worker_id, int)
-        }
-        for worker in self.workers:
-            try:
-                used_ids.add(int(getattr(worker, "worker_id", -1)))
-            except (TypeError, ValueError):
-                pass
-        worker_id = 0
-        while worker_id in used_ids:
-            worker_id += 1
-        return worker_id
-
-    def _available_replacement_key(self, required_model_ids):
-        active_keys = {
-            getattr(worker, "api_key", "")
-            for worker in self.workers
-            if getattr(worker, "api_key", "")
-        }
-        runtime_key_getter = getattr(self, "_runtime_keys_for_required_models", None)
-        candidate_keys = (
-            runtime_key_getter(required_model_ids)
-            if callable(runtime_key_getter)
-            else self._get_available_api_keys(required_model_ids)
-        )
-        for api_key in candidate_keys:
-            if api_key not in active_keys:
-                return api_key
-        return ""
-
-    def _queue_has_pending_work(self):
-        if self._active_manager_queue is None:
-            return False
-        try:
-            return self._active_manager_queue.qsize() > 0
-        except Exception:
-            return True
-
-    def _start_replacement_worker(self):
-        if not self._queue_has_pending_work():
-            return ""
-
-        worker_id = self._next_worker_id()
-
-        if self._active_job_kind == "tts_parallel_live":
-            if self._parallel_live_state is None:
-                return ""
-            replacement_key = self._available_replacement_key([self._selected_model_id()])
-            if not replacement_key:
-                return ""
-            self._add_dashboard_row(worker_id)
-            worker = self._build_parallel_live_worker(worker_id, replacement_key)
-            self._connect_reader_worker_signals(worker)
-
-        elif self._is_flash_tts_mode() or self._active_job_kind == "prepare":
-            required_model_ids = (
-                [self._selected_preprocess_model_id()]
-                if self._active_job_kind == "prepare"
-                else self._worker_models_for_limit()
-            )
-            replacement_key = self._available_replacement_key(required_model_ids)
-            if not replacement_key:
-                return ""
-            self._add_dashboard_row(worker_id)
-            run_mode = "prepare" if self._active_job_kind == "prepare" else self._selected_pipeline_mode()
-            live_playback = self.player is not None and run_mode != "prepare"
-            worker = self._build_flash_worker(worker_id, replacement_key, run_mode, live_playback)
-            self._connect_reader_worker_signals(worker, chapter_done=True, script_ready=True)
-
-        else:
-            replacement_key = self._available_replacement_key([self._selected_model_id()])
-            if not replacement_key:
-                return ""
-            self._add_dashboard_row(worker_id)
-            worker = self._build_live_worker(worker_id, replacement_key, self.player is not None)
-            self._connect_reader_worker_signals(worker, chapter_done=True)
-
-        worker.start_stagger_index = 0
-        self.workers.append(worker)
-        worker.start()
-        return getattr(worker, "api_key", "")
-
     def _on_quota_worker_key(self, worker_id, api_key, model_id, error_text, chapter_index):
         self.disabled_api_keys.add(api_key)
         self._run_had_invalid_keys = True
@@ -8496,7 +8439,11 @@ class MainWindow(QMainWindow):
         self._update_key_state_ui()
         chapter_label = f"глава {chapter_index + 1}" if chapter_index >= 0 else "текущая глава"
         masked_key = _mask_api_key(api_key)
-        replacement_key = self._start_replacement_worker()
+        # worker_id ещё числится в self.workers — реальное удаление произойдёт
+        # позже, в _on_worker_finished, когда придёт нативный сигнал
+        # QThread.finished. Исключаем его явно, чтобы лимит воркеров не
+        # блокировал замену умирающего воркера самим собой.
+        replacement_key = self._start_replacement_worker_if_possible(excluded_worker_id=worker_id)
         if replacement_key:
             self.statusBar().showMessage(
                 f"Ключ {masked_key} списан по лимиту {model_id}; "

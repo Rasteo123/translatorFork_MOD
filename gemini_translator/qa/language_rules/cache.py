@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
-import json
-import os
-from pathlib import Path
-import re
-import time
 
+from ..disk_cache import DEFAULT_TTL_SECONDS, DiskTtlCache
 from .base import LanguageRuleMatch
 
 
-DEFAULT_TTL_SECONDS = 14 * 24 * 3600
-_SAFE_NAME = re.compile(r"[^a-f0-9]+")
+__all__ = (
+    "DEFAULT_TTL_SECONDS",
+    "LanguageRuleCache",
+    "LanguageRuleCacheKey",
+    "fingerprint_text",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,26 +49,19 @@ def fingerprint_text(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
-class LanguageRuleCache:
-    """Store answers under a root the user can delete at any time."""
+class LanguageRuleCache(DiskTtlCache):
+    """Store answers under a root the user can delete at any time.
 
-    def __init__(self, root: Path | str, ttl_seconds: float = DEFAULT_TTL_SECONDS) -> None:
-        self.root = Path(root)
-        self.ttl_seconds = float(ttl_seconds)
+    The disk mechanics (TTL, atomic write, path layout, pruning an expired
+    file on read) live in DiskTtlCache; this class only knows how to turn a
+    LanguageRuleCacheKey into a digest and a tuple of LanguageRuleMatch into
+    (and back out of) JSON.
+    """
 
     def get(self, key: LanguageRuleCacheKey) -> tuple[LanguageRuleMatch, ...] | None:
         """Return a stored answer, or nothing when it is missing or too old."""
-        path = self._path(key)
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        stored_at = payload.get("stored_at")
-        if not isinstance(stored_at, (int, float)):
-            return None
-        if self.ttl_seconds > 0 and time.time() - stored_at > self.ttl_seconds:
+        payload = self.get_raw(key.digest())
+        if payload is None:
             return None
         entries = payload.get("issues")
         if not isinstance(entries, list):
@@ -81,36 +73,23 @@ class LanguageRuleCache:
 
     def put(self, key: LanguageRuleCacheKey, issues) -> None:
         """Store one answer atomically; a failure here is never fatal."""
-        payload = {
-            "stored_at": time.time(),
-            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "issues": [
-                {
-                    "rule_id": issue.rule_id,
-                    "category": issue.category,
-                    "message": issue.message,
-                    "unit_id": issue.unit_id,
-                    "block_id": issue.block_id,
-                    "unit_start": issue.unit_start,
-                    "unit_end": issue.unit_end,
-                    "matched_text": issue.matched_text,
-                    "replacements": list(issue.replacements),
-                    "report_only": issue.report_only,
-                }
-                for issue in issues
-            ],
-        }
-        path = self._path(key)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_name(path.name + ".tmp")
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-            )
-            os.replace(temporary, path)
-        except OSError:
-            return
-
-    def _path(self, key: LanguageRuleCacheKey) -> Path:
-        digest = _SAFE_NAME.sub("", key.digest())
-        return self.root / digest[:2] / f"{digest}.json"
+        self.put_raw(
+            key.digest(),
+            {
+                "issues": [
+                    {
+                        "rule_id": issue.rule_id,
+                        "category": issue.category,
+                        "message": issue.message,
+                        "unit_id": issue.unit_id,
+                        "block_id": issue.block_id,
+                        "unit_start": issue.unit_start,
+                        "unit_end": issue.unit_end,
+                        "matched_text": issue.matched_text,
+                        "replacements": list(issue.replacements),
+                        "report_only": issue.report_only,
+                    }
+                    for issue in issues
+                ],
+            },
+        )

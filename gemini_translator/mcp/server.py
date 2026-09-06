@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from .client_sessions import McpClientSession
 from .client import ensure_daemon_process
-from .commands import CommandBuildError, build_cli_command
+from .commands import COMMON_START_OPTIONS, CommandBuildError, OptionSpec, build_cli_command
 from .ai_bridge import gui_ai_failure_details
 from .jobs import redact_for_mcp
 
@@ -53,7 +53,13 @@ def _schema(properties: dict[str, dict[str, Any]], required: list[str] | None = 
     }
 
 
-COMMON_START_PROPERTIES = {
+# Hand-curated dest -> {"type", "description"} lookup for the start_* MCP tools' shared option
+# vocabulary. This is *not* the source of truth for which dests exist - that is
+# commands.COMMON_START_OPTIONS, derived straight from cli.py's own argparse registrars (see
+# commands.py's _derive_options) - only for the human-written JSON-schema type/description of
+# each one. A dest with no entry here (a cli.py flag newly added since this table was last
+# updated) still shows up in COMMON_START_PROPERTIES below, via _default_property_for.
+_START_PROPERTY_DETAILS: dict[str, dict[str, Any]] = {
     "epub": {"type": "string", "description": "Path to the source EPUB."},
     "project": {"type": "string", "description": "Path to the translator project directory."},
     "chapters": {"type": ["integer", "string"], "description": "Maximum number of chapters to process."},
@@ -81,6 +87,37 @@ COMMON_START_PROPERTIES = {
     "settings_json": {"type": "string", "description": "Path to settings JSON."},
     "settings_profile": {"type": "string", "description": "Named settings profile."},
     "settings_dir": {"type": "string", "description": "Settings directory."},
+}
+
+
+def _default_property_for(spec: OptionSpec) -> dict[str, Any]:
+    """Reasonable JSON-schema fragment for a dest with no entry in _START_PROPERTY_DETAILS.
+
+    Only reached for a cli.py flag added after this table was last hand-updated: a bool switch
+    becomes a boolean, an append option becomes ["array", "string"], and a plain value option
+    becomes ["integer", "string"] / ["number", "string"] when cli.py declared `type=int` /
+    `type=float`, or a bare "string" otherwise.
+    """
+    if spec.kind == "bool":
+        type_: Any = "boolean"
+    elif spec.kind == "repeated":
+        type_ = ["array", "string"]
+    elif spec.value_type == "int":
+        type_ = ["integer", "string"]
+    elif spec.value_type == "float":
+        type_ = ["number", "string"]
+    else:
+        type_ = "string"
+    return {"type": type_, "description": f"CLI option {spec.flag}."}
+
+
+# The property table every start_* tool's schema is built from. The key set and ordering come
+# from commands.COMMON_START_OPTIONS (itself derived from cli.py) - not hand-listed here - so a
+# flag added only to cli.py's common project/run argparse registrars reaches this schema with no
+# server.py edit required.
+COMMON_START_PROPERTIES: dict[str, dict[str, Any]] = {
+    spec.dest: _START_PROPERTY_DETAILS.get(spec.dest, _default_property_for(spec))
+    for spec in COMMON_START_OPTIONS
 }
 
 

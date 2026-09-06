@@ -10,6 +10,8 @@ import json
 import re
 from typing import Any
 
+from ..utils.helpers import as_list
+
 try:
     from bs4 import BeautifulSoup
 except Exception:  # pragma: no cover - the app normally depends on bs4
@@ -114,16 +116,6 @@ def _contains(haystack: str, needle: str, *, case_sensitive: bool = False) -> bo
     return needle.casefold() in haystack.casefold()
 
 
-def _as_list(value: Any) -> list:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    if isinstance(value, tuple):
-        return list(value)
-    return [value]
-
-
 def _glossary_required_terms(source_html: str, glossary_entries: list[dict[str, Any]]) -> list[str]:
     required = []
     for entry in glossary_entries:
@@ -170,7 +162,7 @@ def evaluate_translation(
     metrics: dict[str, Any] = {}
 
     case_sensitive = bool(checks.get("case_sensitive", False))
-    required_terms = [str(item) for item in _as_list(checks.get("required")) if str(item).strip()]
+    required_terms = [str(item) for item in as_list(checks.get("required")) if str(item).strip()]
     if checks.get("glossary_required", True):
         required_terms.extend(_glossary_required_terms(source_html, glossary_entries))
     required_terms = sorted(dict.fromkeys(required_terms))
@@ -186,7 +178,7 @@ def evaluate_translation(
         "missing": missing_required,
     }
 
-    forbidden_terms = [str(item) for item in _as_list(checks.get("forbidden")) if str(item).strip()]
+    forbidden_terms = [str(item) for item in as_list(checks.get("forbidden")) if str(item).strip()]
     found_forbidden = [
         term for term in forbidden_terms if _contains(output_text, term, case_sensitive=case_sensitive)
     ]
@@ -199,7 +191,7 @@ def evaluate_translation(
     }
 
     source_placeholders = set(extract_placeholders(source_html))
-    explicit_placeholders = {normalize_text(str(item)) for item in _as_list(checks.get("placeholders"))}
+    explicit_placeholders = {normalize_text(str(item)) for item in as_list(checks.get("placeholders"))}
     placeholders = sorted(item for item in (source_placeholders | explicit_placeholders) if item)
     missing_placeholders = [item for item in placeholders if item not in output_text]
     if missing_placeholders:

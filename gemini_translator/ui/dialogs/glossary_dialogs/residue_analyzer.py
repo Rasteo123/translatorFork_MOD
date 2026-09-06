@@ -10,9 +10,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from .custom_widgets import ExpandingTextEditDelegate, ExpandingTextEdit
-from ....ui.widgets.preset_widget import PresetWidget
+from ....ui.widgets.ancestor_utils import find_ancestor_by_class_name
 from ....api import config as api_config
 from ...shell import ShellPage
+from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
+from ..word_exceptions_dialog import open_word_exceptions_manager
 
 class ResidueAnalyzerPage(ShellPage):
     """
@@ -48,12 +50,7 @@ class ResidueAnalyzerPage(ShellPage):
         self._apply_all_filters_and_update_view()
 
     def _locate_glossary_owner(self):
-        node = self.parent()
-        while node is not None:
-            if hasattr(node, 'logic'):
-                return node
-            node = node.parent()
-        return None
+        return find_ancestor_by_class_name(self, 'MainWindow', 'GlossaryManagerPage')
 
     def _get_glossary_owner(self):
         if self._glossary_owner is None:
@@ -502,35 +499,18 @@ class ResidueAnalyzerPage(ShellPage):
         return False
     
     def _open_exceptions_manager(self):
-        dialog = QDialog(self); dialog.setWindowTitle("Менеджер списков слов-исключений"); dialog.setMinimumSize(700, 500)
-        layout = QVBoxLayout(dialog)
-        exceptions_widget = PresetWidget(
-            parent=dialog, preset_name="Список исключений",
-            default_prompt_func=api_config.default_word_exceptions,
-            load_presets_func=self.settings_manager.load_word_exceptions_presets,
-            save_presets_func=self.settings_manager.save_word_exceptions_presets,
-            get_last_text_func=self.settings_manager.get_last_word_exceptions_text
+        prompt = open_word_exceptions_manager(
+            self, self.settings_manager, ok_button_text="Принять и перефильтровать"
         )
-        exceptions_widget.load_last_session_state()
-        layout.addWidget(exceptions_widget)
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Принять и перефильтровать")
-        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
-        button_box.accepted.connect(dialog.accept); button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            exceptions_widget.save_last_session_state()
-            self.settings_manager.save_last_word_exceptions_text(exceptions_widget.get_prompt())
+        if prompt is not None:
             self._apply_all_filters_and_update_view()
 
 
-class _ResidueAnalyzerDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(ResidueAnalyzerPage, name)
-
-
-class ResidueAnalyzerDialog(QDialog, metaclass=_ResidueAnalyzerDialogMeta):
+class ResidueAnalyzerDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(ResidueAnalyzerPage),
+):
     """Modal wrapper hosting ResidueAnalyzerPage for the legacy exec() API."""
 
     def __init__(self, residue_map, original_glossary_list, settings_manager, parent=None):
@@ -544,12 +524,6 @@ class ResidueAnalyzerDialog(QDialog, metaclass=_ResidueAnalyzerDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()

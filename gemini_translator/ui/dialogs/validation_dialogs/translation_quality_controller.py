@@ -9,6 +9,7 @@ import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from ....utils.text import format_duration
 from .translation_quality_models import BookQaReportSnapshot
 
 
@@ -435,12 +436,11 @@ def _probe_embedding(qa_settings) -> str:
 
 
 def _humanize_seconds(seconds: int) -> str:
-    """Say a duration the way a person waiting for it would."""
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds} с"
-    minutes, rest = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes} мин" if rest < 30 else f"{minutes + 1} мин"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours} ч {minutes:02d} мин"
+    """Say a duration the way a person waiting for it would.
+
+    Thin alias kept because tests import this name directly; the actual
+    formatting lives in the shared ``format_duration`` helper
+    (gemini_translator/utils/text.py), which every other duration display
+    in the project also goes through.
+    """
+    return format_duration(seconds, round_minutes=True, seconds_unit="с")

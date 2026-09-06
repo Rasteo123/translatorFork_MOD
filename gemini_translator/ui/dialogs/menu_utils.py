@@ -2,10 +2,51 @@
 
 import os
 
-from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 
 
 EXIT_CODE_REBOOT = 2000
+
+
+class PageDialogProxyMixin:
+    """Миксин для тонких QDialog-обёрток, хостящих виджет ``.page`` и
+    сохраняющих старый exec()-API диалога поверх новой ``ShellPage``.
+
+    Делегирует обращения к НЕИЗВЕСТНЫМ атрибутам экземпляра в ``self.page``
+    (было продублировано как минимум в 14 обёртках — см. cluster-17).
+    """
+
+    def __getattr__(self, name):
+        page = self.__dict__.get("page")
+        if page is not None:
+            return getattr(page, name)
+        raise AttributeError(name)
+
+
+def _resolve_page_class_attr(page_cls, name):
+    """Точка, через которую метаклассы тонких диалогов достают атрибуты
+    КЛАССА Page. Вынесена отдельно от ``make_page_delegating_meta``, чтобы
+    её можно было подменить в тестах-маршрутизации."""
+    return getattr(page_cls, name)
+
+
+def make_page_delegating_meta(page_cls):
+    """Строит метакласс для тонкой QDialog-обёртки над ``page_cls``.
+
+    Делегирует обращения к неизвестным атрибутам КЛАССА (например,
+    ``TranslationValidatorDialog._some_method``, которым пользуются тесты,
+    забирающие unbound-методы старых диалогов) в ``page_cls`` — раньше это
+    была своя ``_XxxDialogMeta`` на каждую обёртку.
+    """
+
+    class _PageDelegatingMeta(type(QDialog)):
+        def __getattr__(cls, name):
+            return _resolve_page_class_attr(page_cls, name)
+
+    _PageDelegatingMeta.__name__ = f"_{page_cls.__name__}DelegatingMeta"
+    _PageDelegatingMeta.__qualname__ = _PageDelegatingMeta.__name__
+    _PageDelegatingMeta._page_cls = page_cls
+    return _PageDelegatingMeta
 
 
 def _translator_only_mode_enabled() -> bool:

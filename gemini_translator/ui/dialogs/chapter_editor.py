@@ -6,7 +6,6 @@ import html
 import json
 import os
 import re
-import tempfile
 import zipfile
 from array import array
 from collections import Counter, defaultdict
@@ -23,7 +22,6 @@ from PyQt6.QtGui import (
     QFont,
     QKeySequence,
     QShortcut,
-    QSyntaxHighlighter,
     QTextCharFormat,
     QTextCursor,
     QTextDocument,
@@ -52,7 +50,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from gemini_translator.ui import theme_manager
+from ...utils.io_utils import atomic_write_text
 from ..widgets.overlay_tab_widget import install_tab_fade
+from ..widgets.regex_syntax_highlighter import HTML_PALETTE_LIGHT, HtmlSyntaxHighlighter
 
 
 BLOCK_RE = re.compile(
@@ -305,25 +305,6 @@ def _read_text_file(path: str) -> str:
         return file.read()
 
 
-def _atomic_write_text(path: str, content: str) -> None:
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=".chapter_editor_", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as temp_file:
-            temp_file.write(content)
-            temp_file.flush()
-            os.fsync(temp_file.fileno())
-        os.replace(temp_path, path)
-    except Exception:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-        raise
-
-
 def _visible_preview(raw_text: str, limit: int = 180) -> str:
     if not raw_text:
         return ""
@@ -550,47 +531,6 @@ def _read_from_epub(epub_path: str | None, internal_path: str | None) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-class HtmlSyntaxHighlighter(QSyntaxHighlighter):
-    def __init__(self, document: QTextDocument):
-        super().__init__(document)
-
-        self.tag_format = QTextCharFormat()
-        self.tag_format.setForeground(QColor("#0f5c7a"))
-        self.tag_format.setFontWeight(QFont.Weight.Bold)
-
-        self.attr_format = QTextCharFormat()
-        self.attr_format.setForeground(QColor("#7b3fb7"))
-
-        self.string_format = QTextCharFormat()
-        self.string_format.setForeground(QColor("#b54708"))
-
-        self.comment_format = QTextCharFormat()
-        self.comment_format.setForeground(QColor("#687076"))
-        self.comment_format.setFontItalic(True)
-
-    def highlightBlock(self, text: str) -> None:
-        for match in re.finditer(r"<!--.*?-->", text):
-            self.setFormat(match.start(), match.end() - match.start(), self.comment_format)
-
-        for match in re.finditer(r"</?[A-Za-z0-9:_-]+(?:\s+[^>]*?)?>", text):
-            self.setFormat(match.start(), match.end() - match.start(), self.tag_format)
-
-            inner_text = match.group(0)
-            inner_offset = match.start()
-            for attr_match in re.finditer(r"\b[A-Za-z_:][-A-Za-z0-9_:.]*(?=\=)", inner_text):
-                self.setFormat(
-                    inner_offset + attr_match.start(),
-                    attr_match.end() - attr_match.start(),
-                    self.attr_format,
-                )
-            for string_match in re.finditer(r"\"[^\"]*\"|'[^']*'", inner_text):
-                self.setFormat(
-                    inner_offset + string_match.start(),
-                    string_match.end() - string_match.start(),
-                    self.string_format,
-                )
-
-
 class ChapterEditorDialog(QDialog):
     AUTOSAVE_DELAY_MS = 1500
     ANALYSIS_DELAY_MS = 700
@@ -737,8 +677,12 @@ class ChapterEditorDialog(QDialog):
         self.original_editor = self._create_editor(read_only=True)
         self.original_document = self.original_editor.document()
 
-        self._translated_highlighter = HtmlSyntaxHighlighter(self.translated_document)
-        self._original_highlighter = HtmlSyntaxHighlighter(self.original_document)
+        self._translated_highlighter = HtmlSyntaxHighlighter(
+            self.translated_document, palette=HTML_PALETTE_LIGHT
+        )
+        self._original_highlighter = HtmlSyntaxHighlighter(
+            self.original_document, palette=HTML_PALETTE_LIGHT
+        )
 
         self.mode_tabs.addTab(self.translated_editor, "Только перевод")
 
@@ -1518,7 +1462,7 @@ class ChapterEditorDialog(QDialog):
             snapshot_path = self._create_snapshot(disk_text)
 
         try:
-            _atomic_write_text(self.translated_path, current_text)
+            atomic_write_text(self.translated_path, current_text)
         except OSError as error:
             QMessageBox.critical(self, "Сохранение", f"Не удалось сохранить файл:\n{error}")
             return False

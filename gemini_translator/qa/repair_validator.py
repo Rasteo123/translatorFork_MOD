@@ -7,7 +7,6 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import re
-import unicodedata
 
 from ..utils.epub_json import build_html_document_model, build_translation_payload
 from ..utils.text import validate_html_structure
@@ -29,6 +28,7 @@ from .models import (
 from .glossary_audit import glossary_violation_reason
 from .semantic_units import flatten_visible_text
 from .structural_repair import REPAIR_MARKER_ATTRIBUTE, RepairValidation
+from .text_normalize import normalize_for_comparison
 
 
 # An inline repair wraps its text in one span; a restored paragraph is one new
@@ -174,7 +174,7 @@ def _local_reasons(
 ) -> tuple[str, ...]:
     """Collect every local defect; an empty result means the preview is usable."""
     reasons: list[str] = []
-    if current_html is not None and _normalize(current_html) != _normalize(before.html):
+    if current_html is not None and normalize_for_comparison(current_html) != normalize_for_comparison(before.html):
         reasons.append("chapter_changed")
 
     try:
@@ -305,32 +305,32 @@ def _anchors_surround_fragment(
     # literally fails on anchors that span two blocks, which is precisely the
     # shape of a restored paragraph's anchors.  Order is the question, so both
     # sides are read with their whitespace collapsed.
-    text = _normalize(
+    text = normalize_for_comparison(
         " ".join(
             flatten_visible_text(block["inlines"])[0] for block in payload["blocks"]
         )
     )
-    position = text.find(_normalize(fragment))
+    position = text.find(normalize_for_comparison(fragment))
     if position < 0:
         return False
-    before = _normalize(context.target_before)
-    after = _normalize(context.target_after)
+    before = normalize_for_comparison(context.target_before)
+    after = normalize_for_comparison(context.target_after)
     if before:
         left = text.find(before)
         if left < 0 or left >= position:
             return False
     if after:
-        if text.find(after, position + len(_normalize(fragment))) < 0:
+        if text.find(after, position + len(normalize_for_comparison(fragment))) < 0:
             return False
     return True
 
 
 def _occurrences(payload: dict, fragment: str) -> int:
-    normalized = _normalize(fragment)
+    normalized = normalize_for_comparison(fragment)
     if not normalized:
         return 0
     return sum(
-        _normalize(flatten_visible_text(block["inlines"])[0]).count(normalized)
+        normalize_for_comparison(flatten_visible_text(block["inlines"])[0]).count(normalized)
         for block in payload["blocks"]
     )
 
@@ -381,6 +381,3 @@ def _build_prompt(
     )
     return lines
 
-
-def _normalize(value: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip().casefold()

@@ -13,12 +13,12 @@ if __name__ != "__main__":
 
     __all__ = list(_LAZY_SERVER_MODULES)
 
+    # Общее тело PEP 562 __getattr__ и self-maintenance скрипта вынесено в
+    # lazy_module.py — оно было продублировано дословно с handlers/__init__.py.
+    from gemini_translator.api import lazy_module
+
     def __getattr__(name):
-        module_path = _LAZY_SERVER_MODULES.get(name)
-        if module_path is None:
-            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-        import importlib
-        value = getattr(importlib.import_module(module_path, __name__), name)
+        value = lazy_module.lazy_attr(name, _LAZY_SERVER_MODULES, __name__)
         globals()[name] = value
         return value
 
@@ -27,77 +27,35 @@ if __name__ != "__main__":
 # =============================================================================
 if __name__ == "__main__":
     import os
-    import ast
     import sys
 
-    SEPARATOR = "# ============================================================================="
+    # Бутстрап sys.path: при запуске `python __init__.py` sys.path[0] — это
+    # сама папка servers/, а не корень репозитория, и пакет
+    # gemini_translator не установлен как дистрибутив в окружении. Без этого
+    # следующий импорт падает с ModuleNotFoundError.
+    _repo_root = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+    )
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+
+    from gemini_translator.api import lazy_module
 
     def find_servers(directory):
         """Сканирует папку и ищет классы, заканчивающиеся на 'Server'."""
-        servers = []
-        print(f"🔍 Сканирование директории: {directory}")
-
-        for filename in sorted(os.listdir(directory)):
-            # Игнорируем __init__.py и base.py (если он там вдруг остался мусором)
-            if filename.endswith(".py") and filename != "__init__.py" and filename != "base.py":
-                filepath = os.path.join(directory, filename)
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        tree = ast.parse(f.read())
-                    for node in tree.body:
-                        # Ищем классы: class XyzServer(BaseServer)
-                        if isinstance(node, ast.ClassDef) and node.name.endswith("Server"):
-                            # Доп. проверка: не импортируем сам BaseServer, если он вдруг определен тут
-                            if node.name == "BaseServer":
-                                continue
-
-                            module_name = filename[:-3]
-                            servers.append((module_name, node.name))
-                            print(f"   ✅ Найден: {node.name} в {filename}")
-                except Exception as e:
-                    print(f"   ⚠️ Ошибка чтения {filename}: {e}")
-        return servers
+        # Игнорируем __init__.py и base.py (если он там вдруг остался мусором)
+        return lazy_module.find_classes(
+            directory,
+            class_suffix="Server",
+            base_class_name="BaseServer",
+            ignore_files=("base.py",),
+        )
 
     def regenerate_self(servers):
-        current_file = os.path.abspath(__file__)
-        with open(current_file, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        if SEPARATOR not in content:
-            return
-
-        script_logic = content[content.find(SEPARATOR):]
-        lines = [
-            "# -----------------------------------------------------------------------------",
-            "# AUTO-GENERATED IMPORTS - DO NOT EDIT THIS SECTION MANUALLY",
-            f"# Run this file as a script to update imports: python {os.path.basename(current_file)}",
-            "# -----------------------------------------------------------------------------",
-            "",
-            'if __name__ != "__main__":'
-        ]
-
-        # Генерируем ЛЕНИВУЮ секцию (PEP 562): импорт пакета не тянет flask.
-        lines.append("    _LAZY_SERVER_MODULES = {")
-        for module, classname in servers:
-            lines.append(f'        "{classname}": ".{module}",')
-        lines.append("    }")
-        lines.append("")
-        lines.append("    __all__ = list(_LAZY_SERVER_MODULES)")
-        lines.append("")
-        lines.append("    def __getattr__(name):")
-        lines.append("        module_path = _LAZY_SERVER_MODULES.get(name)")
-        lines.append("        if module_path is None:")
-        lines.append("            raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")")
-        lines.append("        import importlib")
-        lines.append("        value = getattr(importlib.import_module(module_path, __name__), name)")
-        lines.append("        globals()[name] = value")
-        lines.append("        return value")
-        lines.append("")
-        lines.append("")
-
-        new_content = "\n".join(lines) + script_logic
-        with open(current_file, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        print(f"✨ Файл {os.path.basename(current_file)} успешно обновлен!")
+        lazy_module.regenerate_self(
+            current_file=os.path.abspath(__file__),
+            classes=servers,
+            registry_name="_LAZY_SERVER_MODULES",
+        )
 
     regenerate_self(find_servers(os.path.dirname(os.path.abspath(__file__))))

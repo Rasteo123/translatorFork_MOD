@@ -9,20 +9,17 @@
 # ---------------------------------------------------------------------------
 
 import os
-import sys
 import re
 import glob
 import zipfile
 import shutil
 import tempfile
 import json
-import html as html_lib
 from xml.etree import ElementTree as ET
 
 from defusedxml import ElementTree as SafeET
 import traceback
 from functools import partial
-from collections import Counter
 import io
 import mimetypes
 # --- Импорты из PyQt6 ---
@@ -36,20 +33,11 @@ from PyQt6.QtWidgets import (
 )
 # --- Импорты из сторонних библиотек ---
 try:
-    from bs4 import BeautifulSoup, NavigableString, Tag
+    from bs4 import BeautifulSoup
     BS4_AVAILABLE = True
 except ImportError:
     BeautifulSoup = None
-    NavigableString = None
-    Tag = None
     BS4_AVAILABLE = False
-
-try:
-    from recognizers_text import Culture
-    from recognizers_number import recognize_number
-    RECOGNIZERS_AVAILABLE = True
-except ImportError:
-    RECOGNIZERS_AVAILABLE = False
 
 try:
     import Levenshtein
@@ -60,8 +48,17 @@ except ImportError:
 # --- Импорты из нашего проекта ---
 from gemini_translator.ui import theme_manager
 from gemini_translator.ui.wait_dialogs import show_when_slow
-from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path, extract_number_from_path_reversed, EpubCreator, TASK_SIZE_UNIT_CHARS, get_epub_chapter_sizes_with_cache, extract_epub_heading_text
+from ...utils.epub_tools import (
+    get_epub_chapter_order, extract_number_from_path, extract_number_from_path_reversed,
+    EpubCreator, TASK_SIZE_UNIT_CHARS, get_epub_chapter_sizes_with_cache,
+    # Приватный regex-хелпер (без BS4) — намеренно, для подсказки заголовка
+    # главы в батч-сканировании сотен глав, где полный BS4-парсинг был бы
+    # слишком медленным (см. _scan_chapter_titles_batch).
+    _extract_first_epub_heading_text_regex,
+)
 from ...utils.text import unify_paragraphs_for_ai
+from ...utils.epub_cleaner import EpubCleaner
+from ...utils.epub_analyzer import EpubAnalyzer
 from ...utils.project_manager import TranslationProjectManager
 from ...utils.project_migrator import ProjectMigrator, SyncThread
 from ...utils.translation_versions import sort_translation_versions_for_epub_build
@@ -164,6 +161,33 @@ def save_deep_cleanup_settings(settings_data):
     settings.sync()
 
 
+def run_project_migrator_sync(widget, project_manager, source_folder, source_epub_path,
+                               wait_title, wait_text, on_finished):
+    """Единая точка запуска синхронизации проекта (ProjectMigrator + SyncThread)
+    с отложенным показом wait-диалога через show_when_slow — как в
+    _run_full_analysis в этом же файле. Без этого при быстрой синхронизации
+    диалог мигал бы сразу вместо отложенного показа.
+
+    Общий хелпер для всех мест, запускающих сверку проекта: используется
+    двумя методами в этом модуле (EpubHtmlSelectorDialog._run_project_sync,
+    TranslatedChaptersManagerDialog._run_project_sync_and_reload), а также
+    импортируется в setup.py (InitialSetupPage._run_project_sync) и
+    validation.py (TranslationValidatorPage._run_project_sync_and_reload) —
+    каждый вызывающий передаёт свои пути и свой callback завершения."""
+    widget.wait_dialog = QMessageBox(widget)
+    widget.wait_dialog.setWindowTitle(wait_title)
+    widget.wait_dialog.setText(wait_text)
+    widget.wait_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
+    widget.wait_dialog.setModal(True)
+
+    migrator = ProjectMigrator(source_folder, source_epub_path, project_manager)
+    widget.sync_thread = SyncThread(migrator, parent_widget=widget)
+    widget.sync_thread.finished_sync.connect(on_finished)
+    widget.sync_thread.start()
+
+    show_when_slow(widget.wait_dialog)
+
+
 class EpubCleanupThread(QThread):
     """
     Хирург. Выполняет точечные резекции и синхронизацию нумерации.
@@ -173,214 +197,13 @@ class EpubCleanupThread(QThread):
     def __init__(self, virtual_epub_path, fixes_list, parent=None):
         super().__init__(parent)
         self.virtual_epub_path = virtual_epub_path
-        self.fixes = fixes_list 
-        self.tasks = []
-        
-        # Разбираем задачи
-        for fix in self.fixes:
-            if fix.get('type') == 'num_mismatch':
-                self.tasks.append(fix)
-            elif fix.get('type') == 'force_renumber_sequential':
-                self.tasks.append(fix)
-            elif fix.get('type') == 'br':
-                self.tasks.append({'type': 'br'})
-            elif fix.get('type') == 'orphans':
-                self.tasks.append({'type': 'orphans'})
-            elif fix.get('type') == 'attr':
-                t_tag = fix.get('tag', '')
-                t_attr = fix.get('attr', '')
-                t_val = re.escape(fix.get('value', ''))
-                
-                regex_tag = re.compile(fr'(<{t_tag}\b[^>]*>)', re.IGNORECASE)
-                regex_attr = re.compile(fr'\s+{t_attr}\s*=\s*["\']{t_val}["\']', re.IGNORECASE)
-                
-                self.tasks.append({
-                    'type': 'attr',
-                    'tag_re': regex_tag,
-                    'attr_re': regex_attr
-                })
+        self.fixes = fixes_list
 
     def run(self):
         try:
-            files_processed = 0
-            # Словарь замен для глобального обновления ссылок: {filename: (old_text_fragment, new_text)}
-            global_link_updates = {} 
-            
-            temp_output_buffer = io.BytesIO()
-            
-            # --- ИСПРАВЛЕНИЕ 1: Надежный импорт BS4 внутри потока ---
-            has_bs4 = False
-            try:
-                from bs4 import BeautifulSoup
-                has_bs4 = True
-            except ImportError:
-                has_bs4 = False
-            
-            # Флаг сквозной нумерации
-            force_renumber = any(t['type'] == 'force_renumber_sequential' for t in self.tasks)
-            
-            # Получаем порядок глав
-            ordered_chapters = []
-            if force_renumber:
-                from ...utils.epub_tools import get_epub_chapter_order
-                ordered_chapters = get_epub_chapter_order(self.virtual_epub_path)
-            
-            with open(self.virtual_epub_path, 'rb') as epub_file, \
-                    zipfile.ZipFile(epub_file, 'r') as zin:
-                with zipfile.ZipFile(temp_output_buffer, 'w', zipfile.ZIP_DEFLATED) as zout:
-                    
-                    # 1. Читаем все файлы в память
-                    all_files_content = {}
-                    for item in zin.infolist():
-                        all_files_content[item.filename] = zin.read(item.filename)
-
-                    # --- ЭТАП A: Сквозная перенумерация (Force) ---
-                    if force_renumber:
-                        current_chapter_index = 1
-                        for filename in ordered_chapters:
-                            if filename not in all_files_content: continue
-                            
-                            try:
-                                content_str = all_files_content[filename].decode('utf-8', errors='ignore')
-                                
-                                old_text_fragment = ""
-                                new_header_text = ""
-                                
-                                if has_bs4:
-                                    soup = BeautifulSoup(content_str, 'html.parser')
-                                    header = soup.find(['h1', 'h2', 'h3'])
-                                    title_tag = soup.find('title')
-                                    
-                                    if header:
-                                        old_text_fragment = header.get_text().strip()
-                                        
-                                        # ВАРИАНТ 1: Если цифры уже есть — заменяем первую группу
-                                        if re.search(r'\d+', old_text_fragment):
-                                            new_header_text = re.sub(r'\d+', str(current_chapter_index), old_text_fragment, count=1)
-                                        
-                                        # ВАРИАНТ 2: Если цифр нет — добавляем номер в начало
-                                        else:
-                                            new_header_text = f"({current_chapter_index}) {old_text_fragment}"
-
-                                        # Применяем изменения
-                                        if new_header_text != old_text_fragment:
-                                            header.string = new_header_text
-                                            if title_tag:
-                                                title_tag.string = new_header_text
-                                            
-                                            content_str = str(soup)
-                                            all_files_content[filename] = content_str.encode('utf-8')
-                                            
-                                            global_link_updates[filename] = (old_text_fragment, new_header_text)
-                                            files_processed += 1
-                                            
-                                current_chapter_index += 1
-                                
-                            except Exception as e:
-                                print(f"[Renumber Error] {filename}: {e}")
-
-                    # --- ЭТАП B: Точечная замена (num_mismatch) ---
-                    elif not force_renumber:
-                        for task in [t for t in self.tasks if t.get('type') == 'num_mismatch']:
-                            target_file = task['file']
-                            if target_file in all_files_content:
-                                try:
-                                    content_str = all_files_content[target_file].decode('utf-8', errors='ignore')
-                                    old_fragment = task['old_fragment']
-                                    new_number = str(task['new_number'])
-                                    
-                                    if old_fragment in content_str:
-                                        def replace_in_tag(match):
-                                            return match.group(0).replace(old_fragment, new_number)
-                                        
-                                        content_str = re.sub(r'<(h[1-6]|title)[^>]*>.*?</\1>', replace_in_tag, content_str, flags=re.DOTALL | re.IGNORECASE)
-                                        
-                                        all_files_content[target_file] = content_str.encode('utf-8')
-                                        global_link_updates[target_file] = (old_fragment, new_number)
-                                        files_processed += 1
-                                except Exception as e:
-                                    print(f"Error fixing mismatch in {target_file}: {e}")
-
-                    # --- ЭТАП C: Глобальный проход (Ссылки и остальные фиксы) ---
-                    for filename, content_bytes in all_files_content.items():
-                        # --- ИСПРАВЛЕНИЕ 2: Инициализируем modified_content ДО проверок ---
-                        modified_content = content_bytes 
-                        
-                        is_html = filename.lower().endswith(('.html', '.xhtml', '.htm'))
-                        is_nav = filename.lower().endswith(('.ncx', 'nav.xhtml', 'toc.html')) or 'toc' in filename.lower()
-                        
-                        if is_html or is_nav:
-                            try:
-                                content_str = modified_content.decode('utf-8', errors='ignore')
-                                original_str = content_str
-                                
-                                # 1. Обновление ссылок
-                                if global_link_updates:
-                                    for target_file, (old_txt, new_txt) in global_link_updates.items():
-                                        target_basename = os.path.basename(target_file)
-                                        if target_basename in content_str:
-                                            esc_old = re.escape(old_txt)
-                                            # А. HTML ссылки
-                                            pattern_a = re.compile(
-                                                fr'(<a\b[^>]*href=["\'][^"\']*{re.escape(target_basename)}[^"\']*["\'][^>]*>)(.*?{esc_old}.*?)(</a>)', 
-                                                re.IGNORECASE | re.DOTALL
-                                            )
-                                            content_str = pattern_a.sub(lambda m: f"{m.group(1)}{m.group(2).replace(old_txt, new_txt)}{m.group(3)}", content_str)
-                                            
-                                            # Б. NCX (Table of Contents)
-                                            if filename.lower().endswith('.ncx'):
-                                                content_str = content_str.replace(f"<text>{old_txt}</text>", f"<text>{new_txt}</text>")
-
-                                # 2. Остальные задачи
-                                for task in self.tasks:
-                                    if task['type'] == 'br' and '<br' in content_str.lower():
-                                        content_str = unify_paragraphs_for_ai(content_str)
-                                    elif task['type'] == 'attr':
-                                        def remove_attr(match): return task['attr_re'].sub('', match.group(1))
-                                        content_str = task['tag_re'].sub(remove_attr, content_str)
-                                    elif task['type'] == 'orphans':
-                                        if has_bs4:
-                                             soup = BeautifulSoup(content_str, 'html.parser')
-                                             if soup.body:
-                                                new_contents = []
-                                                buffer_text = []
-                                                def flush_buffer():
-                                                    if buffer_text:
-                                                        new_p = soup.new_tag('p')
-                                                        for buf_item in buffer_text: new_p.append(buf_item)
-                                                        new_contents.append(new_p)
-                                                        buffer_text.clear()
-                                                children = list(soup.body.children)
-                                                for child in children:
-                                                    block_tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'hr', 'ul', 'ol', 'table', 'script', 'style', 'head', 'title', 'meta', 'link', 'br'] 
-                                                    is_block = isinstance(child, Tag) and child.name in block_tags
-                                                    is_whitespace = isinstance(child, NavigableString) and not child.strip()
-                                                    if is_block:
-                                                        flush_buffer()
-                                                        new_contents.append(child)
-                                                    elif is_whitespace and not buffer_text:
-                                                        new_contents.append(child)
-                                                    else:
-                                                        buffer_text.append(child)
-                                                flush_buffer()
-                                                soup.body.clear()
-                                                for item_node in new_contents: soup.body.append(item_node)
-                                                content_str = str(soup)
-
-                                if content_str != original_str:
-                                    if filename not in global_link_updates:
-                                        files_processed += 1
-                                    modified_content = content_str.encode('utf-8')
-
-                            except Exception as e:
-                                print(f"Error processing {filename}: {e}")
-
-                        # Теперь запись безопасна для любых типов файлов
-                        zout.writestr(filename, modified_content)
-            
-            temp_output_buffer.seek(0)
-            with open(self.virtual_epub_path, 'wb') as f:
-                f.write(temp_output_buffer.getvalue())
+            cleaner = EpubCleaner(self.virtual_epub_path)
+            files_processed = cleaner.apply_fixes(self.fixes)
+            global_link_updates = cleaner.global_link_updates
 
             final_msg = f"Операция завершена.\nОбработано файлов: {files_processed}."
             if global_link_updates:
@@ -910,21 +733,6 @@ class EpubHtmlSelectorDialog(QDialog):
             
             self.list_widget.addItem(item)
 
-    @staticmethod
-    def _extract_h1_title(html_content):
-        # Заголовок нужен только для подсказки; полный BS4-парсинг каждой
-        # главы стоил секунды на больших книгах, поэтому берём h1 регулярным
-        # выражением (сверено с BS4 на реальных книгах — результат совпадает).
-        if not html_content:
-            return ""
-
-        match = re.search(r"<h1\b[^>]*>(.*?)</h1\s*>", str(html_content), re.IGNORECASE | re.DOTALL)
-        if not match:
-            return ""
-        raw_title = re.sub(r"<(?:br|hr)\b[^>]*>", " ", match.group(1), flags=re.IGNORECASE)
-        raw_title = re.sub(r"<[^>]+>", "", raw_title)
-        return re.sub(r"\s+", " ", html_lib.unescape(raw_title)).strip()
-
     def _load_chapter_title_cache(self):
         self._chapter_title_cache = {}
         self._title_scan_index = None
@@ -957,7 +765,7 @@ class EpubHtmlSelectorDialog(QDialog):
                         print(f"[WARN] Failed to read chapter title for '{file_path}': {e}")
                         continue
 
-                    title = self._extract_h1_title(content)
+                    title = _extract_first_epub_heading_text_regex(content)
                     if title:
                         scanned[file_path] = title
         except Exception as e:
@@ -1239,17 +1047,10 @@ class EpubHtmlSelectorDialog(QDialog):
         
     def _run_project_sync(self):
         if not self.project_manager: return
-        from ...utils.project_migrator import ProjectMigrator, SyncThread
-        self.wait_dialog = QMessageBox(self)
-        self.wait_dialog.setWindowTitle("Синхронизация")
-        self.wait_dialog.setText("Идет анализ проекта…")
-        self.wait_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
-        self.wait_dialog.setModal(True)
-        migrator = ProjectMigrator(self.output_folder, self.real_epub_path, self.project_manager)
-        self.sync_thread = SyncThread(migrator, parent_widget=self)
-        self.sync_thread.finished_sync.connect(self._on_sync_finished)
-        self.sync_thread.start()
-        self.wait_dialog.show()
+        run_project_migrator_sync(
+            self, self.project_manager, self.output_folder, self.real_epub_path,
+            "Синхронизация", "Идет анализ проекта…", self._on_sync_finished,
+        )
 
     def _on_sync_finished(self, is_project_ready, message):
         if hasattr(self, 'wait_dialog') and self.wait_dialog:
@@ -2734,19 +2535,10 @@ class TranslatedChaptersManagerDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Невозможно запустить сверку: не определен проект или путь к исходному EPUB.")
             return
 
-        self.wait_dialog = QMessageBox(self)
-        self.wait_dialog.setWindowTitle("Синхронизация")
-        self.wait_dialog.setText("Идет анализ и сверка проекта…")
-        self.wait_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
-        self.wait_dialog.setModal(True)
-        
-        migrator = ProjectMigrator(self.translated_folder, self.original_epub_path, self.project_manager)
-        
-        self.sync_thread = SyncThread(migrator, parent_widget=self)
-        self.sync_thread.finished_sync.connect(self._on_sync_finished)
-        
-        self.sync_thread.start()
-        self.wait_dialog.show()
+        run_project_migrator_sync(
+            self, self.project_manager, self.translated_folder, self.original_epub_path,
+            "Синхронизация", "Идет анализ и сверка проекта…", self._on_sync_finished,
+        )
 
     def _on_sync_finished(self, is_project_ready, message):
         """Слот, который вызывается после завершения фоновой синхронизации."""
@@ -3194,137 +2986,11 @@ class EpubAnalysisThread(QThread):
         super().__init__(parent)
         self.virtual_epub_path = virtual_epub_path
         self.chapters_list = chapters_list
-        self.re_tag_opener = re.compile(r'<([a-zA-Z0-9]+)(\s+[^>]*)?>', re.IGNORECASE)
-        self.re_attributes = re.compile(r'([a-zA-Z-]+)\s*=\s*["\']([^"\']*)["\']')
-        self.re_br = re.compile(r'<br\b[^>]*>', re.IGNORECASE)
-        # Regex для поиска заголовков
-        self.re_h1 = re.compile(r'<h1\b[^>]*>(.*?)</h1>', re.IGNORECASE | re.DOTALL)
-        self.re_title = re.compile(r'<title\b[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
 
     def run(self):
-        stats = {} 
-        br_files_count = 0
-        orphaned_text_count = 0
-        num_mismatches = [] # Список проблем с нумерацией
-
         try:
-            use_bs4 = 'bs4' in sys.modules
-            # Подготовка культур для распознавания чисел
-            cultures = []
-            if RECOGNIZERS_AVAILABLE:
-                cultures = [Culture.English, Culture.Chinese, Culture.Japanese]
-
-            with open(self.virtual_epub_path, "rb") as epub_file, \
-                    zipfile.ZipFile(epub_file, "r") as zf:
-                for name in self.chapters_list:
-                    try:
-                        # 1. Анализ имени файла на наличие "чистого" номера
-                        # Ищем одну группу цифр. Если их несколько (part_1_sec_2), пропускаем.
-                        digits_groups = re.findall(r'\d+', os.path.basename(name))
-                        target_number = None
-                        if len(digits_groups) == 1:
-                            target_number = int(digits_groups[0])
-                        
-                        content_bytes = zf.read(name)
-                        content_str = content_bytes.decode('utf-8', errors='ignore')
-                        
-                        # --- АНАЛИЗ НУМЕРАЦИИ ---
-                        if target_number is not None and RECOGNIZERS_AVAILABLE:
-                            # Извлекаем текст заголовка (H1 приоритетнее Title)
-                            header_text = ""
-                            h1_match = self.re_h1.search(content_str)
-                            if h1_match:
-                                header_text = re.sub(r'<[^>]+>', '', h1_match.group(1)).strip()
-                            else:
-                                title_match = self.re_title.search(content_str)
-                                if title_match:
-                                    header_text = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
-                            
-                            if header_text:
-                                found_match = False
-                                for culture in cultures:
-                                    results = recognize_number(header_text, culture)
-                                    for res in results:
-                                        if 'value' in res.resolution:
-                                            val = res.resolution['value']
-                                            # Если нашли число, и оно НЕ совпадает с именем файла
-                                            if val != target_number:
-                                                # Проверяем, может это просто "Часть 1" в главе 5?
-                                                # Но если это ЕДИНСТВЕННОЕ или ПЕРВОЕ число в заголовке - это маркер.
-                                                # Для безопасности считаем ошибкой, если в заголовке есть число,
-                                                # которое не равно номеру файла, и нет числа, которое равно.
-                                                all_nums_in_header = [r.resolution['value'] for r in results if 'value' in r.resolution]
-                                                if target_number not in all_nums_in_header:
-                                                    num_mismatches.append({
-                                                        'type': 'num_mismatch',
-                                                        'file': name,
-                                                        'old_fragment': res.text, # Текст, который нужно заменить (напр. "Five")
-                                                        'new_number': target_number,
-                                                        'context': header_text
-                                                    })
-                                                    found_match = True
-                                                    break
-                                    if found_match: break
-
-                        # --- ДАЛЕЕ СТАНДАРТНЫЙ АНАЛИЗ ---
-                        
-                        # 1. Проверка на <br>
-                        if self.re_br.search(content_str):
-                            br_files_count += 1
-                        
-                        # 2. Сбор статистики по тегам (атрибуты)
-                        for match in self.re_tag_opener.finditer(content_str):
-                            tag_name = match.group(1).lower()
-                            attrs_str = match.group(2)
-                            if tag_name not in ['p', 'div', 'span', 'body', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'label']: continue
-                            if tag_name not in stats: stats[tag_name] = {'total': 0, 'attrs': Counter()}
-                            stats[tag_name]['total'] += 1
-                            if attrs_str:
-                                for attr_match in self.re_attributes.finditer(attrs_str):
-                                    attr_name = attr_match.group(1).lower()
-                                    attr_val = attr_match.group(2).strip()
-                                    if attr_name in ['class', 'style'] and attr_val:
-                                        stats[tag_name]['attrs'][f"{attr_name}={attr_val}"] += 1
-                        
-                        # 3. Проверка на сирот (код без изменений)
-                        if use_bs4:
-                            soup = BeautifulSoup(content_str, 'html.parser')
-                            if soup.body:
-                                for child in soup.body.children:
-                                    if isinstance(child, NavigableString) and child.strip():
-                                        orphaned_text_count += 1; break
-                                    elif isinstance(child, Tag) and child.name in ['label', 'span', 'a', 'b', 'i', 'strong', 'em', 'img']:
-                                        orphaned_text_count += 1; break
-
-                    except Exception:
-                        continue 
-
-            # --- Формирование диагноза ---
-            issues = []
-            
-            # А. Нумерация (НОВОЕ)
-            if num_mismatches:
-                # Группируем, чтобы не спамить
-                issues.append({
-                    'type': 'num_mismatch_group',
-                    'count': len(num_mismatches),
-                    'items': num_mismatches,
-                    'desc': f"Рассинхрон нумерации: {len(num_mismatches)} глав имеют заголовок, не совпадающий с именем файла.\n(Пример: файл '05.xhtml', заголовок 'Глава Четвертая')"
-                })
-
-            if br_files_count > 0: issues.append({'type': 'br', 'count': br_files_count})
-            if orphaned_text_count > 0: issues.append({'type': 'orphans', 'count': orphaned_text_count, 'desc': "Обнаружен текст и инлайн-теги вне абзацев."})
-
-            THRESHOLD = 0.90
-            for tag, data in stats.items():
-                total = data['total']
-                min_count = 1 if tag == 'label' else 5
-                if total < min_count: continue
-                for attr_key, count in data['attrs'].items():
-                    if count / total >= THRESHOLD:
-                        attr_name, attr_val = attr_key.split('=', 1)
-                        issues.append({'type': 'attr', 'tag': tag, 'attr': attr_name, 'value': attr_val, 'percent': count / total})
-
+            analyzer = EpubAnalyzer(self.virtual_epub_path, self.chapters_list)
+            issues = analyzer.analyze()
             self.analysis_finished.emit(issues)
 
         except Exception as e:

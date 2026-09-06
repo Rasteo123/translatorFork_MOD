@@ -14,6 +14,7 @@ from PyQt6 import QtCore, QtWidgets
 import os
 import sys
 from gemini_translator.ui.shell import ShellPage
+from gemini_translator.ui.widgets.proxy_status import render_proxy_status
 from gemini_translator.utils import updater as upd
 
 # (icon, title, description, tool_id, is_large)
@@ -279,21 +280,7 @@ class HomePage(ShellPage):
         self._update_proxy_display(settings)
 
     def _update_proxy_display(self, settings: dict) -> None:
-        enabled = bool(settings.get("enabled", False))
-        proxy_type = str(settings.get("type") or "SOCKS5")
-        host = str(settings.get("host") or "")
-        port = str(settings.get("port") or "")
-        user = str(settings.get("user") or "")
-
-        if enabled and host and port:
-            self.proxy_status_label.setText(f"Прокси: {proxy_type}://{host}:{port}")
-            tooltip_lines = [f"Тип: {proxy_type}", f"Хост: {host}", f"Порт: {port}"]
-            if user:
-                tooltip_lines.append(f"Пользователь: {user}")
-            self.proxy_status_label.setToolTip("\n".join(tooltip_lines))
-        else:
-            self.proxy_status_label.setText("Прокси: выключен")
-            self.proxy_status_label.setToolTip("Сетевые запросы идут без прокси.")
+        render_proxy_status(self.proxy_status_label, settings)
 
     # --- Обновления --------------------------------------------------------
     #

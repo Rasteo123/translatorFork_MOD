@@ -17,6 +17,8 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal, pyqtSlot, QRect, QPoint, QTimer
 # Используем тот же самый делегат, что и в менеджере глоссариев
 from ..glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 from ....api import config as api_config
+from ....utils.helpers import format_compact_number
+from ....utils import cjk_ranges
 
 from ...widgets import (
     KeyManagementWidget, ModelSettingsWidget, LogWidget, PresetWidget
@@ -25,6 +27,7 @@ from ...widgets.common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, No
 from ...shell import ShellPage
 from gemini_translator.ui import theme_manager
 from ...overlay_host import exec_dialog
+from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 
 # Алиасы для удобства
 QSpinBox = NoScrollSpinBox
@@ -34,7 +37,18 @@ QDoubleSpinBox = NoScrollDoubleSpinBox
 
 # Паттерны
 ALIEN_WORD_PATTERN = re.compile(r'[^\W\d_а-яА-ЯёЁ]+')
-CJK_PATTERN = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
+# cluster-32 dedup + fix (раунд 1 + 2): раньше здесь был узкий диапазон
+# (Unified без Ext-A + кана + хангыль), из-за чего термины с иероглифами
+# CJK Ext-A получали lang_tag='other' и пропадали из списка при фильтре
+# только по 'cjk'. Раунд 2: детектор кандидатов (untranslated_detector.py)
+# ищет их через широкий ALL_CJK_PATTERN, который включает ещё CJK
+# Compatibility Ideographs и Bopomofo -- та же пропажа была и для них.
+# Используем gemini_translator.utils.cjk_ranges.CJK_SCRIPTS_CHAR_RE (все
+# CJK-письменности: Unified + Ext-A + compat ideographs + кана + хангыль +
+# бопомофо) -- НЕ широкий ALL_CJK_CHAR_RE: тот также включает
+# CJK-пунктуацию/Kangxi radicals, из-за чего одиночные символы вроде
+# '\u3011' ('】') стали бы 'cjk' вместо 'other', ломая пин на это
+# поведение в tests/test_untranslated_fixer_navigation.py.
 LATIN_PATTERN = re.compile(r'[a-zA-Z]')
 GREEK_PATTERN = re.compile(r'[\u0370-\u03ff\u1f00-\u1fff]')
 NORMAL_CHARS_PATTERN = re.compile(r'[а-яА-ЯёЁ0-9\s\.,!?;:«»"\'\-\(\)\[\]\%№—–\/\+\*]')
@@ -673,7 +687,7 @@ class UntranslatedFixerPage(ShellPage):
             term = str(item.get('term', '') or '')
             raw_context = item.get('context', '')
             
-            if CJK_PATTERN.search(term): item['lang_tag'] = 'cjk'
+            if cjk_ranges.CJK_SCRIPTS_CHAR_RE.search(term): item['lang_tag'] = 'cjk'
             elif LATIN_PATTERN.search(term): item['lang_tag'] = 'latin'
             elif GREEK_PATTERN.search(term): item['lang_tag'] = 'greek'
             else: item['lang_tag'] = 'other'
@@ -2143,12 +2157,11 @@ class UntranslatedFixerPage(ShellPage):
         self.update_table_view()
 
 
-class _UntranslatedFixerDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(UntranslatedFixerPage, name)
-
-
-class UntranslatedFixerDialog(QDialog, metaclass=_UntranslatedFixerDialogMeta):
+class UntranslatedFixerDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(UntranslatedFixerPage),
+):
     """Modal wrapper hosting UntranslatedFixerPage for the legacy exec() API."""
 
     navigate_to_chapter_requested = pyqtSignal(dict)
@@ -2167,12 +2180,6 @@ class UntranslatedFixerDialog(QDialog, metaclass=_UntranslatedFixerDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()
@@ -2754,22 +2761,10 @@ class AITranslationPage(ShellPage):
         self._token_total = 0
         self._update_token_usage_label()
 
-    @staticmethod
-    def _format_compact_tokens(value: int) -> str:
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            value = 0
-        if value >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M"
-        if value >= 1_000:
-            return f"{value / 1_000:.1f}K"
-        return str(value)
-
     def _update_token_usage_label(self):
-        total = self._format_compact_tokens(self._token_total)
-        input_tokens = self._format_compact_tokens(self._token_input_total)
-        output_tokens = self._format_compact_tokens(self._token_output_total)
+        total = format_compact_number(self._token_total)
+        input_tokens = format_compact_number(self._token_input_total)
+        output_tokens = format_compact_number(self._token_output_total)
         self.token_usage_label.setText(f"Токены: ~{total}")
         self.token_usage_label.setToolTip(
             f"Оценка токенов за текущую AI-сессию: всего ~{total}, "

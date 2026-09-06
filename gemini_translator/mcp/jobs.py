@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import secrets
 
+from ._json_io import load_task_json
 from .paths import ensure_state_dirs, job_dir
 
 TEXT_FIELD_HINTS = ("text", "prompt", "chapter", "response", "content")
@@ -125,8 +126,7 @@ def save_job(state_dir: Path, job: JobRecord) -> None:
 
 
 def load_job(state_dir: Path, job_id: str) -> JobRecord:
-    payload = json.loads(job_path(state_dir, job_id).read_text(encoding="utf-8"))
-    return JobRecord.from_dict(payload)
+    return load_task_json(job_path(state_dir, job_id), JobRecord.from_dict)
 
 
 def list_jobs(state_dir: Path) -> list[JobRecord]:

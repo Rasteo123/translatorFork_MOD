@@ -80,28 +80,6 @@ RESTART_INFO = {
 }
 
 
-def configure_ranobelib_playwright_runtime():
-    if sys.platform == "win32" and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
-        try:
-            current_policy = asyncio.get_event_loop_policy()
-        except Exception:
-            current_policy = None
-        if not isinstance(current_policy, asyncio.WindowsProactorEventLoopPolicy):
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-    resolved_paths = {
-        "PLAYWRIGHT_BROWSERS_PATH": api_config.find_playwright_browsers_path(),
-        "PLAYWRIGHT_NODEJS_PATH": api_config.find_node_executable(),
-        "PLAYWRIGHT_PACKAGE_ROOT": api_config.find_playwright_package_root(),
-    }
-    for env_name, resolved_path in resolved_paths.items():
-        if not resolved_path:
-            continue
-        path_obj = Path(resolved_path)
-        if path_obj.exists():
-            os.environ[env_name] = str(path_obj)
-
-
 def patch_ranobelib_login_worker():
     workers_module = importlib.import_module("workers")
     login_worker_class = getattr(workers_module, "LoginWorker", None)
@@ -283,7 +261,7 @@ def build_ranobelib_window():
     source_dir_str = str(source_dir)
     sys.path = [path for path in sys.path if path != source_dir_str]
     sys.path.insert(0, source_dir_str)
-    configure_ranobelib_playwright_runtime()
+    api_config.configure_playwright_runtime()
 
     for module_name in RANOBELIB_MODULE_NAMES:
         sys.modules.pop(module_name, None)
@@ -460,26 +438,9 @@ def run_emergency_viewer():
     button_layout = QtWidgets.QHBoxLayout()
     copy_button = QtWidgets.QPushButton("Скопировать ошибку")
 
-    def copy_action():
-        QtWidgets.QApplication.clipboard().setText(error_text)
-        copy_button.setText("Скопировано!")
-        copy_button.setEnabled(False)
-        reset_timer = getattr(dialog, "_copy_reset_timer", None)
-        if reset_timer is None:
-            reset_timer = QtCore.QTimer(dialog)
-            reset_timer.setSingleShot(True)
-
-            def reset_copy_button():
-                copy_button.setText("Скопировать ошибку")
-                copy_button.setEnabled(True)
-
-            reset_timer.timeout.connect(reset_copy_button)
-            dialog._copy_reset_timer = reset_timer
-
-        reset_timer.start(2000)
-        return
-
-    copy_button.clicked.connect(copy_action)
+    # Общий хелпер (см. os_patch.attach_copy_feedback) — та же логика
+    # используется в _patched_qmessagebox_critical.
+    os_patch.attach_copy_feedback(copy_button, dialog, lambda: error_text)
 
     close_button = QtWidgets.QPushButton("Закрыть")
     close_button.clicked.connect(dialog.accept)
@@ -1293,19 +1254,23 @@ def open_tool_in_shell(shell, tool_id):
         )
 
 
-# ============================================================================
-# ОСНОВНАЯ ТОЧКА ВХОДА
-# ============================================================================
-if len(sys.argv) > 1 and sys.argv[1] == '--emergency-viewer':
-    run_emergency_viewer()
+def bootstrap_application(argv, *, translator_only=False):
+    """Единая инициализация QApplication и основных сервисов приложения.
 
-# Специальный код возврата для перезагрузки приложения (возврат в меню)
-EXIT_CODE_REBOOT = 2000
+    Общий bootstrap для обычного запуска (main.py) и для translator-only
+    режима (main_translator_only.py): регистрация главного потока,
+    Qt-локализация, Fusion-стиль на Windows, фикс дублирования Dock-иконки
+    на macOS, глобальные ресурсы, менеджеры и TranslationEngine в фоновом
+    потоке. Возвращает готовый к показу окна `app`.
 
-if __name__ == "__main__":
+    jieba больше не греется на старте безусловно (~18МБ у всех сессий):
+    словарь строится при первом CJK-вызове в воркере (незаметно на фоне
+    сетевых секунд) либо фоновым прогревом при открытии окна глоссария.
+    """
     import threading
+
     prepare_console_streams()
-    configure_settings_scope_from_argv(sys.argv)
+    configure_settings_scope_from_argv(argv)
     sys.excepthook = global_excepthook
     # --- РЕГИСТРАЦИЯ ГЛАВНОГО ПОТОКА ---
     main_id = threading.get_ident()
@@ -1313,29 +1278,30 @@ if __name__ == "__main__":
     # Регистрируем его как VIP
     os_patch.PatientLock.register_vip_thread(main_id)
 
-    app = ApplicationWithContext(sys.argv)
+    app = ApplicationWithContext(argv)
 
-    # Health-подтверждение апдейтера: если процесс запущен хелпером
-    # обновления, пишем ack-файл — иначе хелпер откатит установку.
-    from gemini_translator.utils import update_installer as _upd_install
-    _upd_install.write_startup_acknowledgement()
-    _upd_install.cleanup_stale_staging()
+    if not translator_only:
+        # Health-подтверждение апдейтера: если процесс запущен хелпером
+        # обновления, пишем ack-файл — иначе хелпер откатит установку.
+        from gemini_translator.utils import update_installer as _upd_install
+        _upd_install.write_startup_acknowledgement()
+        _upd_install.cleanup_stale_staging()
 
     # --- ЛОКАЛИЗАЦИЯ СТАНДАРТНЫХ ЭЛЕМЕНТОВ QT ---
     # Загружаем русскую локализацию для контекстных меню (ПКМ) и диалогов Qt (QMessageBox, QInputDialog и т.д.)
     from PyQt6.QtCore import QTranslator, QLibraryInfo
-    
+
     # Локализация базовых компонентов (кнопки, меню)
     qtbase_translator = QTranslator(app)
     qt_translations_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
     if qtbase_translator.load("qtbase_ru", qt_translations_path):
         app.installTranslator(qtbase_translator)
-        
+
     # Локализация остальных компонентов
     qt_translator = QTranslator(app)
     if qt_translator.load("qt_ru", qt_translations_path):
         app.installTranslator(qt_translator)
-    
+
     # Фикс дублирования иконки в Dock на macOS
     if sys.platform == "darwin":
         app.setDesktopFileName("com.siberianteam.translatorfork")
@@ -1388,7 +1354,7 @@ if __name__ == "__main__":
 
     # Убираем автоматическую остановку потока по aboutToQuit,
     # чтобы движок переживал перезагрузку интерфейса (код 2000).
-    # Ручная остановка выполняется в самом конце файла.
+    # Ручная остановка выполняется вызывающей стороной при завершении.
 
     app.engine_thread.finished.connect(app.engine.deleteLater)
 
@@ -1401,9 +1367,20 @@ if __name__ == "__main__":
         QtCore.Qt.ConnectionType.QueuedConnection
     )
 
-    # jieba больше не греется на старте безусловно (~18МБ у всех сессий):
-    # словарь строится при первом CJK-вызове в воркере (незаметно на фоне
-    # сетевых секунд) либо фоновым прогревом при открытии окна глоссария.
+    return app
+
+
+# ============================================================================
+# ОСНОВНАЯ ТОЧКА ВХОДА
+# ============================================================================
+if len(sys.argv) > 1 and sys.argv[1] == '--emergency-viewer':
+    run_emergency_viewer()
+
+# Специальный код возврата для перезагрузки приложения (возврат в меню)
+EXIT_CODE_REBOOT = 2000
+
+if __name__ == "__main__":
+    app = bootstrap_application(sys.argv, translator_only=False)
 
     # --- ГЛАВНЫЙ ЦИКЛ ПРИЛОЖЕНИЯ ---
     from gemini_translator.ui.shell import MainShell

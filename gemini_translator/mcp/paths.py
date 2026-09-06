@@ -52,6 +52,12 @@ def job_dir(state_dir: Path, job_id: str) -> Path:
     return state_dir / "jobs" / validate_job_id(job_id)
 
 
+def build_base_url(host: str, port: int) -> str:
+    """Собирает базовый http-URL демона из host/port, оборачивая IPv6-адрес в скобки."""
+    host_value = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return f"http://{host_value}:{port}"
+
+
 def daemon_file(state_dir: Path | None = None) -> Path:
     return (state_dir or default_state_dir()) / "daemon.json"
 

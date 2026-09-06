@@ -561,38 +561,7 @@ class TranslationOptionsWidget(QGroupBox):
         self._update_info_text()
 
     def _build_analysis_signature(self, epub_path):
-        if not epub_path or not os.path.exists(epub_path):
-            return None
-        try:
-            stat = os.stat(epub_path)
-        except OSError:
-            return None
-        return (
-            os.path.abspath(epub_path),
-            stat.st_mtime_ns,
-            stat.st_size,
-            tuple(self.html_files),
-        )
-
-    def _build_epub_analysis_metadata(self, epub_path):
-        try:
-            epub_stat = os.stat(epub_path)
-            with open(epub_path, "rb") as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
-                chapter_info_list = [
-                    (info.filename, info.file_size)
-                    for info in epub_zip.infolist()
-                    if info.filename.lower().endswith((".html", ".xhtml", ".htm"))
-                ]
-        except (OSError, zipfile.BadZipFile, FileNotFoundError):
-            return None
-
-        return {
-            "epub_name": os.path.basename(epub_path),
-            "epub_size": epub_stat.st_size,
-            "content_checksum": sum(size for _, size in chapter_info_list),
-            "metric": CHAPTER_SIZE_CACHE_METRIC,
-            "version": CHAPTER_SIZE_CACHE_VERSION,
-        }
+        return build_chapter_analysis_signature(self.html_files, epub_path)
 
     def _analyze_chapters(self, epub_path, project_manager=None):
         signature = self._build_analysis_signature(epub_path)

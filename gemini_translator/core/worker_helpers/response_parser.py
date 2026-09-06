@@ -418,11 +418,6 @@ class ResponseParser:
                     extracted_block_raw = translated_full_text[start_pos:end_pos].strip()
                     
                     # 1. Получаем "сырой" контент от AI
-                    extracted_body_only = clean_html_content(extracted_block_raw, is_html=True)
-                    if not extracted_body_only:
-                        report['failed'].append((chapter_path, "Пустой контент (body)"))
-                        continue
-                    
                     raw_body_from_ai = clean_html_content(extracted_block_raw, is_html=True)
                     if not raw_body_from_ai:
                         report['failed'].append((chapter_path, "Пустой контент (body)"))

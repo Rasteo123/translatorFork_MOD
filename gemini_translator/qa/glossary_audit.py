@@ -16,6 +16,7 @@ from .models import (
     GlossaryRule,
     RelevantGlossaryTerm,
 )
+from .text_normalize import normalize_for_comparison
 
 
 _DEFAULT_MORPHOLOGY = object()
@@ -74,8 +75,8 @@ def match_glossary_policies(
 
 
 def _normalize_policy_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value).translate(_QUOTE_TRANSLATION)
-    return re.sub(r"\s+", " ", normalized).strip().casefold()
+    translated = unicodedata.normalize("NFKC", value).translate(_QUOTE_TRANSLATION)
+    return normalize_for_comparison(translated)
 
 
 def _policy_boundary_matches(
@@ -491,8 +492,15 @@ class GlossaryAuditor:
 
 
 def _normalize(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value).translate(_QUOTE_TRANSLATION)
-    normalized = re.sub(r"\s+", " ", normalized).strip().casefold().replace("ё", "е")
+    """Normalize an observed glossary translation for conflict comparison.
+
+    Deliberately more aggressive than the shared `normalize_for_comparison`:
+    glossary translations also need curly quotes folded to ASCII, `ё` folded
+    to `е`, and wrapping quote characters stripped, none of which the plain
+    QA-text comparisons elsewhere in this package want.
+    """
+    translated = unicodedata.normalize("NFKC", value).translate(_QUOTE_TRANSLATION)
+    normalized = normalize_for_comparison(translated).replace("ё", "е")
     return normalized.strip("'\"")
 
 

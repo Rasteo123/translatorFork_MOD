@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QThread, QTimer, Qt
 from PyQt6 import QtWidgets
 from ..api.config import SHARED_DB_URI
+from ..utils.text import truncate_log_details
+from .auto_workflow_helpers import extract_chapters_from_payload
 
 SNAPSHOT_STATUS_KEYS = ('pending', 'in_progress', 'failed', 'completed', 'held')
 SNAPSHOT_META_INT_KEYS = (
@@ -40,7 +42,6 @@ SNAPSHOT_META_INT_KEYS = (
     'recoverable_tasks',
     'saved_task_count',
 )
-MAX_LOG_DETAILS_CHARS = 16000
 UI_RAW_TEXT_PREVIEW_CHARS = 500
 
 
@@ -499,15 +500,8 @@ class ChapterQueueManager(QObject):
             payload = {'message': message}
         details_text = payload.get('details_text')
         if isinstance(details_text, str):
-            payload['details_text'] = self._truncate_log_details(details_text)
+            payload['details_text'] = truncate_log_details(details_text)
         self._post_event('log_message', payload)
-
-    def _truncate_log_details(self, details_text: str) -> str:
-        normalized_text = details_text.strip()
-        if len(normalized_text) <= MAX_LOG_DETAILS_CHARS:
-            return normalized_text
-        omitted = len(normalized_text) - MAX_LOG_DETAILS_CHARS
-        return normalized_text[:MAX_LOG_DETAILS_CHARS].rstrip() + f"\n\n[details truncated: {omitted} chars omitted]"
 
     def _payload_for_ui(self, payload: tuple):
         if not isinstance(payload, tuple) or not payload:
@@ -629,15 +623,7 @@ class ChapterQueueManager(QObject):
         return payload_tuple
 
     def _extract_chapters_from_payload(self, payload: tuple) -> list:
-        if not payload:
-            return []
-
-        task_type = payload[0]
-        if task_type in ('epub', 'epub_chunk') and len(payload) > 2:
-            return [payload[2]]
-        if task_type == 'epub_batch' and len(payload) > 2:
-            return list(payload[2])
-        return []
+        return extract_chapters_from_payload(payload)
 
     def _extract_save_targets_from_payload(self, payload: tuple) -> set[str] | None:
         if not payload or len(payload) <= 3 or not isinstance(payload[3], dict):

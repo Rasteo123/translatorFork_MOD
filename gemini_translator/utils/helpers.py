@@ -13,6 +13,9 @@
 import math
 import time
 import re
+from typing import Any
+
+from . import cjk_ranges
 
 GEMINI_ASCII_CHARS_PER_TOKEN = 4.0
 GEMINI_CYRILLIC_CHARS_PER_TOKEN = 2.2
@@ -21,7 +24,79 @@ GEMINI_OTHER_CHARS_PER_TOKEN = 2.5
 
 _ASCII_RUN_PATTERN = re.compile(r'[\x00-\x7f]+')
 _CYRILLIC_RUN_PATTERN = re.compile(r'[\u0400-\u04ff]+')
-_CJK_RUN_PATTERN = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+')
+# cluster-32 dedup: диапазон (Ext-A + Unified + кана + хангыль) теперь
+# живёт в gemini_translator.utils.cjk_ranges.CJK_WITH_EXT_A_RUN_RE — то же
+# самое множество символов, что и раньше, один источник истины. Важно: это
+# RUN-вариант (с квантификатором "+"), а не CJK_WITH_EXT_A_CHAR_RE — см.
+# докстринг у _count_chars ниже про то, зачем здесь нужны именно серии.
+
+
+def as_list(value: Any, *, sort_sets: bool = False) -> list:
+    """Приводит значение к списку.
+
+    Каноническая реализация для cluster-50 (ранее была продублирована в
+    ``benchmark/evaluator.py``, ``mcp/commands.py`` и
+    ``ui/pages/benchmark_page.py``):
+
+    - ``None`` -> ``[]``.
+    - ``list`` возвращается как есть (без копирования).
+    - ``tuple`` разворачивается в список своих элементов.
+    - ``set``: по умолчанию (``sort_sets=False``) набор целиком оборачивается
+      как единственный элемент (``[value]``) — так вели себя evaluator.py и
+      benchmark_page.py, у которых не было отдельной ветки для set. Передайте
+      ``sort_sets=True``, чтобы получить ``sorted(value)`` — так специально
+      делал mcp/commands.py для детерминизма CLI-аргументов.
+    - любой другой скаляр оборачивается в список из одного элемента.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        if sort_sets:
+            return sorted(value)
+        return [value]
+    return [value]
+
+
+def safe_int(
+    value: Any,
+    default: int = 0,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    """Безопасно приводит значение к ``int`` с опциональным клампом.
+
+    Каноническая реализация для finding-core-b/design/3 (ранее была
+    продублирована минимум в 5 местах: ``consistency_engine.py``,
+    ``worker_helpers/provider_orchestrator.py``, ``qa/handler_factory.py``,
+    ``ui/dialogs/setup.py``, ``ranobelib/api_upload.py``):
+
+    - ``value`` парсится через ``int()``; при ``TypeError``/``ValueError``
+      подставляется ``default``.
+    - ``minimum``/``maximum`` по умолчанию ``None`` — без них функция ничего
+      не клампает (так вели себя копии в ``setup.py`` и
+      ``ranobelib/api_upload.py``, где отрицательные и нулевые значения
+      были осмысленны и проходили как есть).
+    - Если ``minimum`` передан, результат клампится к нему — причём клампу
+      подвергается и ``default``, если ``value`` не распарсилось (так вели
+      себя копии в ``consistency_engine.py``, ``provider_orchestrator.py``
+      и ``handler_factory.py``: они клампили итог уже ПОСЛЕ подстановки
+      default, а не только успешно распарсенное значение).
+    - ``maximum``, если передан, клампит результат сверху (было только в
+      ``provider_orchestrator.py``).
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
 
 
 def _count_chars(pattern, text):
@@ -38,7 +113,7 @@ def estimate_gemini_tokens(text):
     text = str(text)
     ascii_like_chars = _count_chars(_ASCII_RUN_PATTERN, text)
     cyrillic_chars = _count_chars(_CYRILLIC_RUN_PATTERN, text)
-    cjk_chars = _count_chars(_CJK_RUN_PATTERN, text)
+    cjk_chars = _count_chars(cjk_ranges.CJK_WITH_EXT_A_RUN_RE, text)
     other_chars = max(0, len(text) - ascii_like_chars - cyrillic_chars - cjk_chars)
 
     total_tokens = (
@@ -67,6 +142,37 @@ def format_size(size_bytes):
     p = math.pow(1024, i)
     s = round(size_bytes / p, 2)
     return f"{s} {size_name[i]}"
+
+
+def format_compact_number(value) -> str:
+    """Компактно форматирует число: 1_234 -> '1.2K', 2_500_000 -> '2.5M'.
+
+    Канонический хелпер для всех экранов, показывающих «примерное»
+    количество токенов/символов рядом с прогрессом (K/M-суффикс).
+    Нечисловой/отсутствующий вход трактуется как 0.
+    """
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = 0
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return str(value)
+
+
+def format_thousands(value) -> str:
+    """Форматирует целое число с разделением тысяч пробелом: 1234567 -> '1 234 567'.
+
+    Канонический хелпер для точных (не компактных) счётчиков символов/токенов.
+    ``None`` форматируется как ``"0"``; прочие нечисловые значения, как и в
+    исходной реализации, приводятся через ``int()`` (и могут бросить
+    ``ValueError``/``TypeError`` при явно некорректном входе).
+    """
+    if value is None:
+        return "0"
+    return f"{int(value):,}".replace(",", " ")
 
 
 class TokenCounter:
@@ -223,67 +329,13 @@ class TokenCounter:
         return report.strip()
 
 
-# --- НОВАЯ ВЕРСИЯ ФУНКЦИИ ---
-def calculate_potential_output_size(html_content, is_cjk):
-    """
-    Вычисляет потенциальный размер ответа модели в УСЛОВНЫХ СИМВОЛАХ (где 4 символа ~ 1 токен),
-    применяя разные коэффициенты к тегам и тексту.
-    """
-    try:
-        if not BS4_AVAILABLE:
-            # Если BeautifulSoup недоступен, используем старый, более простой метод
-            multiplier = 10 if is_cjk else 3
-            return len(html_content) * multiplier
+# calculate_potential_output_size: мёртвая копия удалена (cluster-dedup
+# finding-utils-io_design_5-calculate-potential-output-siz). Каноническая
+# реализация — gemini_translator.utils.epub_tools.calculate_potential_output_size
+# (кортеж (total, tags_len), коэффициенты из api_config); именно её
+# импортирует единственный вызывающий код (ui/dialogs/setup.py).
 
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # 1. Извлекаем только видимый пользователю текст
-        # Используем ' ' в качестве разделителя, чтобы избежать склеивания слов
-        visible_text = soup.get_text(separator=' ', strip=True)
-        
-        # 2. Считаем размеры компонентов
-        len_html_total = len(html_content)
-        len_text_original = len(visible_text)
-        len_tags_and_scripts = len_html_total - len_text_original
 
-        # 3. Определяем коэффициенты "разрастания" текста при переводе
-        if is_cjk:
-            # CJK -> Русский. Текст становится длиннее в 2.5-3 раза.
-            # Пример: "你好世界" (4 симв) -> "Привет, мир" (11 симв)
-            text_expansion_ratio = 2.8 
-        else:
-            # Английский -> Русский. Текст удлиняется в среднем на 20-30%.
-            text_expansion_ratio = 1.25
-
-        # 4. Рассчитываем потенциальный размер переведенного текста в символах
-        potential_text_size_chars = len_text_original * text_expansion_ratio
-        
-        # 5. Оцениваем, сколько токенов съедят теги и переведенный текст
-        # Теги и латиница ~4 символа/токен
-        # Кириллица ~2.2 символа/токен
-        
-        # Мы хотим получить итоговый размер в "условных символах", где 1 токен = 4 символа.
-        # Поэтому мы должны "утяжелить" кириллицу.
-        # Коэффициент "утяжеления" = (символов/токен в латинице) / (символов/токен в кириллице)
-        # 4 / 2.2 = ~1.8
-        cyrillic_token_weight = 1.8 
-
-        # Умножаем размер переведенного текста на этот вес
-        weighted_text_size = potential_text_size_chars * cyrillic_token_weight
-        
-        # 6. Складываем "вес" тегов (он не меняется) и "вес" переведенного текста
-        final_potential_size = len_tags_and_scripts + weighted_text_size
-        
-        return int(final_potential_size)
-
-    except Exception as e:
-        print(f"[WARN] Ошибка в calculate_potential_output_size: {e}. Используется упрощенный расчет.")
-        # В случае любой ошибки парсинга, возвращаем безопасное, но более грубое значение
-        multiplier = 10 if is_cjk else 3
-        return len(html_content) * multiplier
-        
-        
 def check_value(etalon, value, min_len=None) -> bool:
     """
     Универсальный валидатор.

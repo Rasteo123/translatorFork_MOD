@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from ..utils.epub_tools import TASK_SIZE_UNIT_CHARS, extract_number_from_path, normalize_task_size_unit
 from ..ui.widgets.common_widgets import NoScrollSpinBox
+from ..core.auto_workflow_helpers import extract_chapters_from_payload
 
 class FilterPackagingDialog(QDialog):
     SAVE_CHAPTERS_KEY = "save_chapters"
@@ -100,18 +101,8 @@ class FilterPackagingDialog(QDialog):
             self.CONTEXT_CHAPTERS_KEY: context_list,
         }
 
-    def _payload_chapters(self, payload):
-        if not payload:
-            return []
-        task_type = payload[0]
-        if task_type in ("epub", "epub_chunk") and len(payload) > 2:
-            return [payload[2]]
-        if task_type == "epub_batch" and len(payload) > 2:
-            return list(payload[2])
-        return []
-
     def _with_filter_save_targets(self, payload, filtered_set):
-        chapters = self._payload_chapters(payload)
+        chapters = extract_chapters_from_payload(payload)
         save_targets = [chapter for chapter in chapters if chapter in filtered_set]
         if not save_targets:
             return None

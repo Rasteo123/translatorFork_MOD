@@ -53,6 +53,14 @@ class GlossaryActionDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(self, table, button_size: QtCore.QSize, icon_size: QtCore.QSize,
                  tooltip_provider=None, parent=None):
         super().__init__(parent)
+        # Локальный импорт (не наверху модуля): на уровне пакета
+        # gemini_translator.ui.widgets.__init__ тянет glossary_widget.py ->
+        # glossary.py -> обратно этот же action_delegate.py, который в этот
+        # момент ещё не успел определить свои имена (ACTIONS_ROLE,
+        # GlossaryActionDelegate) — самоцикл импорта модуля. К моменту
+        # создания делегата (конструктор таблицы глоссария) ui.widgets уже
+        # гарантированно загружен, поэтому здесь безопасно.
+        from ....ui.widgets.delegate_utils import PixmapCache
         self._table = table
         self._button_size = QtCore.QSize(button_size)
         self._icon_size = QtCore.QSize(icon_size)
@@ -63,7 +71,7 @@ class GlossaryActionDelegate(QtWidgets.QStyledItemDelegate):
         self._template.setFixedSize(self._button_size)
         self._template.setIconSize(self._icon_size)
         self._template.hide()
-        self._pixmaps = {}
+        self._pixmap_cache = PixmapCache()
         self._icons = {}
         self.hovered = (-1, -1, -1)   # (row, column, button_index)
         self.pressed = (-1, -1, -1)
@@ -94,7 +102,7 @@ class GlossaryActionDelegate(QtWidgets.QStyledItemDelegate):
 
     def invalidate_cache(self):
         """Сброс кэша pixmap'ов и стилей (смена темы/палитры/шрифта)."""
-        self._pixmaps.clear()
+        self._pixmap_cache.invalidate()
         self._icons.clear()
 
     def paint(self, painter, option, index):
@@ -112,11 +120,9 @@ class GlossaryActionDelegate(QtWidgets.QStyledItemDelegate):
     def _pixmap(self, kind, hovered, pressed, enabled):
         dpr = self._table.devicePixelRatioF()
         key = (kind, hovered, pressed, enabled, round(dpr * 100))
-        pixmap = self._pixmaps.get(key)
-        if pixmap is None:
-            pixmap = self._render_template(kind, hovered, pressed, enabled, dpr)
-            self._pixmaps[key] = pixmap
-        return pixmap
+        return self._pixmap_cache.get_or_render(
+            key, lambda: self._render_template(kind, hovered, pressed, enabled, dpr)
+        )
 
     def _icon(self, kind):
         icon = self._icons.get(kind)

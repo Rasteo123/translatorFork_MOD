@@ -14,81 +14,14 @@ from typing import Set, List, Tuple, Dict, Any
 from bs4 import BeautifulSoup, NavigableString, ProcessingInstruction, Comment, Declaration
 
 from gemini_translator.utils.html_text import extract_visible_text
+from gemini_translator.utils.cjk_ranges import UnicodeRanges
 
-
-# =============================================================================
-# CJK and Unicode Character Ranges
-# =============================================================================
-
-class UnicodeRanges:
-    """Comprehensive Unicode ranges for character classification."""
-    
-    # CJK Unified Ideographs (Chinese)
-    CJK_UNIFIED_IDEOGRAPHS = r'\u4e00-\u9fff'
-    CJK_UNIFIED_IDEOGRAPHS_EXT_A = r'\u3400-\u4dbf'
-    CJK_UNIFIED_IDEOGRAPHS_EXT_B = r'\U00020000-\U0002a6df'
-    CJK_UNIFIED_IDEOGRAPHS_EXT_C = r'\U0002a700-\U0002b73f'
-    CJK_UNIFIED_IDEOGRAPHS_EXT_D = r'\U0002b740-\U0002b81f'
-    CJK_UNIFIED_IDEOGRAPHS_EXT_E = r'\U0002b820-\U0002ceaf'
-    CJK_UNIFIED_IDEOGRAPHS_EXT_F = r'\U0002ceb0-\U0002ebef'
-    CJK_COMPATIBILITY_IDEOGRAPHS = r'\uf900-\ufaff'
-    CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT = r'\U0002f800-\U0002fa1f'
-    
-    # Japanese Hiragana and Katakana
-    HIRAGANA = r'\u3040-\u309f'
-    HIRAGANA_EXTENDED = r'\u1b001-\u1b11f'
-    KATAKANA = r'\u30a0-\u30ff'
-    KATAKANA_PHONETIC_EXTENSIONS = r'\u31f0-\u31ff'
-    KATAKANA_SMALL = r'\u3248-\u324f'
-    KATAKANA_EXTENDED = r'\u1b000-\u1b001'
-    
-    # Korean Hangul
-    HANGUL_SYLLABLES = r'\uac00-\ud7af'
-    HANGUL_JAMO = r'\u1100-\u11ff'
-    HANGUL_COMPATIBILITY_JAMO = r'\u3130-\u318f'
-    HANGUL_JAMO_EXTENDED_A = r'\ua960-\ua97f'
-    HANGUL_JAMO_EXTENDED_B = r'\ud7b0-\ud7ff'
-    
-    # Bopomofo (Zhuyin) - Used for Chinese phonetic notation
-    BOPOMOFO = r'\u3100-\u312f'
-    BOPOMOFO_EXTENDED = r'\u31a0-\u31bf'
-    
-    # Other CJK symbols and punctuation
-    CJK_SYMBOLS_AND_PUNCTUATION = r'\u3000-\u303f'
-    CJK_STROKES = r'\u31c0-\u31ef'
-    CJK_RADICALS_SUPPLEMENT = r'\u2e80-\u2eff'
-    KANGXI_RADICALS = r'\u2f00-\u2fdf'
-    IDEOGRAPHIC_DESCRIPTION_CHARACTERS = r'\u2ff0-\u2fff'
-    
-    # Combined pattern for all CJK characters (EXPANDED)
-    ALL_CJK_PATTERN = (
-        f'[{CJK_UNIFIED_IDEOGRAPHS}'
-        f'{CJK_UNIFIED_IDEOGRAPHS_EXT_A}'
-        f'{HIRAGANA}'
-        f'{KATAKANA}'
-        f'{HANGUL_SYLLABLES}'
-        f'{BOPOMOFO}'
-        f'{CJK_COMPATIBILITY_IDEOGRAPHS}'
-        f'{CJK_SYMBOLS_AND_PUNCTUATION}'
-        f'{KANGXI_RADICALS}'
-        f']'
-    )
-    
-    # Extended pattern including less common ranges
-    ALL_CJK_EXTENDED_PATTERN = (
-        f'[{CJK_UNIFIED_IDEOGRAPHS}'
-        f'{CJK_UNIFIED_IDEOGRAPHS_EXT_A}'
-        f'{CJK_UNIFIED_IDEOGRAPHS_EXT_B}'
-        f'{HIRAGANA}'
-        f'{HIRAGANA_EXTENDED}'
-        f'{KATAKANA}'
-        f'{KATAKANA_PHONETIC_EXTENSIONS}'
-        f'{HANGUL_SYLLABLES}'
-        f'{HANGUL_JAMO}'
-        f'{BOPOMOFO}'
-        f'{BOPOMOFO_EXTENDED}'
-        f']'
-    )
+# cluster-32 dedup: UnicodeRanges (CJK/Unicode range constants + ALL_CJK_PATTERN)
+# moved to gemini_translator/utils/cjk_ranges.py, the canonical source shared
+# by the other CJK-detection call sites. Re-imported here (not re-defined) so
+# existing imports of `UnicodeRanges` from this module (e.g.
+# validation_dialogs/__init__.py) keep working unchanged -- it is the same
+# class object.
 
 
 # =============================================================================
@@ -378,30 +311,37 @@ class UntranslatedWordDetector:
         # Skip empty words
         if not word or len(word) < 1:
             return False
-        
+
         if self.CJK_PUNCTUATION_PATTERN.fullmatch(word):
             return False
 
-        # Check if it's a CJK character FIRST (always include, even single chars)
+        # Check the exception list BEFORE the CJK short-circuit below.
+        # _build_current_untranslated_exceptions (validation.py) fills this
+        # set with CJK residues extracted from the glossary's translation
+        # field, precisely so that adding a CJK term to the glossary can
+        # suppress an already-flagged chapter. If the CJK check ran first,
+        # an exception-listed CJK word would still be flagged -- see
+        # finding-ui-dialogs-validation_design_1-untranslated-detection-triplic
+        # review notes.
+        if self.exception_matcher.is_exception(word.lower()):
+            return False
+
+        # Check if it's a CJK character (always include, even single chars)
         if self.CJK_PATTERN.search(word):
             return True
-        
+
         # Skip single-character Latin letters (common in ratings/grades like "E", "A", "B")
         if self.SINGLE_LATIN_PATTERN.match(word):
             return False
-        
+
         # Skip rating patterns like A+, B-, S, etc.
         if self.RATING_PATTERN.match(word):
             return False
-        
+
         # For non-CJK words, apply length filter
         if len(word) < self.MIN_LATIN_WORD_LENGTH:
             return False
-        
-        # Check if word is in exception list
-        if self.exception_matcher.is_exception(word.lower()):
-            return False
-        
+
         return True
     
     def detect_in_text(self, text: str) -> List[str]:

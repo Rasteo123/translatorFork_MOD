@@ -9,15 +9,11 @@ import shutil
 import sys
 from typing import Any
 
-from .paths import default_daemon_port
+from .paths import default_daemon_port, repo_root
 
 CLIENTS_WITH_MCP_SERVERS = {"claude", "generic", "antigravity"}
 SAFE_INSTALL_MODES = {"auto", "print", "write"}
 SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
 
 
 def _state_dir_arg(state_dir: str | Path) -> str:

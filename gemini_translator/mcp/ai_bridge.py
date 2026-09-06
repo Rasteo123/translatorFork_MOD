@@ -8,6 +8,9 @@ import secrets
 import time
 from typing import Any
 
+from ..utils.io_utils import atomic_write_text
+from ._json_io import load_task_json
+from .jobs import utc_now
 from .paths import ensure_state_dirs, validate_job_id
 
 
@@ -37,10 +40,6 @@ class GuiAiTaskTimeout(TimeoutError):
 
 class GuiAiTaskCancelled(Exception):
     pass
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def new_gui_ai_task_id() -> str:
@@ -96,25 +95,13 @@ def gui_ai_task_path(state_dir: Path, task_id: str) -> Path:
 def save_gui_ai_task(state_dir: Path, task: GuiAiTask) -> None:
     path = gui_ai_task_path(state_dir, task.id)
     payload = json.dumps(task.to_dict(), ensure_ascii=False, indent=2)
-    temp_path = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
-    try:
-        temp_path.write_text(payload, encoding="utf-8")
-        if temp_path.exists() and temp_path.stat().st_mode:
-            try:
-                temp_path.chmod(0o600)
-            except OSError:
-                pass
-        temp_path.replace(path)
-    finally:
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
+    # GUI AI-задачи содержат prompt/result_text пользователя — данные
+    # чувствительные, поэтому сохраняем 0o600 из прежней инлайн-копии.
+    atomic_write_text(path, payload, mode=0o600)
 
 
 def load_gui_ai_task(state_dir: Path, task_id: str) -> GuiAiTask:
-    payload = json.loads(gui_ai_task_path(state_dir, task_id).read_text(encoding="utf-8"))
-    return GuiAiTask.from_dict(payload)
+    return load_task_json(gui_ai_task_path(state_dir, task_id), GuiAiTask.from_dict)
 
 
 def list_gui_ai_tasks(state_dir: Path, *, include_terminal: bool = True) -> list[GuiAiTask]:

@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-import re
-import unicodedata
 
 from .coverage_service import SEMANTIC_ALIGNMENT_MODE, CoverageAnalysis
 from .llm.completion import CancellationToken, QaCompletionClient, QaModelSelection
@@ -25,6 +23,7 @@ from .models import (
     QaModelValidationError,
     SemanticUnit,
 )
+from .text_normalize import normalize_for_comparison
 
 
 MINIMUM_ADDITION_CHARS = 12
@@ -272,7 +271,7 @@ def _local_refusal(
     }
     if kinds & NON_NARRATIVE_KINDS:
         return "addition_non_narrative_block"
-    if len(_normalize(context.target_text)) < chapter.minimum_addition_chars:
+    if len(normalize_for_comparison(context.target_text)) < chapter.minimum_addition_chars:
         return "addition_below_minimum_size"
     return None
 
@@ -330,7 +329,3 @@ def _prompt_lines(gap: GapCandidate, context: CandidateContext) -> list[str]:
         f"left_source_context: {escaped(context.source_before)}",
         f"right_source_context: {escaped(context.source_after)}",
     ]
-
-
-def _normalize(value: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip()

@@ -28,6 +28,7 @@ from gemini_translator.ui.widgets.log_widget import LogWidget
 from gemini_translator.ui.widgets.preset_widget import PresetWidget
 from gemini_translator.ui.widgets.ancestor_utils import find_ancestor_by_class_name
 from gemini_translator.ui.overlay_host import exec_dialog
+from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.widgets.overlay_tab_widget import OverlayTabWidget
 from gemini_translator.ui import theme_manager
@@ -2515,12 +2516,11 @@ class CorrectionSessionPage(ShellPage):
         return settings
 
 
-class _CorrectionSessionDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(CorrectionSessionPage, name)
-
-
-class CorrectionSessionDialog(QDialog, metaclass=_CorrectionSessionDialogMeta):
+class CorrectionSessionDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(CorrectionSessionPage),
+):
     """Modal wrapper hosting CorrectionSessionPage for the legacy exec() API."""
 
     correction_accepted = pyqtSignal(list)
@@ -2537,12 +2537,6 @@ class CorrectionSessionDialog(QDialog, metaclass=_CorrectionSessionDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         if not self.page.can_leave():

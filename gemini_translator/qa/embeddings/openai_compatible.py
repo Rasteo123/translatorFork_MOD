@@ -8,24 +8,20 @@ response context manager with integer ``status`` and async ``json()``.
 from __future__ import annotations
 
 import asyncio
-import math
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 import numpy as np
 
-from .base import EmbeddingBatch, EmbeddingContractError, EmbeddingRequest, validate_and_normalize_batch
+from .base import (
+    EmbeddingBatch,
+    EmbeddingContractError,
+    EmbeddingRequest,
+    _positive_finite_timeout,
+    validate_and_normalize_batch,
+)
 from .factory import EmbeddingHttpError, EmbeddingResponseError, EmbeddingTransportError
 from .retry import DEFAULT_ATTEMPTS, with_retries
-
-
-def _positive_finite_timeout(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
-    timeout = float(value)
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
-    return timeout
 
 
 def _embeddings_url(value: object) -> str:

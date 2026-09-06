@@ -9,7 +9,8 @@ from typing import Any
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ...api import config as api_config
-from ...utils.document_importer import DOCUMENT_INPUT_FILTER, extract_document_chapters
+from ...utils.document_importer import DOCUMENT_INPUT_FILTER, extract_document_chapters, set_all_checked
+from ...utils.helpers import as_list
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.dialogs.benchmark import BenchmarkRunWorker
 from ..widgets.overlay_tab_widget import install_tab_fade
@@ -941,9 +942,7 @@ class PromptBenchmarkPage(ShellPage):
         list_widget.blockSignals(False)
 
     def _set_all_checked(self, list_widget: QtWidgets.QListWidget, checked: bool):
-        state = QtCore.Qt.CheckState.Checked if checked else QtCore.Qt.CheckState.Unchecked
-        for index in range(list_widget.count()):
-            list_widget.item(index).setCheckState(state)
+        set_all_checked(list_widget, checked)
         self._update_run_estimate()
 
     def _run_scenario(self) -> str:
@@ -1202,9 +1201,9 @@ class PromptBenchmarkPage(ShellPage):
             self.case_reference_path_edit.setText(str(item.get("reference_path") or ""))
             self.case_reference_edit.setPlainText(str(item.get("reference") or item.get("reference_html") or ""))
             self._populate_glossary_table(item.get("glossary") or [])
-            self.case_required_edit.setPlainText("\n".join(str(value) for value in self._as_list(checks.get("required"))))
-            self.case_forbidden_edit.setPlainText("\n".join(str(value) for value in self._as_list(checks.get("forbidden"))))
-            self.case_placeholders_edit.setPlainText("\n".join(str(value) for value in self._as_list(checks.get("placeholders"))))
+            self.case_required_edit.setPlainText("\n".join(str(value) for value in as_list(checks.get("required"))))
+            self.case_forbidden_edit.setPlainText("\n".join(str(value) for value in as_list(checks.get("forbidden"))))
+            self.case_placeholders_edit.setPlainText("\n".join(str(value) for value in as_list(checks.get("placeholders"))))
             self.case_preserve_html_check.setChecked(bool(checks.get("preserve_html_tags", True)))
             self.case_allow_cjk_check.setChecked(bool(checks.get("allow_cjk", False)))
             self.case_glossary_required_check.setChecked(bool(checks.get("glossary_required", True)))
@@ -1796,13 +1795,6 @@ class PromptBenchmarkPage(ShellPage):
 
     def _lines(self, text: str) -> list[str]:
         return [line.strip() for line in str(text or "").splitlines() if line.strip()]
-
-    def _as_list(self, value) -> list:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        return [value]
 
     def _table_text(self, table: QtWidgets.QTableWidget, row: int, col: int) -> str:
         item = table.item(row, col)

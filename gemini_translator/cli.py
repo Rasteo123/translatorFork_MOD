@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .core.auto_workflow_helpers import build_sequential_chapter_chains
+from .core.auto_workflow_helpers import build_sequential_chapter_chains, extract_chapters_from_payload
 
 
 class CliError(Exception):
@@ -213,21 +213,12 @@ def _chapter_sizes(
     return {chapter: int(sizes.get(chapter, 0) or 0) for chapter in chapters}
 
 
-def _payload_chapters(payload: tuple) -> list[str]:
-    task_type = payload[0] if payload else ""
-    if task_type in {"epub", "epub_chunk"}:
-        return [str(payload[2])]
-    if task_type in {"epub_batch", "glossary_batch_task"}:
-        return [str(item) for item in payload[2]]
-    return []
-
-
 def summarize_payloads(payloads: list[tuple]) -> dict:
     type_counts = Counter(payload[0] for payload in payloads if payload)
     unique_chapters = []
     seen = set()
     for payload in payloads:
-        for chapter in _payload_chapters(payload):
+        for chapter in extract_chapters_from_payload(payload, include_glossary_batch=True):
             if chapter not in seen:
                 seen.add(chapter)
                 unique_chapters.append(chapter)
@@ -672,7 +663,7 @@ class CliSessionObserver:
                 "error_type": data.get("error_type"),
                 "message": data.get("message"),
                 "task_type": task_payload[0] if task_payload else None,
-                "chapters": _payload_chapters(tuple(task_payload)) if task_payload else [],
+                "chapters": extract_chapters_from_payload(tuple(task_payload), include_glossary_batch=True) if task_payload else [],
             })
             return
 

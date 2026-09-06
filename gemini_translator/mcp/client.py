@@ -10,7 +10,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from .daemon import TOKEN_HEADER, read_daemon_info
-from .paths import daemon_stderr_log, daemon_stdout_log, default_state_dir, ensure_state_dirs
+from .paths import build_base_url, daemon_stderr_log, daemon_stdout_log, default_state_dir, ensure_state_dirs
 
 ALLOWED_DAEMON_HOSTS = {"127.0.0.1", "localhost"}
 
@@ -49,8 +49,7 @@ class DaemonClient:
 
     @property
     def base_url(self) -> str:
-        host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
-        return f"http://{host}:{self.port}"
+        return build_base_url(self.host, self.port)
 
     def request(self, method, path, payload=None, *, timeout=5):
         data = None if payload is None else json.dumps(payload).encode("utf-8")

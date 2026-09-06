@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
-import re
-import unicodedata
 
 from ..utils.epub_json import (
     build_html_document_model,
@@ -32,6 +30,7 @@ from .repair_store import (
     content_digest,
 )
 from .semantic_units import SemanticUnitExtractor, flatten_visible_text
+from .text_normalize import normalize_for_comparison
 
 
 REPAIR_MARKER_ATTRIBUTE = "data-qa-repair"
@@ -469,16 +468,12 @@ def _anchors_surround_fragment(after_payload: dict, preview: RepairPreview) -> b
 
 
 def _visible_occurrences(payload: dict, fragment: str) -> int:
-    normalized_fragment = _normalize(fragment)
+    normalized_fragment = normalize_for_comparison(fragment)
     if not normalized_fragment:
         return 0
     total = 0
     for block in payload["blocks"]:
-        total += _normalize(flatten_visible_text(block["inlines"])[0]).count(
+        total += normalize_for_comparison(flatten_visible_text(block["inlines"])[0]).count(
             normalized_fragment
         )
     return total
-
-
-def _normalize(value: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value)).strip().casefold()

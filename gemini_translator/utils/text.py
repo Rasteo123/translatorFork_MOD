@@ -123,6 +123,74 @@ DIALOGUE_SPLIT_PATTERN = re.compile(
 )
 
 
+MAX_LOG_DETAILS_CHARS = 16000
+
+
+def truncate_log_details(text: str, limit: int = MAX_LOG_DETAILS_CHARS) -> str:
+    """Обрезает текст деталей лог-сообщения до `limit` символов.
+
+    Единая реализация для UI (LogWidget) и core (ChapterQueueManager):
+    обе стороны показывают/хранят один и тот же формат деталей лога и должны
+    обрезать его одинаково, чтобы не расходиться в поведении.
+    """
+    normalized_text = text.strip()
+    if len(normalized_text) <= limit:
+        return normalized_text
+    omitted = len(normalized_text) - limit
+    return normalized_text[:limit].rstrip() + f"\n\n[details truncated: {omitted} chars omitted]"
+
+
+def format_duration(seconds, *, round_minutes: bool = False,
+                     unit_spacing: str = " ", seconds_unit: str = "сек",
+                     dash_on_negative: bool = False) -> str:
+    """Render a duration in seconds as a short human-readable Russian phrase.
+
+    Two call sites in the project format the same quantity — seconds
+    remaining — independently of each other, and disagree on rounding and
+    on whether a space separates a number from its unit. This is the single
+    implementation; the differences are explicit keyword arguments so each
+    caller keeps exactly its previous wording.
+
+    ``round_minutes=True`` rounds a sub-hour duration to the nearest minute
+    (a remainder of 30s or more rounds up) instead of showing the leftover
+    seconds — the way a person waiting on a background task reads an ETA.
+    Note this rounding is purely arithmetic on the raw remainder: a duration
+    that rounds up to a full 60 minutes prints "60 мин", not "1 ч 00 мин".
+
+    ``unit_spacing`` is the string placed between a number and its unit
+    ("ч"/"мин"/"сек"); pass "" for compact forms like "5мин".
+
+    ``seconds_unit`` picks the word used for a sub-minute duration ("с" or
+    "сек").
+
+    ``dash_on_negative`` says what a negative duration renders as: ``False``
+    (default) treats it as zero, ``True`` renders it as "—" (an
+    unknown/finished ETA).
+    """
+    if seconds < 0:
+        if dash_on_negative:
+            return "—"
+        seconds = 0
+    total = int(seconds)
+    sp = unit_spacing
+
+    if total < 60:
+        return f"{total}{sp}{seconds_unit}"
+
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+
+    if hours:
+        return f"{hours}{sp}ч {minutes:02d}{sp}мин"
+
+    if round_minutes:
+        if secs >= 30:
+            minutes += 1
+        return f"{minutes}{sp}мин"
+
+    return f"{minutes}{sp}мин {secs:02d}{sp}сек"
+
+
 def _mask_html_tags(text: str, token_prefix: str):
     tag_map = {}
 

@@ -1,7 +1,6 @@
 # gemini_translator/ui/dialogs/glossary_dialogs/versioning.py
 
 import os
-import json
 import zipfile
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (
@@ -15,6 +14,7 @@ from PyQt6.QtCore import Qt
 # Импортируем утилиту для правильной сортировки глав
 from gemini_translator.utils.epub_tools import get_epub_chapter_order, extract_number_from_path
 from gemini_translator.ui import theme_manager
+from gemini_translator.ui.dialogs import chapter_selection_dialog as _selection_utils
 
 class ChapterSelectorWidget(QWidget):
     """
@@ -149,14 +149,10 @@ class ChapterSelectorWidget(QWidget):
             item.setHidden(text not in item.text().lower())
 
     def _select_all(self):
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            if not item.isHidden():
-                item.setCheckState(Qt.CheckState.Checked)
+        _selection_utils.set_checked_all(self.list_widget, True, only_visible=True)
 
     def _deselect_all(self):
-        for i in range(self.list_widget.count()):
-            self.list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
+        _selection_utils.set_checked_all(self.list_widget, False, only_visible=False)
 
     def _modify_selection(self, mode):
         """Универсальный метод для кнопок управления выделением."""
@@ -329,7 +325,6 @@ class TermVersioningDialog(QDialog):
         self.project_manager = project_manager
         self.epub_path = epub_path
         
-        self.versions_file = os.path.join(project_manager.project_folder, "glossary_versions.json")
         self.all_versions_data = self._load_all_versions()
         
         # Данные конкретно для этого термина (список правил)
@@ -411,24 +406,18 @@ class TermVersioningDialog(QDialog):
             self.list_widget.addItem(item)
 
     def _load_all_versions(self):
-        if os.path.exists(self.versions_file):
-            try:
-                with open(self.versions_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[Versioning] Error loading file: {e}")
-        return {}
+        return self.project_manager.load_version_map()
 
     def _save_all_versions(self):
-        if self.term_rules:
-            self.all_versions_data[self.term] = self.term_rules
-        else:
-            if self.term in self.all_versions_data:
-                del self.all_versions_data[self.term]
-        
+        # update_term_versions делает read-modify-write под одним lock:
+        # перечитывает актуальную карту и правит только self.term, поэтому
+        # устаревший снимок self.all_versions_data (сделанный в конструкторе)
+        # не может затереть правки, внесённые в карту кем-то ещё за время,
+        # пока это окно диалога было открыто.
         try:
-            with open(self.versions_file, 'w', encoding='utf-8') as f:
-                json.dump(self.all_versions_data, f, ensure_ascii=False, indent=2)
+            self.all_versions_data = self.project_manager.update_term_versions(
+                self.term, self.term_rules
+            )
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить версии: {e}")
 

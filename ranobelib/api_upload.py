@@ -12,6 +12,7 @@ from playwright.sync_api import sync_playwright
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from constants import BROWSER_PROFILE_DIR, MAX_RETRIES, RETRY_DELAY_SEC
+from gemini_translator.utils.helpers import safe_int
 from models import ChapterData
 from utils import format_num, format_timedelta
 
@@ -39,13 +40,6 @@ def _stringify_payload(payload) -> str:
     if isinstance(payload, (dict, list)):
         return json.dumps(payload, ensure_ascii=False)
     return str(payload)
-
-
-def _safe_int(value, default=0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _safe_float(value, default=0.0) -> float:
@@ -240,8 +234,8 @@ def resolve_api_auth(slug: str) -> tuple[dict, dict]:
 
     token = stored_auth["token"]
     refresh_token_value = token.get("refresh_token")
-    expires_at = _safe_int(token.get("timestamp"), int(time.time() * 1000)) + (
-        _safe_int(token.get("expires_in"), 0) * 1000
+    expires_at = safe_int(token.get("timestamp"), int(time.time() * 1000)) + (
+        safe_int(token.get("expires_in"), 0) * 1000
     )
     if refresh_token_value and (
         not token.get("access_token") or expires_at <= int(time.time() * 1000)
@@ -281,13 +275,13 @@ def _get_latest_chapter_config(chapters: list[dict], requested_volume: str):
     branch_source = branches[0] if branches else latest
     team_ids = []
     for team in branch_source.get("teams") or []:
-        team_id = _safe_int(team.get("id"), 0)
+        team_id = safe_int(team.get("id"), 0)
         if team_id > 0:
             team_ids.append(team_id)
 
     branch_id = branch_source.get("branch_id", latest.get("branch_id"))
     if branch_id is not None:
-        branch_id = _safe_int(branch_id, 0) or None
+        branch_id = safe_int(branch_id, 0) or None
     return latest, team_ids, branch_id
 
 
@@ -318,7 +312,7 @@ def _existing_chapter_order_key(chapter: dict) -> tuple:
     return (
         _volume_order_key(chapter.get("volume")),
         _safe_float(chapter.get("number")),
-        _safe_int(chapter.get("id"), 0),
+        safe_int(chapter.get("id"), 0),
     )
 
 
@@ -665,9 +659,9 @@ class ApiUploadWorker(QThread):
             self.log("INFO", "API: получаю авторизацию RanobeLib из сохранённого профиля...")
             token, auth = resolve_api_auth(slug)
             auth_team_ids = [
-                _safe_int(team.get("id"), 0)
+                safe_int(team.get("id"), 0)
                 for team in (auth.get("teams") or [])
-                if _safe_int(team.get("id"), 0) > 0
+                if safe_int(team.get("id"), 0) > 0
             ]
             self.log(
                 "SUCCESS",

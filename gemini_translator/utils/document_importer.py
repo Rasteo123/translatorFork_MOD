@@ -43,6 +43,32 @@ class DocumentImportError(RuntimeError):
     pass
 
 
+def set_all_checked(widget, checked: bool, column: int = 0) -> None:
+    """Установить чекбокс всех строк ``QTableWidget``/``QListWidget``.
+
+    Единая точка для паттерна «Выбрать всё / Снять всё», продублированного
+    независимо в validation.py, benchmark_page.py, glossary_widget.py и
+    здесь же. Функция только выставляет состояние — специфичные для
+    вызывающей стороны пост-обновления (сводка выбора, оценка запуска и
+    т.п.) остаются за её пределами.
+
+    ``column`` учитывается только для ``QTableWidget`` (у ``QListWidget``
+    нет колонок). Отсутствующий в ячейке item пропускается молча — это
+    безопасный вариант, к которому приведены все бывшие копии.
+    """
+    state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+    if hasattr(widget, "rowCount"):
+        count = widget.rowCount()
+        item_at = lambda index: widget.item(index, column)  # noqa: E731
+    else:
+        count = widget.count()
+        item_at = widget.item
+    for index in range(count):
+        item = item_at(index)
+        if item:
+            item.setCheckState(state)
+
+
 @dataclass
 class DocumentChapter:
     title: str
@@ -682,9 +708,7 @@ class DocumentImportDialog(QtWidgets.QDialog):
         self.preview.setHtml(self.chapters[current_row].html)
 
     def _set_all_checked(self, checked: bool):
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        for row in range(self.table.rowCount()):
-            self.table.item(row, 0).setCheckState(state)
+        set_all_checked(self.table, checked)
 
     def _delete_selected(self):
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)

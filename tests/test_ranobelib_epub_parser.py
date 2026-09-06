@@ -760,7 +760,14 @@ def test_cached_chromium_prefers_newest_revision(monkeypatch, tmp_path):
     newer.parent.mkdir(parents=True)
     older.write_text("", encoding="utf-8")
     newer.write_text("", encoding="utf-8")
-    monkeypatch.setattr("workers._candidate_browser_cache_roots", lambda: [tmp_path])
+    # cluster-57 dedup: `_candidate_browser_cache_roots` больше не определён в
+    # workers.py - реализация вынесена в qidian_rulate/playwright_launcher.py,
+    # это и есть модуль, где `_find_cached_chromium_executable` действительно
+    # его вызывает.
+    monkeypatch.setattr(
+        "qidian_rulate.playwright_launcher._candidate_browser_cache_roots",
+        lambda extra_roots=(): [tmp_path],
+    )
 
     assert _find_cached_chromium_executable() == newer
 
@@ -785,7 +792,14 @@ def test_persistent_browser_launch_falls_back_from_stale_playwright_revision(mon
     class FakePlaywright:
         chromium = FakeChromium()
 
-    monkeypatch.setattr("workers._find_cached_chromium_executable", lambda: cached)
+    # cluster-57 dedup: `_find_cached_chromium_executable` больше не определён
+    # в workers.py - реализация вынесена в qidian_rulate/playwright_launcher.py,
+    # это и есть модуль, где `_launch_persistent_chromium_context` действительно
+    # его вызывает.
+    monkeypatch.setattr(
+        "qidian_rulate.playwright_launcher._find_cached_chromium_executable",
+        lambda **_kwargs: cached,
+    )
 
     context = _launch_persistent_chromium_context(
         FakePlaywright(),

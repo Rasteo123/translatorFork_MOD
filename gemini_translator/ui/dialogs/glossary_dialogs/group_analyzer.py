@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from gemini_translator.ui.shell import ShellPage
+from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 
 class GroupAnalysisPage(ShellPage):
     """
@@ -356,12 +357,11 @@ class GroupAnalysisPage(ShellPage):
         QMessageBox.information(self, "Готово", "Изменения успешно применены.")
 
 
-class _GroupAnalysisDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(GroupAnalysisPage, name)
-
-
-class GroupAnalysisDialog(QDialog, metaclass=_GroupAnalysisDialogMeta):
+class GroupAnalysisDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(GroupAnalysisPage),
+):
     """Modal wrapper hosting GroupAnalysisPage for the legacy exec() API."""
 
     def __init__(self, full_glossary, parent=None):
@@ -375,12 +375,6 @@ class GroupAnalysisDialog(QDialog, metaclass=_GroupAnalysisDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()

@@ -22,7 +22,7 @@ import traceback # <--- ДОБАВЬТЕ ЭТУ СТРОКУ
 
 # --- Импорты из PyQt6 ---
 from ..widgets.overlay_tab_widget import OverlayTabWidget
-from ..wait_dialogs import show_when_slow
+from ..widgets.proxy_status import render_proxy_status
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QListWidget, QPushButton, QDialogButtonBox, QLabel,
@@ -48,6 +48,7 @@ from ...core.consistency_engine import (
 )
 from ...core.translation_engine import TranslationEngine
 from ...core.task_manager import ChapterQueueManager, TaskDBWorker, tuple_deserializer
+from ._shared import session_and_tasks
 from ...utils.settings import SettingsManager
 from ...utils.epub_tools import (
     extract_number_from_path,
@@ -59,9 +60,8 @@ from ...utils.epub_tools import (
     normalize_task_size_unit,
     TASK_SIZE_UNIT_CHARS,
 )
-from ...utils.helpers import TokenCounter
+from ...utils.helpers import TokenCounter, safe_int
 from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
-from ...utils.project_migrator import ProjectMigrator
 from ...utils.project_manager import TranslationProjectManager
 from ...utils.power_inhibitor import (
     PREVENT_SLEEP_SETTING_KEY,
@@ -85,9 +85,19 @@ from ..widgets import (
     AutoTranslateWidget
 )
 from ..widgets.common_widgets import NoScrollSpinBox
-from .epub import EpubHtmlSelectorDialog, TranslatedChaptersManagerDialog
+from .epub import (
+    EpubHtmlSelectorDialog,
+    TranslatedChaptersManagerDialog,
+    run_project_migrator_sync,
+)
 from .misc import ProjectHistoryDialog, ProjectFolderDialog, GeoBlockDialog
-from .menu_utils import post_session_separator, prompt_return_to_menu, return_to_main_menu
+from .menu_utils import (
+    post_session_separator,
+    prompt_return_to_menu,
+    return_to_main_menu,
+    PageDialogProxyMixin,
+    make_page_delegating_meta,
+)
 from .glossary import MainWindow as GlossaryToolWindow
 from .glossary import ImporterWizardDialog
 from ..shell import ShellPage
@@ -111,6 +121,29 @@ TASK_LIST_MIN_HEIGHT = 420
 TASK_OPTIONS_MIN_HEIGHT = 400
 TASKS_TAB_MIN_HEIGHT = TASK_LIST_MIN_HEIGHT + TASK_OPTIONS_MIN_HEIGHT + 24
 # --- КОНЕЦ НОВЫХ КОНСТАНТ ---
+
+
+def load_bool_setting(settings_manager, key: str, default: bool) -> bool:
+    """Читает один булев флаг из снапшота настроек сессии.
+
+    Пробует ``load_full_session_settings``, затем ``load_settings`` — так
+    исторически хранятся переключатели интерфейса в разных диалогах.
+    Отсутствие менеджера настроек, отсутствие загрузчика, исключение при
+    загрузке, не-dict снапшот или отсутствие ключа — всё падает на ``default``.
+    """
+    if settings_manager is None:
+        return bool(default)
+    for loader_name in ("load_full_session_settings", "load_settings"):
+        loader = getattr(settings_manager, loader_name, None)
+        if not callable(loader):
+            continue
+        try:
+            settings = loader()
+        except Exception:
+            continue
+        if isinstance(settings, dict) and key in settings:
+            return bool(settings.get(key))
+    return bool(default)
 
 
 def _prepare_project_location(folder_path, file_path, choice, move_original):
@@ -194,19 +227,6 @@ def _key_widget_can_start_ai_session(key_widget) -> bool:
     if callable(active_keys_getter):
         return bool(active_keys_getter())
     return False
-
-
-def _format_duration(seconds: float) -> str:
-    """Formats a rough duration estimate for display."""
-    seconds = max(0, int(round(seconds)))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-
-    if hours:
-        return f"{hours} ч {minutes} мин"
-    if minutes:
-        return f"{minutes} мин {secs} сек"
-    return f"{secs} сек"
 
 
 def _create_tasks_tab_scroll_area(task_management_widget, translation_options_widget):
@@ -1096,17 +1116,9 @@ class InitialSetupPage(ShellPage):
         return tab
 
     def _load_show_chapter_char_count_enabled(self) -> bool:
-        for loader_name in ("load_full_session_settings", "load_settings"):
-            loader = getattr(self.settings_manager, loader_name, None)
-            if not callable(loader):
-                continue
-            try:
-                settings = loader()
-            except Exception:
-                continue
-            if isinstance(settings, dict) and SHOW_CHAPTER_CHAR_COUNT_SETTING_KEY in settings:
-                return bool(settings.get(SHOW_CHAPTER_CHAR_COUNT_SETTING_KEY))
-        return False
+        return load_bool_setting(
+            self.settings_manager, SHOW_CHAPTER_CHAR_COUNT_SETTING_KEY, False
+        )
 
     def _create_chapter_display_group(self) -> QGroupBox:
         group = QGroupBox("Список глав")
@@ -1131,17 +1143,9 @@ class InitialSetupPage(ShellPage):
         return group
 
     def _load_queue_autosave_enabled(self) -> bool:
-        for loader_name in ("load_full_session_settings", "load_settings"):
-            loader = getattr(self.settings_manager, loader_name, None)
-            if not callable(loader):
-                continue
-            try:
-                settings = loader()
-            except Exception:
-                continue
-            if isinstance(settings, dict) and QUEUE_AUTOSAVE_SETTING_KEY in settings:
-                return bool(settings.get(QUEUE_AUTOSAVE_SETTING_KEY))
-        return True
+        return load_bool_setting(
+            self.settings_manager, QUEUE_AUTOSAVE_SETTING_KEY, True
+        )
 
     def _create_queue_persistence_group(self) -> QGroupBox:
         group = QGroupBox("Очередь задач")
@@ -1379,19 +1383,13 @@ class InitialSetupPage(ShellPage):
         self.prevent_sleep_checkbox.setChecked(load_prevent_sleep_setting(self.settings_manager))
         layout.addWidget(self.prevent_sleep_checkbox)
 
-        from PyQt6.QtCore import QSettings
+        from gemini_translator.ui.notifications import NotificationManager
         self.cb_notifications = QCheckBox("Звуковые и системные уведомления")
-        settings = QSettings("SiberianTeam", "TranslatorFork")
-        self.cb_notifications.setChecked(settings.value("notifications_enabled", True, type=bool))
-        self.cb_notifications.toggled.connect(self._on_notifications_toggled)
+        self.cb_notifications.setChecked(NotificationManager.is_enabled())
+        self.cb_notifications.toggled.connect(NotificationManager.set_enabled)
         layout.addWidget(self.cb_notifications)
 
         return group
-
-    def _on_notifications_toggled(self, checked):
-        from PyQt6.QtCore import QSettings
-        settings = QSettings("SiberianTeam", "TranslatorFork")
-        settings.setValue("notifications_enabled", checked)
 
     def _refresh_ui_theme_controls(self):
         theme_color_buttons = _instance_attr(self, "theme_color_buttons")
@@ -1532,30 +1530,10 @@ class InitialSetupPage(ShellPage):
         self._apply_ui_theme_colors({}, mark_dirty=True)
 
     def _get_available_session_capacity(self) -> int:
-        provider_id = self.key_management_widget.get_selected_provider()
-        active_sessions = len(self.key_management_widget.get_active_keys())
-        if active_sessions <= 0 and self._can_start_ai_session():
-            return 1
-        if active_sessions <= 0:
-            return 0
-        provider_config = api_config.api_providers().get(provider_id, {})
-        if (
-            not api_config.provider_requires_api_key(provider_id)
-            and api_config.uses_legacy_worker_thread(provider_config)
-            and hasattr(self, 'model_settings_widget')
-        ):
-            try:
-                profile_count = int(
-                    self.model_settings_widget.get_settings().get('browser_profiles_count', 1) or 1
-                )
-            except (TypeError, ValueError):
-                profile_count = 1
-            if profile_count > 1:
-                return max(1, profile_count)
-        provider_limit = api_config.provider_max_instances(provider_id)
-        if provider_limit is None or provider_limit <= 0:
-            provider_limit = active_sessions
-        return min(active_sessions, provider_limit)
+        return session_and_tasks.get_available_session_capacity(
+            self.key_management_widget,
+            getattr(self, 'model_settings_widget', None),
+        )
 
     def _can_start_ai_session(self, key_widget=None) -> bool:
         return _key_widget_can_start_ai_session(key_widget or self.key_management_widget)
@@ -1869,23 +1847,7 @@ class InitialSetupPage(ShellPage):
         if label is None:
             return
 
-        enabled = settings.get('enabled', False)
-        proxy_type = str(settings.get('type', 'SOCKS5'))
-        host = str(settings.get('host') or 'не настроен')
-        port = str(settings.get('port') or '')
-        user = str(settings.get('user') or '')
-
-        if enabled and host != 'не настроен' and port:
-            label.setText(f"Прокси: {proxy_type}://{host}:{port}")
-            tooltip_lines = [f"Тип: {proxy_type}", f"Хост: {host}", f"Порт: {port}"]
-            if user:
-                tooltip_lines.append(f"Пользователь: {user}")
-            label.setToolTip("\n".join(tooltip_lines))
-            label.setStyleSheet(f"color: {theme_manager.color('success')};")
-        else:
-            label.setText("Прокси: выключен")
-            label.setToolTip("Сетевые запросы идут без прокси.")
-            label.setStyleSheet(f"color: {theme_manager.color('text_muted')};")
+        render_proxy_status(label, settings)
 
     def _activate_proxy_from_settings(self):
         if self.proxy_status_label is None:
@@ -2781,24 +2743,9 @@ class InitialSetupPage(ShellPage):
         if not (self.engine and self.engine.task_manager):
             return
 
-        target_method = None
-        args = []
-
-        if action in ['top', 'bottom', 'up', 'down']:
-            target_method = self.engine.task_manager.reorder_tasks
-            args = [action, payload]
-        elif action == 'remove':
-            target_method = self.engine.task_manager.remove_tasks
-            args = [payload]
-        elif action == 'duplicate':
-            target_method = self.engine.task_manager.duplicate_tasks
-            args = [payload]
-        elif action == 'split_batch':
-            target_method = self.engine.task_manager.split_batches_into_chapters
-            args = [payload]
-        elif action == 'reorder_batch_chapters':
-            target_method = self.engine.task_manager.reorder_batch_chapters
-            args = [payload[0], payload[1]]
+        target_method, args = session_and_tasks.resolve_task_action(
+            self.engine.task_manager, action, payload, support_batch_split=True,
+        )
 
         if not target_method:
             return
@@ -2806,12 +2753,7 @@ class InitialSetupPage(ShellPage):
         # --- НОВАЯ ЛОГИКА С QTHREAD ---
         # 1. Блокируем UI, чтобы пользователь не нажал ничего лишнего
         self.task_management_widget.setEnabled(False)
-        status_message = "Обновление списка задач..."
-        if action == 'split_batch':
-            status_message = "Разбиваю пакеты на главы..."
-        elif action == 'reorder_batch_chapters':
-            status_message = "Сохраняю порядок глав в пакете..."
-        self.status_bar.set_permanent_message(status_message)
+        self.status_bar.set_permanent_message(session_and_tasks.task_action_status_message(action))
 
         # 2. Создаем и запускаем "грузчика"
         self.db_worker = TaskDBWorker(target_method, *args)
@@ -2975,12 +2917,11 @@ class InitialSetupPage(ShellPage):
             untracked = []
             chapters_to_keep = []
             for chapter_path in chapters_to_filter:
-                base_name = os.path.splitext(os.path.basename(chapter_path))[0]
-                internal_dir = os.path.dirname(chapter_path)
-
                 is_translated = False
                 for suffix in all_possible_suffixes:
-                    full_disk_path = os.path.join(self.project_manager.project_folder, internal_dir, f"{base_name}{suffix}")
+                    full_disk_path = build_translated_output_path(
+                        self.project_manager.project_folder, chapter_path, suffix
+                    )
                     if os.path.exists(full_disk_path):
                         is_translated = True
                         # Проверяем, зарегистрирован ли файл, и добавляем в список, если нет
@@ -3152,10 +3093,9 @@ class InitialSetupPage(ShellPage):
         Если да, то также проверяет, зарегистрирован ли он, и при необходимости добавляет в список для тихого обновления.
         Возвращает True, если глава считается "готовой", иначе False.
         """
-        base_name = os.path.splitext(os.path.basename(chapter_path))[0]
-        internal_dir = os.path.dirname(chapter_path)
-        validated_filename = f"{base_name}{validated_suffix}"
-        full_disk_path = os.path.join(self.project_manager.project_folder, internal_dir, validated_filename)
+        full_disk_path = build_translated_output_path(
+            self.project_manager.project_folder, chapter_path, validated_suffix
+        )
 
         if os.path.exists(full_disk_path):
             # Файл существует. Проверяем, есть ли он в карте.
@@ -3590,21 +3530,10 @@ class InitialSetupPage(ShellPage):
         """Запускает синхронизацию проекта в фоновом потоке."""
         if not self.project_manager: return
 
-        from ...utils.project_migrator import ProjectMigrator, SyncThread
-
-        self.wait_dialog = QMessageBox(self)
-        self.wait_dialog.setWindowTitle("Синхронизация")
-        self.wait_dialog.setText("Идет анализ проекта…")
-        self.wait_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
-        self.wait_dialog.setModal(True)
-
-        migrator = ProjectMigrator(self.output_folder, self.selected_file, self.project_manager)
-
-        self.sync_thread = SyncThread(migrator, parent_widget=self)
-        self.sync_thread.finished_sync.connect(self._on_sync_finished)
-
-        self.sync_thread.start()
-        show_when_slow(self.wait_dialog)
+        run_project_migrator_sync(
+            self, self.project_manager, self.output_folder, self.selected_file,
+            "Синхронизация", "Идет анализ проекта…", self._on_sync_finished,
+        )
 
     def _on_sync_finished(self, is_project_ready, message):
         """Обрабатывает результат фоновой синхронизации."""
@@ -4763,12 +4692,6 @@ class InitialSetupPage(ShellPage):
         if not isinstance(auto_settings, dict):
             auto_settings = {}
 
-        def _safe_int(value, default=0):
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return default
-
         mode = str(auto_settings.get('translation_mode_override', 'inherit') or 'inherit')
         has_override = False
         if mode == 'batch':
@@ -4795,7 +4718,7 @@ class InitialSetupPage(ShellPage):
         else:
             mode = 'inherit'
 
-        batch_token_limit = _safe_int(auto_settings.get('batch_token_limit_override', 0) or 0)
+        batch_token_limit = safe_int(auto_settings.get('batch_token_limit_override', 0) or 0)
         batch_task_limit = None
         token_profile = None
         if batch_token_limit > 0:
@@ -4804,7 +4727,7 @@ class InitialSetupPage(ShellPage):
                 translation_options['task_size_limit'] = batch_task_limit
                 has_override = True
 
-        chapter_limit = _safe_int(auto_settings.get('batch_chapter_limit_override', 0) or 0)
+        chapter_limit = safe_int(auto_settings.get('batch_chapter_limit_override', 0) or 0)
         if chapter_limit > 0:
             translation_options['max_chapters_per_batch'] = chapter_limit
             has_override = True
@@ -7106,12 +7029,11 @@ class InitialSetupPage(ShellPage):
         self._disconnect_event_bus()
 
 
-class _InitialSetupDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(InitialSetupPage, name)
-
-
-class InitialSetupDialog(QDialog, metaclass=_InitialSetupDialogMeta):
+class InitialSetupDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(InitialSetupPage),
+):
     """Thin window wrapper hosting InitialSetupPage (preserves the old QDialog API)."""
 
     def __init__(self, parent=None, prefill_data=None):
@@ -7138,12 +7060,6 @@ class InitialSetupDialog(QDialog, metaclass=_InitialSetupDialogMeta):
     def _return_to_menu(self):
         self._returning_to_main_menu = True
         self.close()
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         # MOVED from the page; self.<x> → self.page.<x> for on_leave/_prepare_for_close.

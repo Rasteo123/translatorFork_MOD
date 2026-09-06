@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import asyncio
 import json
 import importlib.util
 from copy import deepcopy
@@ -1512,6 +1513,39 @@ def find_node_executable(workascii_root: str | Path | None = None) -> Path | Non
         if candidate.exists() and candidate.is_file():
             return candidate
     return None
+
+def configure_playwright_runtime() -> None:
+    """Настраивает окружение для запуска Playwright: на Windows переключает
+    политику event loop на Proactor (нужна Playwright'у), а также выставляет
+    PLAYWRIGHT_BROWSERS_PATH/PLAYWRIGHT_NODEJS_PATH/PLAYWRIGHT_PACKAGE_ROOT
+    из найденных путей (см. find_playwright_browsers_path/find_node_executable/
+    find_playwright_package_root), если такие пути существуют на диске.
+
+    Каноническая реализация (cluster-02 dedup): раньше эта функция была
+    скопирована байт-в-байт под именами configure_ranobelib_playwright_runtime
+    (main.py) и configure_playwright_runtime (qidian_rulate/workers.py) - оба
+    места уже импортировали этот модуль как api_config, поэтому дубли удалены
+    в пользу единственной реализации здесь.
+    """
+    if sys.platform == "win32" and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
+        try:
+            current_policy = asyncio.get_event_loop_policy()
+        except Exception:
+            current_policy = None
+        if not isinstance(current_policy, asyncio.WindowsProactorEventLoopPolicy):
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+    resolved_paths = {
+        "PLAYWRIGHT_BROWSERS_PATH": find_playwright_browsers_path(),
+        "PLAYWRIGHT_NODEJS_PATH": find_node_executable(),
+        "PLAYWRIGHT_PACKAGE_ROOT": find_playwright_package_root(),
+    }
+    for env_name, resolved_path in resolved_paths.items():
+        if not resolved_path:
+            continue
+        path_obj = Path(resolved_path)
+        if path_obj.exists():
+            os.environ[env_name] = str(path_obj)
 
 def _discover_base_glossary_ids() -> list:
     glossary_dir = get_resource_path("config/base_glossaries")

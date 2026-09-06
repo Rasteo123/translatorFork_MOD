@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-import math
 import re
 from typing import Iterable
 
@@ -13,6 +12,7 @@ from .base import (
     EmbeddingContractError,
     EmbeddingProvider,
     EmbeddingRequest,
+    _positive_finite_timeout,
     validate_and_normalize_batch,
 )
 
@@ -77,15 +77,6 @@ def _optional_config_string(value: object, field_name: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         raise EmbeddingContractError(f"{field_name} must be a nonempty string when configured")
     return value.strip()
-
-
-def _positive_finite_timeout(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
-    timeout = float(value)
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise EmbeddingContractError("timeout_seconds must be a positive finite number")
-    return timeout
 
 
 @dataclass(frozen=True, slots=True)

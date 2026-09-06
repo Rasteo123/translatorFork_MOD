@@ -92,6 +92,37 @@ class BaseApiHandler:
         self._session_timeout = None
         self._session_ssl_context_signature = None
 
+    @staticmethod
+    def _normalize_content(content):
+        """Разбирает content LLM-ответа (строка/список чанков/None/скаляр) в
+        обычную строку. Общая логика для хендлеров, чьи API отдают content
+        как список чанков ({"text": ...} / {"content": ...} /
+        {"type": "output_text", "text": ...})."""
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if text is None:
+                        text = item.get("content")
+                    if text is None and item.get("type") == "output_text":
+                        text = item.get("text")
+                    if text is not None:
+                        parts.append(str(text))
+                elif item is not None:
+                    parts.append(str(item))
+            return "".join(parts)
+
+        if content is None:
+            return ""
+
+        return str(content)
+
     def _proactive_session_init(self):
         # No-op: the session is created lazily and asynchronously on first
         # `await self._get_or_create_session_internal()` (e.g. in call_api).

@@ -417,24 +417,14 @@ class PerplexityBackend:
 
         temp_uploader = PerplexityUploader(self.session, active_token)
         s3_filename = f"CONTEXT_{int(time.time())}.txt"
-        tf = tempfile.NamedTemporaryFile(
-            mode="w+", encoding="utf-8", delete=False, suffix=".txt")
-        temp_path = tf.name
+        logger.info("Uploading large context (%s chars)...", len(text))
         try:
-            tf.write(text)
-            tf.close()
-            logger.info("Uploading large context (%s chars)...", len(text))
-            result = temp_uploader.upload_file(temp_path, s3_filename)
+            result = temp_uploader.upload_text_as_file(
+                text, filename=s3_filename)
             return result.get("url")
         except Exception as e:
             logger.error("File upload failed: %s", e)
             raise
-        finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
 
     def _ask_once(self, *, text: str, model: str, token: str, search_focus: str) -> Dict[str, Any]:
         attachments: List[str] = []

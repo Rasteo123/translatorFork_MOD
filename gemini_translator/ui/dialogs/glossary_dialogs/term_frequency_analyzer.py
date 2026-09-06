@@ -23,6 +23,7 @@ from gemini_translator.ui.widgets.common_widgets import NoScrollSpinBox
 from .custom_widgets import ExpandingTextEditDelegate
 from gemini_translator.ui import theme_manager
 from ...widgets.overlay_tab_widget import install_tab_fade
+from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 
 class TermFrequencyAnalyzerPage(ShellPage):
     page_title = "Частотный анализ"
@@ -548,12 +549,11 @@ class TermFrequencyAnalyzerPage(ShellPage):
             self.result_ready.emit(True)
 
 
-class _TermFrequencyAnalyzerDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(TermFrequencyAnalyzerPage, name)
-
-
-class TermFrequencyAnalyzerDialog(QDialog, metaclass=_TermFrequencyAnalyzerDialogMeta):
+class TermFrequencyAnalyzerDialog(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(TermFrequencyAnalyzerPage),
+):
     """Modal wrapper hosting TermFrequencyAnalyzerPage for the legacy exec() API."""
 
     def __init__(self, glossary_data, epub_path=None, parent=None):
@@ -569,12 +569,6 @@ class TermFrequencyAnalyzerDialog(QDialog, metaclass=_TermFrequencyAnalyzerDialo
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         self.page.reject()

@@ -16,6 +16,56 @@ try:
 except ImportError:
     api_config = None
 
+from ...utils import chapter_identity as chapter_identity_utils
+
+
+def set_checked_all(list_widget, checked: bool, only_visible: bool = False) -> None:
+    """Выставляет CheckState всем элементам списка (cluster-61).
+
+    Каноническая реализация триады select_all/deselect_all/invert_selection,
+    ранее продублированной дословно в ChapterSelectionDialog,
+    glossary_dialogs.versioning.ChapterSelectorWidget и
+    ranobelib/main_window.py.
+
+    ``only_visible=True`` пропускает элементы, скрытые фильтром/поиском
+    (``item.isHidden()``) — так работает «Выбрать все» после фильтрации.
+    ``only_visible=False`` (по умолчанию) применяется ко всем элементам без
+    исключения — так работает «Снять все», которое должно сбрасывать выбор
+    целиком, а не только у видимой части списка (поведение сохранено таким,
+    каким было идентично в обеих исходных копиях).
+    """
+    state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+    list_widget.setUpdatesEnabled(False)
+    try:
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            if only_visible and item.isHidden():
+                continue
+            item.setCheckState(state)
+    finally:
+        list_widget.setUpdatesEnabled(True)
+
+
+def invert_checked(list_widget, only_visible: bool = False) -> None:
+    """Инвертирует CheckState всех элементов списка (cluster-61).
+
+    См. :func:`set_checked_all` — та же каноническая триада.
+    ``only_visible=True`` пропускает скрытые фильтром элементы.
+    """
+    list_widget.setUpdatesEnabled(False)
+    try:
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            if only_visible and item.isHidden():
+                continue
+            current = item.checkState()
+            item.setCheckState(
+                Qt.CheckState.Unchecked if current == Qt.CheckState.Checked
+                else Qt.CheckState.Checked
+            )
+    finally:
+        list_widget.setUpdatesEnabled(True)
+
 
 class ChapterSelectionDialog(QDialog):
     """Диалог для выбора глав из проекта."""
@@ -36,12 +86,6 @@ class ChapterSelectionDialog(QDialog):
         self._init_ui()
         self._restore_selection()
 
-    def _chapter_identity(self, chapter: Dict[str, Any]) -> str:
-        """Возвращает стабильный идентификатор главы для восстановления выбора."""
-        if not isinstance(chapter, dict):
-            return ""
-        return str(chapter.get('path') or chapter.get('name') or "").strip()
-    
     def _init_ui(self):
         layout = QVBoxLayout(self)
         
@@ -109,7 +153,7 @@ class ChapterSelectionDialog(QDialog):
             item = self.chapter_list.item(i)
             chapter = item.data(Qt.ItemDataRole.UserRole)
             chapter_name = str(chapter.get('name') or "").strip()
-            chapter_id = self._chapter_identity(chapter)
+            chapter_id = chapter_identity_utils.chapter_identity(chapter)
             if chapter_name in self.previous_selection or chapter_id in self.previous_selection:
                 item.setCheckState(Qt.CheckState.Checked)
         self._update_stats()
@@ -127,29 +171,17 @@ class ChapterSelectionDialog(QDialog):
     
     def _select_all(self):
         """Выбирает все видимые главы."""
-        for i in range(self.chapter_list.count()):
-            item = self.chapter_list.item(i)
-            if not item.isHidden():
-                item.setCheckState(Qt.CheckState.Checked)
+        set_checked_all(self.chapter_list, True, only_visible=True)
         self._update_stats()
-    
+
     def _deselect_all(self):
         """Снимает выбор со всех глав."""
-        for i in range(self.chapter_list.count()):
-            item = self.chapter_list.item(i)
-            item.setCheckState(Qt.CheckState.Unchecked)
+        set_checked_all(self.chapter_list, False, only_visible=False)
         self._update_stats()
-    
+
     def _invert_selection(self):
         """Инвертирует выбор."""
-        for i in range(self.chapter_list.count()):
-            item = self.chapter_list.item(i)
-            if not item.isHidden():
-                current = item.checkState()
-                item.setCheckState(
-                    Qt.CheckState.Unchecked if current == Qt.CheckState.Checked 
-                    else Qt.CheckState.Checked
-                )
+        invert_checked(self.chapter_list, only_visible=True)
         self._update_stats()
     
     def _update_stats(self):

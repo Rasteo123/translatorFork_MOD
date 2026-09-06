@@ -15,6 +15,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from .epub_tools import EpubCreator
 from .language_tools import LanguageDetector
+# NumericSortItem намеренно НЕ импортируется здесь на верхнем уровне:
+# gemini_translator/utils — слой utils, а gemini_translator.ui.widgets — слой
+# ui с жадным __init__.py (тянет 14 виджет-модулей). Импорт ниже локальный,
+# внутри _refresh_toc_table — единственного места использования.
 
 
 try:
@@ -704,19 +708,6 @@ class ChapterViewerDialog(QDialog):
         self.accept()
 
 
-class SortableTableWidgetItem(QTableWidgetItem):
-    """Ячейка, которая умеет правильно сортировать числа."""
-    def __lt__(self, other):
-        try:
-            # Пытаемся сравнить как числа (удаляя пробелы и запятые)
-            val1 = float(self.text().replace(' ', '').replace(',', '').replace('симв.', ''))
-            val2 = float(other.text().replace(' ', '').replace(',', '').replace('симв.', ''))
-            return val1 < val2
-        except ValueError:
-            # Если не вышло — как текст
-            return super().__lt__(other)
-
-
 class TxtImportWizardDialog(QDialog):
     """
     Мастер импорта TXT (2 этапа).
@@ -977,6 +968,11 @@ class TxtImportWizardDialog(QDialog):
 
     # --- ЛОГИКА СТРАНИЦЫ 2 (TOC) ---
     def _refresh_toc_table(self):
+        # Локальный импорт (см. комментарий у верхних импортов модуля):
+        # utils не должен тянуть весь пакет gemini_translator.ui.widgets на
+        # уровне модуля ради одного класса, нужного только здесь.
+        from ..ui.widgets.table_utils import NumericSortItem
+
         # Отключаем сортировку во время обновления, иначе строки будут прыгать при вставке
         self.toc_table.setSortingEnabled(False)
         self.toc_table.setRowCount(0)
@@ -1000,17 +996,17 @@ class TxtImportWizardDialog(QDialog):
             t_item.setData(Qt.ItemDataRole.UserRole, item_data)
             self.toc_table.setItem(i, 0, t_item)
             
-            # 2. Size (SortableItem для чисел)
-            s_item = SortableTableWidgetItem(f"{size:,}")
+            # 2. Size (NumericSortItem для чисел)
+            s_item = NumericSortItem(f"{size:,}")
             s_item.setData(Qt.ItemDataRole.UserRole, item_data) # Дублируем данные на всякий случай
             self.toc_table.setItem(i, 1, s_item)
-            
-            # 3. Char Index (SortableItem)
-            c_item = SortableTableWidgetItem(f"{item_data['char_idx']:,}")
+
+            # 3. Char Index (NumericSortItem)
+            c_item = NumericSortItem(f"{item_data['char_idx']:,}")
             self.toc_table.setItem(i, 2, c_item)
-            
-            # 4. Line No (SortableItem)
-            l_item = SortableTableWidgetItem(str(current_line_idx + 1))
+
+            # 4. Line No (NumericSortItem)
+            l_item = NumericSortItem(str(current_line_idx + 1))
             self.toc_table.setItem(i, 3, l_item)
             
         # Включаем сортировку обратно

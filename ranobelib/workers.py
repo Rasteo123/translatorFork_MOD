@@ -2,7 +2,6 @@ import logging
 import json
 import os
 import re
-import sys
 import tempfile
 import time
 import traceback
@@ -15,6 +14,8 @@ from pathlib import Path
 from docx import Document
 from playwright.sync_api import sync_playwright
 from PyQt6.QtCore import QThread, pyqtSignal
+
+from qidian_rulate import playwright_launcher
 
 from constants import (
     BROWSER_ARGS,
@@ -89,68 +90,24 @@ RANOBELIB_TAGS = (
 )
 
 
-def _playwright_browser_install_hint() -> str:
-    python_executable = sys.executable or "python"
-    return (
-        "Playwright не нашел совместимый Chromium. "
-        f"Установите браузер командой: \"{python_executable}\" -m playwright install chromium"
-    )
+# Playwright Chromium launcher: каноническая реализация вынесена в
+# qidian_rulate/playwright_launcher.py (cluster-57 dedup). Здесь остаются
+# только тонкие обёртки с site-specific extra_globs (headless_shell) - их
+# имена сохранены для обратной совместимости с существующими тестами и с
+# main.py/api_upload.py, обращающимися к ним по имени через модуль workers.
+_RANOBELIB_EXTRA_CHROMIUM_GLOBS = (
+    "chromium_headless_shell-*/chrome-headless-shell-win*/chrome-headless-shell.exe",
+)
 
 
 def _is_browser_missing_error(error: Exception) -> bool:
-    text = str(error).lower()
-    return (
-        "executable doesn't exist" in text
-        or "playwright install" in text
-        or ("browsertype.launch" in text and "executable" in text)
-        or ("chromium distribution" in text and "not found" in text)
-    )
-
-
-def _candidate_browser_cache_roots() -> list[Path]:
-    roots: list[Path] = []
-    env_value = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if env_value:
-        roots.append(Path(env_value))
-
-    module_root = Path(__file__).resolve().parents[1]
-    for base in (module_root, Path.cwd()):
-        roots.append(Path(base) / "playwright_runtime" / "ms-playwright")
-
-    localappdata = os.environ.get("LOCALAPPDATA")
-    if localappdata:
-        roots.append(Path(localappdata) / "ms-playwright")
-
-    unique = []
-    seen = set()
-    for root in roots:
-        try:
-            resolved = root.resolve()
-        except Exception:
-            resolved = root
-        key = str(resolved).lower()
-        if key not in seen and resolved.exists() and resolved.is_dir():
-            seen.add(key)
-            unique.append(resolved)
-    return unique
-
-
-def _revision_from_path(path: Path) -> int:
-    match = re.search(r"chromium-(\d+)", str(path))
-    if not match:
-        return -1
-    return int(match.group(1))
+    return playwright_launcher.is_browser_missing_error(error)
 
 
 def _find_cached_chromium_executable() -> Path | None:
-    candidates: list[Path] = []
-    for root in _candidate_browser_cache_roots():
-        candidates.extend(root.glob("chromium-*/chrome-win*/chrome.exe"))
-        candidates.extend(root.glob("chromium_headless_shell-*/chrome-headless-shell-win*/chrome-headless-shell.exe"))
-    existing = [candidate for candidate in candidates if candidate.exists() and candidate.is_file()]
-    if not existing:
-        return None
-    return max(existing, key=_revision_from_path)
+    return playwright_launcher._find_cached_chromium_executable(
+        extra_globs=_RANOBELIB_EXTRA_CHROMIUM_GLOBS,
+    )
 
 
 def _launch_persistent_chromium_context(
@@ -161,44 +118,15 @@ def _launch_persistent_chromium_context(
     headless: bool = False,
     log_callback=None,
 ):
-    kwargs = {
-        "user_data_dir": user_data_dir,
-        "headless": headless,
-        "args": BROWSER_ARGS,
-    }
-    if viewport:
-        kwargs["viewport"] = viewport
-    try:
-        return playwright.chromium.launch_persistent_context(**kwargs)
-    except Exception as error:
-        if not _is_browser_missing_error(error):
-            raise
-        if log_callback:
-            log_callback("WARNING", "Playwright Chromium не найден, пробую fallback-браузер.")
-
-    cached_executable = _find_cached_chromium_executable()
-    if cached_executable:
-        try:
-            if log_callback:
-                log_callback("INFO", f"Playwright: запускаю Chromium из {cached_executable}.")
-            return playwright.chromium.launch_persistent_context(
-                **kwargs,
-                executable_path=str(cached_executable),
-            )
-        except Exception as error:
-            if log_callback:
-                log_callback("WARNING", f"Кэшированный Chromium не запустился: {error}")
-
-    for channel in ("chrome", "msedge"):
-        try:
-            if log_callback:
-                log_callback("INFO", f"Playwright: пробую системный браузер {channel}.")
-            return playwright.chromium.launch_persistent_context(**kwargs, channel=channel)
-        except Exception as error:
-            if log_callback:
-                log_callback("WARNING", f"Системный браузер {channel} не запустился: {error}")
-
-    raise RuntimeError(_playwright_browser_install_hint())
+    return playwright_launcher.launch_persistent_chromium_context(
+        playwright,
+        user_data_dir=user_data_dir,
+        args=BROWSER_ARGS,
+        viewport=viewport,
+        headless=headless,
+        extra_globs=_RANOBELIB_EXTRA_CHROMIUM_GLOBS,
+        log_callback=log_callback,
+    )
 
 
 def _has_saved_ranobelib_auth(profile_dir) -> tuple[bool, str | None]:

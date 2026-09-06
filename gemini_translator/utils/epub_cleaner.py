@@ -237,9 +237,6 @@ class EpubCleaner:
     
     def _apply_global_fixes(self, all_files_content: Dict[str, bytes]) -> None:
         """Apply global fixes like link updates and attribute removal."""
-        if not BS4_AVAILABLE:
-            BeautifulSoup = None
-        
         for filename, content_bytes in all_files_content.items():
             modified_content = content_bytes
             

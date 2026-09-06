@@ -9,11 +9,13 @@
 # ---------------------------------------------------------------------------
 
 import os
+import posixpath
 import re
 import uuid
 import mimetypes
 import zipfile
 import html as html_lib
+from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 from PyQt6.QtCore import Qt
 from defusedxml import ElementTree as SafeET
@@ -77,7 +79,10 @@ def _extract_first_epub_heading_text_regex(html_content, include_title=False):
         tag_names.append("title")
 
     for tag_name in tag_names:
-        pattern = rf"<{tag_name}\b[^>]*>(.*?)</{tag_name}>"
+        # \s* перед ">" в закрывающем теге: HTML5 допускает пробелы там
+        # (`</h1 >`), и такой заголовок должен находиться так же, как его
+        # находит BS4-путь extract_first_epub_heading_text.
+        pattern = rf"<{tag_name}\b[^>]*>(.*?)</{tag_name}\s*>"
         match = re.search(pattern, str(html_content or ""), re.IGNORECASE | re.DOTALL)
         if not match:
             continue
@@ -698,52 +703,161 @@ def get_epub_chapter_order(epub_path, return_method=False):
         print(f"[ERROR] Критическая ошибка при чтении порядка глав из {epub_path}: {e}")
         return ([], 'error') if return_method else []
 
+
+def find_opf_path(zip_file):
+    """
+    Определяет путь к content.opf внутри открытого EPUB (zipfile.ZipFile).
+
+    Сначала читает META-INF/container.xml и берёт full-path объявленного
+    там rootfile (источник истины по спецификации EPUB). full-path — это
+    IRI и может быть процентно-кодирован (например, 'OEBPS/My%20Book.opf'):
+    если сырое значение отсутствует в архиве, но раскодированное (unquote)
+    присутствует — возвращается раскодированное; иначе возвращается сырое
+    значение как есть (без гарантии, что оно существует в архиве).
+
+    Если container.xml отсутствует, повреждён или не содержит корректный
+    full-path — ищет любой файл с расширением .opf (регистронезависимо) по
+    всему архиву. Если таких файлов несколько (например, случайно
+    попавшая в архив резервная копия), детерминированно выбирает файл с
+    наименьшей глубиной вложенности (ближе к корню архива; при равенстве —
+    по алфавиту) и печатает предупреждение о неоднозначности, вместо
+    молчаливого выбора первого попавшегося в порядке namelist().
+
+    Поднимает FileNotFoundError, если OPF-файл не найден ни одним способом.
+    """
+    try:
+        container_content = zip_file.read("META-INF/container.xml")
+        container_root = SafeET.fromstring(container_content)
+        for elem in container_root.iter():
+            if elem.tag.endswith("rootfile"):
+                full_path = elem.attrib.get("full-path")
+                if full_path:
+                    if full_path in zip_file.namelist():
+                        return full_path
+                    decoded_full_path = unquote(full_path)
+                    if decoded_full_path in zip_file.namelist():
+                        return decoded_full_path
+                    return full_path
+    except Exception:
+        pass
+
+    candidates = [name for name in zip_file.namelist() if name.lower().endswith(".opf")]
+    if not candidates:
+        raise FileNotFoundError("Не удалось найти OPF-файл (content.opf) внутри EPUB.")
+
+    if len(candidates) > 1:
+        candidates.sort(key=lambda name: (name.count("/"), name))
+        print(
+            "[WARN] Найдено несколько .opf-файлов без валидного container.xml: "
+            f"{candidates}. Выбран ближайший к корню архива: {candidates[0]}."
+        )
+        return candidates[0]
+
+    return candidates[0]
+
+
+def parse_opf_package(zip_file):
+    """
+    Разбирает OPF-пакет найденного (через find_opf_path) EPUB.
+
+    Возвращает кортеж (opf_path, opf_dir, manifest, spine_idrefs):
+      - opf_path: путь к OPF-файлу внутри архива;
+      - opf_dir: директория OPF-файла внутри архива (posixpath);
+      - manifest: словарь {id: href}, href раскодирован через unquote(),
+        но ещё НЕ приведён к пути внутри zip (это делает
+        resolve_manifest_href_to_zip_path, т.к. href задан относительно
+        opf_dir);
+      - spine_idrefs: список idref в порядке элементов <spine>.
+    """
+    opf_path = find_opf_path(zip_file)
+    opf_dir = posixpath.dirname(opf_path)
+    opf_content = zip_file.read(opf_path)
+    opf_root = SafeET.fromstring(opf_content)
+    opf_ns = {'opf': 'http://www.idpf.org/2007/opf'}
+
+    manifest = {}
+    for item in opf_root.findall('.//opf:manifest/opf:item', opf_ns):
+        item_id = item.attrib.get('id')
+        href = item.attrib.get('href')
+        if item_id and href:
+            manifest[item_id] = unquote(href)
+
+    spine_idrefs = []
+    for itemref in opf_root.findall('.//opf:spine/opf:itemref', opf_ns):
+        idref = itemref.attrib.get('idref')
+        if idref:
+            spine_idrefs.append(idref)
+
+    return opf_path, opf_dir, manifest, spine_idrefs
+
+
+def resolve_manifest_href_to_zip_path(zip_file, opf_dir, href):
+    """
+    Строит путь внутри zip для href из OPF-манифеста, заданного относительно
+    opf_dir: приводит обратные слэши к прямым и схлопывает '..'/'.' через
+    posixpath-семантику (а не os.path.join, который на Windows дал бы
+    обратные слэши). Если получившийся путь отсутствует в архиве — пробует
+    найти запись, оканчивающуюся тем же basename (фолбэк для архивов с
+    неточными относительными путями).
+
+    Возвращает путь внутри zip либо None, если ничего не подошло.
+    """
+    normalized_href = href.replace("\\", "/")
+    full_path = posixpath.join(opf_dir, normalized_href) if opf_dir else normalized_href
+
+    parts = full_path.split("/")
+    resolved_parts = []
+    for part in parts:
+        if part == "..":
+            if resolved_parts:
+                resolved_parts.pop()
+        elif part not in ("", "."):
+            resolved_parts.append(part)
+    clean_path = "/".join(resolved_parts)
+
+    namelist = zip_file.namelist()
+    if clean_path in namelist:
+        return clean_path
+
+    basename = posixpath.basename(clean_path)
+    if basename:
+        for name in namelist:
+            if name.endswith(basename):
+                return name
+
+    return None
+
+
+def read_spine_html_order(zip_file):
+    """
+    Каноническая функция порядка html-файлов по OPF spine. Используется и
+    epub_tools._get_spine_order_from_zip, и
+    ui.dialogs.rulate_export.SimpleEpubReader.get_ordered_html_files —
+    вместо двух независимых реализаций одного и того же разбора.
+    """
+    opf_path, opf_dir, manifest, spine_idrefs = parse_opf_package(zip_file)
+
+    ordered_files = []
+    for idref in spine_idrefs:
+        href = manifest.get(idref)
+        if href is None:
+            continue
+        resolved = resolve_manifest_href_to_zip_path(zip_file, opf_dir, href)
+        if resolved is not None:
+            ordered_files.append(resolved)
+
+    return ordered_files
+
+
 def _get_spine_order_from_zip(epub_zip_file):
     """Внутренняя функция для извлечения порядка из открытого zip-файла."""
     try:
-        opf_path = None
-        opf_files = [f for f in epub_zip_file.namelist() if f.lower().endswith('.opf')]
-        
-        if len(opf_files) == 1:
-            opf_path = opf_files[0]
-        elif len(opf_files) > 1:
-            container_content = epub_zip_file.read('META-INF/container.xml')
-            root = SafeET.fromstring(container_content)
-            ns = {'cn': 'urn:oasis:names:tc:opendocument:xmlns:container'}
-            opf_path = root.find('.//cn:rootfile', ns).attrib['full-path']
-        
-        if not opf_path:
-            raise FileNotFoundError("OPF файл не найден.")
-
-        opf_dir = os.path.dirname(opf_path)
-        opf_content = epub_zip_file.read(opf_path)
-        opf_root = SafeET.fromstring(opf_content)
-        opf_ns = {'opf': 'http://www.idpf.org/2007/opf'}
-
-        manifest_items = {}
-        for item in opf_root.findall('.//opf:manifest/opf:item', opf_ns):
-            item_id = item.attrib.get('id')
-            href = item.attrib.get('href')
-            if item_id and href:
-                full_href = os.path.join(opf_dir, href)
-                manifest_items[item_id] = full_href
-
-        spine_order = []
-        for itemref in opf_root.findall('.//opf:spine/opf:itemref', opf_ns):
-            idref = itemref.attrib.get('idref')
-            if idref in manifest_items:
-                spine_order.append(manifest_items[idref])
-        
-        return spine_order
+        return read_spine_html_order(epub_zip_file)
     except (KeyError, ET.ParseError, FileNotFoundError, AttributeError) as e:
         print(f"[WARN] Не удалось прочитать spine из EPUB: {e}.")
         return None
-    
-    
-    
-    
-    
-    
+
+
 def calculate_potential_output_size(html_content, is_cjk):
     """
     Вычисляет потенциальный размер ответа модели на основе содержимого HTML.

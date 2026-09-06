@@ -13,22 +13,21 @@ from ...core.consistency_engine import (
     normalize_consistency_confidences,
 )
 from ...utils.power_inhibitor import PREVENT_SLEEP_SETTING_KEY, PowerInhibitor
+from ...utils.translation_versions import select_target_translation_version
 
 
 def choose_preferred_translation_rel_path(versions: dict) -> str | None:
+    """Совместимость с ui/dialogs/setup.py, который импортирует это имя, но
+    нигде его не вызывает (мёртвый импорт вне зоны ответственности этой
+    правки). Реальный выбор версии перевода главы теперь идёт через
+    канонический select_target_translation_version (см.
+    load_project_chapters_for_consistency ниже); эта обёртка оставлена
+    только ради обратной совместимости импорта и не используется в этом
+    модуле."""
     if not isinstance(versions, dict) or not versions:
         return None
-
-    if versions.get(""):
-        return versions.get("")
-    if versions.get("_validated.html"):
-        return versions.get("_validated.html")
-
-    for suffix, rel_path in versions.items():
-        if suffix != "filtered" and rel_path:
-            return rel_path
-
-    return next(iter(versions.values()), None)
+    rel_path, _is_validated = select_target_translation_version(versions, "")
+    return rel_path
 
 
 def load_project_chapters_for_consistency(
@@ -68,7 +67,7 @@ def load_project_chapters_for_consistency(
     for internal_path in all_originals:
         normalized_internal_path = str(internal_path or "").replace("\\", "/")
         versions = project_manager.get_versions_for_original(internal_path)
-        rel_path = choose_preferred_translation_rel_path(versions)
+        rel_path, _is_validated = select_target_translation_version(versions, project_folder)
         if not rel_path:
             continue
 

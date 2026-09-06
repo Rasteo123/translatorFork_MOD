@@ -2,6 +2,7 @@
 
 import requests
 import json
+from .. import config as api_config
 from ..base import BaseApiHandler
 from ..errors import (
     ContentFilterError, NetworkError, LocationBlockedError, 
@@ -86,22 +87,6 @@ class LocalApiHandler(BaseApiHandler):
         self._drop_http_session()
         await super()._close_thread_session_internal()
 
-    @staticmethod
-    def _coerce_positive_int(value):
-        if isinstance(value, bool) or value is None:
-            return None
-        try:
-            if isinstance(value, str):
-                normalized = value.strip().replace(" ", "").replace("_", "").replace(",", "")
-                if not normalized.isdigit():
-                    return None
-                number = int(normalized)
-            else:
-                number = int(value)
-        except (TypeError, ValueError):
-            return None
-        return number if number > 0 else None
-
     def call_api(self, prompt, log_prefix, allow_incomplete=False, use_stream=True, debug=False, max_output_tokens=None):
         """
         СИНХРОННАЯ реализация вызова.
@@ -127,11 +112,11 @@ class LocalApiHandler(BaseApiHandler):
         if temperature is not None:
             payload["temperature"] = temperature
         
-        requested_max_tokens = self._coerce_positive_int(max_output_tokens)
+        requested_max_tokens = api_config._coerce_positive_int(max_output_tokens)
         if requested_max_tokens is not None:
             payload["max_tokens"] = requested_max_tokens
         elif allow_incomplete:
-            configured_max_tokens = self._coerce_positive_int(
+            configured_max_tokens = api_config._coerce_positive_int(
                 self.worker.model_config.get("max_output_tokens")
             )
             if configured_max_tokens is not None:

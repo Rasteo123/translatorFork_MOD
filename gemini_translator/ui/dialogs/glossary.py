@@ -52,6 +52,7 @@ from .glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 
 # Утилиты и API
 from ..shell import ShellPage
+from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 from ...api import config as api_config
 from ...utils.settings import SettingsManager
 from ...utils.language_tools import (
@@ -3907,12 +3908,11 @@ class GlossaryManagerPage(ShellPage):
 # --- Wrapper and re-export follow below ---
 
 
-class _GlossaryDialogMeta(type(QDialog)):
-    def __getattr__(cls, name):
-        return getattr(GlossaryManagerPage, name)
-
-
-class MainWindow(QDialog, metaclass=_GlossaryDialogMeta):
+class MainWindow(
+    PageDialogProxyMixin,
+    QDialog,
+    metaclass=make_page_delegating_meta(GlossaryManagerPage),
+):
     """Thin modal wrapper hosting GlossaryManagerPage (preserves the old QDialog API + result)."""
 
     @property
@@ -3939,12 +3939,6 @@ class MainWindow(QDialog, metaclass=_GlossaryDialogMeta):
 
     def _on_result(self, accepted: bool):
         self.done(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected)
-
-    def __getattr__(self, name):
-        page = self.__dict__.get("page")
-        if page is not None:
-            return getattr(page, name)
-        raise AttributeError(name)
 
     def closeEvent(self, event):
         # MOVED from the page; self.<x> → self.page.<x>

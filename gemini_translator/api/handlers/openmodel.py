@@ -5,6 +5,7 @@ import asyncio
 import json
 import traceback
 
+from .. import config as api_config
 from ..base import BaseApiHandler
 from ..errors import (
     ContentFilterError,
@@ -59,28 +60,12 @@ class OpenModelApiHandler(BaseApiHandler):
             return f"{url}/messages"
         return f"{url}{cls.DEFAULT_MESSAGES_PATH}"
 
-    @staticmethod
-    def _coerce_positive_int(value):
-        if isinstance(value, bool) or value is None:
-            return None
-        try:
-            if isinstance(value, str):
-                normalized = value.strip().replace(" ", "").replace("_", "").replace(",", "")
-                if not normalized.isdigit():
-                    return None
-                number = int(normalized)
-            else:
-                number = int(value)
-        except (TypeError, ValueError):
-            return None
-        return number if number > 0 else None
-
     def _resolve_max_tokens(self, allow_incomplete=False, max_output_tokens=None):
-        requested_max_tokens = self._coerce_positive_int(max_output_tokens)
+        requested_max_tokens = api_config._coerce_positive_int(max_output_tokens)
         if requested_max_tokens is not None:
             return requested_max_tokens
 
-        configured_max_tokens = self._coerce_positive_int(
+        configured_max_tokens = api_config._coerce_positive_int(
             self.worker.model_config.get("max_output_tokens")
         )
         if configured_max_tokens is None:
@@ -112,32 +97,6 @@ class OpenModelApiHandler(BaseApiHandler):
 
         return payload
 
-    def _extract_text_from_content(self, content):
-        if isinstance(content, str):
-            return content
-
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    text = item.get("text")
-                    if text is None:
-                        text = item.get("content")
-                    if text is None and item.get("type") == "output_text":
-                        text = item.get("text")
-                    if text is not None:
-                        parts.append(str(text))
-                elif item is not None:
-                    parts.append(str(item))
-            return "".join(parts)
-
-        if content is None:
-            return ""
-
-        return str(content)
-
     def _extract_text_from_result(self, result, allow_incomplete=False):
         candidates = [result]
         if isinstance(result, dict):
@@ -151,7 +110,7 @@ class OpenModelApiHandler(BaseApiHandler):
                 continue
 
             content = candidate.get("content")
-            text = self._extract_text_from_content(content).strip()
+            text = self._normalize_content(content).strip()
             if text:
                 stop_reason = candidate.get("stop_reason")
                 if stop_reason == "max_tokens" and not allow_incomplete:
@@ -164,7 +123,7 @@ class OpenModelApiHandler(BaseApiHandler):
 
             for key in ("output_text", "generated_text", "text"):
                 if key in candidate:
-                    text = self._extract_text_from_content(candidate.get(key)).strip()
+                    text = self._normalize_content(candidate.get(key)).strip()
                     if text:
                         return text
 

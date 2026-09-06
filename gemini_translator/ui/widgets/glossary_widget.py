@@ -25,6 +25,7 @@ from ..dialogs.glossary import (
 )
 from ..dialogs.glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 from .ancestor_utils import find_ancestor_by_class_name
+from ...utils.document_importer import set_all_checked
 from ...utils.settings import SettingsManager
 from ...api import config as api_config
 from collections import defaultdict
@@ -225,11 +226,7 @@ class GeneratedTermsReviewDialog(QDialog):
         layout.addWidget(self.button_box)
 
     def _set_all_checked(self, checked: bool):
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item:
-                item.setCheckState(state)
+        set_all_checked(self.table, checked)
 
     def accept(self):
         current = self.table.currentItem()

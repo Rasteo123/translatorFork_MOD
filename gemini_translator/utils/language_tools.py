@@ -35,9 +35,10 @@ except ImportError:
     OpenCC = None
     OPENCC_AVAILABLE = False
 
+from . import cjk_ranges
+
 STOP_WORDS = {'the', 'a', 'an', 'to', 'in', 'on', 'of', 'for', 'with', 'am', 'i'}
 CJK_STOP_WORDS = {'的', '是', '一', '不', '人', '我', '了', '在', '有', '和', '之'}
-CJK_CHAR_RE = re.compile(r'[一-鿿぀-ヿ가-힯]')
 MORPHOLOGY_SUFFIXES_TO_IGNORE = ["'s", "es", "s"]
 # Определяем пороги
 ORDERED_SEARCH_THRESHOLD = 99      # Уровень 2: Порядок важен, но прощаем морфологию
@@ -81,7 +82,8 @@ def _glossary_text(value):
     return "" if value is None else str(value).strip()
 
 
-_HAN_RE = re.compile(r'[\u4e00-\u9fff]+')
+# cluster-32 dedup (раунд 2): было _HAN_RE = re.compile(r'[一-鿿]+') — тот
+# же диапазон + квантификатор, что и cjk_ranges.CHINESE_CHAR_RE.
 _OPENCC_CONVERTERS = {}
 
 
@@ -104,7 +106,7 @@ def get_chinese_script_variants(text):
     variants = [value]
     seen = {value}
 
-    if not value or not _HAN_RE.search(value):
+    if not value or not cjk_ranges.CHINESE_CHAR_RE.search(value):
         return variants
 
     for config_name in ("t2s", "s2t"):
@@ -128,20 +130,19 @@ class LanguageDetector:
     @staticmethod
     def contains_chinese(text):
         """Проверяет, содержит ли текст китайские иероглифы"""
-        chinese_pattern = re.compile(r'[\u4e00-\u9fff]+')
-        return bool(chinese_pattern.search(text))
-    
+        # cluster-32 dedup: диапазон теперь один на весь проект —
+        # gemini_translator.utils.cjk_ranges.CHINESE_CHAR_RE.
+        return bool(cjk_ranges.CHINESE_CHAR_RE.search(text))
+
     @staticmethod
     def contains_japanese(text):
         """Проверяет, содержит ли текст японские символы (хирагана, катакана)"""
-        japanese_pattern = re.compile(r'[\u3040-\u309f\u30a0-\u30ff]+')
-        return bool(japanese_pattern.search(text))
-    
+        return bool(cjk_ranges.JAPANESE_CHAR_RE.search(text))
+
     @staticmethod
     def contains_korean(text):
         """Проверяет, содержит ли текст корейские символы (хангыль)"""
-        korean_pattern = re.compile(r'[\uac00-\ud7af]+')
-        return bool(korean_pattern.search(text))
+        return bool(cjk_ranges.KOREAN_CHAR_RE.search(text))
     
     @staticmethod
     def is_cjk_text(text):
@@ -900,7 +901,7 @@ class SmartGlossaryFilter:
     @staticmethod
     def _is_masked_single_char(term, residual_text):
         """Односимвольный CJK-термин, не встречающийся вне более длинных терминов."""
-        if len(term) != 1 or not CJK_CHAR_RE.match(term):
+        if len(term) != 1 or not cjk_ranges.CORE_CJK_CHAR_RE.match(term):
             return False
         return term not in residual_text
 

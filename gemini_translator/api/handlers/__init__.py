@@ -26,12 +26,12 @@ if __name__ != "__main__":
 
     __all__ = list(_LAZY_HANDLER_MODULES)
 
+    # Общее тело PEP 562 __getattr__ и self-maintenance скрипта вынесено в
+    # lazy_module.py — оно было продублировано дословно с servers/__init__.py.
+    from gemini_translator.api import lazy_module
+
     def __getattr__(name):
-        module_path = _LAZY_HANDLER_MODULES.get(name)
-        if module_path is None:
-            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-        import importlib
-        value = getattr(importlib.import_module(module_path, __name__), name)
+        value = lazy_module.lazy_attr(name, _LAZY_HANDLER_MODULES, __name__)
         globals()[name] = value  # кэш: дальше атрибут отдаётся без __getattr__
         return value
 
@@ -40,90 +40,39 @@ if __name__ != "__main__":
 # =============================================================================
 if __name__ == "__main__":
     import os
-    import ast
     import sys
 
-    # Маркер, разделяющий авто-код и логику скрипта
-    SEPARATOR = "# ============================================================================="
+    # Бутстрап sys.path: при запуске `python __init__.py` sys.path[0] — это
+    # сама папка handlers/, а не корень репозитория, и пакет
+    # gemini_translator не установлен как дистрибутив в окружении. Без этого
+    # следующий импорт падает с ModuleNotFoundError.
+    _repo_root = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+    )
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+
+    from gemini_translator.api import lazy_module
 
     def find_handlers(directory):
         """Сканирует папку и ищет классы, заканчивающиеся на 'ApiHandler'."""
-        handlers = [] # (filename_no_ext, class_name)
-        
-        print(f"🔍 Сканирование директории: {directory}")
-        
-        for filename in sorted(os.listdir(directory)):
-            if filename.endswith(".py") and filename != "__init__.py":
-                filepath = os.path.join(directory, filename)
-                
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        tree = ast.parse(f.read())
-                        
-                    for node in tree.body:
-                        # Ищем классы: class XyzApiHandler(...)
-                        if isinstance(node, ast.ClassDef) and node.name.endswith("ApiHandler"):
-                            if node.name == "BaseApiHandler": continue
-                                
-                            module_name = filename[:-3] # убираем .py
-                            handlers.append((module_name, node.name))
-                            print(f"   ✅ Найден: {node.name} в {filename}")
-                            
-                except Exception as e:
-                    print(f"   ⚠️ Ошибка чтения {filename}: {e}")
-        
-        return handlers
+        return lazy_module.find_classes(
+            directory,
+            class_suffix="ApiHandler",
+            base_class_name="BaseApiHandler",
+        )
+
+    def _on_missing_separator():
+        print("❌ ОШИБКА: Не найден разделитель секций в файле __init__.py!")
 
     def regenerate_self(handlers):
         """Читает себя, сохраняет нижнюю часть и генерирует новую верхнюю."""
-        current_file = os.path.abspath(__file__)
-        
-        with open(current_file, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        if SEPARATOR not in content:
-            print("❌ ОШИБКА: Не найден разделитель секций в файле __init__.py!")
-            return
-
-        # Сохраняем скрипт (нижнюю часть)
-        script_logic = content[content.find(SEPARATOR):]
-
-        # Генерируем новую верхнюю часть
-        lines = []
-        lines.append("# -----------------------------------------------------------------------------")
-        lines.append("# AUTO-GENERATED IMPORTS - DO NOT EDIT THIS SECTION MANUALLY")
-        lines.append(f"# Run this file as a script to update imports: python {os.path.basename(current_file)}")
-        lines.append("# -----------------------------------------------------------------------------")
-        lines.append("")
-        
-        # ВАЖНОЕ ИЗМЕНЕНИЕ: генерируем ЛЕНИВУЮ секцию (PEP 562) — импорт
-        # пакета не должен тянуть тяжёлые зависимости хендлеров.
-        lines.append('if __name__ != "__main__":')
-        lines.append("    _LAZY_HANDLER_MODULES = {")
-        for module, classname in handlers:
-            lines.append(f'        "{classname}": ".{module}",')
-        lines.append("    }")
-        lines.append("")
-        lines.append("    __all__ = list(_LAZY_HANDLER_MODULES)")
-        lines.append("")
-        lines.append("    def __getattr__(name):")
-        lines.append("        module_path = _LAZY_HANDLER_MODULES.get(name)")
-        lines.append("        if module_path is None:")
-        lines.append("            raise AttributeError(f\"module {__name__!r} has no attribute {name!r}\")")
-        lines.append("        import importlib")
-        lines.append("        value = getattr(importlib.import_module(module_path, __name__), name)")
-        lines.append("        globals()[name] = value")
-        lines.append("        return value")
-        lines.append("")
-        lines.append("")
-
-        # Собираем и пишем
-        new_content = "\n".join(lines) + script_logic
-
-        with open(current_file, "w", encoding="utf-8") as f:
-            f.write(new_content)
-            
-        print(f"✨ Файл {os.path.basename(current_file)} успешно обновлен!")
+        lazy_module.regenerate_self(
+            current_file=os.path.abspath(__file__),
+            classes=handlers,
+            registry_name="_LAZY_HANDLER_MODULES",
+            on_missing_separator=_on_missing_separator,
+        )
 
     # --- ЗАПУСК ---
     current_dir = os.path.dirname(os.path.abspath(__file__))

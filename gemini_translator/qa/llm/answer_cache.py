@@ -19,17 +19,12 @@ never talk it into anything.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
-import json
-import os
-from pathlib import Path
-import re
-import time
+
+from ..disk_cache import DEFAULT_TTL_SECONDS, DiskTtlCache
 
 
-DEFAULT_TTL_SECONDS = 14 * 24 * 3600
-_SAFE_NAME = re.compile(r"[^a-f0-9]+")
+__all__ = ("DEFAULT_TTL_SECONDS", "QaAnswerCache", "answer_digest")
 
 
 def answer_digest(
@@ -45,62 +40,21 @@ def answer_digest(
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
-class QaAnswerCache:
-    """Store answers under a root the user can delete at any time."""
+class QaAnswerCache(DiskTtlCache):
+    """Store answers under a root the user can delete at any time.
 
-    def __init__(self, root: Path | str, ttl_seconds: float = DEFAULT_TTL_SECONDS) -> None:
-        self.root = Path(root)
-        self.ttl_seconds = float(ttl_seconds)
+    The disk mechanics (TTL, atomic write, path layout, pruning an expired
+    file on read) live in DiskTtlCache; this class only knows that the
+    payload's one interesting field is called "answer".
+    """
 
     def get(self, digest: str) -> object | None:
         """Return a stored answer, or nothing when it is missing, old, or broken."""
-        path = self._path(digest)
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        stored_at = payload.get("stored_at")
-        if not isinstance(stored_at, (int, float)):
-            return None
-        if self.ttl_seconds > 0 and time.time() - stored_at > self.ttl_seconds:
-            # Просроченная запись не должна пережить TTL физически на диске:
-            # иначе каталог кэша растёт без ограничения, ведь put() только
-            # добавляет файлы (qa-b/bugs/3-qa-disk-caches-never-pruned).
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        payload = self.get_raw(digest)
+        if payload is None:
             return None
         return payload.get("answer")
 
     def put(self, digest: str, answer: object) -> None:
         """Store one answer atomically; a failure here is never fatal."""
-        try:
-            body = json.dumps(
-                {
-                    "stored_at": time.time(),
-                    "created_at": datetime.now(timezone.utc).isoformat(
-                        timespec="seconds"
-                    ),
-                    "answer": answer,
-                },
-                ensure_ascii=False,
-            )
-        except (TypeError, ValueError):
-            return
-        path = self._path(digest)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_name(path.name + ".tmp")
-            temporary.write_text(body, encoding="utf-8")
-            os.replace(temporary, path)
-        except OSError:
-            return
-
-    def _path(self, digest: str) -> Path:
-        safe = _SAFE_NAME.sub("", str(digest or ""))
-        if len(safe) < 8:
-            raise ValueError("answer digest must be a sha256 hex string")
-        return self.root / safe[:2] / f"{safe}.json"
+        self.put_raw(digest, {"answer": answer})
