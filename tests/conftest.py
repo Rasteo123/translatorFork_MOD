@@ -48,3 +48,16 @@ _NativeQSettings.setPath(
     _settings_dir,
 )
 QtCore.QSettings = _IsolatedQSettings
+
+
+def pytest_runtest_logreport(report):
+    """Печатать упавший тест сразу, минуя захват вывода.
+
+    Итоговая сводка pytest появляется только в конце прогона; если процесс
+    позже аварийно завершится (например, qFatal в Qt на Windows CI), имена
+    упавших тестов пропадают вместе с ней."""
+    if report.failed:
+        import sys
+
+        sys.__stderr__.write(f"\n[FAILED] {report.nodeid} ({report.when})\n")
+        sys.__stderr__.flush()

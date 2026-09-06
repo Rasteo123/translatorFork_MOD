@@ -93,6 +93,10 @@ class RedirectQueueRescueCrosstalkTests(unittest.TestCase):
         self.addCleanup(self.redirect_anchor.close)
         self.addCleanup(self.main_tm.deleteLater)
         self.addCleanup(self.redirect_tm.deleteLater)
+        # Cleanup-и идут в обратном порядке: сначала штатно гасим фоновый кэш
+        # (таймер + работающий TaskDBWorker), и только потом закрываем БД.
+        self.addCleanup(self.main_tm.shutdown)
+        self.addCleanup(self.redirect_tm.shutdown)
 
     def test_redirect_finish_does_not_reset_unrelated_main_in_progress_tasks(self):
         """Направление А (главный сценарий бага): финиш redirect-сессии не

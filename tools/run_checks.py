@@ -61,6 +61,12 @@ def _run(label: str, command: list[str]) -> int:
     creationflags = _subprocess_creationflags()
     if creationflags:
         run_kwargs["creationflags"] = creationflags
+    env = dict(os.environ)
+    # Qt на Windows по умолчанию шлёт qWarning/qFatal в отладчик, а не в
+    # stderr — без этого аварийный выход pytest остаётся немым в логе CI.
+    env.setdefault("QT_FORCE_STDERR_LOGGING", "1")
+    env.setdefault("PYTHONFAULTHANDLER", "1")
+    run_kwargs["env"] = env
     completed = subprocess.run(command, **run_kwargs)
     output = completed.stdout or ""
     if output:

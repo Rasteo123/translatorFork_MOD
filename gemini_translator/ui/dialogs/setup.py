@@ -375,6 +375,18 @@ class ChapterTextPreviewDialog(QDialog):
 
 
 
+
+def _shutdown_task_manager_quietly(task_manager) -> None:
+    """Штатно выключить фоновый кэш менеджера очереди перед закрытием его БД
+    (см. ChapterQueueManager.shutdown); терпит заглушки без такого метода."""
+    shutdown = getattr(task_manager, "shutdown", None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:
+            pass
+
+
 class InitialSetupPage(ShellPage):
     """
     Единый диалог для настройки перевода.
@@ -5290,6 +5302,7 @@ class InitialSetupPage(ShellPage):
             if task_manager_session_finished_filter is not None:
                 self.bus.unsubscribe('session_finished', task_manager_session_finished_filter)
             if task_manager is not None:
+                _shutdown_task_manager_quietly(task_manager)
                 task_manager.deleteLater()
             if db_anchor is not None:
                 try:
@@ -5406,6 +5419,7 @@ class InitialSetupPage(ShellPage):
             if thread is not None:
                 thread.quit()
                 thread.wait(3000)
+            _shutdown_task_manager_quietly(runner.get('task_manager'))
             db_anchor = runner.get('db_anchor')
             if db_anchor is not None:
                 try:
@@ -5509,6 +5523,7 @@ class InitialSetupPage(ShellPage):
             if thread:
                 thread.quit()
                 thread.wait(3000)
+            _shutdown_task_manager_quietly(task_manager)
             db_anchor = runner.get('db_anchor')
             if db_anchor:
                 db_anchor.close()

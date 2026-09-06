@@ -131,6 +131,8 @@ class RealStartParallelFilterRedirectWiringTests(unittest.TestCase):
         self.main_tm, self.main_anchor = _make_main_queue(self.bus)
         self.addCleanup(self.main_anchor.close)
         self.addCleanup(self.main_tm.deleteLater)
+        # Cleanup-и идут в обратном порядке: сначала гасим фоновый кэш, потом БД.
+        self.addCleanup(self.main_tm.shutdown)
         self.harness = _ParallelRedirectWiringHarness(self.bus, self.main_tm)
 
     def _start(self, chapters, run_label):
@@ -292,6 +294,8 @@ class StartParallelFilterRedirectRollbackTests(unittest.TestCase):
         self.main_tm, self.main_anchor = _make_main_queue(self.bus)
         self.addCleanup(self.main_anchor.close)
         self.addCleanup(self.main_tm.deleteLater)
+        # Cleanup-и идут в обратном порядке: сначала гасим фоновый кэш, потом БД.
+        self.addCleanup(self.main_tm.shutdown)
         self.harness = _ParallelRedirectWiringHarness(self.bus, self.main_tm)
 
     def test_failure_after_guard_install_rolls_back_subscriptions_and_guard(self):

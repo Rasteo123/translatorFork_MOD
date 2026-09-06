@@ -279,6 +279,7 @@ class ChapterQueueManager(QObject):
         self._is_updating_cache = False
         self._cache_update_worker = None
         self._cache_failure_streak = 0
+        self._shut_down = False
 
         # Dirty-tracking state for active-session energy reduction.
         # _dirty_state_lock guards _dirty_task_ids and _structural_dirty only.
@@ -1779,7 +1780,35 @@ class ChapterQueueManager(QObject):
         СЛОТ, который выполняется в ГЛАВНОМ потоке.
         Безопасно запускает таймер для отложенного обновления кэша.
         """
+        if getattr(self, "_shut_down", False):
+            return
         self._update_timer.start()
+
+    @property
+    def is_shut_down(self) -> bool:
+        return bool(getattr(self, "_shut_down", False))
+
+    def shutdown(self, wait_ms: int = 5000) -> None:
+        """Штатно выключить фоновое обновление кэша перед закрытием БД.
+
+        Останавливает таймер, дожидается работающего TaskDBWorker и запрещает
+        новые обновления: после этого закрывать соединение-якорь безопасно —
+        ни один поток больше не полезет в базу. Идемпотентно."""
+        self._shut_down = True
+        try:
+            self._update_timer.stop()
+        except RuntimeError:
+            pass  # C++-объект таймера уже удалён вместе с менеджером
+        worker = self._cache_update_worker
+        self._cache_update_worker = None
+        self._is_updating_cache = False
+        self._in_flight_snapshot = None
+        if worker is not None:
+            try:
+                worker.wait(wait_ms)
+            except RuntimeError:
+                pass
+            TaskDBWorker._inflight.discard(worker)
     
     def notify_task_dirty(self, task_id):
         """Mark a single task as dirty. Thread-safe: callable from worker threads.
@@ -1809,7 +1838,7 @@ class ChapterQueueManager(QObject):
         Snapshots the dirty state under lock, resets it, and hands the snapshot
         to the worker. _in_flight_snapshot keeps the snapshot retrievable so
         _on_cache_updated can restore the dirty ids on worker failure."""
-        if self._is_updating_cache:
+        if self._is_updating_cache or getattr(self, "_shut_down", False):
             return
         with self._dirty_state_lock:
             snapshot = {
@@ -1931,6 +1960,8 @@ class ChapterQueueManager(QObject):
                     f"{streak} ошибок подряд; возобновится при следующем изменении очереди."
                 )
             return
+        if getattr(self, "_shut_down", False):
+            return
         self._update_timer.start()
 
     def _restart_timer_if_dirty(self):
@@ -1942,7 +1973,7 @@ class ChapterQueueManager(QObject):
         not spin continuously and overheat the CPU."""
         with self._dirty_state_lock:
             needs_followup = bool(self._dirty_task_ids) or self._structural_dirty
-        if not needs_followup:
+        if not needs_followup or getattr(self, "_shut_down", False):
             return
         if self._session_active:
             elapsed_ns = time.monotonic_ns() - self._last_cache_update_ns

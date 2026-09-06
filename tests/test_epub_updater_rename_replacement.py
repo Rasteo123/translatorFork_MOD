@@ -93,9 +93,9 @@ def test_links_manifest_and_toc_follow_renamed_chapters(tmp_path):
         assert "Глава 3" in ncx
 
 
-@pytest.mark.performance
-def test_renaming_every_chapter_of_a_big_book_is_not_quadratic(tmp_path):
-    count = 1000
+def _export_renamed_book(tmp_path, count: int) -> float:
+    tmp_path = os.path.join(tmp_path, f"run_{count}")
+    os.makedirs(tmp_path, exist_ok=True)
     filler = ("<p>" + ("Довольно длинный абзац перевода, чтобы глава весила как настоящая. " * 60) + "</p>") * 10
     chapters = [
         (f"ch{i:04d}.xhtml", _chapter(f"ch{i:04d}.xhtml", f"ch{(i + 1) % count:04d}.xhtml", f"Глава {i}", filler))
@@ -115,7 +115,21 @@ def test_renaming_every_chapter_of_a_big_book_is_not_quadratic(tmp_path):
     started = time.perf_counter()
     updater.update_and_save(output)
     elapsed = time.perf_counter() - started
-    assert elapsed < 3.0, f"экспорт {count} переименованных глав занял {elapsed:.1f} с"
     with zipfile.ZipFile(output) as archive:
         opf = archive.read("OEBPS/content.opf").decode("utf-8")
-        assert "href='tr0999.xhtml'" in opf and "href='ch0999.xhtml'" not in opf
+        last = count - 1
+        assert f"href='tr{last:04d}.xhtml'" in opf and f"href='ch{last:04d}.xhtml'" not in opf
+    return elapsed
+
+
+@pytest.mark.performance
+def test_renaming_every_chapter_of_a_big_book_is_not_quadratic(tmp_path):
+    # Сравниваем масштабирование, а не абсолютное время: на нагруженном CI
+    # (Windows-раннер, параллельные прогоны) секунды гуляют в разы, а
+    # соотношение 4× глав остаётся ~4× для линейного экспорта и ~16× для
+    # квадратичного (прежняя реализация делала N проходов regex по OPF/NCX).
+    small = _export_renamed_book(tmp_path, 250)
+    big = _export_renamed_book(tmp_path, 1000)
+    assert big < 8 * max(small, 0.05) + 0.5, (
+        f"экспорт 1000 переименованных глав занял {big:.2f} с против {small:.2f} с для 250 — рост хуже линейного"
+    )
