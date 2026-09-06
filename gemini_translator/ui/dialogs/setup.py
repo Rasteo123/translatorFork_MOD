@@ -51,6 +51,7 @@ from ...core.task_manager import ChapterQueueManager, TaskDBWorker, tuple_deseri
 from ._shared import session_and_tasks
 from ...utils.settings import SettingsManager
 from ...utils.epub_tools import (
+    _extract_first_epub_heading_text_regex,
     extract_number_from_path,
     calculate_potential_output_size,
     estimate_epub_chapter_input_size,
@@ -1805,7 +1806,74 @@ class InitialSetupPage(ShellPage):
         self._process_selected_file()
 
 
-    def _process_selected_file(self, pre_selected_chapters=None):
+    @staticmethod
+    def _read_epub_chapter_titles(epub_path, chapter_paths):
+        titles = []
+        if not epub_path or not chapter_paths or not os.path.exists(epub_path):
+            return titles
+
+        try:
+            with zipfile.ZipFile(epub_path, 'r') as epub_zip:
+                for chapter_path in chapter_paths:
+                    title = ""
+                    try:
+                        content = epub_zip.read(chapter_path).decode('utf-8', errors='ignore')
+                    except (KeyError, OSError):
+                        content = ""
+                    if content:
+                        # cluster-41: EpubHtmlSelectorDialog._extract_h1_title удалён,
+                        # канон — utils.epub_tools._extract_first_epub_heading_text_regex.
+                        title = _extract_first_epub_heading_text_regex(content)
+                    titles.append(title)
+        except (OSError, zipfile.BadZipFile) as exc:
+            print(f"[WARN] Не удалось прочитать названия глав из '{epub_path}': {exc}")
+        return titles
+
+    def _collect_previous_translated_chapter_titles(self, epub_path, chapter_paths):
+        project_manager = self.project_manager
+        if not (
+            project_manager
+            and hasattr(project_manager, 'get_full_map')
+            and chapter_paths
+        ):
+            return []
+
+        try:
+            translation_map = project_manager.get_full_map()
+        except Exception as exc:
+            print(f"[WARN] Не удалось прочитать карту прошлой пачки: {exc}")
+            return []
+
+        translated_chapters = [
+            chapter_path
+            for chapter_path in chapter_paths
+            if translation_map.get(str(chapter_path).replace('\\', '/'))
+        ]
+        return self._read_epub_chapter_titles(epub_path, translated_chapters)
+
+    @classmethod
+    def _chapters_after_previous_translated_titles(
+        cls,
+        epub_path,
+        chapter_paths,
+        previous_translated_chapter_titles,
+    ):
+        if not previous_translated_chapter_titles:
+            return list(chapter_paths or [])
+        current_titles = cls._read_epub_chapter_titles(epub_path, chapter_paths)
+        cutoff = EpubHtmlSelectorDialog.find_previous_title_cutoff(
+            current_titles,
+            previous_translated_chapter_titles,
+        )
+        if cutoff is None:
+            return list(chapter_paths or [])
+        return list(chapter_paths or [])[cutoff + 1:]
+
+    def _process_selected_file(
+        self,
+        pre_selected_chapters=None,
+        previous_translated_chapter_titles=None,
+    ):
         """
         Главная функция для работы с EPUB. Финальная версия с правильной последовательностью.
         """
@@ -1819,7 +1887,8 @@ class InitialSetupPage(ShellPage):
                 epub_filename=self.selected_file,
                 output_folder=self.output_folder,
                 pre_selected_chapters=pre_selected_chapters if pre_selected_chapters is not None else self.html_files,
-                project_manager=self.project_manager
+                project_manager=self.project_manager,
+                previous_translated_chapter_titles=previous_translated_chapter_titles,
             )
 
             if success:
@@ -2206,6 +2275,14 @@ class InitialSetupPage(ShellPage):
             bool(self.output_folder and previous_file) and
             os.path.abspath(previous_file) != os.path.abspath(file_path)
         )
+        previous_translated_chapter_titles = []
+        if file_changed and previous_file:
+            previous_translated_chapter_titles = (
+                self._collect_previous_translated_chapter_titles(
+                    previous_file,
+                    list(self.html_files),
+                )
+            )
 
         # --- НАЧАЛО КЛЮЧЕВОГО ИСПРАВЛЕНИЯ: Атомарный сброс состояния ---
         # Если выбранный файл отличается от текущего, это означает смену контекста.
@@ -2255,7 +2332,14 @@ class InitialSetupPage(ShellPage):
 
         # Запускаем дальнейшую обработку
         if file_changed or not self.html_files:
-            self._process_selected_file()
+            if previous_translated_chapter_titles:
+                self._process_selected_file(
+                    previous_translated_chapter_titles=(
+                        previous_translated_chapter_titles
+                    )
+                )
+            else:
+                self._process_selected_file()
         elif self.output_folder:
             self._handle_project_initialization()
         else:
@@ -2323,6 +2407,13 @@ class InitialSetupPage(ShellPage):
         )
         if not new_file_source or os.path.abspath(new_file_source) == os.path.abspath(self.selected_file):
             return
+
+        previous_translated_chapter_titles = (
+            self._collect_previous_translated_chapter_titles(
+                self.selected_file,
+                list(self.html_files),
+            )
+        )
 
         # 2. Анализ совместимости
         self.status_bar.set_permanent_message("Анализ совместимости глав...")
@@ -2433,8 +2524,14 @@ class InitialSetupPage(ShellPage):
         # Обновляем историю проектов
         self.settings_manager.add_to_project_history(self.selected_file, self.output_folder)
 
-        # Берем все главы из нового файла как текущий выбор
-        self.html_files = get_epub_chapter_order(self.selected_file)
+        # Повторившийся хвост прошлой переведенной пачки оставляем вне новой
+        # очереди, даже если TXT/EPUB был пересобран с другими именами файлов.
+        all_new_chapters = get_epub_chapter_order(self.selected_file)
+        self.html_files = self._chapters_after_previous_translated_titles(
+            self.selected_file,
+            all_new_chapters,
+            previous_translated_chapter_titles,
+        )
 
         # Полная перерисовка
         self._on_project_data_changed(offer_snapshot_restore=False)

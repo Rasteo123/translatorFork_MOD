@@ -344,3 +344,12 @@ def test_fetch_ciweimao_cover_context_routes_through_api_config(monkeypatch):
 
     with pytest.raises(_StopAfterConfigure):
         qidian_workers._fetch_ciweimao_cover_context("https://www.ciweimao.com/book/100441110")
+
+
+def test_fetch_qimao_cover_context_routes_through_api_config(monkeypatch):
+    # Седьмое место вызова появилось при слиянии upstream (поддержка Qimao) и
+    # звало удалённую дедупом локальную configure_playwright_runtime (NameError).
+    _patched_api_config_raises(monkeypatch)
+
+    with pytest.raises(_StopAfterConfigure):
+        qidian_workers._fetch_qimao_cover_context("https://www.qimao.com/shuku/195958/")
