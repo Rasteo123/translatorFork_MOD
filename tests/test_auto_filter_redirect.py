@@ -100,6 +100,7 @@ class _AutoFilterPipelineHarness:
     _make_auto_chapter_signature = InitialSetupDialog._make_auto_chapter_signature
     _compose_auto_details = InitialSetupDialog._compose_auto_details
     _get_filter_retry_translation_options = InitialSetupDialog._get_filter_retry_translation_options
+    _collect_content_filter_state = InitialSetupDialog._collect_content_filter_state
     _try_auto_filter_recovery = InitialSetupDialog._try_auto_filter_recovery
     _try_auto_filter_redirect_followup = InitialSetupDialog._try_auto_filter_redirect_followup
     _schedule_auto_translation_restart = InitialSetupDialog._schedule_auto_translation_restart

@@ -10,12 +10,33 @@ import json
 import re
 from typing import Any
 
-from ..utils.helpers import as_list
+from ..utils.helpers import as_list, estimate_gemini_tokens
+from ..utils.html_text import extract_visible_text_normalized
 
-try:
-    from bs4 import BeautifulSoup
-except Exception:  # pragma: no cover - the app normally depends on bs4
-    BeautifulSoup = None
+# dedup dups-gt_benchmark_evaluator-55: собственная копия estimate_tokens
+# заменена каноническим utils/helpers.py::estimate_gemini_tokens; runner.py
+# импортирует его оттуда же напрямую, реэкспорт-алиас здесь не нужен.
+#
+# extract_visible_text_normalized (utils/html_text.py) исключает <head>/<title>/<meta>
+# из "видимого текста" — не только <script>/<style>. Старая
+# evaluator.visible_text() гоняла BeautifulSoup.get_text() по всему
+# документу и такой текст учитывала. Практическое следствие: непереведённый
+# CJK-текст, оставшийся в XHTML-<title> главы, больше НЕ считается CJK
+# residue и не влияет на cjk_residue_chars / output_visible_chars /
+# length_ratio / reference_similarity (см. cjk_count и source_visible_len /
+# output_visible_len ниже). Это осознанно принятое изменение семантики
+# метрик бенчмарка при дедупе, а не баг — возврат прежнего сигнала
+# потребовал бы параметра "исключаемые теги" в utils/html_text.py, а этот
+# файл вне разрешённого периметра. Зафиксировано тестами
+# test_evaluate_translation_cjk_in_title_is_not_flagged_as_residue и
+# test_evaluator_module_documents_head_title_meta_exclusion.
+#
+# Тем же дедупом bs4 стал жёсткой зависимостью импорта этого модуля:
+# utils/html_text.py делает безусловный `from bs4 import BeautifulSoup`,
+# тогда как старый evaluator.py деградировал без bs4 до regex-очистки тегов
+# (ветка была помечена `pragma: no cover`). beautifulsoup4 — обязательная
+# зависимость (requirements.txt, requirements-translator-only.txt), поэтому
+# отдельного фолбэка здесь не требуется.
 
 
 CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\u3400-\u4dbf]")
@@ -67,36 +88,18 @@ class _TagCounter(HTMLParser):
         self.tags[tag.lower()] += 1
 
 
-def visible_text(value: str) -> str:
-    text = str(value or "")
-    if BeautifulSoup is not None:
-        soup = BeautifulSoup(text, "html.parser")
-        text = soup.get_text(" ")
-    else:
-        text = re.sub(r"<[^>]+>", " ", text)
-    return normalize_text(text)
-
-
-def normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def estimate_tokens(value: str) -> int:
-    text = str(value or "")
-    if not text:
-        return 0
-    ascii_chars = len(re.findall(r"[\x00-\x7f]", text))
-    cjk_chars = len(CJK_RE.findall(text))
-    other_chars = max(0, len(text) - ascii_chars - cjk_chars)
-    return int((ascii_chars / 4.0) + (cjk_chars / 1.5) + (other_chars / 2.3))
-
-
 def extract_placeholders(value: str) -> list[str]:
     text = str(value or "")
     placeholders = []
     placeholders.extend(COMMENT_RE.findall(text))
     placeholders.extend(match.group(0) for match in TOKEN_PLACEHOLDER_RE.finditer(text))
-    return sorted(dict.fromkeys(normalize_text(item) for item in placeholders if item.strip()))
+    return sorted(
+        dict.fromkeys(
+            extract_visible_text_normalized(item, from_html=False)
+            for item in placeholders
+            if item.strip()
+        )
+    )
 
 
 def extract_tag_counts(value: str) -> Counter:
@@ -131,8 +134,8 @@ def _glossary_required_terms(source_html: str, glossary_entries: list[dict[str, 
 def _reference_similarity(output: str, reference: str) -> float | None:
     if not reference:
         return None
-    output_text = visible_text(output)
-    reference_text = visible_text(reference)
+    output_text = extract_visible_text_normalized(output)
+    reference_text = extract_visible_text_normalized(reference)
     if not output_text or not reference_text:
         return 0.0
     return SequenceMatcher(None, output_text.casefold(), reference_text.casefold()).ratio()
@@ -191,7 +194,9 @@ def evaluate_translation(
     }
 
     source_placeholders = set(extract_placeholders(source_html))
-    explicit_placeholders = {normalize_text(str(item)) for item in as_list(checks.get("placeholders"))}
+    explicit_placeholders = {
+        extract_visible_text_normalized(str(item), from_html=False) for item in as_list(checks.get("placeholders"))
+    }
     placeholders = sorted(item for item in (source_placeholders | explicit_placeholders) if item)
     missing_placeholders = [item for item in placeholders if item not in output_text]
     if missing_placeholders:
@@ -219,15 +224,17 @@ def evaluate_translation(
             issues.append("html tag count changed: " + json.dumps(diff, ensure_ascii=False, sort_keys=True))
         metrics["html_tag_diff"] = diff
 
+    # <head>/<title>/<meta> вне "видимого текста" (см. комментарий у импортов
+    # выше) — CJK внутри <title> сюда не попадёт.
     allow_cjk = bool(checks.get("allow_cjk", False))
-    cjk_count = len(CJK_RE.findall(visible_text(output_text)))
+    cjk_count = len(CJK_RE.findall(extract_visible_text_normalized(output_text)))
     metrics["cjk_residue_chars"] = cjk_count
     if cjk_count and not allow_cjk:
         score -= min(25.0, max(5.0, cjk_count * 2.0))
         issues.append(f"CJK residue chars: {cjk_count}")
 
-    source_visible_len = len(visible_text(source_html))
-    output_visible_len = len(visible_text(output_text))
+    source_visible_len = len(extract_visible_text_normalized(source_html))
+    output_visible_len = len(extract_visible_text_normalized(output_text))
     length_ratio = (output_visible_len / source_visible_len) if source_visible_len else None
     metrics["length_ratio"] = round(length_ratio, 3) if length_ratio is not None else None
     min_ratio = float(checks.get("min_length_ratio", 0.25))
@@ -257,6 +264,6 @@ def evaluate_translation(
 
     metrics["source_visible_chars"] = source_visible_len
     metrics["output_visible_chars"] = output_visible_len
-    metrics["output_tokens_estimate"] = estimate_tokens(output_text)
+    metrics["output_tokens_estimate"] = estimate_gemini_tokens(output_text)
 
     return BenchmarkEvaluation(max(0.0, min(100.0, score)), metrics, issues)

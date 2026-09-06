@@ -869,27 +869,10 @@ def green_embedding_keys(
 
     Key limits are already tracked per model, so a key that ran out of
     translation quota is still green for embeddings and the other way round.
+    Same provider/limit filter as ``green_keys`` — embeddings just judge it
+    against the embedding model's id instead of the translation one.
     """
-    if settings_manager is None or not provider_id:
-        return ()
-    try:
-        statuses = settings_manager.load_key_statuses() or ()
-    except Exception:  # noqa: BLE001 - unreadable statuses mean no pool, not a crash
-        return ()
-    pool: list[str] = []
-    for key_info in statuses:
-        if str(key_info.get("provider") or "") != str(provider_id):
-            continue
-        key = str(key_info.get("key") or "").strip()
-        if not key:
-            continue
-        try:
-            blocked = settings_manager.is_key_limit_active(key_info, model_id)
-        except Exception:  # noqa: BLE001 - an unreadable status is not a red key
-            blocked = False
-        if not blocked:
-            pool.append(key)
-    return tuple(dict.fromkeys(pool))
+    return green_keys(settings_manager, provider_id, model_id)
 
 
 class SettingsEmbeddingKeyHealth:

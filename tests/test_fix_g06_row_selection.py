@@ -53,6 +53,11 @@ class _Harness:
     update_comparison_view = P.update_comparison_view
     on_selection_changed = P.on_selection_changed
     _apply_highlighting = P._apply_highlighting
+    # on_text_edited теперь берёт подпись статуса из канонического
+    # STATUS_LABELS (dups-gt_ui_dialogs_validation-01, finding …26-status-
+    # map-and-no-problem-dial); минимальный харнесс не наследует
+    # TranslationValidatorPage, поэтому копируем класс-атрибут явно.
+    STATUS_LABELS = dict(P.STATUS_LABELS)
 
     def __init__(self, n=6):
         self.is_code_view = False

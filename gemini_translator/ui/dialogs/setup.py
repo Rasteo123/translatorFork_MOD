@@ -3812,23 +3812,17 @@ class InitialSetupPage(ShellPage):
         """
         Отправляет команду на остановку сессии через шину событий.
         """
-        if self.engine and self.engine.session_id:
-            if self._hard_stop_enabled:
-                self._post_event('log_message', {'message': "[SYSTEM] Отправка запроса на немедленную остановку сессии…"})
-                self._post_event('manual_stop_requested')
-            else:
-                self._post_event('log_message', {'message': "[SYSTEM] Отправка запроса на плавную остановку сессии…"})
-                self._post_event('soft_stop_requested')
-                self._set_stop_button_mode(True)
+        has_active_session = bool(self.engine and self.engine.session_id) or self._check_and_sync_active_session()
+        if not has_active_session:
+            return
 
-        elif self._check_and_sync_active_session():
-            if self._hard_stop_enabled:
-                self._post_event('log_message', {'message': "[SYSTEM] Отправка запроса на немедленную остановку сессии…"})
-                self._post_event('manual_stop_requested')
-            else:
-                self._post_event('log_message', {'message': "[SYSTEM] Отправка запроса на плавную остановку сессии…"})
-                self._post_event('soft_stop_requested')
-                self._set_stop_button_mode(True)
+        if self._hard_stop_enabled:
+            self._post_event('log_message', {'message': "[SYSTEM] Отправка запроса на немедленную остановку сессии…"})
+            self._post_event('manual_stop_requested')
+        else:
+            self._post_event('log_message', {'message': "[SYSTEM] Отправка запроса на плавную остановку сессии…"})
+            self._post_event('soft_stop_requested')
+            self._set_stop_button_mode(True)
 
     @pyqtSlot()
     def _on_session_finished(self):
@@ -3936,23 +3930,31 @@ class InitialSetupPage(ShellPage):
                 del self._log_session_id
 
 
-    def _open_filter_packaging_dialog(self):
-        """
-        Открывает диалог для умной пакетной подготовки отфильтрованных глав.
-        Версия 2.1: Исправлен поиск задач (теперь ищет 'error' + 'CONTENT_FILTER').
-        """
-        if not (self.engine and self.engine.task_manager):
-            QMessageBox.information(self, "Нет данных", "Менеджер задач не инициализирован.")
-            return
+    def _collect_content_filter_state(self, need_successful_map: bool = False):
+        """Единая точка сканирования очереди на предмет глав с CONTENT_FILTER.
 
-        # 1. Получаем ПОЛНЫЙ список состояния задач
-        all_tasks_state = self.engine.task_manager.get_ui_state_list()
+        Возвращает ``(filtered_chapters, successful_chapters)`` — множества
+        путей глав внутри EPUB. ``filtered_chapters`` — главы, у которых
+        последняя задача завершилась статусом ``'error'`` с ``'CONTENT_FILTER'``
+        среди ``details['errors']``. ``successful_chapters`` заполняется, только
+        если ``need_successful_map=True`` (это требует прохода по
+        ``project_manager.get_full_map()`` — лишняя работа там, где
+        успешные главы не нужны, например в auto-redirect followup).
 
+        Ранее этот проход был продублирован построчно в
+        ``_open_filter_packaging_dialog``, ``_try_auto_filter_recovery`` и
+        ``_try_auto_filter_redirect_followup``.
+        """
         filtered_chapters = set()
         successful_chapters = set()
 
+        if not (self.engine and self.engine.task_manager):
+            return filtered_chapters, successful_chapters
+
+        all_tasks_state = self.engine.task_manager.get_ui_state_list()
+
         successful_map = {}
-        if self.project_manager:
+        if need_successful_map and self.project_manager:
             for original, versions in self.project_manager.get_full_map().items():
                 for suffix, rel_path in versions.items():
                     if suffix != 'filtered':
@@ -3961,8 +3963,8 @@ class InitialSetupPage(ShellPage):
                             successful_map[original] = full_path
                             break
 
-        # 2. Итерируемся по актуальному состоянию
-        # ВАЖНО: распаковываем details (третий элемент), чтобы проверить ошибки
+        # Итерируемся по актуальному состоянию.
+        # ВАЖНО: распаковываем details (третий элемент), чтобы проверить ошибки.
         for task_info, status, details in all_tasks_state:
             payload = task_info[1]
             chapters_in_task = self._extract_chapters_from_payload(payload)
@@ -3973,8 +3975,23 @@ class InitialSetupPage(ShellPage):
             for chapter in chapters_in_task:
                 if is_filtered:
                     filtered_chapters.add(chapter)
-                elif status == 'success' and chapter in successful_map:
+                elif need_successful_map and status == 'success' and chapter in successful_map:
                     successful_chapters.add(chapter)
+
+        return filtered_chapters, successful_chapters
+
+    def _open_filter_packaging_dialog(self):
+        """
+        Открывает диалог для умной пакетной подготовки отфильтрованных глав.
+        Версия 2.1: Исправлен поиск задач (теперь ищет 'error' + 'CONTENT_FILTER').
+        """
+        if not (self.engine and self.engine.task_manager):
+            QMessageBox.information(self, "Нет данных", "Менеджер задач не инициализирован.")
+            return
+
+        filtered_chapters, successful_chapters = self._collect_content_filter_state(
+            need_successful_map=True
+        )
 
         if not filtered_chapters:
             QMessageBox.information(self, "Нет данных", "Не найдено задач, остановленных фильтром контента.")
@@ -4443,8 +4460,22 @@ class InitialSetupPage(ShellPage):
 
     def _auto_original_chapter_has_cjk(self, internal_path: str | None) -> bool:
         internal_path = str(internal_path or "").strip()
+        if not internal_path:
+            return False
+
+        # Если TranslationOptionsWidget уже посчитал состав главы (тот же
+        # анализ, что используется для UI-рекомендаций CJK-режима на
+        # странице), берём готовый is_cjk оттуда — не открываем EPUB заново
+        # и не гоняем главу через второй, слегка иной детектор.
+        compositions = getattr(self, 'translation_options_widget', None)
+        compositions = getattr(compositions, 'chapter_compositions', None) if compositions else None
+        if isinstance(compositions, dict):
+            composition = compositions.get(internal_path)
+            if isinstance(composition, dict) and 'is_cjk' in composition:
+                return bool(composition.get('is_cjk'))
+
         epub_path = getattr(self, 'selected_file', None)
-        if not internal_path or not epub_path or not os.path.exists(epub_path):
+        if not epub_path or not os.path.exists(epub_path):
             return False
 
         cache = getattr(self, '_auto_cjk_original_cache', None)
@@ -5768,30 +5799,11 @@ class InitialSetupPage(ShellPage):
         if not (self.engine and self.engine.task_manager and self.project_manager):
             return False
 
-        all_tasks_state = self.engine.task_manager.get_ui_state_list()
-        filtered_chapters = set()
-        successful_chapters = set()
-        successful_map = {}
         deferred_retry_chapters = set(deferred_retry_chapters or [])
 
-        for original, versions in self.project_manager.get_full_map().items():
-            for suffix, rel_path in versions.items():
-                if suffix != 'filtered':
-                    full_path = os.path.join(self.project_manager.project_folder, rel_path)
-                    if os.path.exists(full_path):
-                        successful_map[original] = full_path
-                        break
-
-        for task_info, status, details in all_tasks_state:
-            payload = task_info[1]
-            chapters_in_task = self._extract_chapters_from_payload(payload)
-
-            is_filtered = (status == 'error' and 'CONTENT_FILTER' in details.get('errors', {}))
-            for chapter in chapters_in_task:
-                if is_filtered:
-                    filtered_chapters.add(chapter)
-                elif status == 'success' and chapter in successful_map:
-                    successful_chapters.add(chapter)
+        filtered_chapters, successful_chapters = self._collect_content_filter_state(
+            need_successful_map=True
+        )
 
         if not filtered_chapters:
             return False
@@ -5877,18 +5889,11 @@ class InitialSetupPage(ShellPage):
         if not (self.engine and self.engine.task_manager):
             return False
 
-        all_tasks_state = self.engine.task_manager.get_ui_state_list()
-        filtered_chapters = set()
         deferred_retry_chapters = set(deferred_retry_chapters or [])
 
-        for task_info, status, details in all_tasks_state:
-            payload = task_info[1]
-            chapters_in_task = self._extract_chapters_from_payload(payload)
-            is_filtered = (status == 'error' and 'CONTENT_FILTER' in details.get('errors', {}))
-            if not is_filtered:
-                continue
-            for chapter in chapters_in_task:
-                filtered_chapters.add(chapter)
+        filtered_chapters, _successful_chapters = self._collect_content_filter_state(
+            need_successful_map=False
+        )
 
         if not filtered_chapters:
             return False

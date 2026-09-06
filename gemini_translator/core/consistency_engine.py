@@ -1250,59 +1250,27 @@ class ConsistencyEngine(QObject):
                 )
                 continue
 
-            # 2. Формирование промпта
-            prompt = self._build_analysis_prompt(chunk, config)
-
-            # 3. Вызов API с ротацией ключей
+            # 2-4. Формирование промпта, вызов API с ротацией ключей, трейс,
+            # парсинг и накопление результата — общая логика с параллельным
+            # (fast_proofread) путём, см. _analyze_chunk_request /
+            # _handle_analysis_response.
             try:
-                self._emit_log_message(
-                    f"[Analysis] Чанк {i + 1}/{total_chunks}: {self._format_chunk_label(chunk)}"
-                )
-                response_text = self._call_api_with_transient_chunk_retry(
-                    prompt,
+                prompt, response_text = self._analyze_chunk_request(
+                    chunk,
                     config,
                     active_keys,
-                    retry_label=f"анализа (чанк {i + 1}/{total_chunks})",
+                    chunk_index=i,
+                    total_chunks=total_chunks,
                 )
-                self._record_request_response_trace(
-                    phase='analysis',
+                self._handle_analysis_response(
+                    chunk=chunk,
+                    chunk_index=i,
+                    total_chunks=total_chunks,
+                    mode=mode,
+                    config=config,
                     prompt=prompt,
-                    response=response_text,
-                    chapter_names=[ch.get('name', '') for ch in chunk if isinstance(ch, dict)],
-                    metadata={
-                        'chunk_index': i + 1,
-                        'total_chunks': total_chunks,
-                        'mode': mode,
-                        'consistency_mode': config.get("consistency_mode"),
-                    },
+                    response_text=response_text,
                 )
-
-                # 4. Валидация и парсинг JSON
-                analysis_result = self._parse_ai_response(response_text)
-                if analysis_result and config.get("consistency_mode") == FAST_PROOFREAD_MODE:
-                    analysis_result = self._filter_fast_proofread_result(analysis_result)
-
-                if analysis_result:
-                    # Накапливаем проблемы
-                    chunk_problems = analysis_result.get('problems', [])
-                    for prob in chunk_problems:
-                        prob['chunk_index'] = i
-                        # Привязываем проблему к главе
-                        chapter_name = prob.get('chapter', '')
-                        if chapter_name not in self.chapter_problems_map:
-                            self.chapter_problems_map[chapter_name] = []
-                        self.chapter_problems_map[chapter_name].append(prob)
-                    
-                    self.all_problems.extend(chunk_problems)
-
-                    # Обновляем глоссарий сессии (если не двухпроходный, или добавляем новое)
-                    self.glossary_session.update_from_response(
-                        analysis_result.get('glossary_update', {}),
-                        analysis_result.get('context_summary', {})
-                    )
-
-                    self._mark_chunk_completed("analysis", chunk)
-                    self.chunk_analyzed.emit(analysis_result)
 
             except Exception as e:
                 error_text = self._sanitize_exception_message(e)

@@ -16,9 +16,10 @@ from typing import Any
 
 from gemini_translator.api import config as api_config
 from gemini_translator.core.worker_helpers.prompt_builder import PromptBuilder
+from gemini_translator.utils.helpers import estimate_gemini_tokens
 from gemini_translator.utils.text import safe_format
 
-from .evaluator import estimate_tokens, evaluate_translation
+from .evaluator import evaluate_translation
 
 
 DEFAULT_KEY_ENVS = {
@@ -518,7 +519,7 @@ class BenchmarkRunner:
             "model": str(model_spec.get("model") or model_spec.get("model_id") or ""),
             "status": "prompt_only" if self.prompt_only else "pending",
             "latency_ms": None,
-            "prompt_tokens_estimate": estimate_tokens(
+            "prompt_tokens_estimate": estimate_gemini_tokens(
                 (prompt_bundle.system_instruction or "") + "\n" + prompt_bundle.user_prompt
             ),
             "output_tokens_estimate": 0,
@@ -558,7 +559,7 @@ class BenchmarkRunner:
                 {
                     "status": "ok",
                     "latency_ms": latency_ms,
-                    "output_tokens_estimate": estimate_tokens(output_text),
+                    "output_tokens_estimate": estimate_gemini_tokens(output_text),
                     "score": evaluation.score,
                     "metrics": evaluation.metrics,
                     "issues": evaluation.issues,

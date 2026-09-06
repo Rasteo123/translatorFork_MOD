@@ -597,21 +597,14 @@ class EpubHtmlSelectorDialog(QDialog):
     
     def _async_initial_setup(self):
         """
-        Выполняется один раз. Строит UI (если нужно) и запускает первую загрузку данных.
+        Выполняется один раз при первом показе диалога. Строит UI (если нужно)
+        и запускает первую загрузку данных.
+
+        Тело шага 1 (построение UI + снятие заглушки) идентично
+        _async_stage_1_build_ui_if_needed - переиспользуем его вместо
+        повторной копии, чтобы не расходиться при правках порядка операций.
         """
-        # Проверяем ВАШ флаг
-        if not self._ui_is_built:
-            # Строим UI только если он еще не был построен
-            self._populate_full_ui()
-            self._ui_is_built = True # <-- Устанавливаем флаг НАВСЕГДА
-    
-        # "Подменяем" заглушку на готовый интерфейс
-        self.loading_label.setVisible(False)
-        self.main_content_widget.setVisible(True)
-        QtWidgets.QApplication.processEvents()
-    
-        # Запускаем цепочку загрузки данных
-        self._start_data_loading_chain()
+        self._async_stage_1_build_ui_if_needed()
 
     def _start_data_loading_chain(self):
         """Просто запускает _async_stage_2_get_filelist."""
@@ -2691,6 +2684,76 @@ class TranslatedChaptersManagerDialog(QDialog):
         QMessageBox.information(self, "Синхронизация завершена", f"{message}\n\nСписок файлов в сборщике обновлен.")
         
         
+def _build_duplicate_chapter_info(chapter_index, chapter_path, content):
+    """Строит запись chapter_infos для analyze_duplicate_findings из уже
+    прочитанного HTML-содержимого главы (общая часть для EPUB- и HTML-
+    вариантов анализа повторов - разнится только то, откуда берётся content:
+    zip в памяти или файл на диске).
+
+    Возвращает None, если в главе нет ни одного блока для сравнения.
+    """
+    soup = BeautifulSoup(content, 'html.parser')
+    blocks = extract_duplicate_review_blocks(soup)
+    if not blocks:
+        return None
+    return {
+        'index': chapter_index,
+        'path': chapter_path,
+        'name': os.path.basename(chapter_path),
+        'blocks': blocks,
+    }
+
+
+def _group_duplicate_findings_by_tag_path(findings):
+    """Группирует findings по chapter_path -> {tag_path: finding} (общая
+    часть подготовки к очистке для EPUB- и HTML-вариантов)."""
+    grouped_findings = {}
+    for finding in findings:
+        chapter_path = finding.get('chapter_path')
+        tag_paths = finding.get('tag_paths') or []
+        if not tag_paths and finding.get('tag_path'):
+            tag_paths = [finding.get('tag_path')]
+        if not chapter_path or not tag_paths:
+            continue
+        grouped_findings.setdefault(chapter_path, {})
+        for tag_path in tag_paths:
+            normalized_path = tuple(tag_path or [])
+            if not normalized_path:
+                continue
+            grouped_findings[chapter_path][normalized_path] = finding
+    return grouped_findings
+
+
+def _remove_duplicate_findings_from_content(content, finding_map):
+    """Удаляет из HTML-содержимого главы теги, отмеченные как повторы,
+    сохраняя h1 (общая часть очистки для EPUB- и HTML-вариантов).
+
+    Возвращает (updated_content, removed_count). Если ничего не удалено,
+    updated_content равен исходному content и removed_count == 0.
+    """
+    had_xml_declaration = content.lstrip().startswith('<?xml')
+    soup = BeautifulSoup(content, 'html.parser')
+    root = soup.body or soup
+    removed = 0
+
+    for tag_path in sorted(finding_map.keys(), reverse=True):
+        target_tag = resolve_tag_path(root, list(tag_path))
+        if target_tag is None or not getattr(target_tag, 'name', None):
+            continue
+        if str(target_tag.name).lower() == 'h1':
+            continue
+        target_tag.decompose()
+        removed += 1
+
+    if not removed:
+        return content, 0
+
+    updated_content = str(soup)
+    if had_xml_declaration and not updated_content.lstrip().startswith('<?xml'):
+        updated_content = '<?xml version="1.0" encoding="utf-8"?>\n' + updated_content
+    return updated_content, removed
+
+
 class EpubDuplicateAnalysisThread(QThread):
     analysis_finished = pyqtSignal(object)
 
@@ -2714,17 +2777,9 @@ class EpubDuplicateAnalysisThread(QThread):
                     except Exception:
                         continue
 
-                    soup = BeautifulSoup(content, 'html.parser')
-                    blocks = extract_duplicate_review_blocks(soup)
-                    if not blocks:
-                        continue
-
-                    chapter_infos.append({
-                        'index': chapter_index,
-                        'path': chapter_path,
-                        'name': os.path.basename(chapter_path),
-                        'blocks': blocks,
-                    })
+                    info = _build_duplicate_chapter_info(chapter_index, chapter_path, content)
+                    if info is not None:
+                        chapter_infos.append(info)
 
             self.analysis_finished.emit(analyze_duplicate_findings(chapter_infos))
         except Exception:
@@ -2746,20 +2801,7 @@ class EpubDuplicateCleanupThread(QThread):
             return
 
         try:
-            grouped_findings = {}
-            for finding in self.findings:
-                chapter_path = finding.get('chapter_path')
-                tag_paths = finding.get('tag_paths') or []
-                if not tag_paths and finding.get('tag_path'):
-                    tag_paths = [finding.get('tag_path')]
-                if not chapter_path or not tag_paths:
-                    continue
-                grouped_findings.setdefault(chapter_path, {})
-                for tag_path in tag_paths:
-                    normalized_path = tuple(tag_path or [])
-                    if not normalized_path:
-                        continue
-                    grouped_findings[chapter_path][normalized_path] = finding
+            grouped_findings = _group_duplicate_findings_by_tag_path(self.findings)
 
             total_removed = 0
             touched_chapters = 0
@@ -2778,24 +2820,11 @@ class EpubDuplicateCleanupThread(QThread):
                             continue
 
                         content_str = content_bytes.decode('utf-8', errors='ignore')
-                        had_xml_declaration = content_str.lstrip().startswith('<?xml')
-                        soup = BeautifulSoup(content_str, 'html.parser')
-                        root = soup.body or soup
-                        removed_in_chapter = 0
-
-                        for tag_path in sorted(finding_map.keys(), reverse=True):
-                            target_tag = resolve_tag_path(root, list(tag_path))
-                            if target_tag is None or not getattr(target_tag, 'name', None):
-                                continue
-                            if str(target_tag.name).lower() == 'h1':
-                                continue
-                            target_tag.decompose()
-                            removed_in_chapter += 1
+                        updated_content, removed_in_chapter = _remove_duplicate_findings_from_content(
+                            content_str, finding_map
+                        )
 
                         if removed_in_chapter:
-                            updated_content = str(soup)
-                            if had_xml_declaration and not updated_content.lstrip().startswith('<?xml'):
-                                updated_content = '<?xml version="1.0" encoding="utf-8"?>\n' + updated_content
                             all_files_content[chapter_path] = updated_content.encode('utf-8')
                             total_removed += removed_in_chapter
                             touched_chapters += 1
@@ -2844,17 +2873,9 @@ class HtmlDuplicateAnalysisThread(QThread):
                 except Exception:
                     continue
 
-                soup = BeautifulSoup(content, 'html.parser')
-                blocks = extract_duplicate_review_blocks(soup)
-                if not blocks:
-                    continue
-
-                chapter_infos.append({
-                    'index': chapter_index,
-                    'path': chapter_path,
-                    'name': os.path.basename(chapter_path),
-                    'blocks': blocks,
-                })
+                info = _build_duplicate_chapter_info(chapter_index, chapter_path, content)
+                if info is not None:
+                    chapter_infos.append(info)
 
             self.analysis_finished.emit(analyze_duplicate_findings(chapter_infos))
         except Exception:
@@ -2875,20 +2896,7 @@ class HtmlDuplicateCleanupThread(QThread):
             return
 
         try:
-            grouped_findings = {}
-            for finding in self.findings:
-                chapter_path = finding.get('chapter_path')
-                tag_paths = finding.get('tag_paths') or []
-                if not tag_paths and finding.get('tag_path'):
-                    tag_paths = [finding.get('tag_path')]
-                if not chapter_path or not tag_paths:
-                    continue
-                grouped_findings.setdefault(chapter_path, {})
-                for tag_path in tag_paths:
-                    normalized_path = tuple(tag_path or [])
-                    if not normalized_path:
-                        continue
-                    grouped_findings[chapter_path][normalized_path] = finding
+            grouped_findings = _group_duplicate_findings_by_tag_path(self.findings)
 
             total_removed = 0
             touched_files = 0
@@ -2900,24 +2908,11 @@ class HtmlDuplicateCleanupThread(QThread):
                 with open(chapter_path, 'r', encoding='utf-8', errors='ignore') as fh:
                     content = fh.read()
 
-                had_xml_declaration = content.lstrip().startswith('<?xml')
-                soup = BeautifulSoup(content, 'html.parser')
-                root = soup.body or soup
-                removed_in_file = 0
-
-                for tag_path in sorted(finding_map.keys(), reverse=True):
-                    target_tag = resolve_tag_path(root, list(tag_path))
-                    if target_tag is None or not getattr(target_tag, 'name', None):
-                        continue
-                    if str(target_tag.name).lower() == 'h1':
-                        continue
-                    target_tag.decompose()
-                    removed_in_file += 1
+                updated_content, removed_in_file = _remove_duplicate_findings_from_content(
+                    content, finding_map
+                )
 
                 if removed_in_file:
-                    updated_content = str(soup)
-                    if had_xml_declaration and not updated_content.lstrip().startswith('<?xml'):
-                        updated_content = '<?xml version="1.0" encoding="utf-8"?>\n' + updated_content
                     with open(chapter_path, 'w', encoding='utf-8', errors='ignore') as fh:
                         fh.write(updated_content)
                     total_removed += removed_in_file

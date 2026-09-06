@@ -242,6 +242,23 @@ def resolve_ranobelib_source_dir():
     return None, searched_locations
 
 
+def _make_return_to_menu_handler():
+    """Каноническая фабрика обработчика «вернуться в меню» для окон-инструментов
+    (RanobeLib, Gemini Reader): закрывает текущий QApplication.exec() с кодом
+    EXIT_CODE_REBOOT, чтобы главный цикл main.py пересоздал MainShell.
+
+    Была продублирована байт-в-байт как вложенная функция return_to_menu()
+    внутри build_ranobelib_window() и build_gemini_reader_window()
+    (dups-main-62, root-entry/design/8-return-to-menu-duplicate-closu).
+    """
+    def return_to_menu():
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.exit(EXIT_CODE_REBOOT)
+
+    return return_to_menu
+
+
 def build_ranobelib_window():
     source_dir, searched_locations = resolve_ranobelib_source_dir()
     if not source_dir:
@@ -268,12 +285,7 @@ def build_ranobelib_window():
     window = window_class()
 
     if hasattr(window, "set_return_to_menu_handler"):
-        def return_to_menu():
-            app = QtWidgets.QApplication.instance()
-            if app is not None:
-                app.exit(EXIT_CODE_REBOOT)
-
-        window.set_return_to_menu_handler(return_to_menu)
+        window.set_return_to_menu_handler(_make_return_to_menu_handler())
 
     return window
 
@@ -302,12 +314,7 @@ def build_gemini_reader_window():
 
     window = gemini_reader_v3.MainWindow()
     if hasattr(window, "set_return_to_menu_handler"):
-        def return_to_menu():
-            app = QtWidgets.QApplication.instance()
-            if app is not None:
-                app.exit(EXIT_CODE_REBOOT)
-
-        window.set_return_to_menu_handler(return_to_menu)
+        window.set_return_to_menu_handler(_make_return_to_menu_handler())
 
     return window
 
@@ -1154,6 +1161,23 @@ class EventBus(QtCore.QObject):
         """Потокобезопасно читает данные, не удаляя их."""
         with self._lock:
             return self._data_store.get(key, default)
+
+    def has_managed_session_active(self, prefix: str = "managed_session_active_") -> bool:
+        """Есть ли хоть один ключ с данным префиксом и значением True.
+
+        Централизует предикат «активна ли управляемая сессия», который
+        раньше был вручную скопирован в ChapterQueueManager.is_finished и
+        ChapterQueueManager.has_pending_tasks (task_manager.py), а также в
+        TranslationEngine.is_managed_mode/_end_session (translation_engine.py,
+        эти два места не переведены на этот метод — вне области правки).
+        Не берём self._lock напрямую: .keys() у _data_store уже сам
+        атомарен под тем же локом (см. _KeysSnapshotDict), а повторный
+        захват self._lock здесь был бы deadlock'ом (Lock нерекурсивный).
+        """
+        for key in self._data_store.keys():
+            if key.startswith(prefix) and self.get_data(key) is True:
+                return True
+        return False
 
 
 def initialize_global_resources(app: QApplication):

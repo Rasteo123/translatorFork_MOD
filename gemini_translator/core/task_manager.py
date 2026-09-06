@@ -1737,6 +1737,24 @@ class ChapterQueueManager(QObject):
             )
         )
 
+    def _has_managed_session_active(self) -> bool:
+        """Есть ли активная управляемая сессия (см. EventBus.has_managed_session_active).
+
+        Единая точка для предиката, ранее вручную скопированного в
+        is_finished и has_pending_tasks (core-a/design/1-managed-session-scan-4x).
+        Предпочитает канонический метод EventBus; для тестовых заглушек
+        шины без него — тот же ручной скан по _data_store, что был раньше.
+        """
+        if self.bus is None:
+            return False
+        if hasattr(self.bus, 'has_managed_session_active'):
+            return bool(self.bus.has_managed_session_active())
+        if hasattr(self.bus, '_data_store'):
+            for key in self.bus._data_store.keys():
+                if key.startswith('managed_session_active_') and self.bus.get_data(key) is True:
+                    return True
+        return False
+
     def is_finished(self) -> bool:
         """
         Главный критерий завершения сессии.
@@ -1745,13 +1763,8 @@ class ChapterQueueManager(QObject):
         Возвращает True, только если работы нет НИГДЕ.
         """
         # 1. Проверка флага управляемой сессии (в памяти)
-        is_managed_active = False
-        if self.bus and hasattr(self.bus, '_data_store'):
-            for key in self.bus._data_store.keys():
-                if key.startswith('managed_session_active_') and self.bus.get_data(key) is True:
-                    is_managed_active = True
-                    break
-        
+        is_managed_active = self._has_managed_session_active()
+
         # Если мы в управляемом режиме — мы НЕ закончили, пока флаг висит.
         # Даже если в базе пусто (оркестратор готовит следующую задачу).
         if is_managed_active:
@@ -2415,12 +2428,9 @@ class ChapterQueueManager(QObject):
             return True
         
         # Если в БД задач нет, проверяем флаг управляемой сессии в шине событий
-        if self.bus and hasattr(self.bus, '_data_store'):
-            # Ищем любой ключ, начинающийся с 'managed_session_active_'
-            for key in self.bus._data_store.keys():
-                if key.startswith('managed_session_active_') and self.bus.get_data(key) is True:
-                    return True
-        
+        if self._has_managed_session_active():
+            return True
+
         return False
     
     def get_first_pending_task_payload(self) -> tuple | None:

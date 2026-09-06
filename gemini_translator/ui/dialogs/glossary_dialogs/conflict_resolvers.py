@@ -63,6 +63,112 @@ def apply_sub_table_edit_to_pending(table, item, pending_changes, baseline_looku
     pending_changes[original_term_id] = (current_term, current_data)
 
 
+class WizardStepMixin:
+    """Каноническая машина состояний пошагового режима «Визард».
+
+    Общая часть между ComplexOverlapResolverPage и ReverseConflictResolverPage
+    (dups-gt_ui_dialogs_glossary_dialogs_conflict_reso-06, находка
+    .../3-conflict-resolvers-duplicated-): обе страницы гоняют один и тот же
+    цикл start_wizard_mode/end_wizard_mode/wizard_go_next/wizard_go_prev/
+    _show_wizard_step поверх QListWidget с элементами конфликтов.
+
+    Единственное реальное расхождение между копиями — то, как элемент списка
+    хранит свой идентификатор: ComplexOverlapResolverPage кладёт id термина в
+    Qt.ItemDataRole.UserRole, а ReverseConflictResolverPage вообще не
+    выставляет UserRole и использует сам текст элемента как ключ. Это не
+    отдельная ветка поведения, а один и тот же приём с запасным вариантом —
+    см. `_wizard_item_key`.
+
+    Подкласс обязан предоставить:
+      - свойство `wizard_list_widget` — QListWidget с элементами визарда;
+      - свойство `wizard_checked_keys` — set с ключами уже отмеченных
+        "проверено" элементов;
+    а также завести (как и раньше) виджеты top_controls_stack,
+    normal_mode_widget, wizard_mode_widget, checked_checkbox,
+    wizard_progress_label, wizard_prev_button, wizard_next_button — их имена
+    совпадали у обеих копий, поэтому здесь не абстрагируются.
+    """
+
+    wizard_mode_active = False
+    wizard_queue = None
+    wizard_current_index = -1
+
+    @property
+    def wizard_list_widget(self):
+        raise NotImplementedError
+
+    @property
+    def wizard_checked_keys(self):
+        raise NotImplementedError
+
+    @staticmethod
+    def _wizard_item_key(item):
+        """Ключ элемента списка: id термина из UserRole, либо, если он не
+        выставлен (ReverseConflictResolverPage), сам текст элемента."""
+        key = item.data(Qt.ItemDataRole.UserRole)
+        return item.text() if key is None else key
+
+    def start_wizard_mode(self):
+        list_widget = self.wizard_list_widget
+        checked = self.wizard_checked_keys
+        keys = [self._wizard_item_key(list_widget.item(i)) for i in range(list_widget.count())]
+        self.wizard_queue = [key for key in keys if key not in checked]
+
+        if not self.wizard_queue:
+            QMessageBox.information(self, "Все готово", "Все конфликты в этом списке уже помечены как проверенные.")
+            return
+
+        self.wizard_mode_active = True
+        self.wizard_current_index = 0
+
+        list_widget.setEnabled(False)
+        self.top_controls_stack.setCurrentWidget(self.wizard_mode_widget)
+
+        self._show_wizard_step()
+
+    def end_wizard_mode(self):
+        self.wizard_mode_active = False
+        self.wizard_queue = []
+        self.wizard_current_index = -1
+
+        self.wizard_list_widget.setEnabled(True)
+        self.top_controls_stack.setCurrentWidget(self.normal_mode_widget)
+
+    def wizard_go_next(self):
+        # Сохраняем и помечаем текущий как проверенный
+        self.checked_checkbox.setChecked(True)
+
+        if self.wizard_current_index < len(self.wizard_queue) - 1:
+            self.wizard_current_index += 1
+            self._show_wizard_step()
+        else:
+            QMessageBox.information(self, "Завершено", "Вы просмотрели все оставшиеся конфликты.")
+            self.end_wizard_mode()
+
+    def wizard_go_prev(self):
+        # Просто переходим назад, ПРЕДВАРИТЕЛЬНО СОХРАНИВ ИЗМЕНЕНИЯ
+        if self.wizard_current_index > 0:
+            self.wizard_current_index -= 1
+            self._show_wizard_step()
+
+    def _show_wizard_step(self):
+        if not self.wizard_mode_active or not self.wizard_queue:
+            return
+
+        self.wizard_progress_label.setText(f"Шаг {self.wizard_current_index + 1} из {len(self.wizard_queue)}")
+        self.wizard_prev_button.setEnabled(self.wizard_current_index > 0)
+        self.wizard_next_button.setText("Далее >" if self.wizard_current_index < len(self.wizard_queue) - 1 else "Завершить")
+
+        term_to_show = self.wizard_queue[self.wizard_current_index]
+
+        list_widget = self.wizard_list_widget
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            if self._wizard_item_key(item) == term_to_show:
+                list_widget.setCurrentItem(item)
+                break
+
+
 def _get_checked_color(widget):
     """Возвращает цвет для выделения, смешанный с базовым фоном виджета."""
     base_color = widget.palette().color(QtGui.QPalette.ColorRole.Base)
@@ -76,7 +182,7 @@ def _get_checked_color(widget):
     return QtGui.QColor(r, g, b)
 
 
-class ComplexOverlapResolverPage(ShellPage):
+class ComplexOverlapResolverPage(WizardStepMixin, ShellPage):
     """
     Супер-диалог для разрешения наложений с двумя режимами:
     1. Общий вид (свободная навигация по списку).
@@ -93,12 +199,8 @@ class ComplexOverlapResolverPage(ShellPage):
         self.pending_changes = {}
         self.deleted_terms = set()
         self.checked_terms = set()
-        self.pymorphy_available = pymorphy_available 
-        # --- Состояние для пошагового режима ---
-        self.wizard_mode_active = False
-        self.wizard_terms = []
-        self.wizard_current_index = -1
-        
+        self.pymorphy_available = pymorphy_available
+
         self.view_mode = 'short_to_long'
         self.show_translations_mode = True  # <--- НОВЫЙ ФЛАГ: По умолчанию показываем переводы
         
@@ -285,69 +387,19 @@ class ComplexOverlapResolverPage(ShellPage):
 
 
 
-    def start_wizard_mode(self):
-        # Собираем только непроверенные термины для визарда
-        self.wizard_terms = []
-        for i in range(self.left_list.count()):
-            item = self.left_list.item(i)
-            # ИЗМЕНЕНИЕ: Сравниваем ID
-            term_id = item.data(Qt.ItemDataRole.UserRole)
-            if term_id not in self.checked_terms:
-                self.wizard_terms.append(term_id)
-        
-        if not self.wizard_terms:
-            QMessageBox.information(self, "Все готово", "Все конфликты в этом списке уже помечены как проверенные.")
-            return
-            
-        self.wizard_mode_active = True
-        self.wizard_current_index = 0
-        
-        self.left_list.setEnabled(False) 
-        self.top_controls_stack.setCurrentWidget(self.wizard_mode_widget)
-        
-        self._show_wizard_step()
+    # --- Пятёрка методов пошагового режима «Визард» (start_wizard_mode,
+    # end_wizard_mode, wizard_go_next, wizard_go_prev, _show_wizard_step)
+    # унаследована от WizardStepMixin — она полностью общая с
+    # ReverseConflictResolverPage, см. dups-gt_ui_dialogs_glossary_dialogs_
+    # conflict_reso-06. Здесь остаётся только специфика этой страницы:
+    # какой список и какой набор "проверенных" ключей использовать.
+    @property
+    def wizard_list_widget(self):
+        return self.left_list
 
-    def end_wizard_mode(self):
-        self.wizard_mode_active = False
-        self.wizard_terms = []
-        self.wizard_current_index = -1
-        
-        self.left_list.setEnabled(True) # Разблокируем список
-        self.top_controls_stack.setCurrentWidget(self.normal_mode_widget)
-
-    def wizard_go_next(self):
-        # Сохраняем и помечаем текущий как проверенный
-        self.checked_checkbox.setChecked(True)
-        
-        if self.wizard_current_index < len(self.wizard_terms) - 1:
-            self.wizard_current_index += 1
-            self._show_wizard_step()
-        else:
-            QMessageBox.information(self, "Завершено", "Вы просмотрели все оставшиеся конфликты.")
-            self.end_wizard_mode()
-
-    def wizard_go_prev(self):
-        # Просто переходим назад, ПРЕДВАРИТЕЛЬНО СОХРАНИВ ИЗМЕНЕНИЯ
-        if self.wizard_current_index > 0:
-            self.wizard_current_index -= 1
-            self._show_wizard_step()
-
-    def _show_wizard_step(self):
-        if not self.wizard_mode_active or not self.wizard_terms:
-            return
-
-        self.wizard_progress_label.setText(f"Шаг {self.wizard_current_index + 1} из {len(self.wizard_terms)}")
-        self.wizard_prev_button.setEnabled(self.wizard_current_index > 0)
-        self.wizard_next_button.setText("Далее >" if self.wizard_current_index < len(self.wizard_terms) - 1 else "Завершить")
-
-        term_to_show = self.wizard_terms[self.wizard_current_index]
-        
-        # ИЗМЕНЕНИЕ: Ищем по UserRole
-        for i in range(self.left_list.count()):
-            item = self.left_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == term_to_show:
-                self.left_list.setCurrentItem(item)
-                break
+    @property
+    def wizard_checked_keys(self):
+        return self.checked_terms
 
 
     def toggle_view(self):
@@ -632,7 +684,7 @@ class ComplexOverlapResolverDialog(
         event.accept()
 
 
-class ReverseConflictResolverPage(ShellPage):
+class ReverseConflictResolverPage(WizardStepMixin, ShellPage):
     """
     Супер-диалог, который решает и обратные конфликты, и связывает "сирот".
     Версия 2.2 с пошаговым режимом "Визард".
@@ -647,15 +699,10 @@ class ReverseConflictResolverPage(ShellPage):
 
         self.entry_map = {}
         self.reverse_issues = self._build_issue_records(reverse_issues)
-        
+
         self.pending_changes = {}
         self.deleted_entries = set()
         self.checked_items = set() # Для отметки проверенных
-        
-        # --- Состояние для пошагового режима ---
-        self.wizard_mode_active = False
-        self.wizard_items = []
-        self.wizard_current_index = -1
 
         self.setWindowTitle("Шаг 2: Обратные конфликты и связывание")
         self.setMinimumSize(1200, 800)
@@ -774,51 +821,19 @@ class ReverseConflictResolverPage(ShellPage):
         self.populate_list()
         self.end_wizard_mode()
 
-    def start_wizard_mode(self):
-        self.wizard_items = [self.translations_list.item(i).text() for i in range(self.translations_list.count()) if self.translations_list.item(i).text() not in self.checked_items]
-        
-        if not self.wizard_items:
-            QMessageBox.information(self, "Все готово", "Все конфликты в этом списке уже помечены как проверенные.")
-            return
-            
-        self.wizard_mode_active = True
-        self.wizard_current_index = 0
-        self.translations_list.setEnabled(False)
-        self.top_controls_stack.setCurrentWidget(self.wizard_mode_widget)
-        self._show_wizard_step()
+    # --- Пятёрка методов пошагового режима «Визард» унаследована от
+    # WizardStepMixin (общая с ComplexOverlapResolverPage, см.
+    # dups-gt_ui_dialogs_glossary_dialogs_conflict_reso-06). Элементы
+    # translations_list не хранят UserRole, поэтому _wizard_item_key
+    # использует их текст как ключ — это то же самое, что раньше делал
+    # findItems(term_to_show, Qt.MatchFlag.MatchExactly) в _show_wizard_step.
+    @property
+    def wizard_list_widget(self):
+        return self.translations_list
 
-    def end_wizard_mode(self):
-        self.wizard_mode_active = False
-        self.wizard_items = []
-        self.wizard_current_index = -1
-        self.translations_list.setEnabled(True)
-        self.top_controls_stack.setCurrentWidget(self.normal_mode_widget)
-
-    def wizard_go_next(self):
-        self.checked_checkbox.setChecked(True)
-        
-        if self.wizard_current_index < len(self.wizard_items) - 1:
-            self.wizard_current_index += 1
-            self._show_wizard_step()
-        else:
-            QMessageBox.information(self, "Завершено", "Вы просмотрели все оставшиеся конфликты.")
-            self.end_wizard_mode()
-    
-    def wizard_go_prev(self):
-        # Просто переходим назад, ПРЕДВАРИТЕЛЬНО СОХРАНИВ ИЗМЕНЕНИЯ
-        if self.wizard_current_index > 0:
-            self.wizard_current_index -= 1
-            self._show_wizard_step()
-
-    def _show_wizard_step(self):
-        if not self.wizard_mode_active or not self.wizard_items: return
-        self.wizard_progress_label.setText(f"Шаг {self.wizard_current_index + 1} из {len(self.wizard_items)}")
-        self.wizard_prev_button.setEnabled(self.wizard_current_index > 0)
-        self.wizard_next_button.setText("Далее >" if self.wizard_current_index < len(self.wizard_items) - 1 else "Завершить")
-
-        term_to_show = self.wizard_items[self.wizard_current_index]
-        items = self.translations_list.findItems(term_to_show, Qt.MatchFlag.MatchExactly)
-        if items: self.translations_list.setCurrentItem(items[0])
+    @property
+    def wizard_checked_keys(self):
+        return self.checked_items
 
     def _on_table_item_changed(self, item: QTableWidgetItem):
         """Автоматически сохраняет изменения из таблицы."""

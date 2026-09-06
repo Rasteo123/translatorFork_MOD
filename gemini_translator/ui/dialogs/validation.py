@@ -24,7 +24,12 @@ from ..widgets.regex_syntax_highlighter import (
     HtmlSyntaxHighlighter,
     RuleBasedSyntaxHighlighter,
 )
-from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta, prompt_return_to_menu
+from .menu_utils import (
+    PageDialogProxyMixin,
+    make_page_delegating_meta,
+    prompt_return_to_menu,
+    return_to_main_menu,
+)
 from ...utils.validation_cache import (
     build_detector_signature,
     build_file_fingerprint,
@@ -2002,6 +2007,19 @@ class TranslationValidatorPage(ShellPage):
         ("problematic_or_changed", "Проблемные + измененные"),
     )
 
+    # Подписи статуса строки для колонки 3 таблицы результатов. Раньше этот
+    # словарь был продублирован дословно в reapply_filters и add_result
+    # (dups-gt_ui_dialogs_validation-01, finding …26-status-map-and-no-
+    # problem-dial) — единственный канонический источник теперь здесь.
+    STATUS_LABELS = {
+        "problem": "Проблема",
+        "neutral": "Проблем нет",
+        "ok": "Готов",
+        "delete": "На удаление",
+        "retry": "К переотправке",
+        "edited": "Редакт.",
+    }
+
     RATIO_PRESETS = {
         **validation_ratio_presets(),
         "Медиана ±20%": (-1.0, 0.20, "Отклонение от медианного значения по всем главам"),
@@ -2623,7 +2641,62 @@ class TranslationValidatorPage(ShellPage):
         main_layout.addWidget(self._create_group5_actions())
 
         return main_group
-    
+
+    def _append_result_row(
+        self,
+        row_pos,
+        internal_path,
+        target_rel_path,
+        is_validated_present,
+        data,
+        needs_analysis,
+        *,
+        placeholder_text,
+    ):
+        """Строит одну строку таблицы результатов и всю связанную с ней
+        бухгалтерию (results_data/path_row_map/dirty_files/скрытие готовых).
+
+        Общая часть циклов _populate_initial_table и
+        _smart_reload_table_preserving_data (dups-gt_ui_dialogs_validation-01,
+        finding …12-table-row-build-loop-copy). ``placeholder_text`` — единственное
+        сознательно сохранённое различие между вызывающими ("Ожидание..." при
+        первичной загрузке против "..." при умной перезагрузке); отзывчивость
+        интерфейса (processEvents/setUpdatesEnabled) первичной загрузки остаётся
+        снаружи, в самом цикле _populate_initial_table, и не переносится на
+        умную перезагрузку — это отдельное поведенческое решение, не часть
+        устраняемого дублирования.
+        """
+        self.table_results.insertRow(row_pos)
+
+        display_text = f"{os.path.basename(internal_path)}"
+        if is_validated_present:
+            display_text += " [Готов]"
+        else:
+            display_text += f" -> {os.path.basename(target_rel_path)}"
+
+        display_path_item = SortableChapterItem(display_text, internal_path)
+        display_path_item.setData(Qt.ItemDataRole.UserRole, is_validated_present)
+        self.table_results.setItem(row_pos, 0, display_path_item)
+
+        current_reasons, _ = self._calculate_status_for_data(data)
+        self._set_problem_cell(row_pos, data, current_reasons)
+        len_text = (
+            f"{data.get('len_orig', 0)} | {data.get('len_trans', 0)}"
+            if data.get('has_cached_analysis')
+            else "- | -"
+        )
+        self.table_results.setItem(row_pos, 2, NumericTableWidgetItem(len_text))
+        self.table_results.setItem(row_pos, 3, QTableWidgetItem(placeholder_text))
+
+        self.results_data[row_pos] = data
+        self.path_row_map[internal_path] = row_pos
+
+        if needs_analysis:
+            self.dirty_files.add(internal_path)
+
+        if is_validated_present and not self.check_revalidate_ok.isChecked():
+            self.table_results.setRowHidden(row_pos, True)
+
     def _populate_initial_table(self):
         """
         Заполняет таблицу всеми файлами.
@@ -2685,47 +2758,24 @@ class TranslationValidatorPage(ShellPage):
                 continue
             
             full_path = os.path.join(self.translated_folder, target_rel_path)
-            
+
             # Данные
             data_placeholder, needs_analysis = self._build_row_data_for_file(
                 internal_path,
                 full_path,
                 is_validated_present,
             )
-            
-            self.table_results.insertRow(row_pos)
-            
-            # Колонка 0
-            display_text = f"{os.path.basename(internal_path)}"
-            if is_validated_present: display_text += " [Готов]"
-            else: display_text += f" -> {os.path.basename(target_rel_path)}"
 
-            display_path_item = SortableChapterItem(display_text, internal_path)
-            display_path_item.setData(Qt.ItemDataRole.UserRole, is_validated_present)
-            self.table_results.setItem(row_pos, 0, display_path_item)
-            
-            # Колонка 1, 2, 3
-            current_reasons, _ = self._calculate_status_for_data(data_placeholder)
-            self._set_problem_cell(row_pos, data_placeholder, current_reasons)
-            len_text = (
-                f"{data_placeholder.get('len_orig', 0)} | {data_placeholder.get('len_trans', 0)}"
-                if data_placeholder.get('has_cached_analysis')
-                else "- | -"
+            self._append_result_row(
+                row_pos,
+                internal_path,
+                target_rel_path,
+                is_validated_present,
+                data_placeholder,
+                needs_analysis,
+                placeholder_text="Ожидание...",
             )
-            self.table_results.setItem(row_pos, 2, NumericTableWidgetItem(len_text))
-            self.table_results.setItem(row_pos, 3, QTableWidgetItem("Ожидание..."))
-            
-            self.results_data[row_pos] = data_placeholder
-            self.path_row_map[internal_path] = row_pos
-            
-            # Помечаем как "Грязный" (нужен анализ)
-            if needs_analysis:
-                self.dirty_files.add(internal_path)
-            
-            # Скрываем строку сразу, если это готовый файл, а галочка выключена
-            if is_validated_present and not self.check_revalidate_ok.isChecked():
-                self.table_results.setRowHidden(row_pos, True)
-            
+
             row_pos += 1
 
         if self._is_destroyed():
@@ -3414,7 +3464,7 @@ class TranslationValidatorPage(ShellPage):
 
         status_item = self.table_results.item(row, 3)
         if status_item:
-            status_item.setText("Редакт.")
+            status_item.setText(self.STATUS_LABELS["edited"])
 
         self.update_row_color(row, 'edited')
         self._fixer_stale_rows.add(row)
@@ -4093,9 +4143,8 @@ class TranslationValidatorPage(ShellPage):
         self.table_results.setSortingEnabled(False)
         self.table_results.setUpdatesEnabled(False)
 
-        status_map = {'problem': "Проблема", 'neutral': "Проблем нет", 'ok': "Готов", 'delete': "На удаление", 'retry': "К переотправке", 'edited': "Редакт."}
         show_all = self.check_show_all.isChecked()
-        
+
         current_bounds = self._get_current_ratio_bounds()
 
         for row in range(self.table_results.rowCount()):
@@ -4120,8 +4169,8 @@ class TranslationValidatorPage(ShellPage):
                 item_3 = QTableWidgetItem("")
                 self.table_results.setItem(row, 3, item_3)
             
-            item_3.setText(status_map.get(visual_status, visual_status))
-            
+            item_3.setText(self.STATUS_LABELS.get(visual_status, visual_status))
+
             self.update_row_color(row, visual_status)
 
             # 4. Скрываем/Показываем строку
@@ -4341,37 +4390,15 @@ class TranslationValidatorPage(ShellPage):
                 needs_analysis = True
                 self._invalidate_analysis_for_data(data)
 
-            self.table_results.insertRow(row_pos)
-
-            display_text = f"{os.path.basename(internal_path)}"
-            if is_validated_present:
-                display_text += " [Готов]"
-            else:
-                display_text += f" -> {os.path.basename(target_rel_path)}"
-
-            display_path_item = SortableChapterItem(display_text, internal_path)
-            display_path_item.setData(Qt.ItemDataRole.UserRole, is_validated_present)
-            self.table_results.setItem(row_pos, 0, display_path_item)
-
-            current_reasons, _ = self._calculate_status_for_data(data)
-            self._set_problem_cell(row_pos, data, current_reasons)
-
-            len_text = (
-                f"{data.get('len_orig', 0)} | {data.get('len_trans', 0)}"
-                if data.get('has_cached_analysis')
-                else "- | -"
+            self._append_result_row(
+                row_pos,
+                internal_path,
+                target_rel_path,
+                is_validated_present,
+                data,
+                needs_analysis,
+                placeholder_text="...",
             )
-            self.table_results.setItem(row_pos, 2, NumericTableWidgetItem(len_text))
-            self.table_results.setItem(row_pos, 3, QTableWidgetItem("..."))
-
-            self.results_data[row_pos] = data
-            self.path_row_map[internal_path] = row_pos
-
-            if needs_analysis:
-                self.dirty_files.add(internal_path)
-
-            if is_validated_present and not self.check_revalidate_ok.isChecked():
-                self.table_results.setRowHidden(row_pos, True)
 
             row_pos += 1
         
@@ -4716,7 +4743,7 @@ class TranslationValidatorPage(ShellPage):
             self.results_data[row]['status'] = 'retry'
             status_item = self.table_results.item(row, 3)
             if status_item:
-                status_item.setText("К переотправке")
+                status_item.setText(self.STATUS_LABELS["retry"])
             self.update_row_color(row, 'retry')
             marked_count += 1
 
@@ -4861,9 +4888,7 @@ class TranslationValidatorPage(ShellPage):
         self._set_problem_cell(row_pos, result, current_reasons)
 
         # 4. Применение статуса и цвета
-        status_map = {'problem': "Проблема", 'neutral': "Проблем нет", 'ok': "Готов", 'delete': "На удаление", 'retry': "К переотправке", 'edited': "Редакт."}
-
-        self.table_results.item(row_pos, 3).setText(status_map.get(visual_status, visual_status))
+        self.table_results.item(row_pos, 3).setText(self.STATUS_LABELS.get(visual_status, visual_status))
         self.update_row_color(row_pos, visual_status)
         
         # 5. Видимость
@@ -4972,7 +4997,7 @@ class TranslationValidatorPage(ShellPage):
             if not self.results_data[row].get('is_edited', False):
                 self.results_data[row]['is_edited'] = True
                 # Обновляем статус в таблице, чтобы было видно
-                self.table_results.item(row, 3).setText("Редакт.")
+                self.table_results.item(row, 3).setText(self.STATUS_LABELS["edited"])
                 self.update_row_color(row, 'edited')
             
             # 3. Активируем кнопку сохранения, так как есть несохраненные изменения
@@ -5170,16 +5195,22 @@ class TranslationValidatorPage(ShellPage):
 
     def mark_selected_rows(self, status):
         selected_rows = sorted(list(set(item.row() for item in self.table_results.selectedItems())))
-        
-        status_map = {
-            'delete': ("На удаление", "delete"),
-            'mark_ok': ("Готов", "ok"),
-            'retry': ("К переотправке", "retry")
+
+        # Ключи действия -> внутренний статус (структура иная, чем у
+        # STATUS_LABELS, так как ключ здесь — имя действия кнопки, а не
+        # внутренний статус); сами подписи теперь берутся из канонического
+        # STATUS_LABELS, а не дублируются здесь литералами
+        # (dups-gt_ui_dialogs_validation-01, finding …26).
+        action_to_status = {
+            'delete': "delete",
+            'mark_ok': "ok",
+            'retry': "retry",
         }
-        
-        if status not in status_map: return
-        
-        display_text, internal_status = status_map[status]
+
+        if status not in action_to_status: return
+
+        internal_status = action_to_status[status]
+        display_text = self.STATUS_LABELS[internal_status]
 
         for row in selected_rows:
             if row in self.results_data:
@@ -5263,7 +5294,35 @@ class TranslationValidatorPage(ShellPage):
             self.btn_save_changes.setEnabled(False)
 
         return saved_count
-    
+
+    def _offer_remaining_good_files_dialog(self, title, text, show_button_text, auto_button_text):
+        """Показывает вопрос "что делать с оставшимися файлами" и выполняет
+        выбранное действие.
+
+        Общая часть двух дословно совпадавших блоков в apply_changes и
+        on_analysis_finished (dups-gt_ui_dialogs_validation-01, finding
+        …26-status-map-and-no-problem-dial); заголовок/текст/подписи кнопок
+        "Показать…"/"Автоматически…" — единственное сохранённое различие
+        между вызывающими, поэтому они переданы параметрами, а не зашиты
+        внутрь.
+        """
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(text)
+        msg_box.setIcon(QMessageBox.Icon.Question)
+
+        btn_show = msg_box.addButton(show_button_text, QMessageBox.ButtonRole.AcceptRole)
+        btn_auto = msg_box.addButton(auto_button_text, QMessageBox.ButtonRole.ActionRole)
+        msg_box.addButton("Ничего не делать", QMessageBox.ButtonRole.RejectRole)
+
+        msg_box.exec()
+
+        if msg_box.clickedButton() == btn_show:
+            self.check_show_all.setChecked(True)
+            self.start_analysis()
+        elif msg_box.clickedButton() == btn_auto:
+            self.auto_process_good_files()
+
     @pyqtSlot()
     def apply_changes(self):
         if not self.project_manager:
@@ -5383,17 +5442,12 @@ class TranslationValidatorPage(ShellPage):
 
         # Проверка на оставшиеся файлы
         if self.table_results.rowCount() == 0 and not self.check_show_all.isChecked() and self._are_any_translated_files_left():
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("Проблемные файлы обработаны"); msg_box.setText("Что делать с оставшимися 'хорошими' файлами?")
-            msg_box.setIcon(QMessageBox.Icon.Question)
-            btn_show = msg_box.addButton("Показать для проверки", QMessageBox.ButtonRole.AcceptRole)
-            btn_auto = msg_box.addButton("Автоматически пометить 'Готовыми'", QMessageBox.ButtonRole.ActionRole)
-            btn_cancel = msg_box.addButton("Ничего не делать", QMessageBox.ButtonRole.RejectRole)
-            msg_box.exec()
-            if msg_box.clickedButton() == btn_show:
-                self.check_show_all.setChecked(True); self.start_analysis()
-            elif msg_box.clickedButton() == btn_auto:
-                self.auto_process_good_files()
+            self._offer_remaining_good_files_dialog(
+                "Проблемные файлы обработаны",
+                "Что делать с оставшимися 'хорошими' файлами?",
+                "Показать для проверки",
+                "Автоматически пометить 'Готовыми'",
+            )
 
 
 
@@ -5440,23 +5494,12 @@ class TranslationValidatorPage(ShellPage):
         
         # Добавляем новую проверку: self._are_any_translated_files_left()
         if self.table_results.rowCount() == 0 and not self.check_show_all.isChecked() and self._are_any_translated_files_left():
-        
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("Проблем не найдено")
-            msg_box.setText("Первичная проверка не нашла проблемных файлов. Что вы хотите сделать?")
-            msg_box.setIcon(QMessageBox.Icon.Question)
-
-            btn_show = msg_box.addButton("Показать все для ручной проверки", QMessageBox.ButtonRole.AcceptRole)
-            btn_auto = msg_box.addButton("Считать все 'Готовыми' и переместить", QMessageBox.ButtonRole.ActionRole)
-            btn_cancel = msg_box.addButton("Ничего не делать", QMessageBox.ButtonRole.RejectRole)
-
-            msg_box.exec()
-
-            if msg_box.clickedButton() == btn_show:
-                self.check_show_all.setChecked(True)
-                self.start_analysis()
-            elif msg_box.clickedButton() == btn_auto:
-                self.auto_process_good_files()
+            self._offer_remaining_good_files_dialog(
+                "Проблем не найдено",
+                "Первичная проверка не нашла проблемных файлов. Что вы хотите сделать?",
+                "Показать все для ручной проверки",
+                "Считать все 'Готовыми' и переместить",
+            )
 
     def _ensure_row_translated_html_loaded(self, row_index):
         result_data = self.results_data.get(row_index)
@@ -5717,20 +5760,15 @@ class TranslationValidatorPage(ShellPage):
         return list(grouped_data_map.values()), soup_cache
 
     def _build_current_untranslated_exceptions(self):
-        if self.settings_manager:
-            exceptions_text = self.settings_manager.get_last_word_exceptions_text()
-            if not exceptions_text.strip():
-                exceptions_text = api_config.default_word_exceptions()
-        else:
-            exceptions_text = api_config.default_word_exceptions()
-
-        exceptions_set = {
-            line.strip().lower()
-            for line in exceptions_text.splitlines()
-            if line.strip() and not line.strip().startswith('#')
-        }
-
-        return self._glossary_latin_residue_exceptions(exceptions_set, warn_context="пересчёта исключений")
+        # dups-gt_ui_dialogs_validation-01, finding …9-word-exceptions-
+        # builder-copy: раньше этот метод дословно повторял тело
+        # _get_effective_word_exceptions (чтение settings_manager ->
+        # api_config.default_word_exceptions -> разбор строк с фильтром '#'
+        # и lower()). Единственная разница между копиями была в тексте
+        # warn_context для предупреждения при ошибке чтения глоссария, так
+        # что теперь это тонкий вызов канонического метода с тем же
+        # контекстом.
+        return self._get_effective_word_exceptions()
 
     def _recalculate_untranslated_words_for_rows(self, affected_rows):
         # finding-ui-dialogs-validation_design_1-untranslated-detection-triplic:
@@ -5853,7 +5891,7 @@ class TranslationValidatorPage(ShellPage):
                 self.results_data[row_idx]['is_edited'] = True
                 status_item = self.table_results.item(row_idx, 3)
                 if status_item:
-                    status_item.setText("Редакт.")
+                    status_item.setText(self.STATUS_LABELS["edited"])
                 self.update_row_color(row_idx, 'edited')
 
         self._recalculate_untranslated_words_for_rows(affected_rows)
@@ -5914,6 +5952,16 @@ class TranslationValidatorPage(ShellPage):
         max_payloads: int = 3,
         text_limit: int = 4000,
     ):
+        # dups-gt_ui_dialogs_validation-01, finding …6-truncate-auto-trace-
+        # copy (вторая половина): по форме вывода ("Промпт/Запрос N/Ответ N/
+        # ... скрыто N") этот метод похож на
+        # auto_workflow_helpers.compose_auto_trace_details, но входные
+        # данные структурно другие — здесь prompt_text + отдельные списки
+        # request_payloads/response_payloads, там список trace-словарей с
+        # phase/metadata. Объединение потребовало бы флага-переключателя
+        # формы входа без реальной пользы, поэтому сознательно оставлено
+        # отдельным методом; общая truncate-логика уже вынесена в
+        # _truncate_auto_trace_text -> auto_workflow_helpers.
         blocks = []
         prompt_block = self._truncate_auto_trace_text(prompt_text, text_limit)
         if prompt_block:
@@ -6414,8 +6462,11 @@ class TranslationValidatorDialog(
                 event.ignore()
                 return
             elif action == "menu":
-                # Устанавливаем спецкод для перезагрузки цикла в main.py
-                QApplication.exit(2000)  # EXIT_CODE_REBOOT
+                # Перезапускаем цикл main.py через канонический
+                # return_to_main_menu() (dups-gt_ui_dialogs_validation-01,
+                # finding …15-legacy-dialog-wrappers-x3) вместо литерала
+                # QApplication.exit(2000).
+                return_to_main_menu()
                 event.accept()
             else:
                 # Обычный выход

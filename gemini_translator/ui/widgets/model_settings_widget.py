@@ -36,6 +36,27 @@ MCP_MODEL_PLACEHOLDER = "Модель выбирает AI-приложение"
 MCP_MODEL_NAME = "MCP Client"
 
 
+def _resolve_initial_browse_dir(settings_manager, current_path: str) -> str:
+    """Общая часть выбора стартовой папки для диалогов QFileDialog.getExistingDirectory.
+
+    Если current_path уже указывает на существующую директорию, он и возвращается.
+    Иначе делается попытка получить папку из settings_manager: сперва
+    get_project_start_folder (если есть), иначе get_last_project_folder. Любая
+    ошибка settings_manager (или отсутствие обоих методов) даёт пустую строку.
+
+    Финальная валидация результата (запасной вариант на случай, если и это не
+    директория) у вызывающих кодов разная и намеренно оставлена на их стороне.
+    """
+    if current_path and os.path.isdir(current_path):
+        return current_path
+    try:
+        if hasattr(settings_manager, "get_project_start_folder"):
+            return settings_manager.get_project_start_folder() or ""
+        return settings_manager.get_last_project_folder() or ""
+    except Exception:
+        return ""
+
+
 class CustomModelDialog(QDialog):
     def __init__(self, provider_name: str, defaults: dict | None = None, parent=None):
         super().__init__(parent)
@@ -259,15 +280,7 @@ class FreeDeepseekApiDialog(QDialog):
 
     def _browse_repo_dir(self):
         current_path = self._selected_repo_dir()
-        initial_dir = current_path if current_path and os.path.isdir(current_path) else ""
-        if not initial_dir:
-            try:
-                if hasattr(self.settings_manager, "get_project_start_folder"):
-                    initial_dir = self.settings_manager.get_project_start_folder() or ""
-                else:
-                    initial_dir = self.settings_manager.get_last_project_folder() or ""
-            except Exception:
-                initial_dir = ""
+        initial_dir = _resolve_initial_browse_dir(self.settings_manager, current_path or "")
         if not initial_dir or not os.path.isdir(initial_dir):
             initial_dir = os.path.expanduser("~")
 
@@ -1062,16 +1075,7 @@ class ModelSettingsWidget(EventBusMixin, QGroupBox):
 
     def _browse_workascii_directory(self, target_edit, caption: str):
         current_path = str(target_edit.text() or "").strip()
-        initial_dir = current_path if current_path and os.path.isdir(current_path) else ""
-
-        if not initial_dir:
-            try:
-                if hasattr(self.settings_manager, "get_project_start_folder"):
-                    initial_dir = self.settings_manager.get_project_start_folder() or ""
-                else:
-                    initial_dir = self.settings_manager.get_last_project_folder() or ""
-            except Exception:
-                initial_dir = ""
+        initial_dir = _resolve_initial_browse_dir(self.settings_manager, current_path)
 
         if initial_dir and not os.path.isdir(initial_dir):
             initial_dir = os.path.dirname(initial_dir)

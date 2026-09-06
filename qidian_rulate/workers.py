@@ -2711,6 +2711,62 @@ def _find_generated_cover(
     return max(candidates, key=lambda item: item.stat().st_mtime)
 
 
+def _execute_codex_cover_command(
+    command,
+    *,
+    project_root: Path,
+    output_dir: Path,
+    target_path: Path,
+    log,
+    action_label: str,
+) -> Path:
+    """Запускает Codex CLI для генерации/перевода обложки и находит результат.
+
+    Каноническая реализация общего блока CodexCoverGenerateWorker.run и
+    CodexCoverTranslateWorker.run (cluster dups-qidian_rulate_workers-59,
+    finding qidian-tools/design/5-codex-cover-worker-run-duplica): запуск
+    subprocess.run, логирование stdout/stderr, проверка returncode и поиск
+    сгенерированного файла через _find_generated_cover были продублированы
+    почти дословно между обоими воркерами, отличаясь только текстом
+    сообщения об отсутствующем файле - этот текст передаётся через
+    `action_label` ("обложки" / "переведённой обложки").
+    """
+    started_at = time.time()
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    completed = subprocess.run(
+        command,
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=1200,
+        creationflags=creationflags,
+        check=False,
+    )
+
+    if completed.stdout.strip():
+        log("DEBUG", "Codex stdout:\n" + _tail_text(completed.stdout))
+    if completed.stderr.strip():
+        log("DEBUG", "Codex stderr:\n" + _tail_text(completed.stderr))
+    if completed.returncode != 0:
+        details = _tail_text(completed.stderr or completed.stdout)
+        raise RuntimeError(f"Codex завершился с кодом {completed.returncode}. {details}".strip())
+
+    generated_path = _find_generated_cover(
+        output_dir,
+        target_path,
+        started_at,
+        codex_output="\n".join([completed.stdout, completed.stderr]),
+    )
+    if not generated_path:
+        details = _tail_text(completed.stdout or completed.stderr)
+        raise RuntimeError(
+            f"Codex завершился без найденного файла {action_label} в output/codex_covers. " + details
+        )
+    return generated_path
+
+
 def _build_codex_cover_generation_prompt(cover_prompt: str, target_path: Path) -> str:
     return f"""Use the imagegen skill/tool to generate a finished raster book cover.
 
@@ -2828,40 +2884,14 @@ class CodexCoverGenerateWorker(QThread):
             _append_codex_prompt(command, prompt)
 
             self.log("INFO", f"Codex: запускаю генерацию обложки в {target_path}")
-            started_at = time.time()
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
-            completed = subprocess.run(
+            generated_path = _execute_codex_cover_command(
                 command,
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=1200,
-                creationflags=creationflags,
-                check=False,
+                project_root=project_root,
+                output_dir=self.output_dir,
+                target_path=target_path,
+                log=self.log,
+                action_label="обложки",
             )
-
-            if completed.stdout.strip():
-                self.log("DEBUG", "Codex stdout:\n" + _tail_text(completed.stdout))
-            if completed.stderr.strip():
-                self.log("DEBUG", "Codex stderr:\n" + _tail_text(completed.stderr))
-            if completed.returncode != 0:
-                details = _tail_text(completed.stderr or completed.stdout)
-                raise RuntimeError(f"Codex завершился с кодом {completed.returncode}. {details}".strip())
-
-            generated_path = _find_generated_cover(
-                self.output_dir,
-                target_path,
-                started_at,
-                codex_output="\n".join([completed.stdout, completed.stderr]),
-            )
-            if not generated_path:
-                details = _tail_text(completed.stdout or completed.stderr)
-                raise RuntimeError(
-                    "Codex завершился без найденного файла обложки в output/codex_covers. "
-                    + details
-                )
 
             self.cover_ready.emit(str(generated_path.resolve()))
             self.log("SUCCESS", f"Codex: обложка создана: {generated_path.resolve()}")
@@ -2957,40 +2987,14 @@ class CodexCoverTranslateWorker(QThread):
             _append_codex_prompt(command, prompt)
 
             self.log("INFO", f"Codex: редактирую обложку и сохраняю результат в {target_path}")
-            started_at = time.time()
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
-            completed = subprocess.run(
+            generated_path = _execute_codex_cover_command(
                 command,
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=1200,
-                creationflags=creationflags,
-                check=False,
+                project_root=project_root,
+                output_dir=self.output_dir,
+                target_path=target_path,
+                log=self.log,
+                action_label="переведённой обложки",
             )
-
-            if completed.stdout.strip():
-                self.log("DEBUG", "Codex stdout:\n" + _tail_text(completed.stdout))
-            if completed.stderr.strip():
-                self.log("DEBUG", "Codex stderr:\n" + _tail_text(completed.stderr))
-            if completed.returncode != 0:
-                details = _tail_text(completed.stderr or completed.stdout)
-                raise RuntimeError(f"Codex завершился с кодом {completed.returncode}. {details}".strip())
-
-            generated_path = _find_generated_cover(
-                self.output_dir,
-                target_path,
-                started_at,
-                codex_output="\n".join([completed.stdout, completed.stderr]),
-            )
-            if not generated_path:
-                details = _tail_text(completed.stdout or completed.stderr)
-                raise RuntimeError(
-                    "Codex завершился без найденного файла переведённой обложки в output/codex_covers. "
-                    + details
-                )
 
             self.cover_ready.emit(str(generated_path.resolve()))
             self.log("SUCCESS", f"Codex: переведённая обложка создана: {generated_path.resolve()}")
@@ -4515,56 +4519,15 @@ _QIDIAN_EXTRACT_SCRIPT = r"""() => {
         }
         return "";
     };
-    const descriptionFromBody = () => {
-        const body = bodyText();
-        const lines = body.replace(/\r/g, "").split("\n").map((line) => line.replace(/[ \t\u00a0]+/g, " ").trim());
-        const headers = new Set(["作品简介", "内容简介", "书籍简介", "小说简介", "作品介绍", "内容介绍"]);
-        const isHeader = (line) => headers.has(line) || (line.length <= 16 && Array.from(headers).some((header) => line.endsWith(header)));
-        const start = lines.findIndex(isHeader);
-        if (start < 0) return "";
-        const stopLines = new Set(["男生月票榜", "女生月票榜", "月票", "推荐票", "打赏", "本月票数", "本周打赏人数", "包含本书的书单", "目录", "书友互动", "本书荣誉"]);
-        const isStopLine = (line) => (
-            stopLines.has(line) ||
-            line.startsWith("男生月票榜") ||
-            line.startsWith("女生月票榜") ||
-            line.startsWith("包含本书的书单") ||
-            line.startsWith("目录 ")
-        );
-        const isLikelyTag = (line) => (
-            line &&
-            line.length <= 8 &&
-            /[\u4e00-\u9fff]/.test(line) &&
-            !/[。！？!?…，、；;：:《》“”"'（）()]/.test(line)
-        );
-        let stopReached = false;
-        let entries = [];
-        for (const line of lines.slice(start + 1)) {
-            if (!line) {
-                if (entries.length && entries[entries.length - 1] !== null) entries.push(null);
-                continue;
-            }
-            if (isStopLine(line)) {
-                stopReached = true;
-                break;
-            }
-            entries.push(line);
-        }
-        while (entries.length && entries[0] === null) entries.shift();
-        while (entries.length && entries[entries.length - 1] === null) entries.pop();
-        if (
-            stopReached &&
-            entries.length >= 2 &&
-            entries[entries.length - 2] === null &&
-            isLikelyTag(entries[entries.length - 1])
-        ) {
-            entries = entries.slice(0, -2);
-        }
-        return entries
-            .map((entry) => entry === null ? "" : entry)
-            .join("\n")
-            .replace(/\n{3,}/g, "\n\n")
-            .trim();
-    };
+    // Эвристика поиска описания по заголовку/стоп-строкам живёт теперь
+    // только в Python (_extract_qidian_description_from_body,
+    // qidian_rulate/workers.py) - раньше она была продублирована здесь
+    // байт-в-байт (cluster dups-qidian_rulate_workers-59, finding
+    // qidian-tools/design/4-qidian-description-heuristic-d) и рисковала
+    // разойтись с Python-версией при будущей правке только одной из копий.
+    // Этот скрипт отдаёт сырой body_text, а простые DOM-фолбэки ниже
+    // остаются как запасной кандидат на случай, если Python-эвристика не
+    // найдёт заголовок описания в body_text.
     const imageFromSrcset = (srcset) => {
         if (!srcset) return "";
         const first = srcset.split(",")[0] || "";
@@ -4588,7 +4551,6 @@ _QIDIAN_EXTRACT_SCRIPT = r"""() => {
         ], "src") ||
         imageFromSrcset(firstAttr([".book-img img", ".book-cover img", "img"], "srcset"));
     const description =
-        descriptionFromBody() ||
         firstMultilineText([
             ".book-intro p",
             ".book-intro",

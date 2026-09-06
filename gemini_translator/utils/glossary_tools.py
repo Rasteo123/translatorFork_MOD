@@ -779,23 +779,43 @@ class TaskPreparer:
             for i, chunk_content in enumerate(chunks)
         ]
 
-    def _prepare_chunk_payloads(self, chapter_file):
+    @staticmethod
+    def _extract_body_prefix_suffix(content):
+        """Разрезает HTML главы на (prefix, body_content, suffix) по тегам <body>/</body>.
+
+        Общая часть для _prepare_chunk_payloads: если тегов <body> нет,
+        вся глава считается body_content, а prefix/suffix — пустые строки.
+        """
+        prefix, body_content, suffix = "", content, ""
+        content_lower = content.lower()
+        start_body_tag_pos, end_body_tag_pos = content_lower.find('<body'), content_lower.rfind('</body>')
+        if start_body_tag_pos != -1 and end_body_tag_pos != -1:
+            start_body_content_pos = content_lower.find('>', start_body_tag_pos) + 1
+            prefix = content[:start_body_content_pos]
+            body_content = content[start_body_content_pos:end_body_tag_pos]
+            suffix = content[end_body_tag_pos:]
+        return prefix, body_content, suffix
+
+    def _prepare_chunk_payloads(self, chapter_file, epub_zip=None):
+        """Читает главу, режет её на chunks и собирает пейлоады.
+
+        epub_zip: опциональный уже открытый zipfile.ZipFile — позволяет
+        вызывающему коду (например, _prepare_individual_and_chunked_tasks)
+        переиспользовать один открытый архив на все главы вместо того,
+        чтобы открывать файл заново на каждую главу.
+        """
         from ..utils.text import split_text_into_chunks
         from ..api import config as api_config
 
         try:
-            with open(self.epub_path, 'rb') as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
+            if epub_zip is not None:
                 content = epub_zip.read(chapter_file).decode("utf-8", "ignore")
+            else:
+                with open(self.epub_path, 'rb') as epub_file, zipfile.ZipFile(epub_file, "r") as own_epub_zip:
+                    content = own_epub_zip.read(chapter_file).decode("utf-8", "ignore")
             content = normalize_epub_chapter_heading_to_h1(content)
 
-            prefix, body_content, suffix = "", content, ""
-            content_lower = content.lower()
-            start_body_tag_pos, end_body_tag_pos = content_lower.find('<body'), content_lower.rfind('</body>')
-            if start_body_tag_pos != -1 and end_body_tag_pos != -1:
-                start_body_content_pos = content_lower.find('>', start_body_tag_pos) + 1
-                prefix = content[:start_body_content_pos]
-                body_content = content[start_body_content_pos:end_body_tag_pos]
-                suffix = content[end_body_tag_pos:]
+            prefix, body_content, suffix = self._extract_body_prefix_suffix(content)
 
             chunk_target_chars = self._chunk_target_chars_for_token_limit(body_content)
             chunks = split_text_into_chunks(body_content, chunk_target_chars,
@@ -821,9 +841,6 @@ class TaskPreparer:
         if not needs_chunking:
             return [plain_payload(chapter_file) for chapter_file in chapter_list]
 
-        from ..utils.text import split_text_into_chunks
-        from ..api import config as api_config
-
         final_payloads = []
         with open(self.epub_path, 'rb') as epub_file, zipfile.ZipFile(epub_file, "r") as epub_zip:
             for chapter_file in chapter_list:
@@ -831,27 +848,9 @@ class TaskPreparer:
                     final_payloads.append(plain_payload(chapter_file))
                     continue
 
-                try:
-                    content = epub_zip.read(chapter_file).decode("utf-8", "ignore")
-                    content = normalize_epub_chapter_heading_to_h1(content)
-
-                    prefix, body_content, suffix = "", content, ""
-                    content_lower = content.lower()
-                    start_body_tag_pos, end_body_tag_pos = content_lower.find('<body'), content_lower.rfind('</body>')
-                    if start_body_tag_pos != -1 and end_body_tag_pos != -1:
-                        start_body_content_pos = content_lower.find('>', start_body_tag_pos) + 1
-                        prefix, body_content, suffix = content[:start_body_content_pos], content[start_body_content_pos:end_body_tag_pos], content[end_body_tag_pos:]
-
-                    chunk_target_chars = self._chunk_target_chars_for_token_limit(body_content)
-                    chunks = split_text_into_chunks(body_content, chunk_target_chars,
-                                                    api_config.chunk_search_window(), api_config.min_chunk_size())
-
-                    final_payloads.extend(
-                        self._payloads_from_chunks(chapter_file, chunks, prefix, suffix)
-                    )
-                except Exception as e:
-                    print(f"[ERROR] Критическая ошибка при чанкинге главы {chapter_file}: {e}")
-                    final_payloads.append(('epub', self.epub_path, chapter_file))
+                final_payloads.extend(
+                    self._prepare_chunk_payloads(chapter_file, epub_zip=epub_zip)
+                )
         return final_payloads
 
 
