@@ -65,8 +65,14 @@ class AsyncInitialSetupRoutesThroughStage1Tests(unittest.TestCase):
         dialog.loading_label.setVisible.assert_called_once_with(False)
         dialog.main_content_widget.setVisible.assert_called_once_with(True)
         # Ровно одно планирование следующего шага (а не два, как было бы при
-        # двойном запуске цепочки через _start_data_loading_chain).
+        # двойном запуске цепочки через бывший _start_data_loading_chain).
         timer_mock.assert_called_once_with(0, dialog._async_stage_2_get_filelist)
+
+    def test_start_data_loading_chain_wrapper_is_gone(self):
+        # После объединения цепочки запуска (finding 13 кластера epub-08)
+        # обёртка _start_data_loading_chain осталась без вызывающих — мёртвый
+        # код удалён, чтобы не появился второй путь запуска этапа 2.
+        self.assertFalse(hasattr(EpubHtmlSelectorDialog, "_start_data_loading_chain"))
 
 
 if __name__ == "__main__":

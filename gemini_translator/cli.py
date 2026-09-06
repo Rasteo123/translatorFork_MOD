@@ -793,12 +793,16 @@ def _run_task_session(
     settings: dict,
     payloads: list[tuple],
     *,
+    task_chains: list[list[tuple]] | None = None,
     verbose: bool = False,
     timeout: int | None = None,
     capture_results: bool = False,
 ) -> tuple[dict, list[dict]]:
     app.task_manager.clear_all_queues()
-    app.task_manager.set_pending_tasks(payloads)
+    if task_chains:
+        app.task_manager.set_pending_task_chains(task_chains)
+    else:
+        app.task_manager.set_pending_tasks(payloads)
     observer = CliSessionObserver(
         app,
         verbose=verbose,
@@ -814,9 +818,11 @@ def _run_task_session(
         })
 
     app.event_bus.set_data("cli_session_active", True)
-    runtime.app_main.QtCore.QTimer.singleShot(0, start_session)
-    app.exec()
-    app.event_bus.pop_data("cli_session_active", None)
+    try:
+        runtime.app_main.QtCore.QTimer.singleShot(0, start_session)
+        app.exec()
+    finally:
+        app.event_bus.pop_data("cli_session_active", None)
     return observer.result_payload(app.task_manager), list(observer.task_results)
 
 
@@ -1125,32 +1131,15 @@ def command_translate(args) -> dict:
                 "plan": plan.summary,
             }
 
-        if plan.task_chains:
-            app.task_manager.set_pending_task_chains(plan.task_chains)
-        else:
-            app.task_manager.set_pending_tasks(plan.payloads)
-
-        observer = CliSessionObserver(
+        result, _ = _run_task_session(
             app,
+            runtime,
+            settings,
+            plan.payloads,
+            task_chains=plan.task_chains,
             verbose=bool(args.verbose),
-            timeout_sec=args.timeout,
+            timeout=args.timeout,
         )
-
-        def start_session():
-            app.event_bus.event_posted.emit({
-                "event": "start_session_requested",
-                "source": "cli",
-                "data": {"settings": settings},
-            })
-
-        app.event_bus.set_data("cli_session_active", True)
-        try:
-            runtime.app_main.QtCore.QTimer.singleShot(0, start_session)
-            app.exec()
-        finally:
-            app.event_bus.pop_data("cli_session_active", None)
-
-        result = observer.result_payload(app.task_manager)
         return {
             "ok": _session_completed_ok(result),
             "status": "finished" if result["finished"] else "stopped",

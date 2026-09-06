@@ -570,6 +570,10 @@ def test_command_translate_reports_failed_task_as_not_ok(monkeypatch, tmp_path):
         def __init__(self):
             self.pending_tasks = None
             self.pending_task_chains = None
+            self.cleared = False
+
+        def clear_all_queues(self):
+            self.cleared = True
 
         def set_pending_tasks(self, payloads):
             self.pending_tasks = payloads
@@ -607,10 +611,12 @@ def test_command_translate_reports_failed_task_as_not_ok(monkeypatch, tmp_path):
             self.shutdown_called = True
 
     class FakeObserver:
-        def __init__(self, app, *, verbose, timeout_sec):
+        def __init__(self, app, *, verbose, timeout_sec, capture_results=False):
             self.app = app
             self.verbose = verbose
             self.timeout_sec = timeout_sec
+            self.capture_results = capture_results
+            self.task_results = []
 
         def result_payload(self, task_manager):
             return {

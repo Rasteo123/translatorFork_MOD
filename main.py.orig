@@ -1191,6 +1191,21 @@ class EventBus(QtCore.QObject):
                 return True
         return False
 
+    def clear_managed_session_flags(self, prefix: str = "managed_session_active_") -> int:
+        """Снимает все флаги управляемой сессии (парный мутатор к
+        has_managed_session_active), возвращает число удалённых ключей.
+
+        Раньше TranslationEngine._end_session сканировал _data_store по тому
+        же литералу префикса сам; теперь литерал живёт только здесь.
+        Снимок ключей берём до удаления, чтобы не менять словарь во время
+        итерации; сам pop_data — под общим локом.
+        """
+        removed = 0
+        for key in [k for k in self._data_store.keys() if k.startswith(prefix)]:
+            self.pop_data(key, None)
+            removed += 1
+        return removed
+
 
 def initialize_global_resources(app: QApplication):
     """

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import random
 import re
 import time
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from typing import Any
 
 from gemini_translator.api import config as api_config
 from gemini_translator.core.worker_helpers.prompt_builder import PromptBuilder
+from gemini_translator.utils.glossary_tools import ContextManager
 from gemini_translator.utils.helpers import estimate_gemini_tokens
 from gemini_translator.utils.text import safe_format
 
@@ -41,34 +44,111 @@ class PromptBundle:
     debug_report: str
 
 
-class _BenchmarkContextManager:
-    def __init__(self, glossary_entries: list[dict[str, Any]] | None = None):
-        self.glossary_entries = list(glossary_entries or [])
+def _normalize_glossary_entry(entry: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Достаёт (original, translated, note) из гибкого формата записи бенчмарка."""
+    if not isinstance(entry, dict):
+        return None
+    original = str(entry.get("original") or entry.get("source") or "").strip()
+    translated = str(entry.get("rus") or entry.get("translation") or entry.get("target") or "").strip()
+    if not original or not translated:
+        return None
+    note = str(entry.get("note") or "").strip()
+    return original, translated, note
 
-    def prepare_html_for_translation(self, text_content):
-        return text_content or ""
 
-    def format_glossary_for_prompt(self, text_content="", current_chapters_list=None):
-        usable_entries = []
-        source_text = str(text_content or "")
-        for entry in self.glossary_entries:
-            if not isinstance(entry, dict):
-                continue
-            original = str(entry.get("original") or entry.get("source") or "").strip()
-            translated = str(entry.get("rus") or entry.get("translation") or entry.get("target") or "").strip()
-            note = str(entry.get("note") or "").strip()
-            if not original or not translated:
-                continue
-            if source_text and original not in source_text:
-                continue
-            item = {"original": original, "rus": translated}
-            if note:
-                item["note"] = note
-            usable_entries.append(item)
+def _format_glossary_preview(glossary_entries: list[dict[str, Any]] | None, text_content: str = "") -> str:
+    """Лёгкий, намеренно упрощённый предпросмотр глоссария для режима 'raw'.
 
-        if not usable_entries:
-            return ""
-        return json.dumps(usable_entries, ensure_ascii=False, indent=2)
+    Режим 'raw' проверяет сырой пользовательский шаблон в обход PromptBuilder
+    и реального ContextManager, поэтому паритет с production-форматированием
+    здесь не требуется и не заявляется — только точное вхождение термина в
+    текст, без версионности/fuzzy-фильтрации/explanation-блока.
+    """
+    usable_entries = []
+    source_text = str(text_content or "")
+    for entry in glossary_entries or []:
+        normalized = _normalize_glossary_entry(entry)
+        if normalized is None:
+            continue
+        original, translated, note = normalized
+        if source_text and original not in source_text:
+            continue
+        item = {"original": original, "rus": translated}
+        if note:
+            item["note"] = note
+        usable_entries.append(item)
+
+    if not usable_entries:
+        return ""
+    return json.dumps(usable_entries, ensure_ascii=False, indent=2)
+
+
+def _build_benchmark_context_manager(glossary_entries: list[dict[str, Any]] | None) -> ContextManager:
+    """Собирает production-совместимый ContextManager для режима 'project'.
+
+    'project'-режим прогоняет промпт через настоящий PromptBuilder, поэтому
+    глоссарий обязан форматироваться так же, как в реальном пайплайне
+    перевода (версионность, объяснения тегов, перемешивание порядка, фильтр
+    по вхождению в текст) — вместо параллельной упрощённой копии
+    format_glossary_for_prompt.
+
+    use_dynamic_glossary=True + fuzzy_threshold=100 включает в
+    ContextManager.format_glossary_for_prompt точный (не семантический)
+    Regex-фильтр SmartGlossaryFilter: в промпт попадают только термины,
+    реально встречающиеся в тексте (или его CJK-вариантах написания), без
+    fuzzy/similarity-подбора родственных слов — тот же режим, что был у
+    удалённой _BenchmarkContextManager. regex_service не передаётся —
+    SmartGlossaryFilter.filter_glossary_for_text строит его на лету, отдельно
+    построенная карта схожести для этого не нужна.
+
+    ВНИМАНИЕ (воспроизводимость): format_glossary_for_prompt перемешивает
+    порядок итоговых терминов через random.shuffle — это поведение прод-кода
+    (снижает ложные срабатывания safety-фильтров LLM на соседстве слов), и
+    'project'-режим бенчмарка теперь честно его наследует. Чтобы промпты
+    одного и того же кейса оставались побайтово одинаковыми между запусками
+    бенчмарка, build_prompt_bundle оборачивает вызов
+    PromptBuilder.prepare_for_api в _deterministic_glossary_shuffle: эта
+    функция не трогает glossary_tools.py, а лишь временно фиксирует и потом
+    восстанавливает состояние глобального модуля random вокруг конкретного
+    вызова.
+    """
+    context_manager = ContextManager(output_folder="")
+    normalized_glossary: dict[str, dict[str, Any]] = {}
+    for entry in glossary_entries or []:
+        normalized = _normalize_glossary_entry(entry)
+        if normalized is None:
+            continue
+        original, translated, note = normalized
+        normalized_glossary[original] = {"original": original, "rus": translated, "note": note}
+    context_manager.global_glossary = normalized_glossary
+    context_manager.use_dynamic_glossary = True
+    context_manager.fuzzy_threshold = 100
+    return context_manager
+
+
+@contextmanager
+def _deterministic_glossary_shuffle(seed_key: str):
+    """Делает случайный порядок терминов глоссария внутри одного вызова
+    ContextManager.format_glossary_for_prompt воспроизводимым для бенчмарка.
+
+    format_glossary_for_prompt перемешивает термины через глобальный модуль
+    random (см. ContextManager._reorder_glossary_items) — намеренное
+    прод-поведение, которое 'project'-режим теперь честно наследует вместе с
+    остальным форматированием. Чтобы одинаковые кейс+промпт бенчмарка
+    давали одинаковый prompt_path/prompt_tokens_estimate между запусками, мы
+    временно засеиваем random детерминированно по ключу (id промпта + id
+    кейса), а затем ОБЯЗАТЕЛЬНО возвращаем прежнее состояние random —
+    чтобы фиксация seed'а ради воспроизводимости не была побочным эффектом
+    для остального процесса (другой код, использующий random в том же
+    процессе после бенчмарка, не должен внезапно получить детерминированную
+    последовательность).
+    """
+    previous_state = random.getstate()
+    random.seed(seed_key)
+    try:
+        yield
+    finally:
+        random.setstate(previous_state)
 
 
 class _NoopSettingsManager:
@@ -219,9 +299,8 @@ def build_prompt_bundle(
     use_system_instruction = bool(prompt_spec.get("use_system_instruction", defaults.get("use_system_instruction", True)))
     mode = str(prompt_spec.get("mode") or defaults.get("prompt_mode") or "project").strip().lower()
 
-    context_manager = _BenchmarkContextManager(glossary)
     if mode == "raw":
-        glossary_text = context_manager.format_glossary_for_prompt(source_html)
+        glossary_text = _format_glossary_preview(glossary, source_html)
         user_prompt = safe_format(
             template,
             text=source_html,
@@ -242,17 +321,20 @@ def build_prompt_bundle(
     if mode != "project":
         raise BenchmarkConfigError(f"Unsupported prompt mode '{mode}' for prompt '{prompt_spec.get('id')}'")
 
+    context_manager = _build_benchmark_context_manager(glossary)
     builder = PromptBuilder(
         template,
         context_manager,
         use_system_instruction=use_system_instruction,
         sequential_mode=bool(prompt_spec.get("sequential_mode", defaults.get("sequential_mode", False))),
     )
-    user_prompt, system_text, debug_report = builder.prepare_for_api(
-        source_html,
-        system_instruction,
-        current_chapters_list=[str(case_spec.get("id") or "benchmark_case")],
-    )
+    seed_key = f"{prompt_spec.get('id') or 'prompt'}::{case_spec.get('id') or 'benchmark_case'}"
+    with _deterministic_glossary_shuffle(seed_key):
+        user_prompt, system_text, debug_report = builder.prepare_for_api(
+            source_html,
+            system_instruction,
+            current_chapters_list=[str(case_spec.get("id") or "benchmark_case")],
+        )
     return PromptBundle(user_prompt=user_prompt, system_instruction=system_text, debug_report=debug_report)
 
 

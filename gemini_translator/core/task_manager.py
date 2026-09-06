@@ -1742,18 +1742,14 @@ class ChapterQueueManager(QObject):
 
         Единая точка для предиката, ранее вручную скопированного в
         is_finished и has_pending_tasks (core-a/design/1-managed-session-scan-4x).
-        Предпочитает канонический метод EventBus; для тестовых заглушек
-        шины без него — тот же ручной скан по _data_store, что был раньше.
+        Только канонический метод EventBus: заглушки шины без него считаются
+        «не управляемым режимом» (запасной ручной скан _data_store был бы
+        ещё одной копией предиката).
         """
-        if self.bus is None:
+        predicate = getattr(self.bus, 'has_managed_session_active', None)
+        if predicate is None:
             return False
-        if hasattr(self.bus, 'has_managed_session_active'):
-            return bool(self.bus.has_managed_session_active())
-        if hasattr(self.bus, '_data_store'):
-            for key in self.bus._data_store.keys():
-                if key.startswith('managed_session_active_') and self.bus.get_data(key) is True:
-                    return True
-        return False
+        return predicate() is True
 
     def is_finished(self) -> bool:
         """

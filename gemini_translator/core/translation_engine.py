@@ -1002,12 +1002,19 @@ class TranslationEngine(EventBusMixin, QObject):
             return
 
     def is_managed_mode(self):
-        if self.bus and hasattr(self.bus, '_data_store'):
-            # Ищем любой ключ, начинающийся с 'managed_session_active_'
-            for key in self.bus._data_store.keys():
-                if key.startswith('managed_session_active_') and self.bus.get_data(key) is True:
-                    return True
-        return False
+        """Активна ли управляемая сессия оркестратора.
+
+        Делегирует в канонический EventBus.has_managed_session_active()
+        (main.py) вместо собственного скана bus._data_store по префиксу
+        'managed_session_active_' — хвост дедупа core-a/design/1
+        (dups-gt_core_task_manager-21). Сравнение ``is True`` намеренное:
+        заглушки шины в тестах (MagicMock) отдают не-bool, и это, как и
+        раньше, означает «не управляемый режим».
+        """
+        predicate = getattr(self.bus, 'has_managed_session_active', None)
+        if predicate is None:
+            return False
+        return predicate() is True
     
     
     def cancel_translation(self, reason: str = "Отменено пользователем"):
@@ -1020,12 +1027,13 @@ class TranslationEngine(EventBusMixin, QObject):
         # 2. Принудительная зачистка флагов Оркестратора.
         # Это гарантирует, что при любом выходе (ошибка, стоп, финиш)
         # система выйдет из управляемого режима и воркеры перестанут ждать.
-        if self.bus and hasattr(self.bus, '_data_store'):
-             # Создаем список ключей для удаления (чтобы не менять словарь во время итерации)
-             orchestrator_keys = [k for k in self.bus._data_store.keys() if k.startswith('managed_session_active_')]
-             for k in orchestrator_keys:
-                 self.bus.pop_data(k, None)
-                 
+        # Делегируем в EventBus.clear_managed_session_flags() (main.py) —
+        # парный мутатор к has_managed_session_active; собственный скан
+        # _data_store по префиксу убран (хвост core-a/design/1).
+        clear_flags = getattr(self.bus, 'clear_managed_session_flags', None)
+        if clear_flags is not None:
+            clear_flags()
+
         if not self.session_id or self.is_session_finishing:
             return
         

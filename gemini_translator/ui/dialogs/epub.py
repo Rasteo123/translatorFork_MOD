@@ -606,10 +606,6 @@ class EpubHtmlSelectorDialog(QDialog):
         """
         self._async_stage_1_build_ui_if_needed()
 
-    def _start_data_loading_chain(self):
-        """Просто запускает _async_stage_2_get_filelist."""
-        QtCore.QTimer.singleShot(0, self._async_stage_2_get_filelist)
-    
     def _async_stage_2_get_filelist(self):
         """ЭТАП 2: Копирует EPUB в память и читает его структуру с учетом spine."""
         try:
