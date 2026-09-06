@@ -24,6 +24,7 @@ from ..qa.service import (
     chapter_fingerprint,
     describe_deferral,
 )
+from ..utils.callbacks import safe_call
 from .task_manager import QaQueueOutcome
 
 
@@ -403,23 +404,15 @@ class ChapterQaCoordinator:
         done = 0
 
         def report_progress(chapter_id: str) -> None:
-            if not callable(on_progress):
-                return
-            try:
-                on_progress(done, total, chapter_id)
-            except Exception:  # noqa: BLE001 - a display never fails a check
-                return
+            safe_call(on_progress, done, total, chapter_id)
 
         def report_chapter(result: ChapterQaResult | None) -> None:
             # A pass over a whole book runs for hours; whoever started it should
             # see each chapter's edits as they happen, not a report that stays
             # empty until the last one.
-            if not callable(on_chapter) or result is None:
+            if result is None:
                 return
-            try:
-                on_chapter(result)
-            except Exception:  # noqa: BLE001 - a display never fails a check
-                return
+            safe_call(on_chapter, result)
 
         async def check(index: int, event: TranslationReadyEvent) -> None:
             nonlocal done

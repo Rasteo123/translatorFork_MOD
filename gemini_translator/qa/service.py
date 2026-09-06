@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from ..utils.epub_json import build_html_document_model, render_document_html
+from ..utils.text import escape_html
 from .addition_detector import AdditionCandidate, ChapterContext
 from .capabilities import QaCapabilitySettings
 from .coverage_service import SEMANTIC_ALIGNMENT_MODE, CoverageAnalysis, CoverageRequest
@@ -312,7 +313,7 @@ class ChapterQaResult:
         changes = self.changes()
         parts = [
             "<div style=\"font-family: Consolas, monospace;\">",
-            f"<p><b>Глава:</b> {_escape(self.chapter_id)}</p>",
+            f"<p><b>Глава:</b> {escape_html(self.chapter_id)}</p>",
         ]
         for kind, title, before_label, after_label in groups:
             selected = [change for change in changes if change.kind == kind]
@@ -320,14 +321,14 @@ class ChapterQaResult:
                 continue
             parts.append(f"<p><b>{title}: {len(selected)}</b></p>")
             for change in selected:
-                note = f", {_escape(change.note)}" if change.note else ""
-                parts.append(f"<p>[{_escape(change.identity)}{note}]<br>")
+                note = f", {escape_html(change.note)}" if change.note else ""
+                parts.append(f"<p>[{escape_html(change.identity)}{note}]<br>")
                 if change.before and change.after and change.same_language:
                     before_html, after_html = highlight_pair(change.before, change.after)
                     parts.append(f"{before_label}: {before_html}<br>")
                     parts.append(f"{after_label}: {after_html}</p>")
                 elif change.before and change.after:
-                    parts.append(f"{before_label}: {_escape(change.before)}<br>")
+                    parts.append(f"{before_label}: {escape_html(change.before)}<br>")
                     parts.append(
                         f"{after_label}: {highlight_added(change.after)}</p>"
                     )
@@ -336,7 +337,7 @@ class ChapterQaResult:
                         f"{after_label}: {highlight_added(change.after)}</p>"
                     )
                 else:
-                    parts.append(f"{before_label}: {_escape(change.before)}</p>")
+                    parts.append(f"{before_label}: {escape_html(change.before)}</p>")
         unchecked = int(getattr(self.language, "unchecked_blocks", 0) or 0)
         if unchecked:
             total = int(getattr(self.language, "blocks_total", 0) or 0)
@@ -357,7 +358,7 @@ class ChapterQaResult:
             parts.append("<p><b>Предупреждения языковой проверки:</b><br>")
             parts.append(
                 "<br>".join(
-                    _escape(describe_refusal(warning)) for warning in language_warnings
+                    escape_html(describe_refusal(warning)) for warning in language_warnings
                 )
             )
             parts.append("</p>")
@@ -1148,12 +1149,6 @@ class TranslationQualityService:
         except OSError:
             # A journal that cannot be written must not undo an applied repair.
             return
-
-
-def _escape(value: str) -> str:
-    from html import escape
-
-    return escape(str(value or ""))
 
 
 def _chapter_status(result: ChapterQaResult) -> str:

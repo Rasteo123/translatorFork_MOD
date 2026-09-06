@@ -21,6 +21,7 @@ from pathlib import Path
 from datetime import datetime
 from PyQt6.QtCore import Qt, pyqtSlot, QThread, pyqtSignal, QRect, QRectF, QEvent, QEventLoop, QTimer
 from PyQt6.QtGui import QColor, QTextCharFormat, QFont, QTextCursor, QBrush, QTextOption, QPainter
+from ...utils.glossary_tools import normalize_glossary_entries
 
 class CenteredCheckboxDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -105,7 +106,7 @@ from ...utils.power_inhibitor import (
 )
 from ...api import config as api_config
 from ...utils import chapter_identity as chapter_identity_utils
-from ...utils.helpers import format_compact_number
+from ...utils.helpers import TokenUsageTrackerMixin
 from ..widgets.key_management_widget import KeyManagementWidget
 from ..widgets.model_settings_widget import ModelSettingsWidget
 from ..shell import ShellPage
@@ -303,7 +304,7 @@ class SingleFixWorker(QThread):
             self.engine.close_session_resources()
 
 
-class ConsistencyValidatorPage(ShellPage):
+class ConsistencyValidatorPage(TokenUsageTrackerMixin, ShellPage):
     page_title = "Проверка согласованности"
     preferred_window_size = (1400, 950)
 
@@ -1006,45 +1007,11 @@ class ConsistencyValidatorPage(ShellPage):
 
     @staticmethod
     def _normalize_shared_project_glossary_entries(glossary_data):
-        raw_entries = []
-        if isinstance(glossary_data, dict):
-            raw_entries = [
-                {'original': key, **value}
-                for key, value in glossary_data.items()
-                if isinstance(value, dict)
-            ]
-        elif isinstance(glossary_data, list):
-            raw_entries = glossary_data
-
-        normalized = []
-        seen = set()
-        for entry in raw_entries:
-            if not isinstance(entry, dict):
-                continue
-
-            original = str(entry.get('original', '') or '').strip()
-            rus = str(
-                entry.get('rus') or entry.get('translation') or entry.get('target') or ''
-            ).strip()
-            note = str(
-                entry.get('note') or entry.get('notes') or entry.get('definition') or ''
-            ).strip()
-            if not any([original, rus, note]):
-                continue
-
-            signature = (original.casefold(), rus, note)
-            if signature in seen:
-                continue
-            seen.add(signature)
-
-            normalized.append({
-                'original': original,
-                'rus': rus,
-                'note': note,
-                'timestamp': entry.get('timestamp'),
-            })
-
-        return normalized
+        return normalize_glossary_entries(
+            glossary_data,
+            note_fallbacks=('note', 'notes', 'definition'),
+            stamp_missing_timestamp=False,
+        )
 
     def _load_shared_project_glossary(self):
         glossary_widget = self._find_shared_glossary_widget()
@@ -1360,34 +1327,17 @@ class ConsistencyValidatorPage(ShellPage):
         self.analysis_thread.error.connect(self.on_error)
         self.analysis_thread.start()
 
-    def _reset_token_usage(self):
-        self._token_input_total = 0
-        self._token_output_total = 0
-        self._token_total = 0
-        self._update_token_usage_label()
-
-    def _update_token_usage_label(self):
-        total = format_compact_number(self._token_total)
-        input_tokens = format_compact_number(self._token_input_total)
-        output_tokens = format_compact_number(self._token_output_total)
-        self.token_usage_label.setText(f"Токены: ~{total}")
-        self.token_usage_label.setToolTip(
-            f"Оценка токенов за текущий сеанс: всего ~{total}, "
-            f"вход ~{input_tokens}, выход ~{output_tokens}."
-        )
+    # _reset_token_usage / _update_token_usage_label: см.
+    # TokenUsageTrackerMixin (pcluster-03) — дефолтный
+    # _token_usage_tooltip_scope ("текущий сеанс") подходит без переопределения.
 
     @pyqtSlot(dict)
     def on_token_usage_updated(self, usage: dict):
-        try:
-            input_tokens = int((usage or {}).get('input_tokens', 0) or 0)
-            output_tokens = int((usage or {}).get('output_tokens', 0) or 0)
-            total_tokens = int((usage or {}).get('total_tokens', input_tokens + output_tokens) or 0)
-        except (TypeError, ValueError):
-            return
-        self._token_input_total += max(0, input_tokens)
-        self._token_output_total += max(0, output_tokens)
-        self._token_total += max(0, total_tokens)
-        self._update_token_usage_label()
+        # Подписка на прямой Qt-сигнал engine.token_usage_updated (см. connect
+        # выше) — архитектура подписки своя для этого класса, но само
+        # накопление (парсинг+клампинг+++) общее — TokenUsageTrackerMixin
+        # (pcluster-03, issue №1 ревью).
+        self._accumulate_token_usage(usage)
 
     def _stop_analysis(self):
         """Останавливает анализ."""

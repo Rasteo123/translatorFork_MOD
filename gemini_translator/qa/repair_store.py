@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 from ..utils.io_utils import atomic_write_bytes
+from ._common import validate_nonempty_string as _validate_nonempty_string
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _METADATA_VERSION = "translation_qa_repair_store.v1"
@@ -325,9 +326,10 @@ class RepairStore:
 
 
 def _identity(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise RepairStoreError(f"{field_name} must be a nonempty string")
-    return value.strip()
+    try:
+        return _validate_nonempty_string(value, field_name)
+    except ValueError as exc:
+        raise RepairStoreError(str(exc)) from exc
 
 
 def _safe_name(value: str) -> str:

@@ -21,6 +21,7 @@ from ..utils.project_manager import TranslationProjectManager
 from ..api.managers import ApiKeyManager
 from ..core.chunk_assembler import ChunkAssembler
 from ..utils.power_inhibitor import PREVENT_SLEEP_SETTING_KEY, PowerInhibitor
+from .event_bus_mixin import EventBusMixin
 
 def shutdown_executor_with_deadline(executor, deadline_seconds: float) -> int:
     """Останавливает пул, ожидая потоки не дольше deadline_seconds.
@@ -131,7 +132,7 @@ def normalize_browser_profile_settings(settings: dict, log_callback=None):
             f"[BROWSER] Parallel browser profiles enabled: {profile_count} profile(s)."
         )
 
-class TranslationEngine(QObject):
+class TranslationEngine(EventBusMixin, QObject):
     LONG_PAUSE_THRESHOLD_SECONDS = 60
     MAX_REPEATED_WAITS = 5
     # --- АСИНХРОННЫЕ ИНТЕРВАЛЫ ---
@@ -236,24 +237,6 @@ class TranslationEngine(QObject):
             self.bus.emit_event(event)
         elif hasattr(self.bus, "event_posted"):
             self.bus.event_posted.emit(event)
-
-    def _connect_to_bus(self):
-        if hasattr(self.bus, "subscribe"):
-            for topic in self._event_topics:
-                self.bus.subscribe(topic, self.on_event)
-            self._uses_topic_subscription = True
-        else:
-            self.bus.event_posted.connect(self.on_event)
-
-    def _disconnect_from_bus(self):
-        try:
-            if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                for topic in self._event_topics:
-                    self.bus.unsubscribe(topic, self.on_event)
-            elif hasattr(self.bus, "event_posted"):
-                self.bus.event_posted.disconnect(self.on_event)
-        except (TypeError, RuntimeError, ValueError):
-            pass
 
     def _cleanup_chunk_assembler(self):
         assembler = getattr(self, "chunk_assembler", None)

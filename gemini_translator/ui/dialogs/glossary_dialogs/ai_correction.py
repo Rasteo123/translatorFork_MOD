@@ -247,9 +247,6 @@ class CorrectionSessionPage(ShellPage):
             self.engine = app.engine
 
     def _locate_glossary_owner(self):
-        parent = self.parent()
-        if parent and parent.__class__.__name__ in ('MainWindow', 'GlossaryManagerPage'):
-            return parent
         return find_ancestor_by_class_name(self, 'MainWindow', 'GlossaryManagerPage')
 
     def _get_glossary_owner(self):

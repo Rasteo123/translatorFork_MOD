@@ -28,6 +28,138 @@ except ImportError:
 
 
 # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
+
+def glossary_entry_key(entry) -> str:
+    """Каноническое вычисление ключа термина записи глоссария по полю original.
+
+    Единая точка для сравнения/поиска записей глоссария по термину, чтобы
+    отдельные места (ui/widgets/glossary_widget.py,
+    ui/dialogs/validation_dialogs/untranslated_fixer_dialog.py) не
+    реализовывали `.strip().casefold()` заново с расходящимися граничными
+    случаями (например, `None` в поле original).
+    """
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("original", "") or "").strip().casefold()
+
+
+def glossary_entries_as_list(data, *, wrap_scalar_as_rus=True) -> list:
+    """Приводит "сырые" данные глоссария (dict term->перевод/запись либо уже
+    готовый список записей) к единому списку записей.
+
+    Единая точка для мест, которые заново реализовывали одинаковую распаковку
+    dict-или-list: ui/widgets/glossary_widget.py (``glossary_snapshot``,
+    ``GlossaryWidget.set_glossary`` — реэкспортируют эту функцию под тем же
+    именем) и ``normalize_glossary_entries`` ниже.
+
+    ``wrap_scalar_as_rus`` управляет единственным реальным различием между
+    прежними копиями: как обрабатывать НЕ-словарное значение внутри
+    словарного ``data`` (например ``{"Foo": "перевод"}``). По умолчанию
+    (``True``, поведение glossary_widget) оно оборачивается в
+    ``{"rus": value}``; при ``False`` (поведение normalize_glossary_entries)
+    такая запись отбрасывается.
+
+    Список возвращается как есть (в том числе с не-dict элементами — их
+    отсеивает вызывающий код), прочие типы ``data`` дают пустой список.
+    """
+    if isinstance(data, dict):
+        result = []
+        for key, value in data.items():
+            if isinstance(value, dict):
+                result.append({"original": key, **value})
+            elif wrap_scalar_as_rus:
+                result.append({"original": key, "rus": value})
+        return result
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def glossary_list_to_replacer_map(entries) -> dict:
+    """Строит карту ``{original: {'rus': ..., 'note': ...}}`` из списка
+    записей глоссария — формат, ожидаемый ``GlossaryReplacer``/``TaskPreparer``.
+
+    Единая точка для мест (ui/dialogs/setup.py: ``_copy_original_chapters``,
+    ``_calibrate_cpu``, ``get_settings``), которые заново строили эту карту
+    инлайново; одна из копий (``_calibrate_cpu``) молча теряла фолбэк
+    ``'rus' -> 'translation'``, из-за чего записи с переводом только в поле
+    ``'translation'`` попадали в калибровочную выборку с пустым ``'rus'``.
+    """
+    result = {}
+    for entry in entries:
+        original = str(entry.get('original') or "").strip()
+        if not original:
+            continue
+        result[original] = {
+            'rus': str((entry.get('rus') or entry.get('translation')) or ""),
+            'note': str(entry.get('note') or ""),
+        }
+    return result
+
+
+def normalize_glossary_entries(glossary_data, *, note_fallbacks=("note",), stamp_missing_timestamp=False):
+    """Каноническое приведение сырых данных глоссария (dict-или-list) к списку
+    нормализованных записей ``{original, rus, note, timestamp}`` с дедупликацией.
+
+    Единая точка для мест (ui/dialogs/validation_dialogs/untranslated_fixer_dialog.py:
+    ``ProjectGlossaryController._normalize_entries``, ui/dialogs/consistency_checker.py:
+    ``ConsistencyValidatorPage._normalize_shared_project_glossary_entries``), которые
+    заново реализовывали одинаковый парсинг + дедупликацию по сигнатуре
+    ``(original.casefold(), rus, note)`` с двумя реальными расхождениями:
+
+    * ``note_fallbacks`` — очередь полей, из которых берётся примечание записи
+      (первое непустое значение побеждает); по умолчанию только ``note``.
+    * ``stamp_missing_timestamp`` — если запись не содержит своего ``timestamp``
+      (или он ложный), проставить ли текущее время (``time.time()``) вместо
+      того, чтобы оставить как есть (``entry.get('timestamp')``, может быть
+      ``None``).
+
+    ``glossary_data`` может быть словарём вида ``{original: {...}}`` (тогда
+    ``original`` берётся из ключа) или списком уже словарных записей.
+    """
+    now = time.time() if stamp_missing_timestamp else None
+
+    raw_entries = glossary_entries_as_list(glossary_data, wrap_scalar_as_rus=False)
+
+    normalized = []
+    seen = set()
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+
+        original = str(entry.get('original', '') or '').strip()
+        rus = str(entry.get('rus') or entry.get('translation') or entry.get('target') or '').strip()
+
+        note = ''
+        for field in note_fallbacks:
+            value = entry.get(field)
+            if value:
+                note = str(value).strip()
+                break
+
+        if not any([original, rus, note]):
+            continue
+
+        signature = (original.casefold(), rus, note)
+        if signature in seen:
+            continue
+        seen.add(signature)
+
+        timestamp = entry.get('timestamp')
+        if stamp_missing_timestamp:
+            timestamp = timestamp or now
+
+        normalized.append({
+            'original': original,
+            'rus': rus,
+            'note': note,
+            'timestamp': timestamp,
+        })
+
+    return normalized
+
+
 # --- НОВАЯ ФУНКЦИЯ ПЕРЕД КЛАССОМ ContextManager ---
 def segment_cjk_in_html(html_content, chinese_processor):
     """
@@ -745,7 +877,7 @@ class GlossaryAggregator:
 
         # Карта начального глоссария
         initial_map = {
-            entry['original'].lower().strip(): entry
+            glossary_entry_key(entry): entry
             for entry in self._initial_glossary if entry.get('original')
         }
 
@@ -759,7 +891,7 @@ class GlossaryAggregator:
             # Если термин из БД уже есть в начальном — игнорируем БД (Initial is King).
             # Если термина нет — добавляем.
             for term in new_terms_from_db:
-                key = term.get('original', '').lower().strip()
+                key = glossary_entry_key(term)
                 if key and key not in existing_keys:
                     final_list.append(term)
                     existing_keys.add(key) # На случай дублей в самой БД (хотя SQL их убрал)
@@ -771,7 +903,7 @@ class GlossaryAggregator:
 
             # 1. Создаем карту победителей из БД (они главнее)
             db_map = {
-                t['original'].lower().strip(): t
+                glossary_entry_key(t): t
                 for t in new_terms_from_db if t.get('original')
             }
 

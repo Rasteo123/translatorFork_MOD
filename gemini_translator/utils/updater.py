@@ -13,6 +13,7 @@ import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 from gemini_translator.api import config as api_config
 from gemini_translator.api.config import GITHUB_REPO
+from gemini_translator.utils.qt_worker import _CallableThread
 from gemini_translator.version import APP_VERSION
 
 
@@ -601,7 +602,7 @@ class _Cancelled(Exception):
     pass
 
 
-class FunctionWorker(QThread):
+class FunctionWorker(_CallableThread):
     """Выполняет callable в рабочем потоке: done(result) либо failed(msg)."""
 
     done = pyqtSignal(object)
@@ -611,8 +612,11 @@ class FunctionWorker(QThread):
         super().__init__(parent)
         self._fn = fn
 
-    def run(self):
-        try:
-            self.done.emit(self._fn())
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(getattr(e, "user_message", None) or str(e))
+    def _call(self):
+        return self._fn()
+
+    def _on_success(self, result):
+        self.done.emit(result)
+
+    def _on_error(self, exc):
+        self.failed.emit(getattr(exc, "user_message", None) or str(exc))

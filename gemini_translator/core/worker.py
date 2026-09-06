@@ -55,6 +55,8 @@ from .worker_helpers.emerger_tasks import EmergencyTask
 
 from .worker_helpers.task_factory import get_task_processor_class
 
+from .event_bus_mixin import EventBusMixin
+
 
 _DEBUG_OPERATION_CONTEXT = contextvars.ContextVar("worker_debug_operation_context", default={})
 WORKER_IDLE_WAKE_TIMEOUT_SECONDS = 2.0
@@ -71,7 +73,7 @@ DEFAULT_TASK_STREAM_MODE = {
 #  ЕДИНЫЙ УНИВЕРСАЛЬНЫЙ КЛАСС-ВОРКЕР
 # ============================================================================
 
-class UniversalWorker:
+class UniversalWorker(EventBusMixin):
     
     def __init__(self, **kwargs):
         
@@ -115,26 +117,6 @@ class UniversalWorker:
             self.bus.emit_event(event)
         else:
             self.bus.event_posted.emit(event)
-
-    def _connect_to_bus(self):
-        if hasattr(self.bus, "subscribe"):
-            for topic in self._event_topics:
-                self.bus.subscribe(topic, self.on_event)
-            self._uses_topic_subscription = True
-        else:
-            self.bus.event_posted.connect(self.on_event)
-
-    def _disconnect_from_bus(self):
-        if not getattr(self, 'bus', None):
-            return
-        try:
-            if getattr(self, '_uses_topic_subscription', False) and hasattr(self.bus, "unsubscribe"):
-                for topic in getattr(self, '_event_topics', ()):
-                    self.bus.unsubscribe(topic, self.on_event)
-            elif hasattr(self.bus, "event_posted"):
-                self.bus.event_posted.disconnect(self.on_event)
-        except (TypeError, RuntimeError, ValueError):
-            pass
 
     def notify_translation_ready(self, task_info, saved_records):
         """Hand saved chapters to translation QA without ever breaking translation.

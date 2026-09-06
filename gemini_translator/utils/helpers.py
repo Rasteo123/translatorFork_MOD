@@ -161,6 +161,88 @@ def format_thousands(value) -> str:
     return f"{int(value):,}".replace(",", " ")
 
 
+class TokenUsageTrackerMixin:
+    """Учёт токенов текущей сессии + подпись/тултип с компактными числами.
+
+    Канонический хелпер для cluster pcluster-03: ``ConsistencyValidatorPage``
+    (consistency_checker.py) и ``AITranslationPage``
+    (untranslated_fixer_dialog.py) держали побайтово идентичные
+    ``_reset_token_usage``/``_update_token_usage_label`` — единственным
+    расхождением был текст тултипа ("текущий сеанс" vs "текущую
+    AI-сессию"), вынесенный сюда в атрибут ``_token_usage_tooltip_scope``.
+
+    По замечанию ревью (major, issue №1): само ядро «учёта токенов» —
+    парсинг payload'а события, клампинг отрицательных значений и накопление
+    трёх счётчиков — тоже было побайтово продублировано в телах
+    ``ConsistencyValidatorPage.on_token_usage_updated`` и
+    ``AITranslationPage._on_token_usage_updated``. Обоснование про разные
+    источники события (Qt-сигнал engine.token_usage_updated напрямую у
+    ConsistencyValidatorPage против общей EventBus-шины у AITranslationPage)
+    относится к ФИЛЬТРУ владения сессией (``_is_owned_session_event``,
+    вызывается ВЫШЕ по стеку — в ``_on_global_event`` fixer'а), а не к телу
+    самого накопления. Поэтому ядро вынесено сюда как
+    ``_accumulate_token_usage`` — каждый класс сохраняет свой тонкий
+    Qt-slot/обработчик-делегат с собственной архитектурой подписки и
+    собственным именем (``on_token_usage_updated`` /
+    ``_on_token_usage_updated``), но тело обоих — один вызов
+    ``self._accumulate_token_usage(payload)``.
+
+    StatusBarWidget (issue №2, minor) — третья, самостоятельная копия
+    учёта токенов сессии в проекте (парсинг+накопление в
+    ``_on_token_usage_updated``, обнуление в ``reset()``, рендер в
+    ``_format_token_usage_suffix``) — сюда сознательно НЕ подключена: у неё
+    другой набор имён атрибутов (``input_tokens_used`` и т.п.), другой
+    формат вывода (суффикс к прогресс-бару, а не подпись+тултип) и
+    дополнительный ранний выход на полностью нулевом пакете
+    (``if total<=0 and input<=0 and output<=0: return``), которого здесь
+    нет. Насильное слияние потребовало бы либо адаптера имён атрибутов,
+    либо флага поведения — сочтено того не стоящим при трёх полях расхождения.
+
+    Класс-хозяин обязан перед использованием иметь атрибуты
+    ``_token_input_total``, ``_token_output_total``, ``_token_total`` (int)
+    и ``token_usage_label`` (любой объект с ``setText``/``setToolTip`` —
+    утиная типизация, обычно ``QLabel``; жёсткой зависимости от PyQt в
+    этом модуле нет).
+    """
+
+    _token_usage_tooltip_scope = "текущий сеанс"
+
+    def _reset_token_usage(self):
+        self._token_input_total = 0
+        self._token_output_total = 0
+        self._token_total = 0
+        self._update_token_usage_label()
+
+    def _accumulate_token_usage(self, payload: dict) -> None:
+        """Канонический разбор+накопление payload'а события token_usage_updated.
+
+        Общее тело для ``ConsistencyValidatorPage.on_token_usage_updated`` и
+        ``AITranslationPage._on_token_usage_updated`` (pcluster-03, issue №1
+        ревью) — оба метода лишь делегируют сюда после собственной,
+        неизменной логики подписки/фильтрации на уровне вызывающего кода.
+        """
+        try:
+            input_tokens = int((payload or {}).get('input_tokens', 0) or 0)
+            output_tokens = int((payload or {}).get('output_tokens', 0) or 0)
+            total_tokens = int((payload or {}).get('total_tokens', input_tokens + output_tokens) or 0)
+        except (TypeError, ValueError):
+            return
+        self._token_input_total += max(0, input_tokens)
+        self._token_output_total += max(0, output_tokens)
+        self._token_total += max(0, total_tokens)
+        self._update_token_usage_label()
+
+    def _update_token_usage_label(self):
+        total = format_compact_number(self._token_total)
+        input_tokens = format_compact_number(self._token_input_total)
+        output_tokens = format_compact_number(self._token_output_total)
+        self.token_usage_label.setText(f"Токены: ~{total}")
+        self.token_usage_label.setToolTip(
+            f"Оценка токенов за {self._token_usage_tooltip_scope}: всего ~{total}, "
+            f"вход ~{input_tokens}, выход ~{output_tokens}."
+        )
+
+
 class TokenCounter:
     """Подсчет токенов для отслеживания использования API"""
     def __init__(self):

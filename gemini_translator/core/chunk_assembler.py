@@ -13,11 +13,12 @@ from ..utils.translated_paths import build_translated_output_path
 from .task_manager import decompress_chunk_content
 from ..utils.epub_tools import normalize_epub_chapter_heading_to_h1
 from ..utils.text import prettify_html, process_body_tag, validate_html_structure
+from .event_bus_mixin import EventBusMixin
 
 ASSEMBLY_VALIDATION_ERROR = "ASSEMBLY_VALIDATION"
 
 
-class ChunkAssembler(QObject):
+class ChunkAssembler(EventBusMixin, QObject):
     """
     Отслеживает и собирает переведенные чанки в финальные файлы глав.
     Класс является потокобезопасным.
@@ -51,31 +52,6 @@ class ChunkAssembler(QObject):
         self._assembly_timer.setSingleShot(True)
         self._assembly_timer.setInterval(350)
         self._assembly_timer.timeout.connect(self._run_scheduled_assembly_check)
-
-    def _connect_to_bus(self):
-        if hasattr(self.bus, "subscribe"):
-            for topic in self._event_topics:
-                self.bus.subscribe(topic, self.on_event)
-            self._uses_topic_subscription = True
-        else:
-            self.bus.event_posted.connect(self.on_event)
-        self._bus_connected = True
-
-    def _disconnect_from_bus(self):
-        if not self._bus_connected:
-            return
-
-        try:
-            if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                for topic in self._event_topics:
-                    self.bus.unsubscribe(topic, self.on_event)
-            elif hasattr(self.bus, "event_posted"):
-                self.bus.event_posted.disconnect(self.on_event)
-        except (TypeError, RuntimeError, ValueError):
-            pass
-        finally:
-            self._bus_connected = False
-            self._uses_topic_subscription = False
 
     def cleanup(self):
         self._is_cleaned_up = True

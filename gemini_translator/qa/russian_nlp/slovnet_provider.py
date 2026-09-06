@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import re
 
+from .._common import bounded_int as _bounded
 from ..models import SemanticUnit
 from .base import (
     ENTITY_TYPES,
@@ -49,8 +50,8 @@ class SlovnetProvider:
         if runtime is None:
             raise RussianNlpUnavailable("slovnet_runtime_missing")
         self._runtime = runtime
-        self.cpu_threads = _bounded(cpu_threads, 1, MAX_CPU_THREADS, 2)
-        self.batch_size = _bounded(batch_size, 1, MAX_BATCH_SIZE, 16)
+        self.cpu_threads = _bounded(cpu_threads, minimum=1, maximum=MAX_CPU_THREADS, default=2)
+        self.batch_size = _bounded(batch_size, minimum=1, maximum=MAX_BATCH_SIZE, default=16)
         self._model_versions = dict(model_versions or {})
 
     def analyze(self, units: Sequence[SemanticUnit]) -> RussianNlpReport:
@@ -155,12 +156,6 @@ def _int(value):
     return value
 
 
-def _bounded(value, minimum: int, maximum: int, default: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return default
-    return min(max(value, minimum), maximum)
-
-
 def load_runtime(model_dir, *, cpu_threads: int = 2):
     """Load the real Slovnet runtime, importing its packages only here."""
     from pathlib import Path
@@ -175,7 +170,8 @@ def load_runtime(model_dir, *, cpu_threads: int = 2):
         navec = Navec.load(str(directory / "navec_news_v1_1B_250K_300d_100q.tar"))
         ner = NER.load(str(directory / "slovnet_ner_news_v1.tar")).navec(navec)
         morph = Morph.load(
-            str(directory / "slovnet_morph_news_v1.tar"), batch_size=_bounded(cpu_threads, 1, MAX_CPU_THREADS, 2)
+            str(directory / "slovnet_morph_news_v1.tar"),
+            batch_size=_bounded(cpu_threads, minimum=1, maximum=MAX_CPU_THREADS, default=2),
         ).navec(navec)
         syntax = Syntax.load(str(directory / "slovnet_syntax_news_v1.tar")).navec(navec)
     except Exception as error:  # noqa: BLE001 - a bad install is an outage, not a crash

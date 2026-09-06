@@ -200,15 +200,12 @@ class FilterPackagingDialog(QDialog):
 
         for payload in final_payloads:
             task_type = payload[0]
-            chapters_in_task = []
-            
+            chapters_in_task = extract_chapters_from_payload(payload)
+
             if task_type == 'epub_batch':
-                chapters_in_task = payload[2]
                 batch_count += 1
                 total_chapters_in_batches += len(chapters_in_task)
-            elif task_type == 'epub':
-                chapters_in_task = [payload[2]]
-            
+
             # Проверяем, не "одинок" ли наш пациент
             task_chapters_set = set(chapters_in_task)
             filtered_in_task = task_chapters_set.intersection(filtered_set)

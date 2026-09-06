@@ -24,6 +24,7 @@ from gemini_translator.api.errors import (
 from gemini_translator.api.factory import get_api_handler_class
 from gemini_translator.core.handler_cleanup import cleanup_provider_handler
 from gemini_translator.utils.helpers import estimate_gemini_tokens, safe_int
+from gemini_translator.utils.text import split_csv
 
 
 TRANSLATION_TASK_TYPES = {"epub", "epub_batch", "epub_chunk", "raw_text_translation"}
@@ -129,10 +130,6 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _split_csv(value: str) -> list[str]:
-    return [item.strip() for item in re.split(r"[,;\n]+", value or "") if item.strip()]
 
 
 def _post_log(worker, message: str, **extra) -> None:
@@ -282,7 +279,7 @@ def _normalize_provider_specs(worker) -> list[dict[str, Any]]:
 
     items: list[Any]
     if isinstance(raw, str):
-        items = _split_csv(raw)
+        items = split_csv(raw)
     elif isinstance(raw, dict):
         items = [raw]
     elif isinstance(raw, (list, tuple)):
@@ -335,7 +332,7 @@ def _normalize_pass_specs(worker) -> list[dict[str, Any]]:
 
     raw_temperatures = getattr(worker, "multi_pass_temperatures", None)
     if isinstance(raw_temperatures, str):
-        temperatures = [_safe_float(item) for item in _split_csv(raw_temperatures)]
+        temperatures = [_safe_float(item) for item in split_csv(raw_temperatures)]
     elif isinstance(raw_temperatures, (list, tuple)):
         temperatures = [_safe_float(item) for item in raw_temperatures]
     else:

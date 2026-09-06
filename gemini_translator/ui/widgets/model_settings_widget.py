@@ -22,6 +22,7 @@ from ...api import config as api_config
 from ...utils import markdown_viewer
 from gemini_translator.ui import theme_manager
 from ..overlay_host import exec_dialog
+from ...core.event_bus_mixin import EventBusMixin
 
 CHATGPT_LOGIN_URL = "https://chatgpt.com/auth/login"
 CHATGPT_SIGNUP_URL = "https://chatgpt.com/auth/login?mode=signup"
@@ -390,7 +391,7 @@ class FreeDeepseekApiDialog(QDialog):
         super().closeEvent(event)
 
 
-class ModelSettingsWidget(QGroupBox):
+class ModelSettingsWidget(EventBusMixin, QGroupBox):
     """
     Виджет для инкапсуляции всех настроек, связанных с API-моделью.
     """
@@ -417,7 +418,6 @@ class ModelSettingsWidget(QGroupBox):
             raise RuntimeError("EventBus не найден.")
         self.bus = app.event_bus
         self._uses_topic_subscription = False
-        self._uses_broadcast_subscription = False
         self._provider_event_source_id = None
         self._mcp_mode = False
         self._mcp_restore_provider_id = None
@@ -1377,25 +1377,6 @@ class ModelSettingsWidget(QGroupBox):
             provider_id = data.get('provider_id')
             if provider_id:
                 self.set_available_models(provider_id)
-
-    def _connect_to_bus(self):
-        if hasattr(self.bus, "subscribe"):
-            for topic in self._event_topics:
-                self.bus.subscribe(topic, self.on_event)
-            self._uses_topic_subscription = True
-        elif hasattr(self.bus, "event_posted"):
-            self.bus.event_posted.connect(self.on_event)
-            self._uses_broadcast_subscription = True
-
-    def _disconnect_from_bus(self):
-        try:
-            if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                for topic in self._event_topics:
-                    self.bus.unsubscribe(topic, self.on_event)
-            elif self._uses_broadcast_subscription and hasattr(self.bus, "event_posted"):
-                self.bus.event_posted.disconnect(self.on_event)
-        except (TypeError, RuntimeError, ValueError):
-            pass
 
     def closeEvent(self, event):
         self._disconnect_from_bus()

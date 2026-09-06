@@ -8,6 +8,8 @@ strip=True) после удаления script/style/head/title/meta. Эквив
 закреплена корпусом tests/test_html_text_extraction.py.
 """
 
+import re
+
 from bs4 import BeautifulSoup
 
 _EXCLUDED_TAGS = ('script', 'style', 'head', 'title', 'meta')
@@ -48,3 +50,23 @@ try:
 except ImportError:
     HTML_TEXT_BACKEND = "beautifulsoup"
     extract_visible_text = _bs4_extract
+
+
+def extract_visible_text_normalized(value, *, from_html: bool = True, limit: int | None = None) -> str:
+    """extract_visible_text() + схлопывание пробелов (+опц. усечение до ``limit``).
+
+    Канонический общий хелпер для мест, которым нужен не просто видимый
+    текст, а ещё и «одна строка без переносов/двойных пробелов» — превью
+    проблемных терминов, поиск по навигации, отпечаток главы и т. п. При
+    ``from_html=False`` HTML не парсится вовсе (вход уже считается голым
+    текстом) — только схлопывание пробелов и усечение.
+    """
+    if not value:
+        return ""
+    text = str(value)
+    if from_html:
+        text = extract_visible_text(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if limit is not None and len(text) > limit:
+        text = text[:limit].rstrip()
+    return text

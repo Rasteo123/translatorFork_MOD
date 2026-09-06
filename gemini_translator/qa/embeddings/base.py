@@ -8,15 +8,18 @@ from typing import Protocol
 
 import numpy as np
 
+from .._common import validate_nonempty_string as _validate_nonempty_string
+
 
 class EmbeddingContractError(ValueError):
     """Raised when an embedding request or provider response is invalid."""
 
 
 def _nonempty_string(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise EmbeddingContractError(f"{field_name} must be a nonempty string")
-    return value.strip()
+    try:
+        return _validate_nonempty_string(value, field_name)
+    except ValueError as exc:
+        raise EmbeddingContractError(str(exc)) from exc
 
 
 def _positive_int(value: object, field_name: str) -> int:

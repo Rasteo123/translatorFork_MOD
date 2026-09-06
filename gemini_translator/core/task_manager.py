@@ -26,9 +26,10 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QThread, QTimer, Qt
+from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QTimer, Qt
 from PyQt6 import QtWidgets
 from ..api.config import SHARED_DB_URI
+from ..utils.qt_worker import _CallableThread
 from ..utils.text import truncate_log_details
 from .auto_workflow_helpers import extract_chapters_from_payload
 
@@ -2966,7 +2967,7 @@ class ChapterQueueManager(QObject):
         finally:
             if disk_conn: disk_conn.close()
 
-class TaskDBWorker(QThread):
+class TaskDBWorker(_CallableThread):
     """Фоновый поток для чтения БД очереди.
 
     Пока поток работает, объект удерживается реестром класса (см. ``start``):
@@ -3000,9 +3001,12 @@ class TaskDBWorker(QThread):
         self.wait(5000)
         TaskDBWorker._inflight.discard(self)
 
-    def run(self):
-        try:
-            self.result = self.target_func(*self.args, **self.kwargs)
-        except Exception as e:
-            print(f"[CRITICAL DB WORKER ERROR] Ошибка в фоновой задаче: {e}")
-            self.result = None
+    def _call(self):
+        return self.target_func(*self.args, **self.kwargs)
+
+    def _on_success(self, result):
+        self.result = result
+
+    def _on_error(self, exc):
+        print(f"[CRITICAL DB WORKER ERROR] Ошибка в фоновой задаче: {exc}")
+        self.result = None

@@ -15,6 +15,13 @@ from PyQt6.QtCore import Qt
 # --- Импорты из вашего проекта ---
 # Импортируем виджеты из их нового местоположения
 from .custom_widgets import ExpandingTextEditDelegate
+# apply_sub_table_edit_to_pending НЕ импортируется здесь на уровне модуля:
+# conflict_resolvers.py тянет ui.widgets.common_widgets -> ui/widgets/__init__.py
+# -> glossary_widget -> dialogs/glossary.py -> обратно этот же модуль
+# (за именем CoreTermAnalyzerDialog), и на момент загрузки этого файла он ещё
+# не успевает определиться -> ImportError. Импорт вынесен внутрь
+# CoreTermAnalyzerPage._on_sub_table_item_changed (см. ниже), где он выполняется
+# уже после того, как весь граф модулей полностью загружен.
 from ...shell import ShellPage
 from ..menu_utils import PageDialogProxyMixin, make_page_delegating_meta
 
@@ -769,26 +776,18 @@ class CoreTermAnalyzerPage(ShellPage):
 
     def _on_sub_table_item_changed(self, item: QTableWidgetItem):
         """Автоматически сохраняет изменения из таблицы 'соседей'."""
-        row, col = item.row(), item.column()
-        # Нас интересуют только столбцы с данными (0, 1, 2)
-        if col not in [0, 1, 2]: return
-
-        # Идентификатор (оригинальный ключ) хранится в UserRole столбца 0
-        id_item = self.members_table.item(row, 0)
-        if not id_item: return
-        original_term_id = id_item.data(Qt.ItemDataRole.UserRole)
-
-        # Получаем текущее состояние изменений для этого термина или его оригинал
-        current_term, current_data = self.pending_changes.get(
-            original_term_id,
-            (original_term_id, next((e for e in self.original_glossary_list if e.get('original') == original_term_id), {}).copy())
+        # Ленивый импорт: см. комментарий у блока импортов вверху файла
+        # (иначе на уровне модуля возникает цикл через ui.widgets.__init__).
+        from .conflict_resolvers import apply_sub_table_edit_to_pending
+        apply_sub_table_edit_to_pending(
+            self.members_table,
+            item,
+            self.pending_changes,
+            lambda original_term_id: next(
+                (e for e in self.original_glossary_list if e.get('original') == original_term_id),
+                {}
+            )
         )
-
-        if col == 0: current_term = item.text()
-        elif col == 1: current_data['rus'] = item.text()
-        elif col == 2: current_data['note'] = item.text()
-
-        self.pending_changes[original_term_id] = (current_term, current_data)
 
     def accept_changes(self):
         """Вызывается при нажатии 'Принять изменения'."""

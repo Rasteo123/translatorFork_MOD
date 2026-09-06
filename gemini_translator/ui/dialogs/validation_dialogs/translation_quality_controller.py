@@ -9,7 +9,7 @@ import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from ....utils.text import format_duration
+from ....utils.text import escape_html, format_duration
 from .translation_quality_models import BookQaReportSnapshot
 
 
@@ -27,12 +27,6 @@ RECHECK_REASONS = {
     "analysis_version_changed": "правила проверки изменились",
     "baseline_now_available": "появилась норма книги",
 }
-
-
-def _escape(value: str) -> str:
-    from html import escape
-
-    return escape(str(value or ""))
 
 
 class TranslationQualityController(QObject):
@@ -210,7 +204,7 @@ class TranslationQualityController(QObject):
         tail = f" Пропущено как улаженные: {settled}." if settled else ""
         return (
             f"<p><b>Продолжаем проверку: {len(selected)} глав(ы) из {total}.</b>"
-            f"{_escape(tail)}<br>{_escape(parts)}</p>"
+            f"{escape_html(tail)}<br>{escape_html(parts)}</p>"
         )
 
     def undo_chapter(self, chapter_id: str) -> None:
@@ -321,10 +315,10 @@ class TranslationQualityController(QObject):
                 self.chapter_logged.emit(result.change_details_html())
             else:
                 self.chapter_logged.emit(
-                    f"<p><b>{_escape(chapter_id)}</b> — без изменений.</p>"
+                    f"<p><b>{escape_html(chapter_id)}</b> — без изменений.</p>"
                 )
         except Exception:  # noqa: BLE001 - the log never fails a check
-            self.chapter_logged.emit(f"<p><b>{_escape(chapter_id)}</b></p>")
+            self.chapter_logged.emit(f"<p><b>{escape_html(chapter_id)}</b></p>")
 
     def _refresh_report_throttled(self) -> None:
         """Fill the table while the pass runs, without rereading the journal per chapter."""

@@ -25,6 +25,7 @@ from ..dialogs.glossary import (
 from ..dialogs.glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 from .ancestor_utils import find_ancestor_by_class_name
 from ...utils.document_importer import set_all_checked
+from ...utils.glossary_tools import glossary_entry_key, glossary_entries_as_list
 from ...utils.settings import SettingsManager
 from ...api import config as api_config
 from collections import defaultdict
@@ -41,8 +42,8 @@ GLOSSARY_PAGE_SIZE = 500
 def sorted_glossary_entries(entries: list[dict]) -> list[dict]:
     """Стабильно сортирует записи по original, оставляя пустые строки в конце."""
     def sort_key(entry):
-        original = str(entry.get("original", "") or "").strip()
-        return not original, original.casefold()
+        key = glossary_entry_key(entry)
+        return not key, key
 
     return sorted(
         entries,
@@ -54,15 +55,22 @@ def normalize_glossary_field(value) -> str:
     return "" if value is None else str(value)
 
 
+def apply_glossary_field_normalization(entry: dict) -> dict:
+    """Применяет normalize_glossary_field к общим полям записи глоссария
+    (original/rus/note и, если присутствует, translation) на месте.
+
+    Общая часть normalize_imported_glossary_entry и GlossaryWidget.set_glossary.
+    """
+    entry["original"] = normalize_glossary_field(entry.get("original"))
+    entry["rus"] = normalize_glossary_field(entry.get("rus"))
+    entry["note"] = normalize_glossary_field(entry.get("note"))
+    if "translation" in entry:
+        entry["translation"] = normalize_glossary_field(entry.get("translation"))
+    return entry
+
+
 def glossary_snapshot(entries) -> list[dict]:
-    raw_list = []
-    if isinstance(entries, dict):
-        raw_list = [
-            {"original": key, **(value if isinstance(value, dict) else {"rus": value})}
-            for key, value in entries.items()
-        ]
-    elif isinstance(entries, list):
-        raw_list = entries
+    raw_list = glossary_entries_as_list(entries)
 
     snapshot = []
     for entry in raw_list:
@@ -79,12 +87,6 @@ def glossary_snapshot(entries) -> list[dict]:
     return snapshot
 
 
-def glossary_entry_key(entry) -> str:
-    if not isinstance(entry, dict):
-        return ""
-    return str(entry.get("original", "") or "").strip().casefold()
-
-
 def normalize_imported_glossary_entry(entry) -> dict | None:
     if not isinstance(entry, dict):
         return None
@@ -93,11 +95,7 @@ def normalize_imported_glossary_entry(entry) -> dict | None:
     if not clean_entry.get("rus") and clean_entry.get("translation"):
         clean_entry["rus"] = clean_entry.get("translation")
 
-    clean_entry["original"] = normalize_glossary_field(clean_entry.get("original"))
-    clean_entry["rus"] = normalize_glossary_field(clean_entry.get("rus"))
-    clean_entry["note"] = normalize_glossary_field(clean_entry.get("note"))
-    if "translation" in clean_entry:
-        clean_entry["translation"] = normalize_glossary_field(clean_entry.get("translation"))
+    apply_glossary_field_normalization(clean_entry)
     if clean_entry.get("timestamp") is None:
         clean_entry.pop("timestamp", None)
 
@@ -644,36 +642,25 @@ class GlossaryWidget(QWidget):
         entries_to_load = []
         
         # --- Нормализация данных (rus vs translation + timestamp) ---
-        raw_list = []
-        if isinstance(glossary_data, dict):
-            raw_list = [
-                {"original": k, **(v if isinstance(v, dict) else {"rus": v})}
-                for k, v in glossary_data.items()
-            ]
-        elif isinstance(glossary_data, list):
-            raw_list = glossary_data
-            
+        raw_list = glossary_entries_as_list(glossary_data)
+
         current_now = time.time()
 
         for entry in raw_list:
             if not isinstance(entry, dict):
                 continue
             clean_entry = entry.copy()
-            
+
             # Фолбэк: если нет 'rus', но есть 'translation', используем его
             if 'rus' not in clean_entry and 'translation' in clean_entry:
                 clean_entry['rus'] = clean_entry['translation']
-            
+
             # Гарантируем наличие ключей
             if 'rus' not in clean_entry: clean_entry['rus'] = ""
             if 'note' not in clean_entry: clean_entry['note'] = ""
             if 'original' not in clean_entry: clean_entry['original'] = ""
-            clean_entry['original'] = normalize_glossary_field(clean_entry.get('original'))
-            clean_entry['rus'] = normalize_glossary_field(clean_entry.get('rus'))
-            clean_entry['note'] = normalize_glossary_field(clean_entry.get('note'))
-            if 'translation' in clean_entry:
-                clean_entry['translation'] = normalize_glossary_field(clean_entry.get('translation'))
-            
+            apply_glossary_field_normalization(clean_entry)
+
             # ТАЙМСТАМП: Сохраняем старый или создаем новый (для импорта из старых версий)
             if 'timestamp' not in clean_entry:
                 clean_entry['timestamp'] = current_now

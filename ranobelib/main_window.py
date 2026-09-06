@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -82,6 +81,7 @@ from qidian_rulate.workers import (
     validate_source_url,
 )
 from gemini_translator.utils import qt_utils
+from gemini_translator.utils.text import split_csv
 
 SCHEDULE_LIMIT_DAYS = 60
 
@@ -114,10 +114,6 @@ except Exception:
     KeyManagementWidget = None
     ModelSettingsWidget = None
     SettingsManager = None
-
-
-def _split_csv_text(text: str) -> list[str]:
-    return [part.strip() for part in re.split(r"[,;\n]+", text or "") if part.strip()]
 
 
 class _CoverPreviewWorker(QThread):
@@ -1996,15 +1992,15 @@ class RanobeUploaderApp(QMainWindow):
                 "cover_path": self._media_codex_cover_path,
                 "year": self.media_year_edit.text().strip(),
                 "description": self.media_description_edit.toPlainText().strip(),
-                "rulate_genres": _split_csv_text(self.media_rulate_genres_edit.toPlainText()),
-                "rulate_tags": _split_csv_text(self.media_rulate_tags_edit.toPlainText()),
+                "rulate_genres": split_csv(self.media_rulate_genres_edit.toPlainText()),
+                "rulate_tags": split_csv(self.media_rulate_tags_edit.toPlainText()),
                 "type_value": self.media_type_combo.currentData() or "12",
                 "status_value": self.media_status_combo.currentData() or "1",
                 "age_value": self.media_age_combo.currentData() or "3",
                 "translation_status_value": self.media_translation_status_combo.currentData() or "1",
                 "chapter_upload_value": self.media_chapter_upload_combo.currentData() or "2",
-                "genres": _split_csv_text(self.media_genres_edit.toPlainText()),
-                "tags": _split_csv_text(self.media_tags_edit.toPlainText()),
+                "genres": split_csv(self.media_genres_edit.toPlainText()),
+                "tags": split_csv(self.media_tags_edit.toPlainText()),
                 "create_author": self.media_create_author_chk.isChecked(),
             }
         )

@@ -133,6 +133,35 @@ def truncate_log_details(text: str, limit: int = MAX_LOG_DETAILS_CHARS) -> str:
     return normalized_text[:limit].rstrip() + f"\n\n[details truncated: {omitted} chars omitted]"
 
 
+def split_csv(text: str, *, delimiters: str = r"[,;\n]+", dedupe: bool = False) -> list[str]:
+    """Разбить строку на список непустых элементов, обрезав пробелы у каждого.
+
+    Три места в проекте разбирали "CSV-подобный" список (ключи API, теги,
+    жанры) собственной копией одной и той же по сути операции и разошлись
+    в деталях. Это единая реализация; различия — явные аргументы, чтобы
+    каждый вызывающий сохранял ровно своё прежнее поведение при миграции.
+
+    ``delimiters`` — regex-класс разделителей. По умолчанию запятая, ';' и
+    перенос строки (поведение provider_orchestrator._split_csv и
+    ranobelib._split_csv_text). qidian_rulate_creator._split_csv никогда не
+    считала ';' разделителем — для неё нужно передать ``delimiters=r"[,\\n]+"``.
+
+    ``dedupe=True`` убирает повторы, сохраняя порядок первого появления
+    (поведение qidian_rulate_creator._split_csv, где список — это теги/жанры
+    и повтор бессмыслен). По умолчанию (``False``) повторы сохраняются —
+    так вели себя provider_orchestrator (списки ключей/temperature) и
+    ranobelib (rulate_genres/rulate_tags).
+    """
+    items = [item.strip() for item in re.split(delimiters, text or "") if item.strip()]
+    if not dedupe:
+        return items
+    result: list[str] = []
+    for item in items:
+        if item not in result:
+            result.append(item)
+    return result
+
+
 def format_duration(seconds, *, round_minutes: bool = False,
                      unit_spacing: str = " ", seconds_unit: str = "сек",
                      dash_on_negative: bool = False) -> str:
@@ -2009,6 +2038,24 @@ def _scan_stray_angle_brackets(html_content: str, collect_limit: int = 0) -> tup
     return "".join(result), snippets
 
 
+def escape_html(value) -> str:
+    """Escape ``value`` for safe inclusion in Qt rich-text/HTML.
+
+    Canonical replacement for the several ad hoc ``.replace('<', '&lt;')``
+    chains that used to live next to each call site: unlike those partial
+    escapes, this also escapes ``&``, ``>`` and quote characters, so an
+    already-escaped entity or a bare ``&`` in the input cannot produce
+    broken markup.
+
+    WARNING: uses ``value or ""`` (inherited from the original ``_escape``
+    copies), so ANY falsy value -- ``None``, ``0``, ``0.0``, ``False``,
+    ``""`` -- becomes an empty string, not its string form. Do not use this
+    for numbers that may legitimately be zero; convert them to ``str``
+    yourself first (e.g. ``escape_html(str(count))``).
+    """
+    return html.escape(str(value or ""), quote=True)
+
+
 def escape_stray_angle_brackets(html_content: str) -> str:
     """
     Escapes literal < and > characters that are not part of real HTML/XML tags.
@@ -3550,7 +3597,11 @@ def validate_html_structure(original_html, translated_html):
         for display_name, search_string in tags_to_check.items():
             trans_has_body_wrapper = bool(re.search(r'<body\b', trans_lower)) and bool(re.search(r'</body>', trans_lower))
             if (search_string in orig_lower) and not (search_string in trans_lower) and not trans_has_body_wrapper:
-                return False, f"Потерян фундаментальный тег {display_name.replace('<', '&lt;')}. Ответ API поврежден.", final_translated_html
+                # display_name (например "<html>") идёт в чисто текстовые
+                # приёмники (log_message, RuntimeError) -- не rich text,
+                # поэтому здесь его не экранируют, как и остальные reason'ы
+                # этой функции (см. "<body>...</body>" выше).
+                return False, f"Потерян фундаментальный тег {display_name}. Ответ API поврежден.", final_translated_html
 
         # ПРОВЕРКА 2.2: Умный баланс тегов <p> через Regex
         p_open_pat = r'<p(?:\s|>)'

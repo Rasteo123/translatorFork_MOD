@@ -60,6 +60,7 @@ from ...utils.epub_tools import (
     TASK_SIZE_UNIT_CHARS,
 )
 from ...utils.helpers import safe_int
+from ...utils.glossary_tools import glossary_entry_key, glossary_list_to_replacer_map
 from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
 from ...utils.project_manager import TranslationProjectManager
 from ...utils.power_inhibitor import (
@@ -68,6 +69,7 @@ from ...utils.power_inhibitor import (
     save_prevent_sleep_setting,
 )
 from ...utils.translated_paths import build_translated_output_path
+from ...utils.translation_versions import VALIDATED_SUFFIX, select_target_translation_version
 
 from ..themes import (
     THEME_SETTINGS_KEY,
@@ -849,7 +851,7 @@ class InitialSetupPage(ShellPage):
 
         current_glossary = self.glossary_widget.get_glossary()
         existing_keys = {
-            str(item.get('original', '')).lower().strip()
+            glossary_entry_key(item)
             for item in current_glossary
             if item.get('original')
         }
@@ -863,7 +865,7 @@ class InitialSetupPage(ShellPage):
             if not original or not rus:
                 continue
 
-            key = original.lower()
+            key = glossary_entry_key({'original': original})
             if key in existing_keys:
                 continue
 
@@ -2718,31 +2720,25 @@ class InitialSetupPage(ShellPage):
             pass
 
         versions = self.project_manager.get_versions_for_original(chapter_path) or {}
-        candidates = []
-        for suffix, rel_path in versions.items():
-            if suffix == 'filtered' or not rel_path:
-                continue
-
-            full_path = os.path.join(self.project_manager.project_folder, rel_path.replace('/', os.sep))
-            if not os.path.exists(full_path):
-                continue
-
-            try:
-                modified_at = os.path.getmtime(full_path)
-            except OSError:
-                modified_at = 0
-
-            # Если версий несколько, показываем самый недавно измененный файл.
-            # При равном времени предпочитаем готовую версию.
-            priority = 0 if suffix == '_validated.html' else 1
-            candidates.append((-modified_at, priority, full_path, suffix))
-
-        if not candidates:
+        rel_path, is_validated = select_target_translation_version(versions, self.project_manager.project_folder)
+        if not rel_path:
             return None, None
 
-        candidates.sort()
-        _, _, preview_path, preview_suffix = candidates[0]
-        return preview_path, preview_suffix
+        full_path = os.path.join(self.project_manager.project_folder, rel_path.replace('/', os.sep))
+        if not os.path.exists(full_path):
+            # Карта версий указывает на файл, отсутствующий на диске — предпросмотра нет.
+            return None, None
+
+        if is_validated:
+            preview_suffix = VALIDATED_SUFFIX
+        else:
+            preview_suffix = next(
+                (suffix for suffix, candidate_rel_path in versions.items()
+                 if suffix != VALIDATED_SUFFIX and candidate_rel_path == rel_path),
+                '',
+            )
+
+        return full_path, preview_suffix
 
     def _open_project_chapter_preview(self, chapter_path: str, preview_path: str, preview_suffix: str):
         with open(preview_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -2890,12 +2886,7 @@ class InitialSetupPage(ShellPage):
         ordered_unique_chapters = []
         seen_chapters = set()
         for task_id, task_payload in tasks_to_check:
-            chapters_in_task = []
-            task_type = task_payload[0]
-            if task_type in ('epub', 'epub_chunk'):
-                chapters_in_task.append(task_payload[2])
-            elif task_type == 'epub_batch':
-                chapters_in_task.extend(task_payload[2])
+            chapters_in_task = self._extract_chapters_from_payload(task_payload)
 
             for chapter in chapters_in_task:
                 if chapter not in seen_chapters:
@@ -3092,11 +3083,7 @@ class InitialSetupPage(ShellPage):
             task_tuple = task_item.data(QtCore.Qt.ItemDataRole.UserRole)
             selected_tasks.append(task_tuple)
 
-            task_type = task_tuple[1][0]
-            if task_type in ('epub', 'epub_chunk'):
-                chapters_to_process.add(task_tuple[1][2])
-            elif task_type == 'epub_batch':
-                chapters_to_process.update(task_tuple[1][2])
+            chapters_to_process.update(self._extract_chapters_from_payload(task_tuple[1]))
 
         if not chapters_to_process:
             self._show_custom_message("Нечего обрабатывать", "Выбранные задачи не содержат глав.", QMessageBox.Icon.Warning)
@@ -3104,15 +3091,7 @@ class InitialSetupPage(ShellPage):
 
         replacer = None
         if process_with_glossary:
-            full_glossary_data = {}
-            for entry in glossary_list:
-                original = str(entry.get('original') or "").strip()
-                if not original:
-                    continue
-                full_glossary_data[original] = {
-                    'rus': str((entry.get('rus') or entry.get('translation')) or ""),
-                    'note': str(entry.get('note') or "")
-                }
+            full_glossary_data = glossary_list_to_replacer_map(glossary_list)
             if full_glossary_data:
                 replacer = GlossaryReplacer(full_glossary_data)
 
@@ -3157,12 +3136,7 @@ class InitialSetupPage(ShellPage):
                 replacer.cleanup()
 
         for task_tuple in selected_tasks:
-            task_type = task_tuple[1][0]
-            chapters_in_task = []
-            if task_type in ('epub', 'epub_chunk'):
-                chapters_in_task.append(task_tuple[1][2])
-            elif task_type == 'epub_batch':
-                chapters_in_task.extend(task_tuple[1][2])
+            chapters_in_task = self._extract_chapters_from_payload(task_tuple[1])
 
             if all(ch in successfully_processed_chapters for ch in chapters_in_task):
                 self.task_manager.task_done("UI_ACTION", task_tuple)
@@ -3882,11 +3856,7 @@ class InitialSetupPage(ShellPage):
         # ВАЖНО: распаковываем details (третий элемент), чтобы проверить ошибки
         for task_info, status, details in all_tasks_state:
             payload = task_info[1]
-            chapters_in_task = []
-            if payload[0] in ('epub', 'epub_chunk'):
-                chapters_in_task.append(payload[2])
-            elif payload[0] == 'epub_batch':
-                chapters_in_task.extend(payload[2])
+            chapters_in_task = self._extract_chapters_from_payload(payload)
 
             # Проверяем наличие ошибки CONTENT_FILTER в деталях задачи
             is_filtered = (status == 'error' and 'CONTENT_FILTER' in details.get('errors', {}))
@@ -3982,10 +3952,8 @@ class InitialSetupPage(ShellPage):
                 save_chapters = metadata.get('save_chapters')
                 if save_chapters:
                     all_chapters_in_payloads.update(save_chapters)
-                elif payload[0] == 'epub_batch':
-                    all_chapters_in_payloads.update(payload[2])
-                elif payload[0] in ('epub', 'epub_chunk') and len(payload) > 2:
-                    all_chapters_in_payloads.add(payload[2])
+                else:
+                    all_chapters_in_payloads.update(self._extract_chapters_from_payload(payload))
 
             self.html_files = sorted(list(all_chapters_in_payloads), key=extract_number_from_path)
             self.paths_widget.update_chapters_info(len(self.html_files))
@@ -4187,15 +4155,7 @@ class InitialSetupPage(ShellPage):
 
         glossary_sample_list = current_glossary_list[:BENCHMARK_GLOSSARY_SIZE]
         # Для теста нам нужен полный формат словаря
-        glossary_sample_dict = {}
-        for entry in glossary_sample_list:
-            original = str(entry.get('original') or "").strip()
-            if not original:
-                continue
-            glossary_sample_dict[original] = {
-                'rus': str(entry.get('rus') or ""),
-                'note': str(entry.get('note') or "")
-            }
+        glossary_sample_dict = glossary_list_to_replacer_map(glossary_sample_list)
 
         text_sample = ""
         if self.html_files and self.selected_file:
@@ -6414,15 +6374,7 @@ class InitialSetupPage(ShellPage):
         provider_id = provider_getter()
 
         glossary_list = self.glossary_widget.get_glossary()
-        full_glossary_data = {}
-        for entry in glossary_list:
-            original = str(entry.get('original') or "").strip()
-            if not original:
-                continue
-            full_glossary_data[original] = {
-                'rus': str((entry.get('rus') or entry.get('translation')) or ""),
-                'note': str(entry.get('note') or "")
-            }
+        full_glossary_data = glossary_list_to_replacer_map(glossary_list)
 
         model_settings = self.model_settings_widget.get_settings()
         translation_options = self.translation_options_widget.get_settings()

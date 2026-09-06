@@ -14,15 +14,17 @@ from datetime import datetime
 from ...core import auto_workflow_helpers
 from ...utils import cjk_ranges
 from ...utils.document_importer import set_all_checked
+from ...utils.html_text import extract_visible_text_normalized
 from ...utils.epub_tools import get_epub_chapter_order, extract_number_from_path
 from ...utils.language_tools import LanguageDetector
 from ..widgets.table_utils import NumericSortItem
+from ..widgets.ancestor_utils import find_ancestor_by_predicate
 from ..widgets.regex_syntax_highlighter import (
     HTML_PALETTE_DARK,
     HtmlSyntaxHighlighter,
     RuleBasedSyntaxHighlighter,
 )
-from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta
+from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta, prompt_return_to_menu
 from ...utils.validation_cache import (
     build_detector_signature,
     build_file_fingerprint,
@@ -34,6 +36,7 @@ from ...utils.validation_cache import (
 )
 from ...utils.text import (
     _create_structural_fingerprint,
+    escape_html,
     find_stray_angle_bracket_snippets,
     find_unwrapped_body_text_snippets,
     is_well_formed_xml,
@@ -123,15 +126,7 @@ REGEX_COMMAS = re.compile(r'[,\uff0c\u3001\u060c]')
 REGEX_COLONS_SEMIS = re.compile(r'[:;\uff1a\uff1b\u061b]')
 
 def _normalize_problem_term_text(raw_fragment):
-    if not raw_fragment:
-        return ""
-
-    try:
-        text = BeautifulSoup(raw_fragment, 'html.parser').get_text(" ", strip=True)
-    except Exception:
-        text = str(raw_fragment)
-
-    return re.sub(r'\s+', ' ', text).strip()
+    return extract_visible_text_normalized(raw_fragment)
 
 
 def _build_problem_term_preview(raw_html, start, end, radius=90):
@@ -261,10 +256,16 @@ class LargeTextInputDialog(QDialog):
             item_layout = QVBoxLayout(item_widget)
             item_layout.setContentsMargins(5, 5, 5, 5); item_layout.setSpacing(2)
             
-            escaped_title = item_data["title"].replace('<', '&lt;').replace('>', '&gt;')
+            escaped_title = escape_html(item_data["title"])
             title_label = QLabel(escaped_title)
-            
-            escaped_code = item_data["code"].replace('<', '&lt;').replace('>', '&gt;')
+            # escape_html(quote=True) превращает апострофы в '&#x27;', а
+            # QLabel.AutoText (по умолчанию) считает строку rich text
+            # только если в ней есть '<' или '&lt;' (Qt::mightBeRichText).
+            # Без явного RichText заголовки без '<' рендерились бы как
+            # обычный текст, показывая '&#x27;' пользователю буквально.
+            title_label.setTextFormat(Qt.TextFormat.RichText)
+
+            escaped_code = escape_html(item_data["code"])
             code_label = QLabel(f"<code>{escaped_code}</code>")
             code_label.setStyleSheet(f"background-color: {theme_manager.color('input_bg')}; padding: 4px; border-radius: 3px; font-family: Consolas, monospace;")
             code_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -477,13 +478,7 @@ def _split_line_review_text(text: str) -> list[str]:
 
 
 def _line_review_visible_text(value) -> str:
-    if not value:
-        return ""
-    try:
-        text = BeautifulSoup(str(value), 'html.parser').get_text(" ", strip=True)
-    except Exception:
-        text = str(value)
-    return re.sub(r'\s+', ' ', text).strip()
+    return extract_visible_text_normalized(value)
 
 
 def retain_or_strip_heavy_fields(result, previous_data):
@@ -1448,7 +1443,7 @@ class StructureErrorsDialog(QDialog):
             description, error_msg = errors['malformed_xml']
             group_layout.addWidget(QLabel(f"<b>Описание:</b> {description}"))
             
-            error_label = QLabel(f"<b>Сообщение парсера:</b> <code>{error_msg.replace('<', '&lt;')}</code>")
+            error_label = QLabel(f"<b>Сообщение парсера:</b> <code>{escape_html(error_msg)}</code>")
             error_label.setWordWrap(True)
             group_layout.addWidget(error_label)
             
@@ -1464,7 +1459,7 @@ class StructureErrorsDialog(QDialog):
                 label = QLabel(CUSTOM_TAG_DESCRIPTIONS.get(tag, f"Неизвестный маркер: {tag}"))
                 label.setWordWrap(True)
                 find_button = QPushButton("Найти в коде")
-                find_button.setToolTip(f"Найти и выделить тег {tag.replace('<', '&lt;')} в редакторе")
+                find_button.setToolTip(f"Найти и выделить тег {escape_html(tag)} в редакторе")
                 find_button.clicked.connect(lambda checked, t=tag: (self.find_tag_in_code_requested.emit(t), self.accept()))
                 row_layout.addWidget(label, 1)
                 row_layout.addWidget(find_button, 0, Qt.AlignmentFlag.AlignRight)
@@ -1475,9 +1470,6 @@ class StructureErrorsDialog(QDialog):
             color = "red" if str(orig) != str(trans) else "green"
             return f'<li><b>{name}:</b> Оригинал: {orig}, Перевод: {trans} <font color="{color}">({ "Несовпадение" if str(orig) != str(trans) else "OK"})</font></li>'
 
-        def html_safe(value):
-            return str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        
         has_tag_errors = False
         tag_html = "<ul>"
         
@@ -1485,7 +1477,7 @@ class StructureErrorsDialog(QDialog):
             for tag, (orig_found, trans_found) in errors['fundamental_tags'].items():
                 if not (orig_found == trans_found):
                     has_tag_errors = True
-                    safe_tag = tag.replace('<', '&lt;').replace('>', '&gt;')
+                    safe_tag = escape_html(tag)
                     tag_html += format_line(f"Тег <code>{safe_tag}</code>", "Есть" if orig_found else "Нет", "Есть" if trans_found else "Нет")
         
         if 'unbalanced_p' in errors:
@@ -1496,13 +1488,13 @@ class StructureErrorsDialog(QDialog):
         if 'body_root_text' in errors:
             has_tag_errors = True
             snippets = errors['body_root_text']
-            preview = html_safe("; ".join(snippets) if isinstance(snippets, list) else str(snippets))
+            preview = escape_html("; ".join(snippets) if isinstance(snippets, list) else str(snippets))
             tag_html += format_line("Текст напрямую в &lt;body&gt;", "Нет", preview)
 
         if 'stray_angle_brackets' in errors:
             has_tag_errors = True
             snippets = errors['stray_angle_brackets']
-            preview = html_safe("; ".join(snippets) if isinstance(snippets, list) else str(snippets))
+            preview = escape_html("; ".join(snippets) if isinstance(snippets, list) else str(snippets))
             tag_html += format_line("Лишние &lt; или &gt; вне тегов", "Нет", preview)
 
         for h in sorted(errors.get('headings', {}).keys()):
@@ -2303,6 +2295,52 @@ class TranslationValidatorPage(ShellPage):
                 excluded_paths.add(internal_path)
         return excluded_paths
 
+    def _glossary_latin_residue_exceptions(self, exceptions_set, warn_context="исключений"):
+        """Пополняет ``exceptions_set`` латинскими "остатками" переводов из
+        project_glossary.json — общий блок для _get_effective_word_exceptions
+        и _build_current_untranslated_exceptions (обе читали файл, разбирали
+        dict-или-list и извлекали rus по одной и той же цепочке фолбэков
+        entry.get('rus') or entry.get('translation') or entry.get('target')).
+
+        Мутирует и возвращает ``exceptions_set`` (как и делали обе исходные
+        копии), чтобы вызывающему коду не нужно было менять свой стиль работы
+        с результатом. ``warn_context`` — единственное реальное различие между
+        копиями (текст предупреждения при ошибке чтения глоссария).
+        """
+        if not (self.project_manager and self.project_manager.project_folder):
+            return exceptions_set
+
+        glossary_path = os.path.join(self.project_manager.project_folder, "project_glossary.json")
+        if not os.path.exists(glossary_path):
+            return exceptions_set
+
+        try:
+            with open(glossary_path, 'r', encoding='utf-8') as f:
+                glossary_data = json.load(f)
+
+            cyrillic_pattern = re.compile(r'[а-яА-ЯёЁ]+')
+            cleanup_pattern = re.compile(r'[\W\d_]+')
+            iterator = glossary_data if isinstance(glossary_data, list) else glossary_data.values()
+
+            for entry in iterator:
+                if not isinstance(entry, dict):
+                    continue
+
+                rus = entry.get('rus') or entry.get('translation') or entry.get('target') or ''
+                if not rus:
+                    continue
+
+                no_cyrillic_str = cyrillic_pattern.sub(' ', rus)
+                pure_residue_str = cleanup_pattern.sub(' ', no_cyrillic_str)
+                for word in pure_residue_str.strip().split():
+                    word_lower = word.lower()
+                    if len(word_lower) >= 2:
+                        exceptions_set.add(word_lower)
+        except Exception as e:
+            print(f"[Validator WARN] Не удалось прочитать глоссарий для {warn_context}: {e}")
+
+        return exceptions_set
+
     def _get_effective_word_exceptions(self):
         if self.settings_manager:
             exceptions_text = self.settings_manager.get_last_word_exceptions_text()
@@ -2317,35 +2355,7 @@ class TranslationValidatorPage(ShellPage):
             if line.strip() and not line.strip().startswith('#')
         }
 
-        if self.project_manager and self.project_manager.project_folder:
-            glossary_path = os.path.join(self.project_manager.project_folder, "project_glossary.json")
-            if os.path.exists(glossary_path):
-                try:
-                    with open(glossary_path, 'r', encoding='utf-8') as f:
-                        glossary_data = json.load(f)
-
-                    cyrillic_pattern = re.compile(r'[а-яА-ЯёЁ]+')
-                    cleanup_pattern = re.compile(r'[\W\d_]+')
-                    iterator = glossary_data if isinstance(glossary_data, list) else glossary_data.values()
-
-                    for entry in iterator:
-                        rus = ''
-                        if isinstance(entry, dict):
-                            rus = entry.get('rus') or entry.get('translation') or entry.get('target') or ''
-
-                        if not rus:
-                            continue
-
-                        no_cyrillic_str = cyrillic_pattern.sub(' ', rus)
-                        pure_residue_str = cleanup_pattern.sub(' ', no_cyrillic_str)
-                        for word in pure_residue_str.strip().split():
-                            w_lower = word.lower()
-                            if len(w_lower) >= 2:
-                                exceptions_set.add(w_lower)
-                except Exception as e:
-                    print(f"[Validator WARN] Не удалось прочитать глоссарий для исключений: {e}")
-
-        return exceptions_set
+        return self._glossary_latin_residue_exceptions(exceptions_set, warn_context="исключений")
 
     def _load_validation_snapshot_state(self):
         self.current_epub_fingerprint = build_file_fingerprint(self.original_epub_path)
@@ -3084,14 +3094,14 @@ class TranslationValidatorPage(ShellPage):
         
         # Группа 1: Основные проверки
         structure_tooltip = "Проверяет соответствие ключевых тегов (<html>, <body>), заголовков (<h1>-<h6>), изображений и списков.\nТакже проверяет баланс тегов <p>."
-        self.check_structure.setToolTip(structure_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
+        self.check_structure.setToolTip(escape_html(structure_tooltip))
         ai_repair_tooltip = (
             "Исправляет типовые ошибки ИИ в HTML: дублированные части тегов, лишние символы < или >, "
             "текст напрямую внутри body без p, потерянную обёртку body, баланс p и склеенные русские слова. "
             "Имена сверяются с глоссарием, неоднозначные склейки остаются без изменений, "
             "а каждое исправление показывается перед применением."
         )
-        self.btn_fix_ai_artifacts.setToolTip(ai_repair_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
+        self.btn_fix_ai_artifacts.setToolTip(escape_html(ai_repair_tooltip))
         
         self.check_untranslated.setToolTip("Включить/выключить проверку на недоперевод.")
         self.btn_fix_untranslated.setToolTip("Ищет в переводе латинские слова (3+ букв) и иероглифы, которые также присутствуют в оригинале.\nОткрывает диалог для пакетного исправления, если что-то найдено.")
@@ -3100,7 +3110,7 @@ class TranslationValidatorPage(ShellPage):
         
         # Группа 2: Настраиваемые проверки
         simplification_tooltip = "Проверяет, не было ли утеряно форматирование. Срабатывает, если количество тегов <p> и <br>\nв переводе отличается от оригинала больше, чем на указанный процент."
-        self.check_simplification.setToolTip(simplification_tooltip.replace('<', '&lt;').replace('>', '&gt;'))
+        self.check_simplification.setToolTip(escape_html(simplification_tooltip))
         self.simplification_threshold_spinbox.setToolTip("Максимально допустимое отклонение (по абзацам, цифрам или пунктуации) от оригинала.\n"
                                                      "Например, 30% позволит пропустить небольшие погрешности.")
         
@@ -3412,26 +3422,22 @@ class TranslationValidatorPage(ShellPage):
     def _get_ai_repair_protected_terms(self):
         protected_terms = set()
 
-        current = self
-        visited = set()
-        for _ in range(10):
-            if current is None or id(current) in visited:
-                break
-            visited.add(id(current))
-            glossary_widget = getattr(current, "glossary_widget", None)
-            if glossary_widget and hasattr(glossary_widget, "get_glossary"):
-                try:
-                    commit_editor = getattr(glossary_widget, "commit_active_editor", None)
-                    if callable(commit_editor):
-                        commit_editor()
-                    protected_terms.update(
-                        ai_repair_protected_terms_from_glossary(glossary_widget.get_glossary())
-                    )
-                except Exception as exc:
-                    print(f"[Validator WARN] Не удалось получить термины из редактора: {exc}")
-                break
-            parent_getter = getattr(current, "parent", None)
-            current = parent_getter() if callable(parent_getter) else None
+        def has_glossary_widget(node):
+            glossary_widget = getattr(node, "glossary_widget", None)
+            return bool(glossary_widget and hasattr(glossary_widget, "get_glossary"))
+
+        owner = find_ancestor_by_predicate(self, has_glossary_widget, max_depth=10)
+        if owner is not None:
+            glossary_widget = owner.glossary_widget
+            try:
+                commit_editor = getattr(glossary_widget, "commit_active_editor", None)
+                if callable(commit_editor):
+                    commit_editor()
+                protected_terms.update(
+                    ai_repair_protected_terms_from_glossary(glossary_widget.get_glossary())
+                )
+            except Exception as exc:
+                print(f"[Validator WARN] Не удалось получить термины из редактора: {exc}")
 
         project_folder = getattr(getattr(self, "project_manager", None), "project_folder", None)
         if project_folder:
@@ -4575,7 +4581,7 @@ class TranslationValidatorPage(ShellPage):
             self.view_translated.setFocus()
         else:
             # 4. Если по какой-то причине тег не найден, сообщаем об этом
-            QMessageBox.information(self, "Не найдено", f"Не удалось найти тег {tag_to_find.replace('<', '&lt;')} в коде.")
+            QMessageBox.information(self, "Не найдено", f"Не удалось найти тег {escape_html(tag_to_find)} в коде.")
 
     def _find_result_row_by_internal_path(self, internal_path):
         if not internal_path:
@@ -4593,17 +4599,7 @@ class TranslationValidatorPage(ShellPage):
 
     @staticmethod
     def _normalize_navigation_search_text(value, *, html_to_text=False, limit=300):
-        text = str(value or "")
-        if html_to_text:
-            try:
-                text = BeautifulSoup(text, 'html.parser').get_text(" ", strip=True)
-            except Exception:
-                pass
-
-        text = re.sub(r'\s+', ' ', text).strip()
-        if len(text) > limit:
-            text = text[:limit].rstrip()
-        return text
+        return extract_visible_text_normalized(value, from_html=html_to_text, limit=limit)
 
     def _navigation_search_candidates(self, payload, *, raw_html=False):
         values = []
@@ -5734,37 +5730,7 @@ class TranslationValidatorPage(ShellPage):
             if line.strip() and not line.strip().startswith('#')
         }
 
-        if self.project_manager and self.project_manager.project_folder:
-            glossary_path = os.path.join(self.project_manager.project_folder, "project_glossary.json")
-            if os.path.exists(glossary_path):
-                try:
-                    with open(glossary_path, 'r', encoding='utf-8') as f:
-                        glossary_data = json.load(f)
-
-                    cyrillic_pattern = re.compile(r'[а-яА-ЯёЁ]+')
-                    cleanup_pattern = re.compile(r'[\W\d_]+')
-                    iterator = glossary_data if isinstance(glossary_data, list) else glossary_data.values()
-
-                    for entry in iterator:
-                        if not isinstance(entry, dict):
-                            continue
-
-                        rus = entry.get('rus') or entry.get('translation') or entry.get('target') or ''
-                        if not rus:
-                            continue
-
-                        no_cyrillic_str = cyrillic_pattern.sub(' ', rus)
-                        pure_residue_str = cleanup_pattern.sub(' ', no_cyrillic_str)
-
-                        for word in pure_residue_str.strip().split():
-                            word_lower = word.lower()
-                            if len(word_lower) < 2:
-                                continue
-                            exceptions_set.add(word_lower)
-                except Exception as e:
-                    print(f"[Validator WARN] Не удалось прочитать глоссарий для пересчёта исключений: {e}")
-
-        return exceptions_set
+        return self._glossary_latin_residue_exceptions(exceptions_set, warn_context="пересчёта исключений")
 
     def _recalculate_untranslated_words_for_rows(self, affected_rows):
         # finding-ui-dialogs-validation_design_1-untranslated-detection-triplic:
@@ -6442,22 +6408,12 @@ class TranslationValidatorDialog(
 
         # 2. Логика выхода в меню (только если retry недоступен, т.е. автономный режим)
         if not self.page.retry_is_available:
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("Завершение работы")
-            msg_box.setText("Вы хотите закрыть приложение или вернуться в главное меню?")
-            msg_box.setIcon(QMessageBox.Icon.Question)
+            action = prompt_return_to_menu(self)
 
-            btn_menu = msg_box.addButton("Вернуться в меню", QMessageBox.ButtonRole.ActionRole)
-            btn_exit = msg_box.addButton("Выйти из программы", QMessageBox.ButtonRole.DestructiveRole)
-            btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-
-            msg_box.exec()
-            clicked = msg_box.clickedButton()
-
-            if clicked == btn_cancel:
+            if action == "cancel":
                 event.ignore()
                 return
-            elif clicked == btn_menu:
+            elif action == "menu":
                 # Устанавливаем спецкод для перезагрузки цикла в main.py
                 QApplication.exit(2000)  # EXIT_CODE_REBOOT
                 event.accept()

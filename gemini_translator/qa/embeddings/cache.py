@@ -21,6 +21,9 @@ from .base import (
     EmbeddingContractError,
     EmbeddingProvider,
     EmbeddingRequest,
+    _base_language as _normalized_language,
+    _nonempty_string as _nonempty,
+    _positive_int,
     validate_and_normalize_batch,
 )
 
@@ -80,32 +83,12 @@ _DIMENSIONLESS_FIELDS = frozenset(
 )
 
 
-def _nonempty(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise EmbeddingContractError(f"{field_name} must be a nonempty string")
-    return value.strip()
-
-
-def _positive_int(value: object, field_name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise EmbeddingContractError(f"{field_name} must be a positive integer")
-    return value
-
-
 def _normalized_text(value: object) -> str:
     text = _nonempty(value, "text")
     normalized = " ".join(unicodedata.normalize("NFKC", text).split()).casefold()
     if not normalized:
         raise EmbeddingContractError("normalized text must be nonempty")
     return normalized
-
-
-def _normalized_language(value: object) -> str:
-    language = _nonempty(value, "language").replace("_", "-")
-    base = language.split("-", 1)[0].casefold()
-    if not base:
-        raise EmbeddingContractError("language must have a nonempty base language")
-    return base
 
 
 def _canonical_provider_id(value: object) -> str:

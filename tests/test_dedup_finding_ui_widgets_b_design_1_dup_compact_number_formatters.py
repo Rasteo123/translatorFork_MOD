@@ -138,8 +138,12 @@ class CompactNumberFormatterRoutingTests(unittest.TestCase):
         page._token_output_total = 500
         page.token_usage_label = mock.MagicMock()
 
+        # pcluster-03: _update_token_usage_label теперь живёт в
+        # TokenUsageTrackerMixin (gemini_translator/utils/helpers.py), а не
+        # в consistency_checker.py — патчим формировщик там, где его
+        # реально вызывает миксин.
         with mock.patch.object(
-            consistency_checker, "format_compact_number", return_value="<compact>"
+            helpers, "format_compact_number", return_value="<compact>"
         ) as fake:
             page._update_token_usage_label()
 
@@ -162,8 +166,9 @@ class CompactNumberFormatterRoutingTests(unittest.TestCase):
         page._token_output_total = 500
         page.token_usage_label = mock.MagicMock()
 
+        # pcluster-03: то же самое — метод переехал в TokenUsageTrackerMixin.
         with mock.patch.object(
-            untranslated_fixer_dialog, "format_compact_number", return_value="<compact>"
+            helpers, "format_compact_number", return_value="<compact>"
         ) as fake:
             page._update_token_usage_label()
 

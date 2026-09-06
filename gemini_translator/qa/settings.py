@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
+from ._common import bounded_int as _bounded_int
 from .capabilities import QaCapabilityKey, QaCapabilitySettings
 from .language_validation import (
     DEFAULT_AUTO_FIX_CATEGORIES,
@@ -118,10 +119,10 @@ class QaSettings:
             ),
         )
         object.__setattr__(
-            self, "slovnet_cpu_threads", _bounded_int(self.slovnet_cpu_threads, 2, 1, 32)
+            self, "slovnet_cpu_threads", _bounded_int(self.slovnet_cpu_threads, default=2, minimum=1, maximum=32)
         )
         object.__setattr__(
-            self, "batch_concurrency", _bounded_int(self.batch_concurrency, 1, 1, 4)
+            self, "batch_concurrency", _bounded_int(self.batch_concurrency, default=1, minimum=1, maximum=4)
         )
         object.__setattr__(
             self,
@@ -129,7 +130,7 @@ class QaSettings:
             _language_chunk_setting(self.language_chunk_chars),
         )
         object.__setattr__(
-            self, "slovnet_batch_size", _bounded_int(self.slovnet_batch_size, 16, 1, 512)
+            self, "slovnet_batch_size", _bounded_int(self.slovnet_batch_size, default=16, minimum=1, maximum=512)
         )
         for field_name in (
             "embedding_model",
@@ -324,9 +325,9 @@ def language_chunk_chars_for(saved_settings: Mapping | None) -> int:
         return DEFAULT_LANGUAGE_CHUNK_CHARS
     return _bounded_int(
         int(limit),
-        DEFAULT_LANGUAGE_CHUNK_CHARS,
-        MIN_LANGUAGE_CHUNK_CHARS,
-        MAX_LANGUAGE_CHUNK_CHARS,
+        default=DEFAULT_LANGUAGE_CHUNK_CHARS,
+        minimum=MIN_LANGUAGE_CHUNK_CHARS,
+        maximum=MAX_LANGUAGE_CHUNK_CHARS,
     )
 
 
@@ -335,7 +336,3 @@ def _choice(value: object, allowed: frozenset[str], default: str) -> str:
     return text if text in allowed else default
 
 
-def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return default
-    return min(max(value, minimum), maximum)

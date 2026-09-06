@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import zipfile
 
+from ..utils.callbacks import safe_call
 from ..utils.epub_json import build_html_document_model, build_translation_payload
 from ..utils.translation_versions import select_target_translation_version
 from .addition_detector import AdditionDetector
@@ -458,7 +459,7 @@ def attach_chapter_qa_coordinator(
         settings_manager, qa_settings, api_keys_by_provider
     )
     if qa_settings.embedding_key_provider and not keys_for_embeddings:
-        _report(
+        safe_call(
             log,
             "[QA] У провайдера "
             f"'{qa_settings.embedding_key_provider}' нет свободных ключей для "
@@ -482,7 +483,7 @@ def attach_chapter_qa_coordinator(
             ),
         )
     except Exception as error:  # noqa: BLE001 - QA without embeddings is limited, not fatal
-        _report(
+        safe_call(
             log,
             f"[QA] Семантическая проверка недоступна, остаётся языковая: {error}",
         )
@@ -492,7 +493,7 @@ def attach_chapter_qa_coordinator(
         translation_provider, translation_model
     )
     if not provider or not model_name:
-        _report(log, "[QA] Не выбрана модель для проверки качества.")
+        safe_call(log, "[QA] Не выбрана модель для проверки качества.")
         return None
     model = QaModelSelection(provider, model_name)
 
@@ -505,10 +506,10 @@ def attach_chapter_qa_coordinator(
             session_id=session_id,
         )
     except QaAssemblyError as error:
-        _report(log, f"[QA] {error}")
+        safe_call(log, f"[QA] {error}")
         return None
     except Exception as error:  # noqa: BLE001 - a broken QA setup never stops translation
-        _report(log, f"[QA] Не удалось собрать проверку качества: {error}")
+        safe_call(log, f"[QA] Не удалось собрать проверку качества: {error}")
         return None
 
     task_manager = getattr(app, "task_manager", None)
@@ -738,14 +739,6 @@ def _current_options(settings_manager):
     return replace(options, language_chunk_chars=language_chunk_chars_for(saved))
 
 
-def _report(log, message: str) -> None:
-    if callable(log):
-        try:
-            log(message)
-        except Exception:  # noqa: BLE001 - logging must never raise
-            return
-
-
 def build_manual_events(
     *,
     project_manager,
@@ -932,7 +925,7 @@ class SettingsEmbeddingKeyHealth:
             manager.mark_key_as_exhausted(api_key, self._model_id)
         except Exception:  # noqa: BLE001 - bookkeeping never fails a check
             return
-        _report(
+        safe_call(
             self._log,
             f"[QA] Ключ …{api_key[-4:]} исчерпан для эмбеддингов "
             f"({self._model_id}{': ' + reason if reason else ''}); "

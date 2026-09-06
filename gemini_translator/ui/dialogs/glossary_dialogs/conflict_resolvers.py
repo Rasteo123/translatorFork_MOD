@@ -27,6 +27,42 @@ if TYPE_CHECKING:
 PYMORPHY_AVAILABLE = False # Как заглушка
 
 
+def apply_sub_table_edit_to_pending(table, item, pending_changes, baseline_lookup):
+    """Каноническая логика «правка ячейки таблицы под-терминов -> pending_changes».
+
+    Общая часть между ComplexOverlapResolverPage._on_sub_table_item_changed и
+    CoreTermAnalyzerPage._on_sub_table_item_changed (pcluster-38): pending_changes
+    хранит значение как кортеж (current_term, current_data), столбец 0 меняет
+    сам термин, столбцы 1/2 — поля 'rus'/'note'. Способ получения baseline-записи
+    для термина, ещё не попавшего в pending_changes, у вызывающих сторон разный
+    (O(1) dict.get против линейного поиска по списку) — он передаётся через
+    `baseline_lookup(original_term_id) -> dict` и остаётся на стороне вызывающего
+    кода без изменений.
+    """
+    row, col = item.row(), item.column()
+    if col not in (0, 1, 2):
+        return
+
+    id_item = table.item(row, 0)
+    if not id_item:
+        return
+    original_term_id = id_item.data(Qt.ItemDataRole.UserRole)
+
+    current_term, current_data = pending_changes.get(
+        original_term_id,
+        (original_term_id, baseline_lookup(original_term_id).copy())
+    )
+
+    if col == 0:
+        current_term = item.text()
+    elif col == 1:
+        current_data['rus'] = item.text()
+    elif col == 2:
+        current_data['note'] = item.text()
+
+    pending_changes[original_term_id] = (current_term, current_data)
+
+
 def _get_checked_color(widget):
     """Возвращает цвет для выделения, смешанный с базовым фоном виджета."""
     base_color = widget.palette().color(QtGui.QPalette.ColorRole.Base)
@@ -500,24 +536,12 @@ class ComplexOverlapResolverPage(ShellPage):
     
     def _on_sub_table_item_changed(self, item: QTableWidgetItem):
         """Автоматически сохраняет изменения из таблицы под-терминов."""
-        row, col = item.row(), item.column()
-        if col not in [0, 1, 2]: return # Интересуют столбцы 0, 1, 2
-        
-        # Идентификатор хранится в столбце 0
-        id_item = self.sub_terms_table.item(row, 0)
-        if not id_item: return
-        original_term_id = id_item.data(Qt.ItemDataRole.UserRole)
-        
-        current_term, current_data = self.pending_changes.get(
-            original_term_id,
-            (original_term_id, self.original_glossary.get(original_term_id, {}).copy())
+        apply_sub_table_edit_to_pending(
+            self.sub_terms_table,
+            item,
+            self.pending_changes,
+            lambda original_term_id: self.original_glossary.get(original_term_id, {})
         )
-
-        if col == 0: current_term = item.text()
-        elif col == 1: current_data['rus'] = item.text()
-        elif col == 2: current_data['note'] = item.text()
-        
-        self.pending_changes[original_term_id] = (current_term, current_data)
     
     def delete_main_term(self):
         if self.current_term:

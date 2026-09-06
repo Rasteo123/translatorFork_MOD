@@ -104,10 +104,10 @@ class ReorderArrowDelegate(QtWidgets.QStyledItemDelegate):
             painter.drawPixmap(rect.topLeft(), self._pixmap(action, hovered, pressed, enabled))
 
     def _pixmap(self, action, hovered, pressed, enabled):
-        dpr = self._table.devicePixelRatioF()
-        key = (action, hovered, pressed, enabled, round(dpr * 100))
-        return self._pixmap_cache.get_or_render(
-            key, lambda: self._render_template(action, hovered, pressed, enabled, dpr)
+        # Общая обвязка (ключ кэша + get_or_render) вынесена в
+        # PixmapCache.pixmap (pcluster-65); _render_template остаётся своим.
+        return self._pixmap_cache.pixmap(
+            self._table, action, hovered, pressed, enabled, self._render_template
         )
 
     def _render_template(self, action, hovered, pressed, enabled, dpr):

@@ -118,10 +118,10 @@ class GlossaryActionDelegate(QtWidgets.QStyledItemDelegate):
             painter.drawPixmap(rect.topLeft(), self._pixmap(kind, hovered, pressed, enabled))
 
     def _pixmap(self, kind, hovered, pressed, enabled):
-        dpr = self._table.devicePixelRatioF()
-        key = (kind, hovered, pressed, enabled, round(dpr * 100))
-        return self._pixmap_cache.get_or_render(
-            key, lambda: self._render_template(kind, hovered, pressed, enabled, dpr)
+        # Общая обвязка (ключ кэша + get_or_render) вынесена в
+        # PixmapCache.pixmap (pcluster-65); _render_template остаётся своим.
+        return self._pixmap_cache.pixmap(
+            self._table, kind, hovered, pressed, enabled, self._render_template
         )
 
     def _icon(self, kind):

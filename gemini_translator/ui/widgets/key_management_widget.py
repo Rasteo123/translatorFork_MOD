@@ -14,6 +14,7 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 import time
 import threading
 from ..overlay_host import exec_dialog
+from ...core.event_bus_mixin import EventBusMixin
 
 
 MCP_PROVIDER_ID = "__mcp_server__"
@@ -115,7 +116,7 @@ class ProviderChoiceDialog(QDialog):
         return self.combo_box.currentText()
 
 
-class KeyManagementWidget(QWidget):
+class KeyManagementWidget(EventBusMixin, QWidget):
     active_keys_changed = pyqtSignal()
 
     def __init__(self, settings_manager: SettingsManager, parent=None, distribution_group_widget=None, current_active_keys=None, server_manager=None):
@@ -134,7 +135,6 @@ class KeyManagementWidget(QWidget):
                 current_active_keys)
 
         self._uses_topic_subscription = False
-        self._uses_broadcast_subscription = False
         # Подписываемся только на события, которые реально обрабатываем,
         # чтобы не будить виджет на каждый широковещательный лог во время перевода.
         self._event_topics = (
@@ -159,25 +159,6 @@ class KeyManagementWidget(QWidget):
 
         self.init_ui()
         self._load_and_refresh_keys()
-
-    def _connect_to_bus(self):
-        if hasattr(self.bus, "subscribe"):
-            for topic in self._event_topics:
-                self.bus.subscribe(topic, self.on_event)
-            self._uses_topic_subscription = True
-        elif hasattr(self.bus, "event_posted"):
-            self.bus.event_posted.connect(self.on_event)
-            self._uses_broadcast_subscription = True
-
-    def _disconnect_from_bus(self):
-        try:
-            if self._uses_topic_subscription and hasattr(self.bus, "unsubscribe"):
-                for topic in self._event_topics:
-                    self.bus.unsubscribe(topic, self.on_event)
-            elif self._uses_broadcast_subscription and hasattr(self.bus, "event_posted"):
-                self.bus.event_posted.disconnect(self.on_event)
-        except (TypeError, RuntimeError, ValueError):
-            pass
 
     def closeEvent(self, event):
         self._disconnect_from_bus()

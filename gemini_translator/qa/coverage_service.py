@@ -15,6 +15,7 @@ import re
 from types import MappingProxyType
 from typing import Protocol
 
+from ._common import validate_nonempty_string as _validate_nonempty_string
 from .alignment import AlignmentCapacityError
 from .embeddings.base import (
     EmbeddingBatch,
@@ -73,9 +74,10 @@ class CoverageValidationError(ValueError):
 
 
 def _nonempty_string(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise CoverageValidationError(f"{field_name} must be a nonempty string")
-    return value.strip()
+    try:
+        return _validate_nonempty_string(value, field_name)
+    except ValueError as exc:
+        raise CoverageValidationError(str(exc)) from exc
 
 
 def _optional_nonempty_string(value: object, field_name: str) -> str | None:

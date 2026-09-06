@@ -14,6 +14,7 @@ except ImportError:
     PYTZ_AVAILABLE = False
 
 from ..api import config as api_config
+from .text_sanitize import sanitize_path_segment
 
 SETTINGS_PROFILE_ENV = "GT_SETTINGS_PROFILE"
 SETTINGS_DIR_ENV = "GT_SETTINGS_DIR"
@@ -33,11 +34,7 @@ def _safe_profile_segment(profile: str) -> str:
     normalized = normalize_settings_profile(profile)
     if not normalized:
         return ""
-    safe = "".join(
-        char if char.isalnum() or char in ("-", "_") else "_"
-        for char in normalized
-    ).strip("._-")
-    return safe or "profile"
+    return sanitize_path_segment(normalized, strip_chars="._-", default="profile")
 
 
 def default_settings_dir(home_dir=None) -> str:

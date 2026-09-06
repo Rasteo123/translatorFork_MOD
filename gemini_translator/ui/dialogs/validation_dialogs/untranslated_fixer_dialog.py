@@ -17,13 +17,15 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal, pyqtSlot, QRect, QPoint, QTimer
 # Используем тот же самый делегат, что и в менеджере глоссариев
 from ..glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 from ....api import config as api_config
-from ....utils.helpers import format_compact_number
+from ....utils.helpers import TokenUsageTrackerMixin
 from ....utils import cjk_ranges
+from ....utils.glossary_tools import glossary_entry_key, normalize_glossary_entries
 
 from ...widgets import (
     KeyManagementWidget, ModelSettingsWidget, LogWidget, PresetWidget
 )
 from ...widgets.common_widgets import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
+from ...widgets.ancestor_utils import find_ancestor_by_predicate
 from ...shell import ShellPage
 from gemini_translator.ui import theme_manager
 from ...overlay_host import exec_dialog
@@ -198,61 +200,36 @@ class ProjectGlossaryController:
         self.glossary_owner = None
         self._discover_context()
 
+    @staticmethod
+    def _has_project_info(node):
+        project_manager = getattr(node, 'project_manager', None)
+        if project_manager and getattr(project_manager, 'project_folder', None):
+            return True
+        return bool(getattr(node, 'output_folder', None))
+
     def _discover_context(self):
-        parent = self.owner.parent()
-        while parent:
-            if self.project_folder is None:
-                project_manager = getattr(parent, 'project_manager', None)
-                if project_manager and getattr(project_manager, 'project_folder', None):
-                    self.project_folder = project_manager.project_folder
-                elif getattr(parent, 'output_folder', None):
-                    self.project_folder = parent.output_folder
+        start = self.owner.parent()
 
-            if self.glossary_widget is None and hasattr(parent, 'glossary_widget'):
-                self.glossary_widget = parent.glossary_widget
-                self.glossary_owner = parent
+        project_node = find_ancestor_by_predicate(start, self._has_project_info)
+        if project_node is not None:
+            project_manager = getattr(project_node, 'project_manager', None)
+            if project_manager and getattr(project_manager, 'project_folder', None):
+                self.project_folder = project_manager.project_folder
+            else:
+                self.project_folder = project_node.output_folder
 
-            parent = parent.parent()
+        glossary_node = find_ancestor_by_predicate(start, lambda node: hasattr(node, 'glossary_widget'))
+        if glossary_node is not None:
+            self.glossary_widget = glossary_node.glossary_widget
+            self.glossary_owner = glossary_node
 
     def is_available(self):
         return bool(self.project_folder or self.glossary_widget)
 
     def _normalize_entries(self, glossary_data):
-        now = time.time()
-        normalized = []
-        raw_entries = []
-
-        if isinstance(glossary_data, dict):
-            raw_entries = [{'original': key, **value} for key, value in glossary_data.items() if isinstance(value, dict)]
-        elif isinstance(glossary_data, list):
-            raw_entries = glossary_data
-
-        seen_exact = set()
-        for entry in raw_entries:
-            if not isinstance(entry, dict):
-                continue
-
-            original = str(entry.get('original', '') or '').strip()
-            rus = str(entry.get('rus') or entry.get('translation') or entry.get('target') or '').strip()
-            note = str(entry.get('note', '') or '').strip()
-
-            if not any([original, rus, note]):
-                continue
-
-            normalized_entry = {
-                'original': original,
-                'rus': rus,
-                'note': note,
-                'timestamp': entry.get('timestamp') or now,
-            }
-
-            exact_signature = (original.casefold(), rus, note)
-            if exact_signature in seen_exact:
-                continue
-            seen_exact.add(exact_signature)
-            normalized.append(normalized_entry)
-
-        return normalized
+        return normalize_glossary_entries(
+            glossary_data, note_fallbacks=('note',), stamp_missing_timestamp=True
+        )
 
     def load(self):
         if self.glossary_widget and hasattr(self.glossary_widget, 'commit_active_editor'):
@@ -291,10 +268,10 @@ class ProjectGlossaryController:
         return normalized
 
     def find_entries(self, glossary_entries, term):
-        term_key = (term or '').strip().casefold()
+        term_key = glossary_entry_key({'original': term})
         if not term_key:
             return []
-        return [entry.copy() for entry in glossary_entries if str(entry.get('original', '')).strip().casefold() == term_key]
+        return [entry.copy() for entry in glossary_entries if glossary_entry_key(entry) == term_key]
 
     def upsert_entry(self, glossary_entries, original, rus, note):
         original = (original or '').strip()
@@ -303,11 +280,11 @@ class ProjectGlossaryController:
         if not original:
             raise ValueError("Термин не может быть пустым.")
 
-        term_key = original.casefold()
+        term_key = glossary_entry_key({'original': original})
         working = [entry.copy() for entry in glossary_entries]
         match_indices = [
             index for index, entry in enumerate(working)
-            if str(entry.get('original', '')).strip().casefold() == term_key
+            if glossary_entry_key(entry) == term_key
         ]
 
         removed_duplicates = max(0, len(match_indices) - 1)
@@ -347,13 +324,13 @@ class ProjectGlossaryController:
         }
 
     def delete_term(self, glossary_entries, term):
-        term_key = (term or '').strip().casefold()
+        term_key = glossary_entry_key({'original': term})
         if not term_key:
             return glossary_entries, 0
 
         filtered = [
             entry.copy() for entry in glossary_entries
-            if str(entry.get('original', '')).strip().casefold() != term_key
+            if glossary_entry_key(entry) != term_key
         ]
         removed_count = len(glossary_entries) - len(filtered)
         if removed_count:
@@ -481,13 +458,11 @@ class AdvancedTagFilterDialog(QDialog):
         # --- ПОИСК ПАПКИ ПРОЕКТА ---
         # Поднимаемся по иерархии родителей, пока не найдем project_manager
         self.project_folder = None
-        current_parent = parent
-        while current_parent:
-            if hasattr(current_parent, 'project_manager') and current_parent.project_manager:
-                if hasattr(current_parent.project_manager, 'project_folder'):
-                    self.project_folder = current_parent.project_manager.project_folder
-                break
-            current_parent = current_parent.parent()
+        owner_node = find_ancestor_by_predicate(
+            parent, lambda node: bool(getattr(node, 'project_manager', None))
+        )
+        if owner_node is not None and hasattr(owner_node.project_manager, 'project_folder'):
+            self.project_folder = owner_node.project_manager.project_folder
         
         layout = QVBoxLayout(self)
         
@@ -1806,23 +1781,13 @@ class UntranslatedFixerPage(ShellPage):
         exec_dialog(self, dialog)
 
     def _get_project_manager(self):
-        checked = set()
-        current_parent = getattr(self, '_validator_host', None)
-        while current_parent and id(current_parent) not in checked:
-            checked.add(id(current_parent))
-            project_manager = getattr(current_parent, 'project_manager', None)
-            if project_manager:
-                return project_manager
-            current_parent = current_parent.parent()
+        def has_project_manager(node):
+            return bool(getattr(node, 'project_manager', None))
 
-        current_parent = self.parent()
-        while current_parent and id(current_parent) not in checked:
-            checked.add(id(current_parent))
-            project_manager = getattr(current_parent, 'project_manager', None)
-            if project_manager:
-                return project_manager
-            current_parent = current_parent.parent()
-        return None
+        node = find_ancestor_by_predicate(getattr(self, '_validator_host', None), has_project_manager)
+        if node is None:
+            node = find_ancestor_by_predicate(self.parent(), has_project_manager)
+        return node.project_manager if node is not None else None
 
     def _delete_user_mark(self, data_index):
         item_data = self.original_data[data_index]
@@ -2205,7 +2170,7 @@ def build_translation_tasks_from_data_items(data_items, batch_size=50):
     return tasks_list
 
 
-class AITranslationPage(ShellPage):
+class AITranslationPage(TokenUsageTrackerMixin, ShellPage):
     """
     Адаптированная страница для сессии перевода недопереведенных фрагментов.
     Версия 6.0: 
@@ -2215,6 +2180,10 @@ class AITranslationPage(ShellPage):
     """
     result_ready = pyqtSignal(list)
     finished = pyqtSignal(int)
+    # pcluster-03: единственное реальное расхождение с
+    # ConsistencyValidatorPage._update_token_usage_label — текст тултипа.
+    _token_usage_tooltip_scope = "текущую AI-сессию"
+
     def __init__(
         self,
         tasks_payloads,
@@ -2755,33 +2724,17 @@ class AITranslationPage(ShellPage):
                 return
             self._on_token_usage_updated(data)
 
-    def _reset_token_usage(self):
-        self._token_input_total = 0
-        self._token_output_total = 0
-        self._token_total = 0
-        self._update_token_usage_label()
-
-    def _update_token_usage_label(self):
-        total = format_compact_number(self._token_total)
-        input_tokens = format_compact_number(self._token_input_total)
-        output_tokens = format_compact_number(self._token_output_total)
-        self.token_usage_label.setText(f"Токены: ~{total}")
-        self.token_usage_label.setToolTip(
-            f"Оценка токенов за текущую AI-сессию: всего ~{total}, "
-            f"вход ~{input_tokens}, выход ~{output_tokens}."
-        )
+    # _reset_token_usage / _update_token_usage_label: см.
+    # TokenUsageTrackerMixin (pcluster-03); _token_usage_tooltip_scope
+    # переопределён выше на уровне класса.
 
     def _on_token_usage_updated(self, data: dict):
-        try:
-            input_tokens = int((data or {}).get('input_tokens', 0) or 0)
-            output_tokens = int((data or {}).get('output_tokens', 0) or 0)
-            total_tokens = int((data or {}).get('total_tokens', input_tokens + output_tokens) or 0)
-        except (TypeError, ValueError):
-            return
-        self._token_input_total += max(0, input_tokens)
-        self._token_output_total += max(0, output_tokens)
-        self._token_total += max(0, total_tokens)
-        self._update_token_usage_label()
+        # Вызывается из _on_global_event ПОСЛЕ проверки
+        # _is_owned_session_event (см. выше) — фильтр владения сессией не
+        # трогаем. Само накопление (парсинг+клампинг+++) общее с
+        # ConsistencyValidatorPage — TokenUsageTrackerMixin (pcluster-03,
+        # issue №1 ревью).
+        self._accumulate_token_usage(data)
 
     def _set_ui_active(self, active: bool):
         self.is_session_active = active

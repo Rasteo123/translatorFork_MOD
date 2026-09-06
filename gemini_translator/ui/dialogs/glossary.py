@@ -52,7 +52,7 @@ from .glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 
 # Утилиты и API
 from ..shell import ShellPage
-from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta
+from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta, prompt_return_to_menu
 from ...api import config as api_config
 from ...utils.settings import SettingsManager
 from ...utils.language_tools import (
@@ -3808,22 +3808,12 @@ class MainWindow(
             return
 
         if self.page.launch_mode == 'standalone':
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("Завершение работы")
-            msg_box.setText("Вы хотите закрыть приложение или вернуться в главное меню?")
-            msg_box.setIcon(QMessageBox.Icon.Question)
+            action = prompt_return_to_menu(self)
 
-            btn_menu = msg_box.addButton("Вернуться в меню", QMessageBox.ButtonRole.ActionRole)
-            btn_exit = msg_box.addButton("Выйти из программы", QMessageBox.ButtonRole.DestructiveRole)
-            btn_cancel = msg_box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
-
-            msg_box.exec()
-            clicked = msg_box.clickedButton()
-
-            if clicked == btn_cancel:
+            if action == "cancel":
                 event.ignore()
                 return
-            elif clicked == btn_menu:
+            elif action == "menu":
                 self.page._ask_delete_backup()
                 # Спецкод для main.py
                 QApplication.exit(2000)

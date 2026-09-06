@@ -22,6 +22,7 @@ from defusedxml import ElementTree as SafeET
 
 from ..api import config as api_config
 from .helpers import estimate_gemini_tokens
+from .html_text import extract_visible_text_normalized
 
 EPUB_HEADING_TAGS = ("h1", "h2", "h3")
 CHAPTER_SIZE_CACHE_METRIC = "gemini_input_tokens"
@@ -1050,10 +1051,11 @@ def get_chapter_fingerprint(epub_zip, internal_path):
         h_tag = soup.find(['h1', 'h2', 'h3'])
         h_text = extract_epub_heading_text(h_tag) if h_tag else ""
         
-        # 3. Чистая длина текста (без тегов)
-        clean_text = soup.get_text()
-        # Убираем лишние пробелы для более точного сравнения длины
-        clean_text = " ".join(clean_text.split())
+        # 3. Чистая длина текста (без тегов), канонический экстрактор
+        # (исключает script/style/head/title/meta и расставляет разделители
+        # между соседними тегами без пробелов — иначе `<p>A</p><p>B</p>`
+        # схлопнулось бы в "AB" вместо "A B").
+        clean_text = extract_visible_text_normalized(raw_content)
         
         return {
             'title': title_text,

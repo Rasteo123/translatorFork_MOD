@@ -13,6 +13,8 @@ import shutil
 import tempfile
 from typing import Literal
 
+from ..utils.callbacks import safe_call
+
 
 MODEL_STATES = frozenset({"missing", "installing", "ready", "invalid"})
 MANIFEST_NAME = "manifest.json"
@@ -143,7 +145,7 @@ class ModelBundleManager:
                     raise self.error_type(f"model_hash_mismatch:{item.name}")
                 target.write_bytes(bytes(data))
                 downloaded += len(data)
-                _report(progress, item.name, downloaded, self.manifest.total_bytes)
+                safe_call(progress, item.name, downloaded, self.manifest.total_bytes)
             _raise_if_cancelled(cancellation)
             (staging / MANIFEST_NAME).write_text(
                 json.dumps({"version": self.manifest.version}, ensure_ascii=False),
@@ -189,12 +191,3 @@ async def _await_maybe(value):
     if hasattr(value, "__await__"):
         return await value
     return value
-
-
-def _report(progress, name: str, done: int, total: int) -> None:
-    if not callable(progress):
-        return
-    try:
-        progress(name, done, total)
-    except Exception:  # noqa: BLE001 - progress reporting must never fail an install
-        return
