@@ -1047,6 +1047,10 @@ def capitalize_sentence(match):
     separator = match.group(2) # То, что между знаком и буквой (пробелы, тире)
     letter = match.group(3)    # Сама буква
 
+    # После !/? слова автора за тире продолжаются со строчной буквы.
+    if sign in "!?" and any(dash in separator for dash in DASH_CHARS):
+        return match.group(0)
+
     # --- УЛУЧШЕННАЯ ЗАЩИТА ССЫЛОК И ФАЙЛОВ ---
     if sign == '.' and not separator:
         # Получаем символ СЛЕВА от точки
