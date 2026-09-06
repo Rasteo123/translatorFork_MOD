@@ -10,6 +10,7 @@ from PyQt6.QtCore import pyqtSlot
 from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QTextBrowser, QTextEdit, QVBoxLayout, QWidget
 
 from gemini_translator.ui import theme_manager
+from gemini_translator.utils.text import truncate_log_details
 from ..overlay_host import exec_dialog
 
 
@@ -64,7 +65,6 @@ LOG_STYLES = [
 ]
 MAX_LOG_BLOCKS = 1200
 MAX_STORED_DETAILS = 200
-MAX_DETAIL_TEXT_CHARS = 16000
 MAX_PENDING_LOG_MESSAGES = 2000
 MAX_LOG_FLUSH_BATCH_SIZE = 300
 LOG_FLUSH_INTERVAL_MS = 1000
@@ -301,7 +301,7 @@ class LogWidget(QWidget):
 
         details_text = data.get('details_text')
         if isinstance(details_text, str) and details_text.strip():
-            details_text = self._truncate_details_text(details_text)
+            details_text = truncate_log_details(details_text)
             detail_id = uuid.uuid4().hex
             details_html = data.get('details_html')
             self._details_map[detail_id] = {
@@ -385,9 +385,3 @@ class LogWidget(QWidget):
                 break
             self._details_map.pop(oldest_key, None)
 
-    def _truncate_details_text(self, details_text: str) -> str:
-        normalized_text = details_text.strip()
-        if len(normalized_text) <= MAX_DETAIL_TEXT_CHARS:
-            return normalized_text
-        omitted = len(normalized_text) - MAX_DETAIL_TEXT_CHARS
-        return normalized_text[:MAX_DETAIL_TEXT_CHARS].rstrip() + f"\n\n[details truncated: {omitted} chars omitted]"
