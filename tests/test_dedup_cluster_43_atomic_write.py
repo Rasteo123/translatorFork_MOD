@@ -25,6 +25,7 @@ temp-имени, cleanup при ошибке, опциональный chmod, с
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,7 @@ def test_atomic_write_bytes_cleans_up_temp_file_on_failure(tmp_path, monkeypatch
     assert leftovers == [], "осиротевший temp-файл не должен оставаться после сбоя"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="chmod на Windows меняет только бит read-only, POSIX-права не проверить")
 def test_atomic_write_bytes_applies_optional_mode(tmp_path):
     path = tmp_path / "secret.json"
     io_utils.atomic_write_bytes(path, b"{}", mode=0o600)
@@ -156,7 +158,8 @@ def test_atomic_write_json_bytes_round_trip(tmp_path):
     payload = json.dumps({"id": "t1", "status": "pending"}, ensure_ascii=False, indent=2)
     io_utils.atomic_write_text(path, payload, mode=0o600)
     assert json.loads(path.read_text(encoding="utf-8")) == {"id": "t1", "status": "pending"}
-    assert (path.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":  # на Windows chmod(0o600) не отражается в st_mode
+        assert (path.stat().st_mode & 0o777) == 0o600
 
 
 # ---------------------------------------------------------------------------

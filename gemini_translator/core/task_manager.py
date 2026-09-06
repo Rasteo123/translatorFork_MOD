@@ -1799,11 +1799,25 @@ class ChapterQueueManager(QObject):
             self._update_timer.stop()
         except RuntimeError:
             pass  # C++-объект таймера уже удалён вместе с менеджером
-        worker = self._cache_update_worker
+        workers = [self._cache_update_worker]
         self._cache_update_worker = None
         self._is_updating_cache = False
         self._in_flight_snapshot = None
-        if worker is not None:
+        # Воркеры очистки сессии/глоссария и всё, что ещё числится в реестре
+        # с методом ЭТОГО менеджера в качестве цели: финиш redirect-прогона
+        # закрывает БД сразу после session_finished, пока
+        # _handle_session_finished_background ещё работает.
+        workers.append(getattr(self, "_cleanup_worker", None))
+        workers.append(getattr(self, "_glossary_cleanup_worker", None))
+        for candidate in list(TaskDBWorker._inflight):
+            target = getattr(candidate, "target_func", None)
+            if getattr(target, "__self__", None) is self:
+                workers.append(candidate)
+        seen = set()
+        for worker in workers:
+            if worker is None or id(worker) in seen:
+                continue
+            seen.add(id(worker))
             try:
                 worker.wait(wait_ms)
             except RuntimeError:

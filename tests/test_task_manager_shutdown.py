@@ -82,6 +82,33 @@ class ShutdownTests(unittest.TestCase):
         self.assertFalse(manager._update_timer.isActive())
         self.assertIsNone(manager._cache_update_worker, "после shutdown() новые воркеры запускаться не должны")
 
+    def test_shutdown_waits_for_the_session_cleanup_worker_too(self):
+        """Финиш redirect-прогона закрывает БД сразу после session_finished, а
+        _handle_session_finished_background в этот момент ещё крутится в своём
+        TaskDBWorker — на Windows CI это давало «no such table» и порчу памяти
+        sqlite. shutdown() обязан дождаться ВСЕХ воркеров менеджера."""
+        manager, anchor = _make_manager("cleanup")
+        self.addCleanup(anchor.close)
+        real = manager._handle_session_finished_background
+
+        def slow(*args, **kwargs):
+            time.sleep(0.2)
+            return real(*args, **kwargs)
+
+        manager._handle_session_finished_background = slow
+        manager.on_event({"event": "session_finished", "session_id": None, "data": {"reason": "ok"}})
+        deadline = time.monotonic() + 2
+        while getattr(manager, "_cleanup_worker", None) is None and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(0.002)
+        worker = manager._cleanup_worker
+        self.assertIsNotNone(worker, "воркер очистки сессии не стартовал")
+        self.assertTrue(worker.isRunning())
+
+        manager.shutdown()
+
+        self.assertTrue(worker.isFinished(), "shutdown() обязан дождаться воркера очистки сессии")
+
     def test_shutdown_is_idempotent_and_safe_without_worker(self):
         manager, anchor = _make_manager("idempotent")
         self.addCleanup(anchor.close)

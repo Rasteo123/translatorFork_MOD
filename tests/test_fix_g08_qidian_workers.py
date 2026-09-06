@@ -7,7 +7,6 @@
    в фолбэк-ветке _wait_for_selector_attached — фолбэк всегда падает.
 """
 
-import pytest
 
 from qidian_rulate.workers import _clean_qidian_description, _wait_for_selector_attached
 
@@ -29,36 +28,59 @@ def test_clean_qidian_description_strips_seo_prefix_without_author():
     assert "创作的" not in cleaned
 
 
+class _AttachedTimeout(Exception):
+    pass
+
+
+class _FakeFirstLocator:
+    """Playwright-подобный Locator: `.first` — свойство, НЕ метод."""
+
+    def __init__(self, page):
+        self._page = page
+
+    @property
+    def first(self):
+        return self
+
+    def wait_for(self, *, state, timeout):
+        self._page.fallback_calls.append((state, timeout))
+        if self._page.element_appears_in_fallback:
+            return None
+        raise _AttachedTimeout("still absent")
+
+
+class _FakePage:
+    """Первичный wait_for_selector всегда «не успевает» (как в проде при
+    позднем рендере), элемент появляется только в окне фолбэка."""
+
+    def __init__(self, element_appears_in_fallback=True):
+        self.element_appears_in_fallback = element_appears_in_fallback
+        self.fallback_calls = []
+
+    def wait_for_selector(self, selector, *, state, timeout):
+        raise _AttachedTimeout("primary wait timed out")
+
+    def locator(self, selector):
+        return _FakeFirstLocator(self)
+
+
 def test_wait_for_selector_attached_fallback_waits_for_late_element():
     """Фолбэк-ветка должна реально дождаться элемента через `.first`
     (свойство Playwright Locator), а не падать с TypeError на `.first()`.
+
+    Раньше тест поднимал настоящий Chromium и гонял таймеры 200/300 мс — на
+    медленном Windows-раннере окно фолбэка проигрывало гонку. Заглушки
+    воспроизводят контракт Playwright (`.first` — свойство) детерминированно.
     """
-    playwright_sync_api = pytest.importorskip("playwright.sync_api")
+    page = _FakePage(element_appears_in_fallback=True)
 
-    with playwright_sync_api.sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        try:
-            page = browser.new_page()
-            page.set_content("<html><body></body></html>")
-            # Элемент появляется в DOM через 300 мс — после того, как первичный
-            # page.wait_for_selector с таймаутом 200мс не успеет, но в пределах
-            # окна фолбэка (ещё 200мс, итого до 400мс).
-            page.evaluate(
-                """
-                setTimeout(() => {
-                    const el = document.createElement('div');
-                    el.id = 'late-element';
-                    document.body.appendChild(el);
-                }, 300);
-                """
-            )
+    # До фикса: фолбэк звал `.first()` -> TypeError ('Locator' object is not
+    # callable), внешний except гасил его, и функция возвращала False.
+    assert _wait_for_selector_attached(page, "#late-element", timeout=200) is True
+    assert page.fallback_calls == [("attached", 200)]
 
-            result = _wait_for_selector_attached(page, "#late-element", timeout=200)
 
-            # До фикса: первичный wait_for_selector(timeout=200) не успевает,
-            # фолбэк `.first()` бросает TypeError ('Locator' object is not
-            # callable), внешний except гасит его, и функция сразу
-            # возвращает False, не дождавшись элемента.
-            assert result is True
-        finally:
-            browser.close()
+def test_wait_for_selector_attached_returns_false_when_element_never_appears():
+    page = _FakePage(element_appears_in_fallback=False)
+    assert _wait_for_selector_attached(page, "#never", timeout=50) is False
+    assert page.fallback_calls == [("attached", 50)]

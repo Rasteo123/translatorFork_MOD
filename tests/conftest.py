@@ -59,5 +59,13 @@ def pytest_runtest_logreport(report):
     if report.failed:
         import sys
 
-        sys.__stderr__.write(f"\n[FAILED] {report.nodeid} ({report.when})\n")
+        detail = ""
+        try:
+            text = report.longreprtext or ""
+            tail = [line for line in text.splitlines() if line.strip()][-12:]
+            if tail:
+                detail = "\n" + "\n".join("    " + line for line in tail)
+        except Exception:
+            detail = ""
+        sys.__stderr__.write(f"\n[FAILED] {report.nodeid} ({report.when}){detail}\n")
         sys.__stderr__.flush()
