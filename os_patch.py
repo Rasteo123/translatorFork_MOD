@@ -569,7 +569,8 @@ class PatientLock:
 
         # ЛОКАЛЬНЫЕ переменные для слежки за лидером
         watched_leader = None
-        leader_misses = 0 
+        leader_misses = 0
+        reported_long_hold_owner = None
         
         with self._mutex:
             # 1. ДИАГНОСТИКА РЕКУРСИИ
@@ -604,26 +605,33 @@ class PatientLock:
 
                     now = time.monotonic()
 
-                    # --- СУД НАД ВЛАДЕЛЬЦЕМ ---
+                    # --- ДИАГНОСТИКА ДОЛГОГО УДЕРЖАНИЯ ---
                     if self._owner is not None:
                         owner_limit = 60.0 if self._owner in self._vip_threads else 30.0
-                        if self._owner_ts and (now - self._owner_ts) > owner_limit:
+                        if (
+                            self._owner_ts
+                            and (now - self._owner_ts) > owner_limit
+                            and reported_long_hold_owner != self._owner
+                        ):
+                            reported_long_hold_owner = self._owner
                             culprit_stack = "".join(self._owner_stack) if self._owner_stack else "<Стек не сохранен>"
-                            print(f"\n{'!'*40}\n [PatientLock] СУД ЛИНЧА: Владелец {self._owner} сброшен ({owner_limit}с).\n{'!'*40}\n")
+                            print(
+                                f"\n{'!'*40}\n"
+                                f" [PatientLock] Владелец {self._owner} удерживает замок "
+                                f"дольше {owner_limit}с; принудительное освобождение запрещено.\n"
+                                f"{'!'*40}\n"
+                            )
                             
                             global _global_notifier
                             if _global_notifier:
                                 user_text = (
                                     f"ВНИМАНИЕ: Обнаружена блокировка ЗАМКА!\n\n"
                                     f"Поток (ID {self._owner}) удерживал ресурс более {owner_limit} с.\n"
-                                    f"Приложение ПОПРОБУЕТ продолжить работу.\n\n"
+                                    f"Замок не был принудительно освобождён: приложение ждёт владельца, "
+                                    f"чтобы не допустить одновременный доступ.\n\n"
                                     f"=== ИНФОРМАЦИЯ ДЛЯ ОТЛАДКИ ===\n{culprit_stack.strip()}"
                                 )
-                                _global_notifier.show_warning.emit("Deadlock Resolved (Watchdog)", user_text)
-                            
-                            self._owner = None
-                            self._cond.notify_all()
-                            continue
+                                _global_notifier.show_warning.emit("Long-held Lock (Watchdog)", user_text)
                     
                     # --- СУД НАД ЛИДЕРОМ ОЧЕРЕДИ ---
                     else: # Замок свободен (self._owner is None)

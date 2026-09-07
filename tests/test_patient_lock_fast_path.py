@@ -59,6 +59,39 @@ class PatientLockFastPathTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(results), 1)
 
+    def test_watchdog_never_replaces_a_live_owner(self):
+        lock = os_patch.PatientLock()
+        waiter_entered = threading.Event()
+        allow_waiter_exit = threading.Event()
+
+        def waiter():
+            lock.acquire()
+            try:
+                waiter_entered.set()
+                allow_waiter_exit.wait(timeout=2)
+            finally:
+                lock.release()
+
+        lock.acquire()
+        with lock._mutex:
+            lock._owner_ts = time.monotonic() - 31.0
+
+        thread = threading.Thread(target=waiter, daemon=True)
+        thread.start()
+
+        entered_before_owner_release = waiter_entered.wait(timeout=1)
+        lock.release()
+        entered_after_owner_release = waiter_entered.wait(timeout=2)
+        allow_waiter_exit.set()
+        thread.join(timeout=2)
+
+        self.assertFalse(
+            entered_before_owner_release,
+            "watchdog replaced the thread that still owned the lock",
+        )
+        self.assertTrue(entered_after_owner_release)
+        self.assertFalse(thread.is_alive())
+
 
 if __name__ == "__main__":
     unittest.main()
