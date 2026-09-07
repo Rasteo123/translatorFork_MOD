@@ -1,5 +1,6 @@
 import hashlib
 import sqlite3
+import threading
 
 import pytest
 
@@ -181,3 +182,280 @@ def test_load_statuses_returns_one_snapshot_when_merge_happens_between_selects(
         "exhausted_level": 1,
         "requests": [10],
     }
+
+
+def test_increment_from_two_store_instances_loses_no_requests(tmp_path):
+    path = tmp_path / "settings.runtime.sqlite3"
+    first, second = KeyRuntimeStore(path), KeyRuntimeStore(path)
+    barrier = threading.Barrier(3)
+    errors = []
+
+    def add_many(store, offset):
+        try:
+            barrier.wait()
+            for index in range(40):
+                store.increment("KEY", "model", 1000 + offset + index, cutoff=0)
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=add_many, args=(first, 0)),
+               threading.Thread(target=add_many, args=(second, 100))]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(first.load_statuses(["KEY"])["KEY"]["model"].requests) == 80
+
+
+def test_increment_prunes_exclusive_cutoff_and_preserves_other_models(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.merge_statuses({"KEY": {"model": {"requests": [10, 20, 30]},
+                                 "other": {"requests": [10]}}})
+    assert store.increment("KEY", "model", 40, cutoff=20) == 2
+    assert store.increment("KEY", "model", 20, cutoff=20) == 2
+    loaded = store.load_statuses(["KEY"])["KEY"]
+    assert loaded["model"].requests == (30, 40)
+    assert loaded["other"].requests == (10,)
+
+
+def test_decrement_removes_one_latest_request(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.merge_statuses({"KEY": {"model": {"requests": [10, 20, 20]}}})
+    assert store.decrement("KEY", "model", cutoff=0) == (True, 2)
+    assert store.load_statuses(["KEY"])["KEY"]["model"].requests == (10, 20)
+    assert store.decrement("KEY", "model", cutoff=20) == (False, 0)
+    assert store.decrement("MISSING", "model", cutoff=0) == (False, 0)
+
+
+def test_exhaustion_and_delete_are_atomic(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    assert store.clear_exhaustion("KEY", "model") is False
+    store.set_exhausted("KEY", "model", exhausted_at=123.0)
+    state = store.load_statuses(["KEY"])["KEY"]["model"]
+    assert (state.exhausted_at, state.exhausted_level) == (123.0, 2)
+    assert store.clear_exhaustion("KEY", "model") is True
+    assert store.clear_exhaustion("KEY", "model") is False
+    store.increment("KEY", "model", 10, cutoff=0)
+    store.delete_keys(iter(["KEY"]))
+    assert store.load_statuses(["KEY"]) == {"KEY": {}}
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM key_requests").fetchone()[0] == 0
+
+
+def test_maintenance_is_atomic_and_does_not_clear_a_newer_exhaustion(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.merge_statuses({"KEY": {"model": {
+        "exhausted_at": 123.0, "exhausted_level": 2, "requests": [10, 20, 30],
+    }}})
+    assert store.maintain_model("KEY", "model", cutoff=15,
+                                clear_exhausted_at=123.0) == (True, 2, True)
+    store.set_exhausted("KEY", "model", exhausted_at=200.0)
+    assert store.maintain_model("KEY", "model", cutoff=15,
+                                clear_exhausted_at=123.0) == (False, 2, False)
+    assert store.load_statuses(["KEY"])["KEY"]["model"].exhausted_at == 200.0
+    assert store.prune_requests("KEY", "model", cutoff=20) == (True, 1)
+    assert store.maintain_model("MISSING", "model", cutoff=0) == (False, 0, False)
+
+
+def test_delete_orphans_keeps_only_configured_key_ids(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.merge_statuses({"KEEP": {"model": {"requests": [10]}},
+                          "ORPHAN": {"model": {"requests": [20]}}})
+    store.delete_keys([])
+    store.delete_orphans(iter(["KEEP"]))
+    assert store.load_statuses(["KEEP", "ORPHAN"]) == {
+        "KEEP": {"model": ModelRuntimeState(requests=(10,))}, "ORPHAN": {},
+    }
+    store.delete_orphans([])
+    assert store.load_statuses(["KEEP"]) == {"KEEP": {}}
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM key_requests").fetchone()[0] == 0
+
+
+def test_not_a_database_is_quarantined_and_reported(tmp_path):
+    path = tmp_path / "settings.runtime.sqlite3"
+    path.write_bytes(b"not sqlite")
+    recovered = []
+    store = KeyRuntimeStore(path, on_corrupt=lambda source, backup: recovered.append((source, backup)))
+    assert store.load_statuses(["KEY"]) == {"KEY": {}}
+    assert len(recovered) == 1
+    assert recovered[0][0] == path
+    assert recovered[0][1].read_bytes() == b"not sqlite"
+    assert recovered[0][1].name.startswith("settings.runtime.sqlite3.corrupt-")
+    store.increment("KEY", "model", 10, cutoff=0)
+    assert store.load_statuses(["KEY"])["KEY"]["model"].requests == (10,)
+
+
+@pytest.mark.parametrize("message", ["unable to open database file", "database is locked",
+                                      "database or disk is full", "attempt to write a readonly database"])
+def test_operational_error_is_not_misclassified_as_corruption(tmp_path, monkeypatch, message):
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+    store.ensure_ready()
+
+    def fail_connect():
+        raise sqlite3.OperationalError(message)
+
+    monkeypatch.setattr(store, "_connect", fail_connect)
+    with pytest.raises(sqlite3.OperationalError, match=message):
+        store.load_statuses(["KEY"])
+    store._ready = False
+    with pytest.raises(sqlite3.OperationalError, match=message):
+        store.ensure_ready()
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
+@pytest.mark.parametrize("code,message,expected", [
+    (sqlite3.SQLITE_CORRUPT, "unrelated text", True),
+    (sqlite3.SQLITE_NOTADB, "unrelated text", True),
+    (sqlite3.SQLITE_CORRUPT | (1 << 8), "extended error", True),
+    (sqlite3.SQLITE_BUSY, "file is not a database", False),
+    (None, "database disk image is malformed", True),
+    (None, "file is not a database", True),
+    (None, "possibly file is not a database", False),
+])
+def test_corruption_classification_is_narrow(code, message, expected):
+    error = sqlite3.DatabaseError(message)
+    if code is not None:
+        error.sqlite_errorcode = code
+    assert key_runtime_store_module._is_corruption_error(error) is expected
+
+
+def test_quick_check_runs_once_and_detects_reported_corruption(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.sqlite3"
+    KeyRuntimeStore(path).merge_statuses({"KEY": {"model": {"requests": [10]}}})
+    real_connect = sqlite3.connect
+    checks = []
+    recovered = []
+
+    class CheckConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if sql == "PRAGMA quick_check":
+                checks.append(sql)
+                if len(checks) == 1:
+                    return super().execute("SELECT 'bad page'")
+            return super().execute(sql, parameters)
+
+    def checked_connect(*args, **kwargs):
+        return real_connect(*args, factory=CheckConnection, **kwargs)
+
+    monkeypatch.setattr(key_runtime_store_module.sqlite3, "connect", checked_connect)
+    store = KeyRuntimeStore(path, on_corrupt=lambda *paths: recovered.append(paths))
+    assert store.load_statuses(["KEY"]) == {"KEY": {}}
+    store.load_statuses(["KEY"])
+    assert len(checks) == 2  # Original file and recreated database, never per operation.
+    assert len(recovered) == 1
+
+
+def test_maintenance_rolls_back_pruning_when_clear_fails(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.merge_statuses({"KEY": {"model": {
+        "requests": [10, 20], "exhausted_at": 123.0, "exhausted_level": 2,
+    }}})
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""CREATE TRIGGER reject_clear BEFORE UPDATE ON key_model_status
+                            BEGIN SELECT RAISE(ABORT, 'clear failed'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="clear failed"):
+        store.maintain_model("KEY", "model", cutoff=15, clear_exhausted_at=123.0)
+    assert store.load_statuses(["KEY"])["KEY"]["model"] == ModelRuntimeState(
+        requests=(10, 20), exhausted_at=123.0, exhausted_level=2,
+    )
+
+
+def test_mutations_close_connections_after_success_and_rollback(tmp_path, monkeypatch):
+    real_connect = sqlite3.connect
+    connections = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(key_runtime_store_module.sqlite3, "connect", tracking_connect)
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.increment("KEY", "model", 10, 0)
+    store.decrement("KEY", "model", 0)
+    store.set_exhausted("KEY", "model", 1)
+    store.clear_exhaustion("KEY", "model")
+    store.maintain_model("KEY", "model", 0)
+    store.delete_keys(["KEY"])
+    store.delete_orphans([])
+    with pytest.raises(sqlite3.IntegrityError):
+        store.increment("KEY", "model", None, 0)
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
+def test_connection_configuration_failure_closes_connection(tmp_path, monkeypatch):
+    real_connect = sqlite3.connect
+    connections = []
+
+    class FailingConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            raise sqlite3.OperationalError("configuration failed")
+
+    def failing_connect(*args, **kwargs):
+        connection = real_connect(*args, factory=FailingConnection, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(key_runtime_store_module.sqlite3, "connect", failing_connect)
+    with pytest.raises(sqlite3.OperationalError, match="configuration failed"):
+        KeyRuntimeStore(tmp_path / "runtime.sqlite3").ensure_ready()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].cursor()
+
+
+def test_quarantine_moves_main_before_removing_sidecars_and_keeps_backups(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.sqlite3"
+    wal, shm = tmp_path / "runtime.sqlite3-wal", tmp_path / "runtime.sqlite3-shm"
+    real_unlink = type(path).unlink
+
+    def checked_unlink(target, *args, **kwargs):
+        if target in (wal, shm):
+            assert not path.exists()
+            assert any(backup.read_bytes() == b"broken" for backup in tmp_path.glob("*.corrupt-*"))
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), "unlink", checked_unlink)
+    store = KeyRuntimeStore(path)
+    backups = []
+    for _ in range(2):
+        path.write_bytes(b"broken")
+        wal.write_bytes(b"stale wal")
+        shm.write_bytes(b"stale shm")
+        backups.append(store._quarantine())
+        assert not wal.exists() and not shm.exists()
+    assert backups[0] != backups[1]
+    assert [backup.read_bytes() for backup in backups] == [b"broken", b"broken"]
+
+
+def test_quarantine_preserves_main_and_sidecars_if_move_fails(tmp_path, monkeypatch):
+    path = tmp_path / "runtime.sqlite3"
+    wal = tmp_path / "runtime.sqlite3-wal"
+    path.write_bytes(b"broken")
+    wal.write_bytes(b"preserve wal")
+
+    def fail_move(*args, **kwargs):
+        raise PermissionError("move denied")
+
+    monkeypatch.setattr(type(path), "replace", fail_move)
+    with pytest.raises(PermissionError, match="move denied"):
+        KeyRuntimeStore(path)._quarantine()
+    assert path.read_bytes() == b"broken"
+    assert wal.read_bytes() == b"preserve wal"
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
+def test_delete_keys_rolls_back_request_removal_when_status_delete_fails(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.merge_statuses({"KEY": {"model": {"requests": [10]}}})
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""CREATE TRIGGER reject_delete BEFORE DELETE ON key_model_status
+                            BEGIN SELECT RAISE(ABORT, 'delete failed'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="delete failed"):
+        store.delete_keys(["KEY"])
+    assert store.load_statuses(["KEY"])["KEY"]["model"].requests == (10,)
