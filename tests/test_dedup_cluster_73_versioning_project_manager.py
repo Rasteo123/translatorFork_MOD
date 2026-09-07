@@ -75,22 +75,12 @@ class LoadSaveVersionMapCharacterizationTests(unittest.TestCase):
     def test_save_raises_on_write_failure_so_ui_can_report_it(self):
         """save_version_map должен пробрасывать ошибку записи наверх,
         чтобы вызывающий UI-код (TermVersioningDialog) мог показать её
-        пользователю — как раньше делал самодельный _save_all_versions.
-
-        Патч ``open`` сужен до пути, по которому save_version_map реально
-        пишет (tmp-файл атомарной записи) — глобальный OSError-патч на
-        builtins.open ловил бы и фоновые открытия файлов (Qt/watchdog/
-        ленивый импорт) во время теста, источник редких флейков."""
-        version_file = os.path.join(self.tmpdir.name, "glossary_versions.json")
-        tmp_file = version_file + ".tmp"
-        real_open = open
-
-        def _flaky_open(path, *args, **kwargs):
-            if os.path.abspath(str(path)) == os.path.abspath(tmp_file):
-                raise OSError("disk full")
-            return real_open(path, *args, **kwargs)
-
-        with patch("builtins.open", side_effect=_flaky_open):
+        пользователю — как раньше делал самодельный _save_all_versions."""
+        with patch(
+            "gemini_translator.utils.project_manager.atomic_write_text",
+            side_effect=OSError("disk full"),
+            create=True,
+        ):
             with self.assertRaises(OSError):
                 self.pm.save_version_map({"Term": []})
 

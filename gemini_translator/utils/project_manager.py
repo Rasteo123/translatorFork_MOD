@@ -9,6 +9,7 @@ import threading
 import weakref
 
 from . import fast_json
+from .io_utils import atomic_write_bytes, atomic_write_text
 
 try:
     import zstandard as _zstd
@@ -134,12 +135,14 @@ class TranslationProjectManager:
             return {}
 
     def _write_map_file_unsafe(self, data_to_save):
-        """Атомарная запись карты: tmp-файл + os.replace (под блокировкой)."""
-        os.makedirs(os.path.dirname(self.map_file_path), exist_ok=True)
-        tmp_path = self.map_file_path + ".tmp"
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=2, sort_keys=True)
-        os.replace(tmp_path, self.map_file_path)
+        """Атомарная запись карты через общий writer (под блокировкой)."""
+        payload = json.dumps(
+            data_to_save,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        atomic_write_text(self.map_file_path, payload)
 
     def _save_unsafe(self, data_to_save):
         """Внутренний метод, вызывается, когда блокировка уже установлена.
@@ -228,16 +231,11 @@ class TranslationProjectManager:
         return {}
 
     def _write_version_map_unsafe(self, version_map):
-        """Атомарная запись карты версий: tmp-файл + os.replace (под
-        self.lock) — падение записи не оставляет обрезанный/битый файл,
-        который load_version_map иначе прочитал бы как {}, молча потеряв
-        всю карту версий терминов."""
+        """Атомарная запись карты версий через общий writer (под self.lock)."""
         version_file = self._version_map_file_path()
-        tmp_path = version_file + '.tmp'
         try:
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(version_map, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, version_file)
+            payload = json.dumps(version_map, ensure_ascii=False, indent=2)
+            atomic_write_text(version_file, payload)
         except Exception as e:
             print(f"[ProjectManager] Ошибка сохранения версий: {e}")
             raise
@@ -718,10 +716,10 @@ class TranslationProjectManager:
             os.makedirs(os.path.dirname(self.validation_cache_path), exist_ok=True)
             serialized = fast_json.dumps(payload, indent=2, sort_keys=True)
             if _zstd is not None:
-                tmp_path = self.validation_cache_zst_path + '.tmp'
-                with open(tmp_path, 'wb') as f:
-                    f.write(_zstd.ZstdCompressor(level=3).compress(serialized.encode('utf-8')))
-                os.replace(tmp_path, self.validation_cache_zst_path)
+                compressed = _zstd.ZstdCompressor(level=3).compress(
+                    serialized.encode('utf-8')
+                )
+                atomic_write_bytes(self.validation_cache_zst_path, compressed)
                 # Легаси-файл убираем, чтобы не разъезжался со сжатым.
                 try:
                     os.remove(self.validation_cache_path)
