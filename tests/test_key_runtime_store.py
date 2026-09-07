@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+import gemini_translator.utils.key_runtime_store as key_runtime_store_module
 from gemini_translator.utils.key_runtime_store import (
     KeyRuntimeStore,
     ModelRuntimeState,
@@ -103,3 +104,80 @@ def test_path_is_read_only(tmp_path):
 
     with pytest.raises(AttributeError):
         store.path = tmp_path / "other.runtime.sqlite3"
+
+
+def test_public_operations_explicitly_close_every_sqlite_connection(
+    tmp_path, monkeypatch
+):
+    real_connect = sqlite3.connect
+    closed_connections = []
+
+    class TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed_connections.append(self)
+            super().close()
+
+    def tracking_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(key_runtime_store_module.sqlite3, "connect", tracking_connect)
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+
+    store.merge_statuses({"KEY": {"model": {"requests": [10]}}})
+    store.load_statuses(["KEY"])
+
+    assert len(closed_connections) == 3
+
+
+def test_load_statuses_returns_one_snapshot_when_merge_happens_between_selects(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "settings.runtime.sqlite3"
+    writer = KeyRuntimeStore(path)
+    writer.merge_statuses({
+        "KEY": {
+            "model": {
+                "exhausted_level": 1,
+                "requests": [10],
+            }
+        }
+    })
+    reader = KeyRuntimeStore(path)
+    reader.ensure_ready()
+
+    real_connect = sqlite3.connect
+    triggered = False
+
+    class InterleavingConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            nonlocal triggered
+            cursor = super().execute(sql, parameters)
+            if "FROM key_model_status" in sql and not triggered:
+                triggered = True
+                writer.merge_statuses({
+                    "KEY": {
+                        "model": {
+                            "exhausted_level": 2,
+                            "requests": [10, 20],
+                        }
+                    }
+                })
+            return cursor
+
+    def interleaving_connect(*args, **kwargs):
+        kwargs["factory"] = InterleavingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(
+        key_runtime_store_module.sqlite3, "connect", interleaving_connect
+    )
+
+    state = reader.load_statuses(["KEY"])["KEY"]["model"]
+
+    assert triggered
+    assert state.to_dict() == {
+        "exhausted_at": None,
+        "exhausted_level": 1,
+        "requests": [10],
+    }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -74,7 +75,7 @@ class KeyRuntimeStore:
             if self._ready:
                 return
 
-            with self._connect() as connection:
+            with closing(self._connect()) as connection:
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.executescript(
                     """
@@ -122,24 +123,31 @@ class KeyRuntimeStore:
         placeholders = ", ".join("?" for _ in key_hashes)
         requests_by_model: dict[tuple[str, str], list[int]] = defaultdict(list)
 
-        with self._connect() as connection:
-            status_rows = connection.execute(
-                """
-                SELECT key_hash, model_name, exhausted_at, exhausted_level
-                FROM key_model_status
-                WHERE key_hash IN ({placeholders})
-                """.format(placeholders=placeholders),
-                key_hashes,
-            ).fetchall()
-            request_rows = connection.execute(
-                """
-                SELECT key_hash, model_name, requested_at
-                FROM key_requests
-                WHERE key_hash IN ({placeholders})
-                ORDER BY requested_at, id
-                """.format(placeholders=placeholders),
-                key_hashes,
-            ).fetchall()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
+            try:
+                status_rows = connection.execute(
+                    """
+                    SELECT key_hash, model_name, exhausted_at, exhausted_level
+                    FROM key_model_status
+                    WHERE key_hash IN ({placeholders})
+                    """.format(placeholders=placeholders),
+                    key_hashes,
+                ).fetchall()
+                request_rows = connection.execute(
+                    """
+                    SELECT key_hash, model_name, requested_at
+                    FROM key_requests
+                    WHERE key_hash IN ({placeholders})
+                    ORDER BY requested_at, id
+                    """.format(placeholders=placeholders),
+                    key_hashes,
+                ).fetchall()
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+            else:
+                connection.execute("COMMIT")
 
         for row in request_rows:
             requests_by_model[(row["key_hash"], row["model_name"])].append(
@@ -167,7 +175,7 @@ class KeyRuntimeStore:
             return
 
         self.ensure_ready()
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 for api_key, statuses_by_model in statuses_by_key.items():
