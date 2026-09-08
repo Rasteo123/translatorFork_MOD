@@ -41,20 +41,19 @@ class SettingsLiveKeyResetTests(unittest.TestCase):
         manager = self._create_manager(bus)
 
         expired_at = int(time.time()) - (48 * 60 * 60)
-        with manager.file_lock:
-            manager._cache["api_keys_with_status"] = [
-                {
-                    "key": "GEMINI_TEST_KEY",
-                    "provider": "gemini",
-                    "status_by_model": {
-                        "gemini-test-model": {
-                            "exhausted_at": expired_at,
-                            "exhausted_level": 2,
-                            "requests": [expired_at],
-                        }
-                    },
-                }
-            ]
+        manager.save_key_statuses([
+            {
+                "key": "GEMINI_TEST_KEY",
+                "provider": "gemini",
+                "status_by_model": {
+                    "gemini-test-model": {
+                        "exhausted_at": expired_at,
+                        "exhausted_level": 2,
+                        "requests": [expired_at],
+                    }
+                },
+            }
+        ])
 
         bus.events.clear()
         manager._refresh_expired_key_limits()
@@ -82,31 +81,30 @@ class SettingsLiveKeyResetTests(unittest.TestCase):
         manager = self._create_manager(_RecordingBus())
         now = int(time.time())
         expired_at = now - (48 * 60 * 60)
-        with manager.file_lock:
-            manager._cache["api_keys_with_status"] = [
-                {
-                    "key": "CURRENTLY_LIMITED_KEY",
-                    "provider": "gemini",
-                    "status_by_model": {
-                        "gemini-test-model": {
-                            "exhausted_at": now,
-                            "exhausted_level": 2,
-                            "requests": [now],
-                        }
-                    },
+        manager.save_key_statuses([
+            {
+                "key": "CURRENTLY_LIMITED_KEY",
+                "provider": "gemini",
+                "status_by_model": {
+                    "gemini-test-model": {
+                        "exhausted_at": now,
+                        "exhausted_level": 2,
+                        "requests": [now],
+                    }
                 },
-                {
-                    "key": "EXPIRED_KEY",
-                    "provider": "gemini",
-                    "status_by_model": {
-                        "gemini-test-model": {
-                            "exhausted_at": expired_at,
-                            "exhausted_level": 2,
-                            "requests": [expired_at],
-                        }
-                    },
+            },
+            {
+                "key": "EXPIRED_KEY",
+                "provider": "gemini",
+                "status_by_model": {
+                    "gemini-test-model": {
+                        "exhausted_at": expired_at,
+                        "exhausted_level": 2,
+                        "requests": [expired_at],
+                    }
                 },
-            ]
+            },
+        ])
 
         statuses = {
             item["key"]: item for item in manager.load_key_statuses()

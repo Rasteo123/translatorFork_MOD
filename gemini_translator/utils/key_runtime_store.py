@@ -127,7 +127,8 @@ class KeyRuntimeStore:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS runtime_meta (
-                    schema_version INTEGER NOT NULL
+                    name TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS key_model_status (
@@ -149,6 +150,21 @@ class KeyRuntimeStore:
                 ON key_requests (key_hash, model_name, requested_at, id);
                 """
             )
+            # Early sidecars had only a redundant schema_version column.
+            # Upgrade that metadata table without touching persisted runtime rows.
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(runtime_meta)")}
+                if columns == {"schema_version"}:
+                    connection.execute("DROP TABLE runtime_meta")
+                    connection.execute(
+                        "CREATE TABLE runtime_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    )
+                connection.execute("COMMIT")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
             connection.execute("PRAGMA user_version=1")
 
     def _quarantine(self) -> Path:
@@ -291,6 +307,39 @@ class KeyRuntimeStore:
                 raise
             else:
                 connection.execute("COMMIT")
+
+    def import_legacy_once(
+        self,
+        statuses_by_key: Mapping[str, Mapping[str, Mapping[str, object]]],
+    ) -> bool:
+        """Commit the legacy rows and import marker in one transaction."""
+        with self._transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM runtime_meta WHERE name = 'legacy_json_v1_imported'"
+            ).fetchone() is not None:
+                return False
+            for api_key, statuses_by_model in statuses_by_key.items():
+                key_hash = key_id(api_key)
+                for model_id, status in statuses_by_model.items():
+                    connection.execute(
+                        """INSERT INTO key_model_status (
+                               key_hash, model_name, exhausted_at, exhausted_level
+                           ) VALUES (?, ?, ?, ?)
+                           ON CONFLICT(key_hash, model_name) DO UPDATE SET
+                               exhausted_at=excluded.exhausted_at,
+                               exhausted_level=excluded.exhausted_level""",
+                        (key_hash, model_id, status.get("exhausted_at"),
+                         status.get("exhausted_level", 0)),
+                    )
+                    connection.executemany(
+                        """INSERT INTO key_requests (key_hash, model_name, requested_at)
+                           VALUES (?, ?, ?)""",
+                        [(key_hash, model_id, timestamp) for timestamp in status.get("requests", ())],
+                    )
+            connection.execute(
+                "INSERT INTO runtime_meta (name, value) VALUES ('legacy_json_v1_imported', '1')"
+            )
+        return True
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:

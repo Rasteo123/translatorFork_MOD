@@ -58,22 +58,21 @@ class SettingsLimitCheckHotPathTests(unittest.TestCase):
         self.manager = SettingsManager(
             config_file=os.path.join(self.temp_dir.name, "settings.json"))
         now = int(time.time())
-        with self.manager.file_lock:
-            self.manager._cache["api_keys_with_status"] = [
-                {
-                    "key": f"KEY_{index}",
-                    "provider": "gemini",
-                    "status_by_model": {
-                        f"model-{suffix}": {
-                            "exhausted_at": None,
-                            "exhausted_level": 0,
-                            "requests": [now - 10, now - 5],
-                        }
-                        for suffix in range(3)
-                    },
-                }
-                for index in range(30)
-            ]
+        self.manager.save_key_statuses([
+            {
+                "key": f"KEY_{index}",
+                "provider": "gemini",
+                "status_by_model": {
+                    f"model-{suffix}": {
+                        "exhausted_at": None,
+                        "exhausted_level": 0,
+                        "requests": [now - 10, now - 5],
+                    }
+                    for suffix in range(3)
+                },
+            }
+            for index in range(30)
+        ])
 
     def test_limit_check_does_not_recompose_provider_registry(self):
         api_config.api_providers_view()  # прогреваем кэш
@@ -82,10 +81,14 @@ class SettingsLimitCheckHotPathTests(unittest.TestCase):
         with mock.patch.object(
                 api_config, "_compose_runtime_providers",
                 side_effect=original) as compose_spy:
-            with self.manager.file_lock:
-                self.manager._check_and_reset_limits_in_cache()
+            self.manager._check_and_reset_limits_in_cache()
 
         self.assertEqual(compose_spy.call_count, 0)
+        statuses = self.manager.load_key_statuses()
+        self.assertEqual(len(statuses), 30)
+        for key_info in statuses:
+            for suffix in range(3):
+                self.assertEqual(self.manager.get_request_count(key_info, f"model-{suffix}"), 2)
 
 
 if __name__ == "__main__":

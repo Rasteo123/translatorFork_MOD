@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -11,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6 import QtCore, QtWidgets
 
 from gemini_translator.api import config as api_config
+from gemini_translator.utils.key_runtime_store import KeyRuntimeStore
 from gemini_translator.utils.settings import SettingsManager
 
 
@@ -38,15 +40,16 @@ def test_plain_settings_do_not_create_runtime_database(tmp_path):
 
 def test_public_loaders_materialize_same_status_shape(tmp_path):
     manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    now = int(time.time())
     manager.save_key_statuses([{
         "key": "KEY",
         "provider": "gemini",
         "status_by_model": {
-            "model": {"exhausted_at": 10.0, "exhausted_level": 2, "requests": [1, 2]}
+            "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now, now]}
         },
     }])
 
-    expected = {"exhausted_at": 10.0, "exhausted_level": 2, "requests": [1, 2]}
+    expected = {"exhausted_at": now, "exhausted_level": 2, "requests": [now, now]}
     assert manager.load_key_statuses()[0]["status_by_model"]["model"] == expected
     assert manager.get_key_info("KEY")["status_by_model"]["model"] == expected
     assert manager.load_settings()["api_keys_with_status"][0]["status_by_model"]["model"] == expected
@@ -54,7 +57,7 @@ def test_public_loaders_materialize_same_status_shape(tmp_path):
     assert on_disk["api_keys_with_status"] == [{"key": "KEY", "provider": "gemini"}]
 
 
-def test_legacy_statuses_remain_visible_before_runtime_migration(tmp_path):
+def test_legacy_statuses_remain_visible_after_runtime_migration(tmp_path):
     settings_path = tmp_path / "settings.json"
     now = int(time.time())
     expected = {"exhausted_at": now, "exhausted_level": 2, "requests": [now, now]}
@@ -68,7 +71,7 @@ def test_legacy_statuses_remain_visible_before_runtime_migration(tmp_path):
     assert manager.load_settings()["api_keys_with_status"][0]["status_by_model"]["model"] == expected
 
 
-def test_sqlite_overrides_matching_legacy_model_and_keeps_other_models(tmp_path):
+def test_sqlite_merge_preserves_migrated_requests_and_other_models(tmp_path):
     settings_path = tmp_path / "settings.json"
     legacy = {"exhausted_at": None, "exhausted_level": 0, "requests": [1]}
     settings_path.write_text(json.dumps({"api_keys_with_status": [{
@@ -80,17 +83,18 @@ def test_sqlite_overrides_matching_legacy_model_and_keeps_other_models(tmp_path)
     manager._key_runtime_store.merge_statuses({"KEY": {"shared": stored}})
 
     assert manager.get_key_info("KEY")["status_by_model"] == {
-        "shared": stored, "legacy-only": legacy,
+        "shared": {**stored, "requests": [1, 3]}, "legacy-only": legacy,
     }
-    assert manager._cache["api_keys_with_status"][0]["status_by_model"]["shared"] == legacy
+    assert manager._cache["api_keys_with_status"] == [{"key": "KEY", "provider": "gemini"}]
 
 
 @pytest.mark.parametrize("loader", ["load_key_statuses", "get_key_info", "load_settings"])
 def test_public_results_are_independent_deep_copies(tmp_path, loader):
     manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    now = int(time.time())
     manager.save_key_statuses([{
         "key": "KEY", "provider": "gemini", "metadata": {"labels": ["original"]},
-        "status_by_model": {"model": {"requests": [1], "exhausted_level": 0}},
+        "status_by_model": {"model": {"requests": [now], "exhausted_level": 0}},
     }])
     if loader == "get_key_info":
         result = manager.get_key_info("KEY")
@@ -103,7 +107,7 @@ def test_public_results_are_independent_deep_copies(tmp_path, loader):
 
     reloaded = manager.get_key_info("KEY")
     assert reloaded["metadata"]["labels"] == ["original"]
-    assert reloaded["status_by_model"]["model"]["requests"] == [1]
+    assert reloaded["status_by_model"]["model"]["requests"] == [now]
 
 
 def test_store_operational_error_is_recorded_reported_and_propagated(tmp_path, monkeypatch):
@@ -170,3 +174,373 @@ def test_corrupt_store_recovery_is_published(tmp_path):
     event = next(item for item in bus.events if item["event"] == "key_runtime_store_corrupted")
     assert event["data"]["database_file"] == str(runtime_path)
     assert Path(event["data"]["backup_path"]).read_bytes() == b"not sqlite"
+
+
+def _legacy_payload():
+    return {"api_keys_with_status": [{
+        "key": "KEY", "provider": "gemini",
+        "status_by_model": {"model": {
+            "exhausted_at": 50, "exhausted_level": 2, "requests": [10, 10],
+        }},
+    }]}
+
+
+def test_legacy_json_is_imported_once_and_cleaned(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(_legacy_payload()), encoding="utf-8")
+    first = SettingsManager(config_file=str(path))
+    assert first.get_key_info("KEY")["status_by_model"]["model"]["requests"] == [10, 10]
+    assert json.loads(path.read_text(encoding="utf-8"))["api_keys_with_status"] == [
+        {"key": "KEY", "provider": "gemini"},
+    ]
+    second = SettingsManager(config_file=str(path))
+    assert second.get_key_info("KEY")["status_by_model"]["model"]["requests"] == [10, 10]
+
+
+def test_committed_import_is_not_repeated_when_json_cleanup_failed(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    legacy = _legacy_payload()
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    real_save = SettingsManager._save_unsafe
+    bus = RecordingBus()
+
+    def fail_cleanup(self, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(SettingsManager, "_save_unsafe", fail_cleanup)
+    first = SettingsManager(event_bus=bus, config_file=str(path))
+    assert isinstance(first._last_save_error, OSError)
+    assert json.loads(path.read_text(encoding="utf-8")) == legacy
+    assert first.get_key_info("KEY")["status_by_model"]["model"]["requests"] == [10, 10]
+    assert first._cache["api_keys_with_status"] == [{"key": "KEY", "provider": "gemini"}]
+    assert any(item["event"] == "settings_save_failed" for item in bus.events)
+    monkeypatch.setattr(SettingsManager, "_save_unsafe", real_save)
+    second = SettingsManager(config_file=str(path))
+    assert second.get_key_info("KEY")["status_by_model"]["model"]["requests"] == [10, 10]
+    assert json.loads(path.read_text(encoding="utf-8"))["api_keys_with_status"] == [
+        {"key": "KEY", "provider": "gemini"},
+    ]
+
+
+def test_failed_legacy_import_leaves_json_unchanged_and_reports_error(tmp_path):
+    path = tmp_path / "settings.json"
+    payload = json.dumps(_legacy_payload())
+    path.write_text(payload, encoding="utf-8")
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+    store.ensure_ready()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""CREATE TRIGGER reject_import BEFORE INSERT ON key_requests
+            BEGIN SELECT RAISE(ABORT, 'import denied'); END""")
+    bus = RecordingBus()
+    with pytest.raises(sqlite3.IntegrityError, match="import denied"):
+        SettingsManager(event_bus=bus, config_file=str(path))
+    assert path.read_text(encoding="utf-8") == payload
+    assert bus.events[-1]["event"] == "key_runtime_store_failed"
+    assert store.load_statuses(["KEY"]) == {"KEY": {}}
+
+
+def test_top_level_legacy_runtime_is_normalized_before_import(tmp_path):
+    path = tmp_path / "settings.json"
+    model = next(iter(api_config.api_providers_view()["gemini"]["models"].values()))["id"]
+    path.write_text(json.dumps({"api_keys_with_status": [{
+        "key": "KEY", "provider": "gemini", "requests": [10, 10],
+        "exhausted_at": 50, "exhausted_level": 2,
+    }]}), encoding="utf-8")
+    manager = SettingsManager(config_file=str(path))
+    assert manager.get_key_info("KEY")["status_by_model"][model] == {
+        "exhausted_at": 50, "exhausted_level": 2, "requests": [10, 10],
+    }
+    assert json.loads(path.read_text(encoding="utf-8"))["api_keys_with_status"] == [
+        {"key": "KEY", "provider": "gemini"},
+    ]
+
+
+def test_save_settings_splits_runtime_and_removal_deletes_sidecar_state(tmp_path):
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(config_file=str(path))
+    now = int(time.time())
+    payload = {"custom_prompt": "keep me", "api_keys_with_status": [{
+        "key": "KEY", "provider": "gemini", "status_by_model": {"model": {
+            "exhausted_at": None, "exhausted_level": 0, "requests": [now],
+        }},
+    }]}
+    assert manager.save_settings(payload) is True
+    assert manager.load_settings() == payload
+    assert json.loads(path.read_text(encoding="utf-8"))["api_keys_with_status"] == [
+        {"key": "KEY", "provider": "gemini"},
+    ]
+    payload["api_keys_with_status"][0]["provider"] = "changed"
+    assert manager.get_key_info("KEY")["provider"] == "gemini"
+    assert manager.remove_keys_atomically({"KEY"}) == 1
+    assert manager.get_api_keys() == []
+    assert manager._key_runtime_store.load_statuses(["KEY"]) == {"KEY": {}}
+
+
+def test_next_start_removes_orphan_left_by_failed_delete(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    bus = RecordingBus()
+    first = SettingsManager(event_bus=bus, config_file=str(path))
+    first.save_key_statuses([{"key": "KEY", "provider": "gemini",
+                             "status_by_model": {"model": {"requests": [int(time.time())]}}}])
+
+    def fail_delete(_keys):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(first._key_runtime_store, "delete_keys", fail_delete)
+    bus.events.clear()
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        first.remove_keys_atomically({"KEY"})
+    assert first.get_api_keys() == []
+    assert first._key_runtime_store.load_statuses(["KEY"])["KEY"]
+    assert [event["event"] for event in bus.events] == ["key_runtime_store_failed"]
+    second = SettingsManager(config_file=str(path))
+    assert second.get_api_keys() == []
+    assert second._key_runtime_store.load_statuses(["KEY"]) == {"KEY": {}}
+
+
+def test_adding_configured_keys_does_not_create_runtime_database(tmp_path):
+    path = tmp_path / "settings.json"
+    first = SettingsManager(config_file=str(path))
+    first.add_keys_atomically({"KEY"}, "gemini")
+    second = SettingsManager(config_file=str(path))
+    assert second.get_api_keys() == ["KEY"]
+    assert not (tmp_path / "settings.runtime.sqlite3").exists()
+    assert json.loads(path.read_text(encoding="utf-8"))["api_keys_with_status"] == [
+        {"key": "KEY", "provider": "gemini"},
+    ]
+
+
+@pytest.mark.parametrize("save_method", ["save_key_statuses", "save_settings"])
+def test_stale_bulk_save_keeps_concurrent_duplicate_requests(tmp_path, save_method):
+    path = tmp_path / "settings.json"
+    first = SettingsManager(config_file=str(path))
+    first.add_keys_atomically({"KEY"}, "gemini")
+    first.increment_request_count("KEY", "model")
+    snapshot = first.load_settings()
+    second = SettingsManager(config_file=str(path))
+    second.increment_request_count("KEY", "model")
+    second.increment_request_count("KEY", "model")
+    value = snapshot if save_method == "save_settings" else snapshot["api_keys_with_status"]
+    assert getattr(first, save_method)(value) is True
+    assert first.get_request_count(first.get_key_info("KEY"), "model") == 3
+
+
+def test_two_managers_increment_without_lost_updates(tmp_path):
+    path = tmp_path / "settings.json"
+    first = SettingsManager(config_file=str(path))
+    first.add_keys_atomically({"KEY"}, "gemini")
+    second = SettingsManager(config_file=str(path))
+    barrier = threading.Barrier(3)
+    errors = []
+
+    def increment_many(manager):
+        try:
+            barrier.wait()
+            for _ in range(30):
+                assert manager.increment_request_count("KEY", "model") is True
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=increment_many, args=(manager,)) for manager in (first, second)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    assert first.get_request_count(first.get_key_info("KEY"), "model") == 60
+
+
+def test_exhaustion_event_is_emitted_after_store_commit(tmp_path):
+    bus = RecordingBus()
+    manager = SettingsManager(event_bus=bus, config_file=str(tmp_path / "settings.json"))
+    manager.add_keys_atomically({"KEY"}, "gemini")
+    observed = []
+
+    def observe(event):
+        if event["event"] == "key_statuses_updated":
+            state = KeyRuntimeStore(manager._key_runtime_store.path).load_statuses(["KEY"])
+            observed.append(state["KEY"]["model"].exhausted_level if "model" in state["KEY"] else None)
+
+    bus.event_posted.connect(observe)
+    assert manager.mark_key_as_exhausted("KEY", "model") is True
+    assert observed == [2]
+    assert manager.clear_key_exhaustion_status("KEY", "model") is True
+    assert observed == [2, 0]
+
+
+def test_runtime_mutations_do_not_schedule_or_write_json(tmp_path):
+    path = tmp_path / "settings.json"
+    bus = RecordingBus()
+    manager = SettingsManager(event_bus=bus, config_file=str(path))
+    manager.add_keys_atomically({"KEY"}, "gemini")
+    before = path.read_bytes()
+    before_mtime = path.stat().st_mtime_ns
+    observed = []
+
+    def observe(event):
+        if event["event"] == "request_count_updated":
+            stored = KeyRuntimeStore(manager._key_runtime_store.path).load_statuses(["KEY"])
+            state = stored["KEY"].get("model")
+            observed.append((event["data"]["count"], len(state.requests) if state else None))
+
+    bus.event_posted.connect(observe)
+    assert manager.increment_request_count("KEY", "model") is True
+    assert manager.decrement_request_count("KEY", "model") is True
+    assert manager.decrement_request_count("KEY", "model") is False
+    assert observed == [(1, 1), (0, 0)]
+    assert manager.mark_key_as_exhausted("KEY", "model") is True
+    assert manager.clear_key_exhaustion_status("KEY", "model") is True
+    assert manager.clear_key_exhaustion_status("KEY", "model") is False
+    assert not manager._save_timer.isActive()
+    assert not manager._is_dirty
+    assert path.read_bytes() == before
+    assert path.stat().st_mtime_ns == before_mtime
+
+
+@pytest.mark.parametrize("policy,now,cutoff", [
+    ({"type": "rolling", "duration_hours": 2}, 100000, 92800),
+    ({"type": "rolling"}, 100000, 13600),
+    ({"type": "daily", "timezone": "UTC"}, 172800, 86460),
+    ({"type": "daily", "timezone": "UTC"}, 172860, 172860),
+    ({"type": "daily", "timezone": "Asia/Yekaterinburg", "reset_hour": 5,
+      "reset_minute": 0}, 172800, 172800),
+    ({"type": "daily", "timezone": "Unknown/TestZone"}, 100000, 13600),
+    ({"type": "daily", "timezone": "UTC", "reset_hour": 25}, 100000, 13600),
+    ({"type": "other"}, 100000, 13600),
+])
+def test_request_cutoff_and_filter_keep_exclusive_boundary(tmp_path, policy, now, cutoff):
+    manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    assert manager._request_window_cutoff(policy, now) == cutoff
+    assert manager._filter_request_timestamps_in_window(
+        [cutoff - 1, cutoff, cutoff + 1, cutoff + 1, "invalid"], policy, now_ts=now,
+    ) == [cutoff + 1, cutoff + 1]
+
+
+def test_maintenance_preserves_newer_concurrent_exhaustion_without_json_write(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    bus = RecordingBus()
+    first = SettingsManager(event_bus=bus, config_file=str(path))
+    now = int(time.time())
+    expired = now - 48 * 3600
+    first.save_key_statuses([{"key": "KEY", "provider": "gemini", "status_by_model": {
+        "model": {"exhausted_at": expired, "exhausted_level": 2, "requests": [expired, now]},
+    }}])
+    second = SettingsManager(config_file=str(path))
+    real_maintain = first._key_runtime_store.maintain_model
+
+    def interleave(key, model, cutoff, *, clear_exhausted_at=None):
+        second.mark_key_as_exhausted(key, model)
+        return real_maintain(key, model, cutoff, clear_exhausted_at=clear_exhausted_at)
+
+    monkeypatch.setattr(first._key_runtime_store, "maintain_model", interleave)
+    before = path.stat().st_mtime_ns
+    bus.events.clear()
+    first._refresh_expired_key_limits()
+    state = first.get_key_info("KEY")["status_by_model"]["model"]
+    assert state["exhausted_at"] >= now
+    assert state["exhausted_level"] == 2
+    assert state["requests"] == [now]
+    assert path.stat().st_mtime_ns == before
+    assert not first._save_timer.isActive()
+    assert bus.events[-1]["data"] == {"reason": "automatic_limit_reset"}
+
+
+@pytest.mark.parametrize("method,store_method", [
+    ("increment_request_count", "increment"),
+    ("decrement_request_count", "decrement"),
+    ("mark_key_as_exhausted", "set_exhausted"),
+    ("clear_key_exhaustion_status", "clear_exhaustion"),
+    ("_refresh_expired_key_limits", "maintain_model"),
+])
+def test_runtime_mutation_failure_is_reported_without_success_event(
+    tmp_path, monkeypatch, method, store_method,
+):
+    path = tmp_path / "settings.json"
+    bus = RecordingBus()
+    manager = SettingsManager(event_bus=bus, config_file=str(path))
+    now = int(time.time())
+    manager.save_key_statuses([{"key": "KEY", "provider": "gemini", "status_by_model": {
+        "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now]},
+    }}])
+    before = path.read_bytes()
+    bus.events.clear()
+    error = sqlite3.OperationalError("database is locked")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(manager._key_runtime_store, store_method, fail)
+    args = () if method == "_refresh_expired_key_limits" else ("KEY", "model")
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        getattr(manager, method)(*args)
+    assert manager._last_runtime_store_error is error
+    assert [event["event"] for event in bus.events] == ["key_runtime_store_failed"]
+    assert path.read_bytes() == before
+    assert not manager._save_timer.isActive()
+
+
+def test_startup_orphan_cleanup_failure_is_reported_and_propagated(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"api_keys_with_status": []}), encoding="utf-8")
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+    store.increment("ORPHAN", "model", 10, 0)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""CREATE TRIGGER reject_orphan_delete BEFORE DELETE ON key_requests
+            BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END""")
+    bus = RecordingBus()
+    with pytest.raises(sqlite3.IntegrityError, match="cleanup failed"):
+        SettingsManager(event_bus=bus, config_file=str(path))
+    assert bus.events[-1]["event"] == "key_runtime_store_failed"
+    assert store.load_statuses(["ORPHAN"])["ORPHAN"]["model"].requests == (10,)
+
+
+def test_failed_legacy_import_does_not_reencode_original_json(tmp_path):
+    path = tmp_path / "settings.json"
+    legacy = {**_legacy_payload(), "custom_prompt": "Текст в старой кодировке"}
+    original = json.dumps(legacy, ensure_ascii=False).encode("cp1251")
+    path.write_bytes(original)
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+    store.ensure_ready()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""CREATE TRIGGER reject_import BEFORE INSERT ON key_requests
+            BEGIN SELECT RAISE(ABORT, 'import denied'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="import denied"):
+        SettingsManager(config_file=str(path))
+    assert path.read_bytes() == original
+
+
+def test_automatic_rolling_reset_preserves_subsecond_exhaustion_boundary(tmp_path, monkeypatch):
+    manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    manager.save_key_statuses([{"key": "KEY", "provider": "rolling-test", "status_by_model": {
+        "model": {"exhausted_at": 100000.5, "exhausted_level": 2, "requests": []},
+    }}])
+    monkeypatch.setattr(api_config, "api_providers_view", lambda: {
+        "rolling-test": {"reset_policy": {"type": "rolling", "duration_hours": 1}},
+    })
+    monkeypatch.setattr("gemini_translator.utils.settings.time.time", lambda: 103600.75)
+    manager._refresh_expired_key_limits()
+    assert manager.get_key_info("KEY")["status_by_model"]["model"]["exhausted_at"] is None
+
+
+@pytest.mark.parametrize("runtime_field,value", [
+    ("requests", [10, 10]), ("exhausted_at", 50), ("exhausted_level", 2),
+])
+def test_unmappable_top_level_legacy_fails_before_import_or_json_changes(
+    tmp_path, runtime_field, value,
+):
+    path = tmp_path / "settings.json"
+    legacy = _legacy_payload()
+    legacy["api_keys_with_status"].append({
+        "key": "UNMAPPABLE_SECRET_KEY", "provider": "unknown-provider", runtime_field: value,
+    })
+    original = json.dumps(legacy).encode("utf-8")
+    path.write_bytes(original)
+    bus = RecordingBus()
+    with pytest.raises(ValueError, match="provider 'unknown-provider' has no default model_id"):
+        SettingsManager(event_bus=bus, config_file=str(path))
+    assert path.read_bytes() == original
+    assert not (tmp_path / "settings.runtime.sqlite3").exists()
+    assert [event["event"] for event in bus.events] == ["key_runtime_store_failed"]
+    assert "UNMAPPABLE_SECRET_KEY" not in json.dumps(bus.events)

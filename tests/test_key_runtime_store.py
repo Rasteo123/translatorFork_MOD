@@ -557,3 +557,65 @@ def test_initialization_registry_releases_unused_locks(tmp_path, fail):
     gc.collect()
     assert lock_reference is not None and lock_reference() is None
     assert normalized_path not in key_runtime_store_module._initialization_locks
+
+
+def test_legacy_import_commits_duplicate_requests_and_marker_once(tmp_path):
+    path = tmp_path / "runtime.sqlite3"
+    store = KeyRuntimeStore(path)
+    legacy = {"KEY": {"model": {
+        "exhausted_at": 50, "exhausted_level": 2, "requests": [10, 10],
+    }}}
+    assert store.import_legacy_once(legacy) is True
+    assert KeyRuntimeStore(path).import_legacy_once(legacy) is False
+    assert store.load_statuses(["KEY"])["KEY"]["model"].to_dict() == legacy["KEY"]["model"]
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT value FROM runtime_meta WHERE name = 'legacy_json_v1_imported'"
+        ).fetchone() is not None
+
+
+def test_legacy_import_failure_rolls_back_all_rows_and_marker(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.ensure_ready()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""CREATE TRIGGER reject_request BEFORE INSERT ON key_requests
+            WHEN NEW.requested_at = 20
+            BEGIN SELECT RAISE(ABORT, 'import failed'); END""")
+    legacy = {"KEY": {"model": {"requests": [10, 10, 20]}}}
+    with pytest.raises(sqlite3.IntegrityError, match="import failed"):
+        store.import_legacy_once(legacy)
+    assert store.load_statuses(["KEY"]) == {"KEY": {}}
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM key_requests").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM runtime_meta").fetchone()[0] == 0
+        connection.execute("DROP TRIGGER reject_request")
+    assert store.import_legacy_once(legacy) is True
+    assert store.load_statuses(["KEY"])["KEY"]["model"].requests == (10, 10, 20)
+
+
+def test_legacy_import_upgrades_intermediate_metadata_without_losing_runtime(tmp_path):
+    path = tmp_path / "runtime.sqlite3"
+    original = KeyRuntimeStore(path)
+    original.increment("EXISTING", "model", 10, cutoff=0)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE runtime_meta")
+        connection.execute("CREATE TABLE runtime_meta (schema_version INTEGER NOT NULL)")
+        connection.execute("INSERT INTO runtime_meta VALUES (1)")
+    reopened = KeyRuntimeStore(path)
+    assert reopened.import_legacy_once({"LEGACY": {"model": {"requests": [20, 20]}}}) is True
+    loaded = reopened.load_statuses(["EXISTING", "LEGACY"])
+    assert loaded["EXISTING"]["model"].requests == (10,)
+    assert loaded["LEGACY"]["model"].requests == (20, 20)
+
+
+def test_legacy_marker_failure_rolls_back_imported_rows(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "runtime.sqlite3")
+    store.ensure_ready()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("""CREATE TRIGGER reject_marker BEFORE INSERT ON runtime_meta
+            BEGIN SELECT RAISE(ABORT, 'marker failed'); END""")
+    with pytest.raises(sqlite3.IntegrityError, match="marker failed"):
+        store.import_legacy_once({"KEY": {"model": {"requests": [10, 10]}}})
+    assert store.load_statuses(["KEY"]) == {"KEY": {}}
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM key_requests").fetchone()[0] == 0
