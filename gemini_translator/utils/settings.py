@@ -9,6 +9,7 @@ import threading
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..api import config as api_config
+from .key_runtime_store import KeyRuntimeStore, runtime_store_path
 from .text_sanitize import sanitize_path_segment
 
 SETTINGS_PROFILE_ENV = "GT_SETTINGS_PROFILE"
@@ -76,6 +77,26 @@ _MISSING = object()
 # Списки, которые надо сливать поэлементно, а не заменять целиком:
 # имя настройки -> поле, по которому опознаётся запись.
 _KEYED_LIST_SETTINGS = {"api_keys_with_status": "key"}
+
+
+def _strip_key_runtime_fields(key_info: dict) -> dict:
+    cleaned = deepcopy(key_info)
+    for field in ("status_by_model", "requests", "exhausted_at", "exhausted_level"):
+        cleaned.pop(field, None)
+    return cleaned
+
+
+def _split_key_statuses(key_statuses):
+    configured = []
+    runtime = {}
+    for item in key_statuses or []:
+        copied = deepcopy(item)
+        raw_key = copied.get("key")
+        model_statuses = copied.get("status_by_model", {})
+        if raw_key and isinstance(model_statuses, dict) and model_statuses:
+            runtime[raw_key] = model_statuses
+        configured.append(_strip_key_runtime_fields(copied))
+    return configured, runtime
 
 
 def _index_entries_by(entries, id_field):
@@ -201,6 +222,11 @@ class SettingsManager(QObject):
         self._disk_baseline = {}
         self._is_dirty = False
         self._last_save_error = None
+        self._last_runtime_store_error = None
+        self._key_runtime_store = KeyRuntimeStore(
+            runtime_store_path(self.config_file),
+            on_corrupt=self._on_runtime_store_corrupt,
+        )
         
         # Таймер для отложенной записи (debouncing)
         self._save_timer = QtCore.QTimer(self)
@@ -232,6 +258,47 @@ class SettingsManager(QObject):
         if not self.bus: return
         event = {'event': name, 'source': 'SettingsManager', 'data': data or {}}
         self.bus.event_posted.emit(event)
+
+    def _on_runtime_store_corrupt(self, database_file, backup_path):
+        self._post_event("key_runtime_store_corrupted", {
+            "database_file": str(database_file),
+            "backup_path": str(backup_path),
+        })
+
+    def _run_runtime_store_operation(self, operation, callback, *args, **kwargs):
+        try:
+            result = callback(*args, **kwargs)
+        except Exception as error:
+            self._last_runtime_store_error = error
+            self._post_event("key_runtime_store_failed", {
+                "message": str(error),
+                "filename": str(self._key_runtime_store.path),
+                "operation": operation,
+            })
+            raise
+        self._last_runtime_store_error = None
+        return result
+
+    def _materialize_key_statuses_unsafe(self):
+        configured = deepcopy(self._cache.get("api_keys_with_status", []))
+        raw_keys = [item["key"] for item in configured if item.get("key")]
+        if not raw_keys:
+            return configured
+        runtime = self._run_runtime_store_operation(
+            "load_key_statuses", self._key_runtime_store.load_statuses, raw_keys,
+        )
+        for item in configured:
+            # Until legacy migration imports JSON runtime state, keep models
+            # absent from SQLite. A stored model is authoritative as a whole.
+            model_statuses = item.get("status_by_model", {})
+            if not isinstance(model_statuses, dict):
+                model_statuses = {}
+            model_statuses.update({
+                model_id: state.to_dict()
+                for model_id, state in runtime.get(item.get("key"), {}).items()
+            })
+            item["status_by_model"] = model_statuses
+        return configured
 
     # --- ВНУТРЕННИЕ МЕТОДЫ УПРАВЛЕНИЯ КЭШЕМ И ФАЙЛОМ ---
 
@@ -416,7 +483,10 @@ class SettingsManager(QObject):
 
     def load_settings(self):
         with self.file_lock:
-            return self._cache.copy()
+            settings = deepcopy(self._cache)
+            if "api_keys_with_status" in settings:
+                settings["api_keys_with_status"] = self._materialize_key_statuses_unsafe()
+            return settings
 
     def save_settings(self, settings_dict):
         with self.file_lock:
@@ -480,9 +550,9 @@ class SettingsManager(QObject):
     
     def get_key_info(self, key_to_find):
         with self.file_lock:
-            for key_info in self._cache.get('api_keys_with_status', []):
+            for key_info in self._materialize_key_statuses_unsafe():
                 if key_info['key'] == key_to_find:
-                    return key_info.copy()
+                    return key_info
         return None
 
     def get_key_reset_time_str(self, key_info, model_id, now_utc=None):
@@ -627,14 +697,18 @@ class SettingsManager(QObject):
         with self.file_lock:
             if self._check_and_reset_limits_in_cache():
                 self._save_to_disk_unsafe() # Сохраняем, если были изменения
-            return self._cache.get('api_keys_with_status', []).copy()
+            return self._materialize_key_statuses_unsafe()
 
     def save_key_statuses(self, key_statuses):
+        configured, runtime = _split_key_statuses(key_statuses)
         with self.file_lock:
-            self._cache['api_keys_with_status'] = key_statuses
-            if 'api_keys' in self._cache:
-                del self._cache['api_keys']
+            self._cache['api_keys_with_status'] = configured
+            self._cache.pop('api_keys', None)
             self._save_to_disk_unsafe()
+        if runtime:
+            self._run_runtime_store_operation(
+                "save_key_statuses", self._key_runtime_store.merge_statuses, runtime,
+            )
         self._post_event('key_statuses_updated')
         return True
 
