@@ -1,6 +1,9 @@
+import gc
 import hashlib
+import os
 import sqlite3
 import threading
+import weakref
 
 import pytest
 
@@ -459,3 +462,82 @@ def test_delete_keys_rolls_back_request_removal_when_status_delete_fails(tmp_pat
     with pytest.raises(sqlite3.IntegrityError, match="delete failed"):
         store.delete_keys(["KEY"])
     assert store.load_statuses(["KEY"])["KEY"]["model"].requests == (10,)
+
+
+@pytest.mark.parametrize("same_path", [False, True])
+def test_paused_initialization_only_blocks_the_same_normalized_path(
+    tmp_path, monkeypatch, same_path
+):
+    first = KeyRuntimeStore(tmp_path / "first.sqlite3")
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    second = KeyRuntimeStore(
+        alias / "first.sqlite3" if same_path else tmp_path / "second.sqlite3"
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_finished = threading.Event()
+    errors = []
+    initialize_first = first._initialize
+
+    def pause_first():
+        first_started.set()
+        if not release_first.wait(timeout=5):
+            raise TimeoutError("first initialization was not released")
+        initialize_first()
+
+    def run_first():
+        try:
+            first.ensure_ready()
+        except BaseException as error:
+            errors.append(error)
+
+    def run_second():
+        second_started.set()
+        try:
+            second.ensure_ready()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            second_finished.set()
+
+    monkeypatch.setattr(first, "_initialize", pause_first)
+    threads = [threading.Thread(target=run_first), threading.Thread(target=run_second)]
+    threads[0].start()
+    try:
+        assert first_started.wait(timeout=2)
+        threads[1].start()
+        assert second_started.wait(timeout=2)
+        assert second_finished.wait(timeout=0.2 if same_path else 2) is not same_path
+    finally:
+        release_first.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=5)
+    assert not any(thread.is_alive() for thread in threads)
+    assert errors == []
+    first.increment("KEY", "model", 10, 0)
+    second.increment("KEY", "model", 20, 0)
+    expected = (10, 20) if same_path else (10,)
+    assert first.load_statuses(["KEY"])["KEY"]["model"].requests == expected
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_initialization_registry_releases_unused_locks(tmp_path, fail):
+    path = tmp_path / "runtime.sqlite3"
+    normalized_path = os.path.normcase(str(path.resolve()))
+    lock_reference = None
+    try:
+        with key_runtime_store_module._initialization_lock(path):
+            lock_reference = weakref.ref(
+                key_runtime_store_module._initialization_locks[normalized_path]
+            )
+            assert lock_reference() is not None
+            if fail:
+                raise RuntimeError("initialization failed")
+    except RuntimeError:
+        pass
+    gc.collect()
+    assert lock_reference is not None and lock_reference() is None
+    assert normalized_path not in key_runtime_store_module._initialization_locks

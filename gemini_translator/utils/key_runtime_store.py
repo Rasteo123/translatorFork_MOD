@@ -8,9 +8,29 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import os
 from pathlib import Path
 import sqlite3
 import threading
+from weakref import WeakValueDictionary
+
+
+_initialization_registry_lock = threading.Lock()
+_initialization_locks: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
+
+
+@contextmanager
+def _initialization_lock(path: Path) -> Iterator[None]:
+    normalized_path = os.path.normcase(str(path.resolve()))
+    with _initialization_registry_lock:
+        lock = _initialization_locks.get(normalized_path)
+        if lock is None:
+            lock = threading.Lock()
+            _initialization_locks[normalized_path] = lock
+    # Owners and waiters retain a strong reference. The weak registry drops
+    # unused entries only after the last user exits, including on exceptions.
+    with lock:
+        yield
 
 
 @dataclass(frozen=True)
@@ -45,10 +65,6 @@ def _is_corruption_error(error: sqlite3.DatabaseError) -> bool:
 
 class KeyRuntimeStore:
     """Persist per-key model runtime state without persisting API keys."""
-
-    # SQLite cannot always wait for concurrent journal-mode transitions.
-    # Serialize cold starts (including recovery), not normal transactions.
-    _initialization_lock = threading.Lock()
 
     def __init__(
         self,
@@ -86,7 +102,7 @@ class KeyRuntimeStore:
         if self._ready:
             return
 
-        with self._ready_lock, self._initialization_lock:
+        with self._ready_lock, _initialization_lock(self.path):
             if self._ready:
                 return
 
