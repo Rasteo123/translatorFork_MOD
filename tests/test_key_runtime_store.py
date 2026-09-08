@@ -78,6 +78,22 @@ def test_schema_version_wal_and_busy_timeout_are_configured(tmp_path):
         assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
+def test_connect_receives_runtime_path_as_a_string(tmp_path, monkeypatch):
+    path = tmp_path / "settings.runtime.sqlite3"
+    database_arguments = []
+    real_connect = sqlite3.connect
+
+    def checked_connect(database, *args, **kwargs):
+        database_arguments.append(database)
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(key_runtime_store_module.sqlite3, "connect", checked_connect)
+    connection = KeyRuntimeStore(path)._connect()
+    connection.close()
+
+    assert database_arguments == [str(path)]
+
+
 def test_repeated_merge_does_not_add_duplicate_snapshot_requests(tmp_path):
     store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
     statuses = {"KEY": {"model": {"requests": [90, 90]}}}

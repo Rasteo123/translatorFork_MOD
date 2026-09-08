@@ -86,7 +86,7 @@ class KeyRuntimeStore:
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(
-            self.path,
+            str(self.path),
             timeout=self._busy_timeout_ms / 1000,
             isolation_level=None,
         )
