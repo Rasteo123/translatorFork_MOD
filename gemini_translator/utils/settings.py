@@ -73,6 +73,8 @@ def resolve_settings_location(config_file=None, config_dir=None, profile=None, h
 
 
 _MISSING = object()
+# Возвращается вместо результата, когда операция хранилища не выполнилась.
+_STORE_FAILED = object()
 
 # Списки, которые надо сливать поэлементно, а не заменять целиком:
 # имя настройки -> поле, по которому опознаётся запись.
@@ -223,6 +225,10 @@ class SettingsManager(QObject):
         self._is_dirty = False
         self._last_save_error = None
         self._last_runtime_store_error = None
+        self._last_load_failed = False
+        # Ключи, legacy-runtime которых не удалось перенести в SQLite: их поля
+        # обязаны остаться в JSON, иначе история квот пропадёт бесследно.
+        self._unmigrated_runtime_keys = set()
         self._key_runtime_store = KeyRuntimeStore(
             runtime_store_path(self.config_file),
             on_corrupt=self._on_runtime_store_corrupt,
@@ -238,13 +244,29 @@ class SettingsManager(QObject):
         # Первоначальная загрузка кэша
         with self.file_lock:
             self._load_from_disk_unsafe()
+        # Запоминаем сразу: последующее сохранение перечитает файл и сбросит флаг.
+        settings_were_readable = not self._last_load_failed
         normalized, legacy_runtime, runtime = self._run_runtime_store_operation(
             "normalize_legacy", self._prepare_legacy_key_runtime,
+            fallback=(False, False, {}),
         )
         if legacy_runtime:
-            self._run_runtime_store_operation(
+            imported = self._run_runtime_store_operation(
                 "import_legacy", self._key_runtime_store.import_legacy_once, runtime,
+                fallback=_STORE_FAILED,
             )
+            if imported is False and runtime:
+                # Маркер импорта уже стоит, но runtime приехал позже: прошлый
+                # запуск не смог мигрировать ключ исчезнувшего провайдера.
+                # merge_statuses идемпотентен по таймстампам, дублей не будет.
+                imported = self._run_runtime_store_operation(
+                    "import_legacy_late", self._key_runtime_store.merge_statuses, runtime,
+                    fallback=_STORE_FAILED,
+                )
+            if imported is _STORE_FAILED:
+                # Импорт не состоялся — срезать legacy-поля из JSON нельзя,
+                # иначе состояние квот исчезнет вместе с ними.
+                normalized = legacy_runtime = False
         if normalized or legacy_runtime:
             with self.file_lock:
                 self._strip_runtime_from_key_cache_unsafe()
@@ -255,6 +277,8 @@ class SettingsManager(QObject):
         if self._key_runtime_store.path.exists():
             self._run_runtime_store_operation(
                 "delete_orphans", self._key_runtime_store.delete_orphans, self.get_api_keys(),
+                allow_full_wipe=settings_were_readable,
+                fallback=None,
             )
 
         # Пока приложение открыто, своевременно снимаем истекшие ограничения
@@ -283,7 +307,15 @@ class SettingsManager(QObject):
             "backup_path": str(backup_path),
         })
 
-    def _run_runtime_store_operation(self, operation, callback, *args, **kwargs):
+    def _run_runtime_store_operation(self, operation, callback, *args, fallback=_MISSING, **kwargs):
+        """Выполняет операцию хранилища, сообщая об ошибке событием.
+
+        `fallback` задаётся там, где сбой не должен ронять вызывающий код:
+        операции этапа инициализации возвращают значение по умолчанию, чтобы
+        недоступная база (нет прав на папку, битый файл) не мешала приложению
+        запуститься. Мутации во время работы по-прежнему пробрасывают исключение
+        — вызывающий обязан знать, что счётчик не записан.
+        """
         try:
             result = callback(*args, **kwargs)
         except Exception as error:
@@ -293,7 +325,9 @@ class SettingsManager(QObject):
                 "filename": str(self._key_runtime_store.path),
                 "operation": operation,
             })
-            raise
+            if fallback is _MISSING:
+                raise
+            return fallback
         self._last_runtime_store_error = None
         return result
 
@@ -466,17 +500,28 @@ class SettingsManager(QObject):
         """[Под замком] Выполняет миграцию старого формата ключей прямо в кэше."""
         migrated = False
         key_statuses = self._cache.get('api_keys_with_status', [])
-        
+        self._unmigrated_runtime_keys = set()
+
         for key_info in key_statuses:
             if any(field in key_info for field in ('exhausted_at', 'requests', 'exhausted_level')):
-                if 'status_by_model' not in key_info: key_info['status_by_model'] = {}
                 provider_id = key_info.get('provider', 'gemini')
                 provider_cfg = api_config.api_providers_view().get(provider_id, {})
                 default_model_id = next(iter(provider_cfg.get('models', {}).values()), {}).get('id')
                 if not default_model_id:
-                    raise ValueError(
-                        f"Cannot migrate legacy key runtime: provider '{provider_id}' has no default model_id"
+                    # Провайдера нет в реестре: переименован, удалён или ещё не
+                    # загружен. Раньше это исключение валило конструктор
+                    # SettingsManager, а вместе с ним и запуск приложения.
+                    # Запись оставляем нетронутой и запрещаем срезать её
+                    # legacy-поля, чтобы история квот дождалась провайдера.
+                    raw_key = key_info.get('key')
+                    if raw_key:
+                        self._unmigrated_runtime_keys.add(raw_key)
+                    print(
+                        f"[SettingsManager WARN] Runtime ключа не перенесён: у провайдера "
+                        f"'{provider_id}' нет моделей. Legacy-поля оставлены в settings.json."
                     )
+                    continue
+                if 'status_by_model' not in key_info: key_info['status_by_model'] = {}
                 if default_model_id not in key_info['status_by_model']:
                     key_info['status_by_model'][default_model_id] = {
                         "exhausted_at": key_info.pop('exhausted_at', None),
@@ -497,10 +542,17 @@ class SettingsManager(QObject):
         return _split_key_statuses(self._cache.get("api_keys_with_status", []))[1]
 
     def _strip_runtime_from_key_cache_unsafe(self):
-        """[Под замком] Оставляет в записях ключей только конфигурацию."""
+        """[Под замком] Оставляет в записях ключей только конфигурацию.
+
+        Записи из `_unmigrated_runtime_keys` пропускаем: их runtime до SQLite не
+        доехал, и срезать его из JSON означало бы стереть единственную копию.
+        """
         if "api_keys_with_status" in self._cache:
             self._cache["api_keys_with_status"] = [
-                _strip_key_runtime_fields(item) for item in self._cache["api_keys_with_status"]
+                item
+                if item.get("key") in self._unmigrated_runtime_keys
+                else _strip_key_runtime_fields(item)
+                for item in self._cache["api_keys_with_status"]
             ]
 
     # --- ПУБЛИЧНЫЕ МЕТОДЫ: Адаптированы для работы с кэшем ---
@@ -1200,6 +1252,9 @@ class SettingsManager(QObject):
             raise e
     
     def _load_unsafe(self):
+        # Отличаем «файла ещё нет» и «файл пуст» (нормальный первый запуск) от
+        # «файл не прочитался» — по последнему нельзя судить о наборе ключей.
+        self._last_load_failed = False
         if not os.path.exists(self.config_file): return {}
         encodings_to_try = ['utf-8', 'cp1251', 'cp866']
         for encoding in encodings_to_try:
@@ -1227,6 +1282,7 @@ class SettingsManager(QObject):
                 print(f"[SettingsManager WARN] Не удалось прочитать файл настроек с кодировкой {encoding}: {e}")
                 continue
         print(f"[SettingsManager CRITICAL] Не удалось прочитать или распарсить файл {self.config_file}. Файл может быть поврежден. Возвращаю пустые настройки.")
+        self._last_load_failed = True
         backup_path = self._quarantine_corrupt_file_unsafe()
         if backup_path:
             print(f"[SettingsManager] Повреждённый файл настроек сохранён как {backup_path}.")

@@ -288,7 +288,7 @@ def test_delete_orphans_keeps_only_configured_key_ids(tmp_path):
     assert store.load_statuses(["KEEP", "ORPHAN"]) == {
         "KEEP": {"model": ModelRuntimeState(requests=(10,))}, "ORPHAN": {},
     }
-    store.delete_orphans([])
+    store.delete_orphans([], allow_full_wipe=True)
     assert store.load_statuses(["KEEP"]) == {"KEEP": {}}
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM key_requests").fetchone()[0] == 0
@@ -619,3 +619,40 @@ def test_legacy_marker_failure_rolls_back_imported_rows(tmp_path):
     assert store.load_statuses(["KEY"]) == {"KEY": {}}
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM key_requests").fetchone()[0] == 0
+
+
+def test_delete_orphans_without_keys_keeps_existing_state(tmp_path):
+    """Пустой список ключей неотличим от непрочитанного settings.json.
+
+    Раньше он вырождался в DELETE без WHERE и стирал единственную копию
+    истории квот: сам settings.json уходит в карантин с бэкапом, а sidecar — нет.
+    """
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+    store.merge_statuses({
+        "SECRET_KEY": {
+            "model-a": {"exhausted_at": 100.5, "exhausted_level": 2, "requests": [90, 100]}
+        }
+    })
+
+    store.delete_orphans([])
+
+    state = store.load_statuses(["SECRET_KEY"])["SECRET_KEY"]["model-a"]
+    assert state.to_dict() == {
+        "exhausted_at": 100.5,
+        "exhausted_level": 2,
+        "requests": [90, 100],
+    }
+
+
+def test_delete_orphans_still_removes_keys_that_are_gone(tmp_path):
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+    store.merge_statuses({
+        "KEPT": {"model-a": {"exhausted_at": None, "exhausted_level": 0, "requests": [1]}},
+        "DROPPED": {"model-a": {"exhausted_at": None, "exhausted_level": 0, "requests": [2]}},
+    })
+
+    store.delete_orphans(["KEPT"])
+
+    loaded = store.load_statuses(["KEPT", "DROPPED"])
+    assert loaded["KEPT"]["model-a"].to_dict()["requests"] == [1]
+    assert loaded.get("DROPPED", {}) == {}

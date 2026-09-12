@@ -232,8 +232,9 @@ def test_failed_legacy_import_leaves_json_unchanged_and_reports_error(tmp_path):
         connection.execute("""CREATE TRIGGER reject_import BEFORE INSERT ON key_requests
             BEGIN SELECT RAISE(ABORT, 'import denied'); END""")
     bus = RecordingBus()
-    with pytest.raises(sqlite3.IntegrityError, match="import denied"):
-        SettingsManager(event_bus=bus, config_file=str(path))
+    # Сбой импорта сообщается событием, но не мешает приложению запуститься:
+    # раньше исключение летело наружу из конструктора.
+    SettingsManager(event_bus=bus, config_file=str(path))
     assert path.read_text(encoding="utf-8") == payload
     assert bus.events[-1]["event"] == "key_runtime_store_failed"
     assert store.load_statuses(["KEY"]) == {"KEY": {}}
@@ -481,7 +482,7 @@ def test_runtime_mutation_failure_is_reported_without_success_event(
     assert not manager._save_timer.isActive()
 
 
-def test_startup_orphan_cleanup_failure_is_reported_and_propagated(tmp_path):
+def test_startup_orphan_cleanup_failure_is_reported_without_blocking_startup(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"api_keys_with_status": []}), encoding="utf-8")
     store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
@@ -490,8 +491,7 @@ def test_startup_orphan_cleanup_failure_is_reported_and_propagated(tmp_path):
         connection.execute("""CREATE TRIGGER reject_orphan_delete BEFORE DELETE ON key_requests
             BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END""")
     bus = RecordingBus()
-    with pytest.raises(sqlite3.IntegrityError, match="cleanup failed"):
-        SettingsManager(event_bus=bus, config_file=str(path))
+    SettingsManager(event_bus=bus, config_file=str(path))
     assert bus.events[-1]["event"] == "key_runtime_store_failed"
     assert store.load_statuses(["ORPHAN"])["ORPHAN"]["model"].requests == (10,)
 
@@ -506,8 +506,7 @@ def test_failed_legacy_import_does_not_reencode_original_json(tmp_path):
     with sqlite3.connect(store.path) as connection:
         connection.execute("""CREATE TRIGGER reject_import BEFORE INSERT ON key_requests
             BEGIN SELECT RAISE(ABORT, 'import denied'); END""")
-    with pytest.raises(sqlite3.IntegrityError, match="import denied"):
-        SettingsManager(config_file=str(path))
+    SettingsManager(config_file=str(path))
     assert path.read_bytes() == original
 
 
@@ -527,20 +526,149 @@ def test_automatic_rolling_reset_preserves_subsecond_exhaustion_boundary(tmp_pat
 @pytest.mark.parametrize("runtime_field,value", [
     ("requests", [10, 10]), ("exhausted_at", 50), ("exhausted_level", 2),
 ])
-def test_unmappable_top_level_legacy_fails_before_import_or_json_changes(
+def test_unmappable_top_level_legacy_stays_in_json_and_lets_the_app_start(
     tmp_path, runtime_field, value,
 ):
+    """Ключ провайдера, которого нет в реестре, не мигрирует и не роняет запуск.
+
+    Его legacy-поле остаётся в JSON — это единственная копия состояния, — а
+    остальные ключи переносятся в SQLite как обычно.
+    """
     path = tmp_path / "settings.json"
     legacy = _legacy_payload()
     legacy["api_keys_with_status"].append({
         "key": "UNMAPPABLE_SECRET_KEY", "provider": "unknown-provider", runtime_field: value,
     })
-    original = json.dumps(legacy).encode("utf-8")
-    path.write_bytes(original)
+    path.write_bytes(json.dumps(legacy).encode("utf-8"))
     bus = RecordingBus()
-    with pytest.raises(ValueError, match="provider 'unknown-provider' has no default model_id"):
-        SettingsManager(event_bus=bus, config_file=str(path))
-    assert path.read_bytes() == original
-    assert not (tmp_path / "settings.runtime.sqlite3").exists()
-    assert [event["event"] for event in bus.events] == ["key_runtime_store_failed"]
+
+    manager = SettingsManager(event_bus=bus, config_file=str(path))
+
+    on_disk = {
+        item["key"]: item
+        for item in json.loads(path.read_text(encoding="utf-8"))["api_keys_with_status"]
+    }
+    assert on_disk["UNMAPPABLE_SECRET_KEY"][runtime_field] == value
+    assert "status_by_model" not in on_disk["KEY"], "мигрирующий ключ очищается как обычно"
+    assert manager.get_key_info("KEY")["status_by_model"]["model"]["requests"] == [10, 10]
+    assert "key_runtime_store_failed" not in [event["event"] for event in bus.events]
     assert "UNMAPPABLE_SECRET_KEY" not in json.dumps(bus.events)
+
+
+def test_corrupt_settings_file_does_not_wipe_runtime_store(tmp_path):
+    """Нечитаемый settings.json уводится в карантин с бэкапом, а sidecar — нет.
+
+    Стартовая очистка сирот получала пустой список ключей и вычищала базу
+    целиком, безвозвратно унося историю квот вместе с блокировками.
+    """
+    config = tmp_path / "settings.json"
+    manager = SettingsManager(config_file=str(config))
+    now = int(time.time())
+    manager.save_key_statuses([{
+        "key": "KEY",
+        "provider": "gemini",
+        "status_by_model": {
+            "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now]}
+        },
+    }])
+    sidecar = tmp_path / "settings.runtime.sqlite3"
+    assert sidecar.exists()
+
+    config.write_text("{ это не json", encoding="utf-8")
+    SettingsManager(config_file=str(config))
+
+    state = KeyRuntimeStore(sidecar).load_statuses(["KEY"])["KEY"]["model"]
+    assert state.to_dict() == {"exhausted_at": now, "exhausted_level": 2, "requests": [now]}
+
+
+def test_key_of_unknown_provider_does_not_block_startup(tmp_path):
+    """Провайдер могли переименовать или убрать между версиями.
+
+    Миграция бросала ValueError прямо из конструктора SettingsManager, то есть
+    старый конфиг делал приложение незапускаемым. Теперь ключ пропускается,
+    а его legacy-поля остаются в JSON и ждут возвращения провайдера.
+    """
+    config = tmp_path / "settings.json"
+    config.write_text(json.dumps({
+        "api_keys_with_status": [{
+            "key": "GHOST",
+            "provider": "provider_that_no_longer_exists",
+            "requests": [1, 2],
+            "exhausted_at": 123,
+            "exhausted_level": 1,
+        }]
+    }), encoding="utf-8")
+
+    SettingsManager(config_file=str(config))
+
+    on_disk = json.loads(config.read_text(encoding="utf-8"))["api_keys_with_status"][0]
+    assert on_disk["requests"] == [1, 2]
+    assert on_disk["exhausted_at"] == 123
+    assert on_disk["exhausted_level"] == 1
+
+
+def test_unusable_runtime_store_does_not_block_startup(tmp_path):
+    """Папка конфига без прав на запись не должна превращаться в кирпич.
+
+    Любая ошибка SQLite на этапе импорта пробрасывалась наружу из конструктора.
+    """
+    config = tmp_path / "settings.json"
+    config.write_text(json.dumps({
+        "api_keys_with_status": [{
+            "key": "KEY",
+            "provider": "gemini",
+            "requests": [1],
+            "exhausted_at": 5,
+            "exhausted_level": 1,
+        }]
+    }), encoding="utf-8")
+    # Каталог на месте файла базы: sqlite не сможет её открыть.
+    (tmp_path / "settings.runtime.sqlite3").mkdir()
+
+    SettingsManager(config_file=str(config))
+
+    on_disk = json.loads(config.read_text(encoding="utf-8"))["api_keys_with_status"][0]
+    assert on_disk["requests"] == [1]
+    assert on_disk["exhausted_at"] == 5
+
+
+def test_legacy_runtime_survives_until_its_provider_comes_back(tmp_path, monkeypatch):
+    """Ключ пропавшего провайдера мигрирует позже, когда провайдер вернётся.
+
+    Маркер однократного импорта к тому моменту уже стоит, поэтому опоздавший
+    runtime доливается обычным merge, а не теряется вместе с полями JSON.
+    """
+    config = tmp_path / "settings.json"
+    config.write_text(json.dumps({
+        "api_keys_with_status": [
+            {"key": "PRESENT", "provider": "gemini", "requests": [7], "exhausted_at": None,
+             "exhausted_level": 0},
+            {"key": "GHOST", "provider": "temporarily_missing", "requests": [8, 9],
+             "exhausted_at": 321, "exhausted_level": 3},
+        ]
+    }), encoding="utf-8")
+
+    SettingsManager(config_file=str(config))
+
+    after_first = {
+        item["key"]: item
+        for item in json.loads(config.read_text(encoding="utf-8"))["api_keys_with_status"]
+    }
+    assert "requests" not in after_first["PRESENT"], "мигрированный ключ должен быть очищен"
+    assert after_first["GHOST"]["requests"] == [8, 9], "неперенесённый ключ должен уцелеть"
+
+    # Провайдер вернулся в реестр.
+    real_view = api_config.api_providers_view
+
+    def view_with_ghost_provider():
+        providers = dict(real_view())
+        providers["temporarily_missing"] = {"models": {"m": {"id": "ghost-model"}}}
+        return providers
+
+    monkeypatch.setattr(api_config, "api_providers_view", view_with_ghost_provider)
+
+    manager = SettingsManager(config_file=str(config))
+    state = manager.get_key_info("GHOST")["status_by_model"]["ghost-model"]
+    assert state["requests"] == [8, 9]
+    assert state["exhausted_at"] == 321
+    assert state["exhausted_level"] == 3

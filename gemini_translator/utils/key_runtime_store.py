@@ -454,8 +454,18 @@ class KeyRuntimeStore:
         if hashes:
             self._delete_hashes(hashes, keep=False)
 
-    def delete_orphans(self, api_keys: Iterable[str]) -> None:
-        self._delete_hashes(list({key_id(api_key) for api_key in api_keys}), keep=True)
+    def delete_orphans(self, api_keys: Iterable[str], *, allow_full_wipe: bool = False) -> None:
+        """Удаляет состояние ключей, которых нет в `api_keys`.
+
+        Пустой список означает полную очистку, а её нельзя выполнять вслепую:
+        так же выглядит непрочитанный settings.json, и состояние квот, в отличие
+        от него, резервной копии не имеет. Полное стирание разрешает только
+        вызывающий, который уверен, что список ключей достоверен.
+        """
+        hashes = list({key_id(api_key) for api_key in api_keys})
+        if not hashes and not allow_full_wipe:
+            return
+        self._delete_hashes(hashes, keep=True)
 
     def _delete_hashes(self, hashes: list[str], *, keep: bool) -> None:
         placeholders = ", ".join("?" for _ in hashes)
