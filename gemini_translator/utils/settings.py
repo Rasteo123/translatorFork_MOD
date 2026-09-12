@@ -568,18 +568,34 @@ class SettingsManager(QObject):
 
     def save_settings(self, settings_dict):
         incoming = deepcopy(settings_dict)
-        runtime = {}
+        configured = None
         if "api_keys_with_status" in incoming:
-            configured, runtime = _split_key_statuses(incoming["api_keys_with_status"])
+            # Runtime из входящего снимка отбрасывается — см. save_key_statuses.
+            configured, _ = _split_key_statuses(incoming["api_keys_with_status"])
             incoming["api_keys_with_status"] = configured
         with self.file_lock:
+            previous_keys = [
+                item.get("key") for item in self._cache.get("api_keys_with_status", [])
+            ]
             self._cache = incoming
             self._save_to_disk_unsafe()
-        if runtime:
-            self._run_runtime_store_operation(
-                "save_settings", self._key_runtime_store.merge_statuses, runtime,
-            )
+        if configured is not None:
+            self._reconcile_removed_key_runtime(previous_keys, configured)
         return True
+
+    def _reconcile_removed_key_runtime(self, previous_keys, configured):
+        """Убирает runtime ключей, которых больше нет в конфигурации.
+
+        Иначе тот же ключ, добавленный заново, унаследует чужой счётчик запросов
+        и чужую блокировку: сироты вычищаются только при следующем запуске.
+        """
+        removed = {key for key in previous_keys if key} - {
+            item.get("key") for item in configured
+        }
+        if removed:
+            self._run_runtime_store_operation(
+                "delete_removed_keys", self._key_runtime_store.delete_keys, removed,
+            )
 
     @pyqtSlot(dict)
     def on_event(self, event_data: dict):
@@ -770,15 +786,26 @@ class SettingsManager(QObject):
         return self._materialize_key_statuses_unsafe()
 
     def save_key_statuses(self, key_statuses):
-        configured, runtime = _split_key_statuses(key_statuses)
+        """Сохраняет конфигурацию ключей; runtime-состояние не трогает.
+
+        Снимок приходит из интерфейса и читался когда-то раньше, а квоты за это
+        время могли измениться в рабочем потоке: пришедшая обратно запись
+        сняла бы блокировку, поставленную уже после чтения. Единственный
+        источник runtime — SQLite, и меняют его выделенные методы
+        (increment_request_count, mark_key_as_exhausted, обслуживание лимитов).
+
+        Состав ключей, наоборот, авторитетен: runtime исчезнувших ключей
+        удаляется сразу же.
+        """
+        configured, _ = _split_key_statuses(key_statuses)
         with self.file_lock:
+            previous_keys = [
+                item.get("key") for item in self._cache.get('api_keys_with_status', [])
+            ]
             self._cache['api_keys_with_status'] = configured
             self._cache.pop('api_keys', None)
             self._save_to_disk_unsafe()
-        if runtime:
-            self._run_runtime_store_operation(
-                "save_key_statuses", self._key_runtime_store.merge_statuses, runtime,
-            )
+        self._reconcile_removed_key_runtime(previous_keys, configured)
         self._post_event('key_statuses_updated')
         return True
 

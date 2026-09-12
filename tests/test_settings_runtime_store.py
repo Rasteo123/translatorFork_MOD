@@ -31,6 +31,18 @@ class RecordingBus(QtCore.QObject):
         self.event_posted.connect(self.events.append)
 
 
+def _seed_key_runtime(manager, key, statuses_by_model, provider="gemini", **config):
+    """Кладёт runtime ключа прямо в SQLite.
+
+    save_key_statuses() пишет только конфигурацию: runtime из принесённого
+    снимка он игнорирует намеренно, чтобы не откатывать блокировку, выставленную
+    уже после чтения снимка. Значит и в тестах состояние надо готовить там, где
+    оно живёт, — в хранилище.
+    """
+    manager.save_key_statuses([{"key": key, "provider": provider, **config}])
+    manager._key_runtime_store.merge_statuses({key: statuses_by_model})
+
+
 def test_plain_settings_do_not_create_runtime_database(tmp_path):
     manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
     manager.save_custom_prompt("hello")
@@ -41,13 +53,9 @@ def test_plain_settings_do_not_create_runtime_database(tmp_path):
 def test_public_loaders_materialize_same_status_shape(tmp_path):
     manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
     now = int(time.time())
-    manager.save_key_statuses([{
-        "key": "KEY",
-        "provider": "gemini",
-        "status_by_model": {
-            "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now, now]}
-        },
-    }])
+    _seed_key_runtime(manager, "KEY", {
+        "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now, now]}
+    })
 
     expected = {"exhausted_at": now, "exhausted_level": 2, "requests": [now, now]}
     assert manager.load_key_statuses()[0]["status_by_model"]["model"] == expected
@@ -92,10 +100,10 @@ def test_sqlite_merge_preserves_migrated_requests_and_other_models(tmp_path):
 def test_public_results_are_independent_deep_copies(tmp_path, loader):
     manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
     now = int(time.time())
-    manager.save_key_statuses([{
-        "key": "KEY", "provider": "gemini", "metadata": {"labels": ["original"]},
-        "status_by_model": {"model": {"requests": [now], "exhausted_level": 0}},
-    }])
+    _seed_key_runtime(
+        manager, "KEY", {"model": {"requests": [now], "exhausted_level": 0}},
+        metadata={"labels": ["original"]},
+    )
     if loader == "get_key_info":
         result = manager.get_key_info("KEY")
     elif loader == "load_settings":
@@ -135,29 +143,26 @@ def test_store_operational_error_is_recorded_reported_and_propagated(tmp_path, m
     assert manager._last_runtime_store_error is None
 
 
-def test_runtime_save_failure_preserves_config_write_without_success_event(tmp_path, monkeypatch):
+def test_runtime_removal_failure_preserves_config_write_without_success_event(tmp_path, monkeypatch):
+    """Конфигурация записана даже когда чистка runtime удалённого ключа упала."""
     bus = RecordingBus()
     settings_path = tmp_path / "settings.json"
     manager = SettingsManager(event_bus=bus, config_file=str(settings_path))
+    manager.save_key_statuses([{"key": "KEY", "provider": "gemini"}])
     failure = sqlite3.OperationalError("database is locked")
 
-    def fail_merge(_statuses):
+    def fail_delete(_keys):
         raise failure
 
-    monkeypatch.setattr(manager._key_runtime_store, "merge_statuses", fail_merge)
+    monkeypatch.setattr(manager._key_runtime_store, "delete_keys", fail_delete)
+    bus.events.clear()
     with pytest.raises(sqlite3.OperationalError, match="locked"):
-        manager.save_key_statuses([{
-            "key": "KEY", "provider": "gemini", "requests": [1],
-            "exhausted_at": 2, "exhausted_level": 2,
-            "status_by_model": {"model": {"requests": [1]}},
-        }])
+        manager.save_key_statuses([])
 
-    assert json.loads(settings_path.read_text(encoding="utf-8"))["api_keys_with_status"] == [
-        {"key": "KEY", "provider": "gemini"},
-    ]
+    assert json.loads(settings_path.read_text(encoding="utf-8"))["api_keys_with_status"] == []
     assert manager._last_runtime_store_error is failure
     assert [item["event"] for item in bus.events] == ["key_runtime_store_failed"]
-    assert bus.events[0]["data"]["operation"] == "save_key_statuses"
+    assert bus.events[0]["data"]["operation"] == "delete_removed_keys"
 
 
 def test_corrupt_store_recovery_is_published(tmp_path):
@@ -256,17 +261,19 @@ def test_top_level_legacy_runtime_is_normalized_before_import(tmp_path):
     ]
 
 
-def test_save_settings_splits_runtime_and_removal_deletes_sidecar_state(tmp_path):
+def test_save_settings_keeps_config_and_removal_deletes_sidecar_state(tmp_path):
     path = tmp_path / "settings.json"
     manager = SettingsManager(config_file=str(path))
     now = int(time.time())
-    payload = {"custom_prompt": "keep me", "api_keys_with_status": [{
-        "key": "KEY", "provider": "gemini", "status_by_model": {"model": {
-            "exhausted_at": None, "exhausted_level": 0, "requests": [now],
-        }},
-    }]}
+    runtime = {"exhausted_at": None, "exhausted_level": 0, "requests": [now]}
+    _seed_key_runtime(manager, "KEY", {"model": runtime})
+    payload = {"custom_prompt": "keep me", "api_keys_with_status": [
+        {"key": "KEY", "provider": "gemini"},
+    ]}
     assert manager.save_settings(payload) is True
-    assert manager.load_settings() == payload
+    loaded = manager.load_settings()
+    assert loaded["custom_prompt"] == "keep me"
+    assert loaded["api_keys_with_status"][0]["status_by_model"] == {"model": runtime}
     assert json.loads(path.read_text(encoding="utf-8"))["api_keys_with_status"] == [
         {"key": "KEY", "provider": "gemini"},
     ]
@@ -281,8 +288,7 @@ def test_next_start_removes_orphan_left_by_failed_delete(tmp_path, monkeypatch):
     path = tmp_path / "settings.json"
     bus = RecordingBus()
     first = SettingsManager(event_bus=bus, config_file=str(path))
-    first.save_key_statuses([{"key": "KEY", "provider": "gemini",
-                             "status_by_model": {"model": {"requests": [int(time.time())]}}}])
+    _seed_key_runtime(first, "KEY", {"model": {"requests": [int(time.time())]}})
 
     def fail_delete(_keys):
         raise sqlite3.OperationalError("database is locked")
@@ -425,9 +431,9 @@ def test_maintenance_preserves_newer_concurrent_exhaustion_without_json_write(tm
     first = SettingsManager(event_bus=bus, config_file=str(path))
     now = int(time.time())
     expired = now - 48 * 3600
-    first.save_key_statuses([{"key": "KEY", "provider": "gemini", "status_by_model": {
+    _seed_key_runtime(first, "KEY", {
         "model": {"exhausted_at": expired, "exhausted_level": 2, "requests": [expired, now]},
-    }}])
+    })
     second = SettingsManager(config_file=str(path))
     real_maintain = first._key_runtime_store.maintain_model
 
@@ -462,9 +468,9 @@ def test_runtime_mutation_failure_is_reported_without_success_event(
     bus = RecordingBus()
     manager = SettingsManager(event_bus=bus, config_file=str(path))
     now = int(time.time())
-    manager.save_key_statuses([{"key": "KEY", "provider": "gemini", "status_by_model": {
+    _seed_key_runtime(manager, "KEY", {
         "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now]},
-    }}])
+    })
     before = path.read_bytes()
     bus.events.clear()
     error = sqlite3.OperationalError("database is locked")
@@ -512,9 +518,11 @@ def test_failed_legacy_import_does_not_reencode_original_json(tmp_path):
 
 def test_automatic_rolling_reset_preserves_subsecond_exhaustion_boundary(tmp_path, monkeypatch):
     manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
-    manager.save_key_statuses([{"key": "KEY", "provider": "rolling-test", "status_by_model": {
-        "model": {"exhausted_at": 100000.5, "exhausted_level": 2, "requests": []},
-    }}])
+    _seed_key_runtime(
+        manager, "KEY",
+        {"model": {"exhausted_at": 100000.5, "exhausted_level": 2, "requests": []}},
+        provider="rolling-test",
+    )
     monkeypatch.setattr(api_config, "api_providers_view", lambda: {
         "rolling-test": {"reset_policy": {"type": "rolling", "duration_hours": 1}},
     })
@@ -564,13 +572,9 @@ def test_corrupt_settings_file_does_not_wipe_runtime_store(tmp_path):
     config = tmp_path / "settings.json"
     manager = SettingsManager(config_file=str(config))
     now = int(time.time())
-    manager.save_key_statuses([{
-        "key": "KEY",
-        "provider": "gemini",
-        "status_by_model": {
-            "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now]}
-        },
-    }])
+    _seed_key_runtime(manager, "KEY", {
+        "model": {"exhausted_at": now, "exhausted_level": 2, "requests": [now]}
+    })
     sidecar = tmp_path / "settings.runtime.sqlite3"
     assert sidecar.exists()
 
@@ -672,3 +676,68 @@ def test_legacy_runtime_survives_until_its_provider_comes_back(tmp_path, monkeyp
     assert state["requests"] == [8, 9]
     assert state["exhausted_at"] == 321
     assert state["exhausted_level"] == 3
+
+
+def test_save_key_statuses_does_not_undo_a_block_set_after_the_snapshot(tmp_path):
+    """Снимок из интерфейса не должен снимать свежую блокировку.
+
+    Пользователь открыл менеджер ключей, воркер тем временем упёрся в квоту,
+    пользователь нажал «Сохранить» — блокировка обязана уцелеть.
+    """
+    manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    manager.save_key_statuses([{"key": "KEY", "provider": "gemini"}])
+    manager.increment_request_count("KEY", "model")
+    snapshot = manager.load_key_statuses()
+    assert snapshot[0]["status_by_model"]["model"]["exhausted_at"] is None
+
+    manager.mark_key_as_exhausted("KEY", "model")
+    manager.save_key_statuses(snapshot)
+
+    assert manager.get_key_info("KEY")["status_by_model"]["model"]["exhausted_at"] is not None
+
+
+def test_save_settings_does_not_undo_a_block_set_after_the_snapshot(tmp_path):
+    """Тот же снимок приезжает обратно и через load_settings/save_settings."""
+    manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    manager.save_key_statuses([{"key": "KEY", "provider": "gemini"}])
+    # Снимок обязан быть непустым: пустой status_by_model до слияния не доходит,
+    # и тест разошёлся бы с проверяемым багом.
+    manager.increment_request_count("KEY", "model")
+    snapshot = manager.load_settings()
+    assert snapshot["api_keys_with_status"][0]["status_by_model"]["model"]["exhausted_at"] is None
+
+    manager.mark_key_as_exhausted("KEY", "model")
+    snapshot["custom_prompt"] = "правка, сделанная поверх старого снимка"
+    manager.save_settings(snapshot)
+
+    assert manager.get_key_info("KEY")["status_by_model"]["model"]["exhausted_at"] is not None
+    assert manager.load_settings()["custom_prompt"] == "правка, сделанная поверх старого снимка"
+
+
+def test_readded_key_does_not_inherit_the_runtime_of_the_removed_one(tmp_path):
+    """Удаление ключа через save_key_statuses сразу чистит его runtime.
+
+    Иначе сироты доживали до следующего запуска, и тот же ключ, добавленный
+    заново, получал чужой счётчик запросов и чужую 24-часовую блокировку.
+    """
+    manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    manager.save_key_statuses([{"key": "KEY", "provider": "gemini"}])
+    manager.increment_request_count("KEY", "model")
+    manager.mark_key_as_exhausted("KEY", "model")
+
+    manager.save_key_statuses([])
+    manager.save_key_statuses([{"key": "KEY", "provider": "gemini"}])
+
+    assert manager.get_key_info("KEY")["status_by_model"] == {}
+
+
+def test_save_settings_without_key_section_keeps_every_runtime_row(tmp_path):
+    """Настройки без раздела ключей ничего не говорят об их составе."""
+    manager = SettingsManager(config_file=str(tmp_path / "settings.json"))
+    manager.save_key_statuses([{"key": "KEY", "provider": "gemini"}])
+    manager.mark_key_as_exhausted("KEY", "model")
+
+    manager.save_settings({"custom_prompt": "без раздела ключей"})
+
+    store = KeyRuntimeStore(tmp_path / "settings.runtime.sqlite3")
+    assert store.load_statuses(["KEY"])["KEY"]["model"].exhausted_at is not None

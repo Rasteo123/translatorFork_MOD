@@ -59,20 +59,20 @@ class SettingsLimitCheckHotPathTests(unittest.TestCase):
             config_file=os.path.join(self.temp_dir.name, "settings.json"))
         now = int(time.time())
         self.manager.save_key_statuses([
-            {
-                "key": f"KEY_{index}",
-                "provider": "gemini",
-                "status_by_model": {
-                    f"model-{suffix}": {
-                        "exhausted_at": None,
-                        "exhausted_level": 0,
-                        "requests": [now - 10, now - 5],
-                    }
-                    for suffix in range(3)
-                },
+            {"key": f"KEY_{index}", "provider": "gemini"} for index in range(30)
+        ])
+        # save_key_statuses пишет только конфигурацию; runtime живёт в SQLite.
+        self.manager._key_runtime_store.merge_statuses({
+            f"KEY_{index}": {
+                f"model-{suffix}": {
+                    "exhausted_at": None,
+                    "exhausted_level": 0,
+                    "requests": [now - 10, now - 5],
+                }
+                for suffix in range(3)
             }
             for index in range(30)
-        ])
+        })
 
     def test_limit_check_does_not_recompose_provider_registry(self):
         api_config.api_providers_view()  # прогреваем кэш

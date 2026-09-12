@@ -900,25 +900,11 @@ class KeyManagementWidget(EventBusMixin, QWidget):
             self._remember_active_keys_for_provider(provider_id)
         # --- [PATCH END] ---
 
-        loaded_statuses = self.settings_manager.load_key_statuses()
-        updated_statuses = []
-        changed = False
-
-        for key_info in loaded_statuses:
-            if 'status_by_model' in key_info:
-                for model_id in key_info['status_by_model']:
-                    if not self.settings_manager.is_key_limit_active(key_info, model_id):
-                        if key_info['status_by_model'][model_id].get("exhausted_at") is not None:
-                            changed = True
-                            key_info['status_by_model'][model_id]["exhausted_at"] = None
-                            key_info['status_by_model'][model_id]["exhausted_level"] = 0
-            updated_statuses.append(key_info)
-
-        if changed:
-            self.settings_manager.save_key_statuses(updated_statuses)
-            updated_statuses = self.settings_manager.load_key_statuses()
-
-        self._populate_available_keys_list(updated_statuses)
+        # load_key_statuses() сама обслуживает лимиты: истёкшие блокировки
+        # снимаются в SQLite до материализации записей. Снимать их здесь и
+        # сохранять снимок обратно больше не нужно — и небезопасно, потому что
+        # за время показа диалога воркер мог выставить новую блокировку.
+        self._populate_available_keys_list(self.settings_manager.load_key_statuses())
 
     def _create_key_list_item(self, key_info: dict) -> QtWidgets.QListWidgetItem:
         key = key_info["key"]
