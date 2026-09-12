@@ -388,40 +388,6 @@ class SettingsManager(QObject):
             return
         api_config.set_custom_provider_models(self._cache["custom_provider_models"])
     
-    def _merge_disk_timestamps(self, disk_data):
-        """Вспомогательный метод: объединяет таймстампы из файла с текущим кэшем."""
-        disk_keys = disk_data.get('api_keys_with_status', [])
-        mem_keys = self._cache.get('api_keys_with_status', [])
-        
-        # Создаем карту для быстрого сопоставления ключей в памяти
-        mem_key_map = {k['key']: k for k in mem_keys}
-
-        for disk_k in disk_keys:
-            key_str = disk_k.get('key')
-            # Если такой ключ есть у нас в памяти
-            if key_str in mem_key_map:
-                mem_k = mem_key_map[key_str]
-                
-                disk_models = disk_k.get('status_by_model', {})
-                mem_models = mem_k.get('status_by_model', {})
-                
-                # Проходим по моделям внутри ключа
-                for model_id, disk_stats in disk_models.items():
-                    # Если модель есть и у нас, мержим списки
-                    if model_id in mem_models:
-                        disk_reqs = set(disk_stats.get('requests', []))
-                        mem_stats = mem_models[model_id]
-                        mem_reqs = set(mem_stats.get('requests', []))
-                        
-                        # Объединение множеств (исключает дубликаты)
-                        if not disk_reqs.issubset(mem_reqs):
-                            # Сортируем, чтобы хронология была красивой
-                            mem_stats['requests'] = sorted(list(mem_reqs | disk_reqs))
-                    
-                    # Если в памяти этой модели еще нет (например, использовалась в другом окне), 
-                    # можно теоретически добавить, но для безопасности лучше не трогать структуру кэша,
-                    # так как мы только "обогащаем" существующие данные.
-                    
     def _request_save(self):
         """
         [Потокобезопасно] Помечает кэш как 'грязный' и ИСПУСКАЕТ СИГНАЛ
@@ -741,19 +707,6 @@ class SettingsManager(QObject):
             return []
         cutoff = self._request_window_cutoff(policy, now_ts)
         return sorted(ts for ts in normalized_timestamps if ts > cutoff)
-
-    def _prune_request_history_for_model(self, key_info, model_id, now_ts=None):
-        model_status = self._get_status_for_model(key_info, model_id)
-        current_requests = model_status.get('requests', [])
-        filtered_requests = self._filter_request_timestamps_in_window(
-            current_requests,
-            self._get_request_policy(key_info),
-            now_ts=now_ts,
-        )
-        was_changed = filtered_requests != current_requests
-        if was_changed:
-            model_status['requests'] = filtered_requests
-        return filtered_requests, was_changed
 
     def increment_request_count(self, key_to_update, model_id):
         if not model_id: return False
