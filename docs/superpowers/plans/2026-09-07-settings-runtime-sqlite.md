@@ -10,6 +10,29 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-07-settings-runtime-sqlite-design.md`
 
+## Status as of 2026-09-12
+
+The step checkboxes below were never ticked; read this section instead.
+
+- Tasks 1–5: implemented (`edcf195`..`ec5dc13`).
+- Task 6: done, but not by its own steps. `_merge_disk_timestamps` and
+  `_prune_request_history_for_model` are deleted (`85f1d65`). The ast-grep audit
+  was re-run against the post-migration tree and found no consumer to change:
+  every `api_keys_with_status` and `status_by_model` subscript is inside
+  `settings.py`, there is no direct assignment to `requests`, `exhausted_at` or
+  `exhausted_level` anywhere in the package, and the twelve
+  `load_full_session_settings()` calls read an unrelated section
+  (`_generic_loader('last_full_session')`). The one coupling the baseline named
+  in `key_management_widget.py` is gone — its reset-then-save loop was dead,
+  because `load_key_statuses()` clears expired limits before materializing.
+  Step 4's gate lives in `tests/test_settings_runtime_write_gate.py`.
+- Three defect fixes were added on top of the plan (`2c5ff07`, `f39a7ed`): a
+  full-wipe path through `delete_orphans`, initialization failures aborting
+  startup, and both public saves writing runtime back from a stale snapshot.
+  The last one changed a public contract: `save_key_statuses` and
+  `save_settings` no longer persist runtime, and tests must seed it through
+  `KeyRuntimeStore` instead.
+
 ## Global Constraints
 
 - API keys and providers remain in JSON; only `requests`, `exhausted_at`, and `exhausted_level` move to SQLite.

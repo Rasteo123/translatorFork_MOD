@@ -6687,7 +6687,9 @@ class MainWindow(QMainWindow):
                 if key in existing_map:
                     merged_statuses.append(existing_map[key])
                 else:
-                    merged_statuses.append({"key": key, "provider": "gemini", "status_by_model": {}})
+                    # Только конфигурация: runtime нового ключа заводит само
+                    # хранилище, save_key_statuses его отсюда не читает.
+                    merged_statuses.append({"key": key, "provider": "gemini"})
             self.settings_manager.save_key_statuses(merged_statuses)
         else:
             legacy_data = _load_legacy_settings()
