@@ -12,6 +12,8 @@ import threading
 import time
 from urllib.parse import quote, urlparse, urlunparse
 
+from .model_config_schema import sanitize_model_config
+
 try:
     import requests
 except Exception:
@@ -383,6 +385,8 @@ _ALL_TRANSLATED_SUFFIXES = []
 _DYNAMIC_PROVIDER_MODELS = {}
 _DYNAMIC_PROVIDER_MODELS_TS = {}
 _CUSTOM_PROVIDER_MODELS = {}
+# Модели, отклонённые проверкой при последней загрузке пользовательских настроек.
+_CUSTOM_MODEL_VALIDATION_ERRORS = []
 _DYNAMIC_PROVIDER_MODELS_LOCK = threading.Lock()
 _LOCAL_MODEL_DISCOVERY_TTL_SECONDS = 15.0
 _LOCAL_MODEL_DISCOVERY_TIMEOUT_SECONDS = 0.75
@@ -404,7 +408,15 @@ def _build_all_models(providers_config: dict) -> dict:
     }
 
 
+def custom_model_validation_errors():
+    """Модели, отклонённые при последней загрузке пользовательских настроек."""
+    return deepcopy(_CUSTOM_MODEL_VALIDATION_ERRORS)
+
+
 def _normalize_custom_provider_models(custom_provider_models) -> dict:
+    global _CUSTOM_MODEL_VALIDATION_ERRORS
+    _CUSTOM_MODEL_VALIDATION_ERRORS = []
+
     if not isinstance(custom_provider_models, dict):
         return {}
 
@@ -430,6 +442,26 @@ def _normalize_custom_provider_models(custom_provider_models) -> dict:
                 model_id = model_name
 
             next_config["id"] = model_id
+
+            # Данные ввёл человек: чиним здесь, иначе строка в поле лимита
+            # доедет до воркера. Саму модель не выбрасываем — исчезнувшая из
+            # списка модель выглядит как потеря данных, и объяснить её в
+            # интерфейсе сейчас негде. Убираем только негодные поля.
+            next_config, field_errors = sanitize_model_config(next_config)
+            for field_error in field_errors:
+                _CUSTOM_MODEL_VALIDATION_ERRORS.append({
+                    "provider": provider_key,
+                    "model": model_name,
+                    "error": field_error,
+                })
+                print(
+                    f"[CONFIG WARN] Пользовательская модель '{model_name}' "
+                    f"провайдера '{provider_key}': {field_error}. "
+                    "Поле проигнорировано, применится значение провайдера."
+                )
+            if not next_config:
+                continue
+
             next_config["user_defined"] = True
             normalized_models[model_name] = next_config
 
