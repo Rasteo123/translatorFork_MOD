@@ -372,10 +372,10 @@ class NvidiaApiHandler(BaseApiHandler):
             extra={"use_stream": use_stream, "allow_incomplete": allow_incomplete},
         )
 
-        max_retries = 3
+        # Повторы при перегрузке: политика общая, см. BaseApiHandler.
         retry_count = 0
 
-        while retry_count < max_retries:
+        while True:
             try:
                 async with session.post(self.base_url, headers=headers, json=payload) as response:
                     if response.status == 202:
@@ -396,20 +396,16 @@ class NvidiaApiHandler(BaseApiHandler):
                             extra={"http_status": response.status, "mode": "error"},
                         )
 
-                        if response.status in [500, 502, 503]:
-                            wait_time = 15.0 * (retry_count + 1)
-                            self.worker._post_event(
-                                "log_message",
-                                {
-                                    "message": (
-                                        f"⏳ Сервер NVIDIA NIM перегружен ({response.status}). "
-                                        f"Ждем {wait_time}с перед повтором."
-                                    )
-                                },
+                        if self._is_server_overload_status(response.status):
+                            if await self._retry_after_server_overload(
+                                response.status, retry_count + 1, "NVIDIA NIM"
+                            ):
+                                retry_count += 1
+                                continue
+                            raise NetworkError(
+                                "Не удалось получить ответ от NVIDIA NIM из-за перегрузки серверов (Retry Limit).",
+                                delay_seconds=30,
                             )
-                            await asyncio.sleep(wait_time)
-                            retry_count += 1
-                            continue
 
                         if response.status in [401, 403]:
                             raise RateLimitExceededError(
@@ -507,8 +503,3 @@ class NvidiaApiHandler(BaseApiHandler):
             except Exception as error:
                 traceback.print_exc()
                 raise Exception(f"Критическая ошибка NVIDIA NIM: {error}")
-
-        raise NetworkError(
-            "Не удалось получить ответ от NVIDIA NIM из-за перегрузки серверов (Retry Limit).",
-            delay_seconds=30,
-        )

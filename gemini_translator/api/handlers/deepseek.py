@@ -73,11 +73,11 @@ class DeepseekApiHandler(BaseApiHandler):
             extra={"use_stream": use_stream, "allow_incomplete": allow_incomplete},
         )
 
-        # Цикл попыток на случай перегрузки серверов DeepSeek (503)
-        max_retries = 3
+        # Повторы при перегрузке серверов DeepSeek (503 здесь не редкость).
+        # Сама политика — в BaseApiHandler, общая с NVIDIA и OpenModel.
         retry_count = 0
 
-        while retry_count < max_retries:
+        while True:
             try:
                 async with session.post(self.base_url, headers=headers, json=payload) as response:
                     
@@ -91,16 +91,17 @@ class DeepseekApiHandler(BaseApiHandler):
                             extra={"http_status": response.status, "mode": "error"},
                         )
                         
-                        # Обработка перегрузки (API DeepSeek часто выдает 503 при высокой нагрузке)
-                        if response.status in [500, 502, 503]:
-                            wait_time = 15.0 * (retry_count + 1)
-                            log_msg = f"⏳ Сервер DeepSeek перегружен ({response.status}). Ждем {wait_time}с перед повтором."
-                            self.worker._post_event('log_message', {'message': log_msg})
-                            
-                            await asyncio.sleep(wait_time)
-                            retry_count += 1
-                            continue
-                        
+                        if self._is_server_overload_status(response.status):
+                            if await self._retry_after_server_overload(
+                                response.status, retry_count + 1, "DeepSeek"
+                            ):
+                                retry_count += 1
+                                continue
+                            raise NetworkError(
+                                "Не удалось получить ответ от DeepSeek из-за перегрузки серверов (Retry Limit).",
+                                delay_seconds=30,
+                            )
+
                         # Стандартные ошибки
                         if response.status == 401:
                             raise RateLimitExceededError(f"Неверный токен (…{self.worker.api_key[-4:]}) DeepSeek.")
@@ -184,5 +185,3 @@ class DeepseekApiHandler(BaseApiHandler):
                 import traceback
                 traceback.print_exc()
                 raise Exception(f"Критическая ошибка DeepSeek: {e}")
-        
-        raise NetworkError("Не удалось получить ответ от DeepSeek из-за перегрузки серверов (Retry Limit).", delay_seconds=30)

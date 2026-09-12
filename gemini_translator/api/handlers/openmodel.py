@@ -263,10 +263,10 @@ class OpenModelApiHandler(BaseApiHandler):
             extra={"use_stream": use_stream, "allow_incomplete": allow_incomplete},
         )
 
-        max_retries = 3
+        # Overload retries share one policy with the other handlers (BaseApiHandler).
         retry_count = 0
 
-        while retry_count < max_retries:
+        while True:
             try:
                 async with session.post(self.base_url, headers=headers, json=payload) as response:
                     if response.status != 200:
@@ -279,20 +279,16 @@ class OpenModelApiHandler(BaseApiHandler):
                             extra={"mode": "error", "http_status": response.status},
                         )
 
-                        if response.status in [500, 502, 503]:
-                            wait_time = 15.0 * (retry_count + 1)
-                            self.worker._post_event(
-                                "log_message",
-                                {
-                                    "message": (
-                                        f"OpenModel server is overloaded ({response.status}). "
-                                        f"Retrying in {wait_time}s."
-                                    )
-                                },
+                        if self._is_server_overload_status(response.status):
+                            if await self._retry_after_server_overload(
+                                response.status, retry_count + 1, "OpenModel"
+                            ):
+                                retry_count += 1
+                                continue
+                            raise NetworkError(
+                                "Failed to get OpenModel response because the server stayed overloaded.",
+                                delay_seconds=30,
                             )
-                            await asyncio.sleep(wait_time)
-                            retry_count += 1
-                            continue
 
                         if response.status in [401, 403]:
                             raise RateLimitExceededError(
@@ -344,8 +340,3 @@ class OpenModelApiHandler(BaseApiHandler):
             except Exception as error:
                 traceback.print_exc()
                 raise Exception(f"Critical OpenModel error: {error}")
-
-        raise NetworkError(
-            "Failed to get OpenModel response because the server stayed overloaded.",
-            delay_seconds=30,
-        )

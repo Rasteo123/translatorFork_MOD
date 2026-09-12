@@ -23,6 +23,12 @@ _current_debug_trace = contextvars.ContextVar("current_debug_trace", default=Non
 _DEFAULT_TRANSIENT_DISCONNECT_RETRIES = 1
 _DEFAULT_TRANSIENT_DISCONNECT_RETRY_DELAY_SECONDS = 1.0
 
+# Перегрузка на стороне провайдера: ответ пришёл, но сервер просит подождать.
+# Отдельно от transient-disconnect — там рвётся соединение и запрос не доехал.
+_SERVER_OVERLOAD_STATUSES = frozenset({500, 502, 503})
+_DEFAULT_SERVER_OVERLOAD_RETRIES = 3
+_DEFAULT_SERVER_OVERLOAD_RETRY_DELAY_SECONDS = 15.0
+
 
 def _get_ssl_context_signature():
     ssl_cert_file = os.environ.get("SSL_CERT_FILE") or None
@@ -349,6 +355,53 @@ class BaseApiHandler:
         except (TypeError, ValueError):
             base_delay = _DEFAULT_TRANSIENT_DISCONNECT_RETRY_DELAY_SECONDS
         return base_delay * max(1, attempt)
+
+    @staticmethod
+    def _is_server_overload_status(status: int) -> bool:
+        """Провайдер жив, но просит подождать: 500/502/503."""
+        return status in _SERVER_OVERLOAD_STATUSES
+
+    def _server_overload_retry_attempts(self) -> int:
+        raw_value = self._config_value(
+            "server_overload_retries",
+            _DEFAULT_SERVER_OVERLOAD_RETRIES,
+        )
+        try:
+            return max(1, int(raw_value))
+        except (TypeError, ValueError):
+            return _DEFAULT_SERVER_OVERLOAD_RETRIES
+
+    def _server_overload_retry_delay(self, attempt: int) -> float:
+        raw_value = self._config_value(
+            "server_overload_retry_delay_seconds",
+            _DEFAULT_SERVER_OVERLOAD_RETRY_DELAY_SECONDS,
+        )
+        try:
+            base_delay = max(0.0, float(raw_value))
+        except (TypeError, ValueError):
+            base_delay = _DEFAULT_SERVER_OVERLOAD_RETRY_DELAY_SECONDS
+        return base_delay * max(1, attempt)
+
+    async def _retry_after_server_overload(self, status: int, attempt: int, service_name: str) -> bool:
+        """Ждёт и отвечает, повторять ли запрос после ответа `status`.
+
+        `attempt` — номер только что провалившейся попытки, начиная с 1. Когда
+        попытки исчерпаны, метод возвращает False СРАЗУ: пауза перед отказом
+        никого не дожидается, а раньше каждый из трёх хендлеров успевал так
+        проспать лишние 45 секунд.
+        """
+        if status not in _SERVER_OVERLOAD_STATUSES:
+            return False
+        if attempt >= self._server_overload_retry_attempts():
+            return False
+
+        delay = self._server_overload_retry_delay(attempt)
+        self.worker._post_event('log_message', {
+            'message': f"⏳ Сервер {service_name} перегружен ({status}). Ждём {delay:g} с перед повтором."
+        })
+        if delay:
+            await asyncio.sleep(delay)
+        return True
 
     def _exception_chain(self, error: Exception):
         seen = set()
