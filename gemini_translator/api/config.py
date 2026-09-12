@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import importlib.util
 from copy import deepcopy
 from pathlib import Path
@@ -13,6 +14,10 @@ import time
 from urllib.parse import quote, urlparse, urlunparse
 
 from .model_config_schema import sanitize_model_config
+
+# Предупреждения о конфигурации адресованы человеку: канал доводит их до окна
+# лога, см. gemini_translator/utils/user_log.py.
+_logger = logging.getLogger(__name__)
 
 try:
     import requests
@@ -454,10 +459,10 @@ def _normalize_custom_provider_models(custom_provider_models) -> dict:
                     "model": model_name,
                     "error": field_error,
                 })
-                print(
-                    f"[CONFIG WARN] Пользовательская модель '{model_name}' "
-                    f"провайдера '{provider_key}': {field_error}. "
-                    "Поле проигнорировано, применится значение провайдера."
+                _logger.warning(
+                    "Пользовательская модель «%s» провайдера «%s»: %s. "
+                    "Поле проигнорировано, применится значение провайдера.",
+                    model_name, provider_key, field_error,
                 )
             if not next_config:
                 continue

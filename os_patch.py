@@ -31,10 +31,13 @@ import random
 
 import zipfile
 import sqlite3
+import logging
 import time
 from collections import deque
 from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import QTimer
+
+_logger = logging.getLogger("os_patch")
 
 VIRTUAL_PREFIX = "mem://"
 
@@ -615,11 +618,12 @@ class PatientLock:
                         ):
                             reported_long_hold_owner = self._owner
                             culprit_stack = "".join(self._owner_stack) if self._owner_stack else "<Стек не сохранен>"
-                            print(
-                                f"\n{'!'*40}\n"
-                                f" [PatientLock] Владелец {self._owner} удерживает замок "
-                                f"дольше {owner_limit}с; принудительное освобождение запрещено.\n"
-                                f"{'!'*40}\n"
+                            # Через logging, а не print: консоли при запуске
+                            # GUI нет, и предупреждение уходило в никуда.
+                            _logger.warning(
+                                "[PatientLock] Владелец %s удерживает замок дольше %.0f с; "
+                                "принудительное освобождение запрещено.",
+                                self._owner, owner_limit,
                             )
                             
                             global _global_notifier
