@@ -74,3 +74,6 @@ benchmark_results/
 #  .superpowers/ — брифы, отчёты, диффы ревью и server.pid)
 .mcp.json
 .superpowers/
+
+# База примеров hypothesis: локальный кэш, в репозитории не нужен
+.hypothesis/

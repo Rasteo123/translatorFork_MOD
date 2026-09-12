@@ -1,4 +1,5 @@
 fuzzywuzzy
+hypothesis
 pytest
 pytest-qt
 pytest-timeout
