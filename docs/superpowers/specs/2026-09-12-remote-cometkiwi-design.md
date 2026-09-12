@@ -71,7 +71,7 @@ JSON, `run_runner_process` запускает раннер, пишет запр�
 
 `command()` в удалённом режиме не используется.
 
-Новая функция `run_remote_request(endpoint)` возвращает транспорт с той же
+Новая функция `remote_transport(config)` возвращает транспорт с той же
 сигнатурой, что и `run_runner_process`: `(command, payload, *, timeout,
 cancellation)`. Она шлёт `POST <endpoint>/score` с телом `payload`, соблюдает
 `timeout_seconds` из конфигурации, уважает отмену и обрезает ответ по тому же
@@ -119,6 +119,7 @@ VRAM предсказуемым.
 - Поле адреса и кнопка «Проверить связь» в диалоге качества перевода
   (`translation_quality_dialog.py`). Кнопка дёргает `/health` и показывает имя
   модели и устройство либо причину отказа.
+
 ### Условия готовности
 
 Это самое опасное место работы. Сегодня `unsatisfied_requirements()` в
@@ -161,6 +162,7 @@ VRAM предсказуемым.
 | --- | --- |
 | `endpoint_invalid` | адрес в настройках не разбирается |
 | `endpoint_unreachable` | ПК выключен, спит, не пускает по сети |
+| `endpoint_status_<код>` | сервер ответил не 200 — например, не тот путь |
 | `timeout` | ответ не пришёл за `timeout_seconds` |
 | `response_too_large` | ответ превысил `MAX_RESPONSE_BYTES` |
 | `runner_failed` | сервер ответил ошибкой или непригодным JSON |
