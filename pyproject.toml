@@ -3,6 +3,13 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
 qt_api = "pyqt6"
+# Зависший тест не должен вешать весь прогон: asyncio, потоки, Qt, сеть и
+# executors дают достаточно поводов. Запас большой — самый долгий тест идёт
+# ~19 с, а Windows-CI заметно медленнее, — так что порог ловит только настоящие
+# зависания. Метод thread работает и на Windows и печатает стеки ВСЕХ потоков,
+# что для этого приложения и есть главная улика.
+timeout = 120
+timeout_method = "thread"
 filterwarnings = [
     "default",
 ]
