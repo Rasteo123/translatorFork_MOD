@@ -5,10 +5,13 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import QObject, pyqtSlot, pyqtSignal
+import logging
 import threading
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..api import config as api_config
+from .interprocess_lock import interprocess_lock
+from .io_utils import atomic_write_text
 from .key_runtime_store import KeyRuntimeStore, runtime_store_path
 from .text_sanitize import sanitize_path_segment
 
@@ -17,6 +20,13 @@ SETTINGS_DIR_ENV = "GT_SETTINGS_DIR"
 DEFAULT_SETTINGS_DIRNAME = ".epub_translator"
 PROFILE_SETTINGS_DIRNAME = "profiles"
 _DEFAULT_PROFILE_ALIASES = {"", "default", "global", "main"}
+
+logger = logging.getLogger(__name__)
+
+# Сколько ждать, пока другое окно приложения допишет настройки. Обычная запись
+# занимает десятки миллисекунд; дольше замок держит только зависший процесс, и
+# замораживать ради него интерфейс нельзя.
+SETTINGS_LOCK_TIMEOUT_SECONDS = 3.0
 
 # Неизвестные таймзоны в reset_policy встречаются в хот-пути (таймер обслуживания
 # лимитов раз в 5с на каждый ключ/модель, перерисовка UI, выбор ключа в QA/воркерах).
@@ -48,6 +58,12 @@ def _safe_profile_segment(profile: str) -> str:
 def default_settings_dir(home_dir=None) -> str:
     root = os.path.expanduser("~") if home_dir is None else os.path.expanduser(str(home_dir))
     return os.path.abspath(os.path.join(root, DEFAULT_SETTINGS_DIRNAME))
+
+
+def settings_lock_path(config_file) -> str:
+    """Файл межпроцессного замка: скрытый и лежит рядом с файлом настроек."""
+    directory, name = os.path.split(os.path.abspath(os.path.expanduser(str(config_file))))
+    return os.path.join(directory, f".{name}.lock")
 
 
 def resolve_settings_location(config_file=None, config_dir=None, profile=None, home_dir=None):
@@ -218,6 +234,9 @@ class SettingsManager(QObject):
         
         # --- КЛЮЧЕВЫЕ КОМПОНЕНТЫ КЭШИРУЮЩЕЙ АРХИТЕКТУРЫ ---
         self.file_lock = PatientLock()
+        # Замок, общий для всех процессов, которые пишут этот же файл настроек.
+        self._settings_lock_path = settings_lock_path(self.config_file)
+        self._warned_about_missing_lock = False
         self._cache = {}
         # Снимок диска на момент последней синхронизации. Нужен, чтобы при записи
         # отличить наши правки от чужих и не затереть другой экземпляр приложения.
@@ -357,7 +376,33 @@ class SettingsManager(QObject):
         self._apply_custom_provider_models_to_runtime()
 
     def _save_to_disk_unsafe(self):
-        """[Под замком] Объединяет конфигурацию с диском и атомарно записывает JSON."""
+        """[Под замком] Объединяет конфигурацию с диском и атомарно записывает JSON.
+
+        Файл делят несколько окон приложения, то есть разные процессы. Чтение,
+        склейка и запись идут под межпроцессным замком: иначе окно, прочитавшее
+        диск раньше нашей записи, затрёт её своей, а наша следующая склейка
+        примет затёртое значение за чужую правку, и изменение пропадёт насовсем.
+        """
+        with interprocess_lock(
+            self._settings_lock_path, timeout=SETTINGS_LOCK_TIMEOUT_SECONDS
+        ) as locked:
+            if not locked:
+                self._warn_saving_without_lock()
+            self._merge_with_disk_and_write_unsafe()
+
+    def _warn_saving_without_lock(self):
+        if self._warned_about_missing_lock:
+            return
+        self._warned_about_missing_lock = True
+        logger.warning(
+            "Не удалось занять замок файла настроек %s за %.1f с. Настройки сохранены "
+            "без него: если открыто другое окно приложения, его последние правки "
+            "могут потеряться.",
+            self.config_file,
+            SETTINGS_LOCK_TIMEOUT_SECONDS,
+        )
+
+    def _merge_with_disk_and_write_unsafe(self):
         disk_data = self._load_unsafe()
         if "api_keys_with_status" in disk_data:
             disk_data["api_keys_with_status"] = [
@@ -1203,33 +1248,16 @@ class SettingsManager(QObject):
             # Не пишем ничего, чтобы не испортить файл
             raise e
 
-        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
-        
         # --- 3. Атомарная запись (Disk) ---
-        # Пишем во временный файл, который находится в ТОЙ ЖЕ папке.
-        # Это обязательно для работы os.replace (атомарного переноса).
-        temp_file = self.config_file + ".tmp"
-        
+        # Временный файл обязан получать уникальное имя. С общим
+        # settings.json.tmp два процесса, сохранявшие настройки одновременно,
+        # усекали его друг другу, и короткий документ ложился поверх длинного:
+        # так с 16.08 по 11.09.2026 появились 14 нечитаемых settings.json.
         try:
-            # Записываем подготовленную строку
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                f.write(json_content)
-                f.flush()
-                os.fsync(f.fileno()) # Принудительно сбрасываем буфер ОС на диск
-
-            # МОМЕНТ ИСТИНЫ: Мгновенная подмена. 
-            # Либо старый файл, либо новый. Никаких промежуточных состояний.
-            os.replace(temp_file, self.config_file)
-
+            atomic_write_text(self.config_file, json_content)
         except Exception as e:
-            # Если что-то пошло не так (место на диске кончилось), удаляем мусор
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except OSError:
-                    pass
             print(f"[SettingsManager CRITICAL] Не удалось записать файл настроек: {e}")
-            raise e
+            raise
     
     def _load_unsafe(self):
         # Отличаем «файла ещё нет» и «файл пуст» (нормальный первый запуск) от
