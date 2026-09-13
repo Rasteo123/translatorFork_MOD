@@ -20,6 +20,7 @@ from ....api import config as api_config
 from ....utils.helpers import TokenUsageTrackerMixin
 from ....utils import cjk_ranges
 from ....utils.glossary_tools import glossary_entry_key, normalize_glossary_entries
+from ....utils.io_utils import atomic_write_json
 
 from ...widgets import (
     KeyManagementWidget, ModelSettingsWidget, LogWidget, PresetWidget
@@ -262,8 +263,7 @@ class ProjectGlossaryController:
 
         if self.project_folder:
             project_glossary_path = os.path.join(self.project_folder, "project_glossary.json")
-            with open(project_glossary_path, 'w', encoding='utf-8') as f:
-                json.dump(normalized, f, ensure_ascii=False, indent=2, sort_keys=True)
+            atomic_write_json(project_glossary_path, normalized, indent=2, sort_keys=True)
 
         return normalized
 
@@ -575,7 +575,6 @@ class AdvancedTagFilterDialog(QDialog):
 
     def _save_to_project(self):
         import os
-        import json
         if not self.project_folder: return
         file_path = os.path.join(self.project_folder, "untranslated_filters.json")
         try:
@@ -583,8 +582,7 @@ class AdvancedTagFilterDialog(QDialog):
                 "whitelist": sorted(list(self.whitelist)),
                 "blacklist": sorted(list(self.blacklist))
             }
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
+            atomic_write_json(file_path, data, indent=4)
             QMessageBox.information(self, "Сохранено", f"Фильтры успешно сохранены в проект:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить фильтры:\n{e}")

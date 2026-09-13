@@ -39,11 +39,11 @@ class GlossaryAtomicWriteTests(unittest.TestCase):
                 json.dump(original_entries, handle, ensure_ascii=False)
 
             with patch.object(
-                glossary_widget_module.json,
-                "dump",
-                side_effect=RuntimeError("диск переполнен на середине записи"),
+                glossary_widget_module.os,
+                "replace",
+                side_effect=OSError("диск переполнен на последнем шаге записи"),
             ):
-                with self.assertRaises(RuntimeError):
+                with self.assertRaises(OSError):
                     widget._write_glossary_json(target_path, [{"original": "beta", "rus": "бета"}])
 
             # Целевой файл не должен быть усечён/повреждён неудачной записью.

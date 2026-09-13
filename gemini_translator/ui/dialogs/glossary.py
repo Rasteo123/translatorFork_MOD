@@ -55,6 +55,7 @@ from ..shell import ShellPage
 from .menu_utils import PageDialogProxyMixin, make_page_delegating_meta, prompt_return_to_menu
 from ...api import config as api_config
 from ...utils.settings import SettingsManager
+from ...utils.io_utils import atomic_write_json
 from ...utils.language_tools import (
     LanguageDetector, ChineseTextProcessor, GlossaryLogic
 )
@@ -847,8 +848,7 @@ class GlossaryManagerPage(ShellPage):
         project_glossary_path = os.path.join(self.associated_project_path, "project_glossary.json")
 
         try:
-            with open(project_glossary_path, 'w', encoding='utf-8') as f:
-                json.dump(glossary_to_save, f, ensure_ascii=False, indent=2, sort_keys=True)
+            atomic_write_json(project_glossary_path, glossary_to_save, indent=2, sort_keys=True)
 
             self.mark_current_state_as_saved(saved_to_project=True)
             self._sync_saved_project_state_to_parent(glossary_to_save)
@@ -3589,8 +3589,7 @@ class GlossaryManagerPage(ShellPage):
         except Exception:
             state['vertical_scroll_value'] = 0
         try:
-            with open(state_path, 'w', encoding='utf-8') as f:
-                json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+            atomic_write_json(state_path, state, indent=2, sort_keys=True)
         except Exception as e:
             print(f"Failed to persist glossary page state: {e}")
 

@@ -2,7 +2,6 @@
 
 import json
 import os
-import tempfile
 
 import re
 import traceback
@@ -26,6 +25,7 @@ from ..dialogs.glossary_dialogs.custom_widgets import ExpandingTextEditDelegate
 from .ancestor_utils import find_ancestor_by_class_name
 from ...utils.document_importer import set_all_checked
 from ...utils.glossary_tools import glossary_entry_key, glossary_entries_as_list
+from ...utils.io_utils import atomic_write_json
 from ...utils.settings import SettingsManager
 from ...api import config as api_config
 from collections import defaultdict
@@ -440,29 +440,7 @@ class GlossaryWidget(QWidget):
         # Атомарная запись: сначала во временный файл рядом с целевым, затем
         # os.replace(). Так крах/исключение посреди записи не оставляет на
         # диске усечённый JSON поверх ранее сохранённых данных.
-        directory = os.path.dirname(file_path) or "."
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=directory,
-                prefix=os.path.basename(file_path) + ".",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                tmp_path = handle.name
-                json.dump(glossary_data, handle, ensure_ascii=False, indent=2, sort_keys=True)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_path, file_path)
-        except Exception:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-            raise
+        atomic_write_json(file_path, glossary_data, indent=2, sort_keys=True)
 
     def _load_glossary_json(self, file_path: str, missing_value=None):
         if not file_path or not os.path.exists(file_path):
@@ -584,8 +562,7 @@ class GlossaryWidget(QWidget):
         except Exception:
             state["vertical_scroll_value"] = 0
         try:
-            with open(state_path, "w", encoding="utf-8") as handle:
-                json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            atomic_write_json(state_path, state, indent=2, sort_keys=True)
         except Exception:
             pass
 
@@ -1240,8 +1217,7 @@ class GlossaryWidget(QWidget):
         if project_folder and msg_box.clickedButton() == save_btn:
             try:
                 project_glossary_path = os.path.join(project_folder, "project_glossary.json")
-                with open(project_glossary_path, 'w', encoding='utf-8') as f:
-                    json.dump(self.get_glossary(), f, ensure_ascii=False, indent=2, sort_keys=True)
+                self._write_glossary_json(project_glossary_path, self.get_glossary())
                 if parent_dialog and hasattr(parent_dialog, 'project_manager') and parent_dialog.project_manager:
                     parent_dialog.project_manager.save_glossary_generation_map(updated_generated_chapters_map)
                 # --- ИСПРАВЛЕНИЕ: Сохраняем копию состояния, чтобы разорвать ссылочную связь ---

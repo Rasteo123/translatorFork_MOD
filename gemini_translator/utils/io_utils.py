@@ -27,6 +27,8 @@ import os
 from pathlib import Path
 import secrets
 
+from . import fast_json
+
 
 def atomic_write_bytes(
     path: Path | str,
@@ -80,3 +82,23 @@ def atomic_write_text(
     :func:`atomic_write_bytes`.
     """
     atomic_write_bytes(path, text.encode(encoding), fsync=fsync, mode=mode)
+
+
+def atomic_write_json(
+    path: Path | str,
+    obj,
+    *,
+    indent: int | None = None,
+    sort_keys: bool = False,
+    fsync: bool = True,
+    mode: int | None = None,
+) -> None:
+    """JSON-вариант :func:`atomic_write_text` через :mod:`fast_json`.
+
+    Объект сериализуется целиком до того, как тронут диск: значение, которое
+    нельзя записать в JSON, поднимает ``TypeError``, и файл остаётся прежним.
+    Не-ASCII пишется как есть — служебные файлы книги, в первую очередь
+    глоссарий, правят руками.
+    """
+    text = fast_json.dumps(obj, indent=indent, sort_keys=sort_keys)
+    atomic_write_text(path, text, fsync=fsync, mode=mode)

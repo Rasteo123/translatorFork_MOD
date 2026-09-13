@@ -9,7 +9,7 @@ import threading
 import weakref
 
 from . import fast_json
-from .io_utils import atomic_write_bytes, atomic_write_text
+from .io_utils import atomic_write_bytes, atomic_write_json, atomic_write_text
 
 try:
     import zstandard as _zstd
@@ -726,8 +726,7 @@ class TranslationProjectManager:
                 except OSError:
                     pass
             else:
-                with open(self.validation_cache_path, 'w', encoding='utf-8') as f:
-                    f.write(serialized)
+                atomic_write_text(self.validation_cache_path, serialized)
 
     def load_term_frequency_cache(self):
         with self.lock:
@@ -742,9 +741,9 @@ class TranslationProjectManager:
 
     def save_term_frequency_cache(self, payload):
         with self.lock:
-            os.makedirs(os.path.dirname(self.term_frequency_cache_path), exist_ok=True)
-            with open(self.term_frequency_cache_path, 'w', encoding='utf-8') as f:
-                fast_json.dump(payload, f, indent=2, sort_keys=True)
+            atomic_write_json(
+                self.term_frequency_cache_path, payload, indent=2, sort_keys=True
+            )
 
     def get_all_originals(self):
         from .epub_tools import extract_number_from_path
@@ -892,9 +891,7 @@ class TranslationProjectManager:
             # Конвертируем set в отсортированный список для стабильного и читаемого вывода
             data_to_save = sorted(list(generated_chapters_set))
             try:
-                os.makedirs(os.path.dirname(self.glossary_map_path), exist_ok=True)
-                with open(self.glossary_map_path, 'w', encoding='utf-8') as f:
-                    json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+                atomic_write_json(self.glossary_map_path, data_to_save, indent=2)
                 print(f"[INFO] Карта сгенерированного глоссария ({len(data_to_save)} глав) сохранена.")
             except IOError as e:
                 print(f"[ERROR] Не удалось сохранить файл карты глоссария: {e}")
@@ -959,9 +956,7 @@ class TranslationProjectManager:
                     str(item.get('id', '')),
                 )
             )
-            os.makedirs(os.path.dirname(self.user_problem_terms_path), exist_ok=True)
-            with open(self.user_problem_terms_path, 'w', encoding='utf-8') as f:
-                json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.user_problem_terms_path, data_to_save, indent=2)
 
             return {
                 'added': added,
@@ -988,9 +983,7 @@ class TranslationProjectManager:
             if removed_count == 0:
                 return 0
 
-            os.makedirs(os.path.dirname(self.user_problem_terms_path), exist_ok=True)
-            with open(self.user_problem_terms_path, 'w', encoding='utf-8') as f:
-                json.dump(filtered_items, f, ensure_ascii=False, indent=2)
+            atomic_write_json(self.user_problem_terms_path, filtered_items, indent=2)
 
             return removed_count
     
@@ -1025,9 +1018,7 @@ class TranslationProjectManager:
         """Потокобезопасно сохраняет кэш анализа состава глав."""
         with self.lock:
             try:
-                os.makedirs(os.path.dirname(self.chapter_analysis_cache_path), exist_ok=True)
-                with open(self.chapter_analysis_cache_path, 'w', encoding='utf-8') as f:
-                    fast_json.dump(cache_data, f, indent=2)
+                atomic_write_json(self.chapter_analysis_cache_path, cache_data, indent=2)
             except IOError as e:
                 print(f"[ERROR] Не удалось сохранить кэш анализа глав: {e}")
 
@@ -1036,8 +1027,6 @@ class TranslationProjectManager:
         with self.lock:
             cache_path = self._get_size_cache_path()
             try:
-                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                with open(cache_path, 'w', encoding='utf-8') as f:
-                    fast_json.dump(cache_data, f, indent=2)
+                atomic_write_json(cache_path, cache_data, indent=2)
             except IOError as e:
                 print(f"[ERROR] Не удалось сохранить кэш размеров глав: {e}")

@@ -62,6 +62,7 @@ from ...utils.epub_tools import (
 )
 from ...utils.helpers import safe_int
 from ...utils.glossary_tools import glossary_entry_key, glossary_list_to_replacer_map
+from ...utils.io_utils import atomic_write_json
 from ...utils.language_tools import SmartGlossaryFilter, GlossaryReplacer
 from ...utils.project_manager import TranslationProjectManager
 from ...utils.power_inhibitor import (
@@ -840,8 +841,7 @@ class InitialSetupPage(ShellPage):
         }
         try:
             os.makedirs(os.path.dirname(state_path), exist_ok=True)
-            with open(state_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+            atomic_write_json(state_path, data, indent=2, sort_keys=True)
         except Exception as e:
             print(f"[WARN] Не удалось сохранить состояние выбора базового глоссария: {e}")
 
@@ -3476,8 +3476,7 @@ class InitialSetupPage(ShellPage):
         project_glossary_path = os.path.join(self.output_folder, "project_glossary.json")
         current_glossary = self.glossary_widget.get_glossary()
         try:
-            with open(project_glossary_path, 'w', encoding='utf-8') as f:
-                json.dump(current_glossary, f, ensure_ascii=False, indent=2, sort_keys=True)
+            atomic_write_json(project_glossary_path, current_glossary, indent=2, sort_keys=True)
 
             self.mark_project_glossary_as_saved(current_glossary)
 
@@ -5028,8 +5027,12 @@ class InitialSetupPage(ShellPage):
         if self.output_folder:
             try:
                 project_glossary_path = os.path.join(self.output_folder, "project_glossary.json")
-                with open(project_glossary_path, 'w', encoding='utf-8') as f:
-                    json.dump(self.glossary_widget.get_glossary(), f, ensure_ascii=False, indent=2, sort_keys=True)
+                atomic_write_json(
+                    project_glossary_path,
+                    self.glossary_widget.get_glossary(),
+                    indent=2,
+                    sort_keys=True,
+                )
             except Exception as e:
                 self._auto_log(f"Не удалось сохранить автоглоссарий в проект: {e}", force=True)
 

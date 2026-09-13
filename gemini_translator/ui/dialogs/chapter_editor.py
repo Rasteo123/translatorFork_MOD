@@ -50,7 +50,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from gemini_translator.ui import theme_manager
-from ...utils.io_utils import atomic_write_text
+from ...utils.io_utils import atomic_write_json, atomic_write_text
 from ..widgets.overlay_tab_widget import install_tab_fade
 from ..widgets.regex_syntax_highlighter import HTML_PALETTE_LIGHT, HtmlSyntaxHighlighter
 
@@ -1327,8 +1327,7 @@ class ChapterEditorDialog(QDialog):
             "text": self.translated_document.toPlainText(),
         }
         try:
-            with open(self.draft_path, "w", encoding="utf-8") as file:
-                json.dump(payload, file, ensure_ascii=False, indent=2)
+            atomic_write_json(self.draft_path, payload, indent=2)
             self.meta_label.setText(
                 f"{self.meta_label.text().split(' • ')[0]} • Черновик обновлён {payload['updated_at']}"
             )

@@ -38,6 +38,7 @@ from gemini_translator.utils.power_inhibitor import (
     save_prevent_sleep_setting,
 )
 from gemini_translator.utils.settings import SettingsManager
+from gemini_translator.utils.io_utils import atomic_write_json
 from gemini_translator.core.task_manager import TaskDBWorker
 from gemini_translator.ui.dialogs._shared import session_and_tasks
 from gemini_translator.core.glossary_pipeline import (
@@ -1587,10 +1588,9 @@ class GenerationSessionPage(ShellPage):
             
             try:
                 # 2. Пишем новый файл (i+1)
-                with open(base_name, 'w', encoding='utf-8') as f:
-                    json.dump(snapshot, f, ensure_ascii=False, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno()) # Принудительный сброс на диск для защиты от сбоев питания
+                # Временный файл, fsync и os.replace: сбой посреди записи не
+                # оставит битый файл восстановления с самым свежим номером.
+                atomic_write_json(base_name, snapshot, indent=2)
                 
                 # 3. Удаляем ВСЕ старые файлы (i, i-1...)
                 # Удаляем только после успешной записи нового.
