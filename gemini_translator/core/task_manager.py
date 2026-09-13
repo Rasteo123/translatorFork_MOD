@@ -21,6 +21,7 @@ import json
 import time
 import sqlite3
 import hashlib
+import secrets
 from collections import Counter
 import contextlib
 from dataclasses import dataclass
@@ -69,6 +70,28 @@ def build_queue_snapshot_meta(counts_by_status: dict, saved_at: float | None = N
         'recoverable_tasks': str(recoverable_tasks),
         'saved_task_count': str(saved_task_count),
     }
+
+
+def _write_compact_copy(conn: sqlite3.Connection, target_path: str) -> None:
+    """Пишет базу conn в target_path без пустых страниц и атомарно подменяет файл.
+
+    backup() переносит страницы как есть, вместе с освободившимися после
+    удаления задач, и снимок разрастается до пикового размера очереди. VACUUM
+    INTO пишет только живые данные. Прежний файл остаётся на месте, пока новый
+    не записан целиком.
+    """
+    temp_path = f"{target_path}.{secrets.token_hex(8)}.tmp"
+    try:
+        conn.execute("VACUUM INTO ?", (temp_path,))
+        # VACUUM INTO сам не делает fsync — так сказано в документации SQLite.
+        with open(temp_path, "rb+") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target_path)
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
 
 
 # --- Сжатие блобов переводов чанков (chunk_results.translated_content) ---
@@ -2818,22 +2841,8 @@ class ChapterQueueManager(QObject):
             # ВАЖНО: Фиксируем изменения в клоне перед отправкой
             snapshot_conn.commit()
             
-            # 3. Сбрасываем модифицированный клон на диск
-            if os.path.exists(snapshot_path):
-                try:
-                    os.remove(snapshot_path)
-                except OSError:
-                    pass # Если файл занят, connect ниже выбросит ошибку, это ок
-            
-            # Подключаемся к файлу на диске
-            disk_conn = sqlite3.connect(snapshot_path)
-            
-            try:
-                # ВАЖНО: Выполняем backup БЕЗ обертки 'with disk_conn'.
-                # API бэкапа само управляет блокировками.
-                snapshot_conn.backup(disk_conn)
-            finally:
-                disk_conn.close()
+            # 3. Сбрасываем модифицированный клон на диск: компактно и атомарно
+            _write_compact_copy(snapshot_conn, snapshot_path)
                 
             if not quiet:
                 self._log(f"[DB] 💾 Очередь задач сохранена в '{os.path.basename(snapshot_path)}'.")
