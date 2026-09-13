@@ -57,6 +57,9 @@ class SettingsLimitCheckHotPathTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.manager = SettingsManager(
             config_file=os.path.join(self.temp_dir.name, "settings.json"))
+        # Таймер обслуживания лимитов пережил бы тест и его временный каталог,
+        # см. tests/test_settings_live_key_reset.py.
+        self.addCleanup(self.manager._limit_maintenance_timer.stop)
         now = int(time.time())
         self.manager.save_key_statuses([
             {"key": f"KEY_{index}", "provider": "gemini"} for index in range(30)
