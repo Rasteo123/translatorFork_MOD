@@ -10,6 +10,35 @@ from ..errors import (
     TemporaryRateLimitError, PartialGenerationError
 )
 from ._sse_stream import SSEStreamInterrupted, parse_openai_compatible_sse_stream
+from ..retry_hints import retry_after_seconds
+
+# A 429 is a pause, never a spent key. OmniRoute answers one for a closed
+# 5-hour Antigravity window with the word «quota» in the body, and while the
+# quota-text check ran before the status check, that pause marked the only
+# OmniRoute key exhausted for 24 hours and ended the session mid-book.
+RATE_LIMIT_DEFAULT_DELAY_SECONDS = 20
+# Per 429 the worker sleeps at most this long and then asks again, so a window
+# that reopens earlier than the hint said is not waited out to the end.
+RATE_LIMIT_WAIT_CAP_SECONDS = 3600.0
+# A reset further away than a working day (weekly Antigravity caps answer with
+# 166h) is a spent key: the session ends with the time in the message instead
+# of sleeping for a week one hour at a time.
+QUOTA_RESET_FAR_SECONDS = 6 * 3600.0
+# The reason an OpenAI-compatible ``finish_reason: "content_filter"`` carries
+# into PartialGenerationError; the analyzer and the fallback treat it like
+# Gemini's SAFETY / PROHIBITED_CONTENT.
+CONTENT_BLOCK_REASON = "CONTENT_FILTER"
+
+
+def _format_wait(seconds):
+    total = int(round(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours} ч {minutes} мин" if minutes else f"{hours} ч"
+    if minutes:
+        return f"{minutes} мин"
+    return f"{secs} с"
 
 def get_dynamic_server_url(endpoint_filename: str, default_port: int = 8000) -> str:
     """
@@ -110,6 +139,31 @@ class OpenRouterApiHandler(BaseApiHandler):
             and cls._is_model_access_denied_error(status, response_text)
         )
 
+    @staticmethod
+    def _raise_rate_limited(response, response_text):
+        """Turn a 429 into the pause the service asked for, or a spent key.
+
+        The hint comes from Retry-After, from OmniRoute's ``retryAfterMs`` or
+        Google's ``retryDelay`` in the body, or from the message text («Your
+        quota will reset after 4h32m10s»). No hint keeps the old short pause.
+        """
+        hint = retry_after_seconds(getattr(response, "headers", None), response_text)
+        if hint is None:
+            raise TemporaryRateLimitError(
+                "Лимит запросов (429).", delay_seconds=RATE_LIMIT_DEFAULT_DELAY_SECONDS
+            )
+        if hint > QUOTA_RESET_FAR_SECONDS:
+            error = RateLimitExceededError(
+                f"Квота исчерпана (429), сброс примерно через {_format_wait(hint)}: "
+                f"{response_text[:150]}"
+            )
+            error.retry_after_seconds = hint
+            raise error
+        raise TemporaryRateLimitError(
+            f"Лимит запросов (429), сервис просит подождать {_format_wait(hint)}.",
+            delay_seconds=min(max(hint, 1.0), RATE_LIMIT_WAIT_CAP_SECONDS),
+        )
+
     async def _read_success_response(self, response, use_stream, allow_incomplete, debug):
         if use_stream:
             try:
@@ -134,6 +188,8 @@ class OpenRouterApiHandler(BaseApiHandler):
 
             if finish_reason == "length" and not allow_incomplete:
                 raise PartialGenerationError("Превышен лимит токенов", partial_text=collected_text, reason="LENGTH")
+            if finish_reason == "content_filter":
+                self._raise_content_block(collected_text)
             return collected_text
 
         result = await response.json()
@@ -144,8 +200,29 @@ class OpenRouterApiHandler(BaseApiHandler):
         )
         if 'choices' in result and result['choices']:
             self._remember_openai_usage(result.get("usage"))
-            return result['choices'][0]['message']['content']
+            choice = result['choices'][0]
+            content = choice['message']['content']
+            if isinstance(choice, dict) and choice.get('finish_reason') == "content_filter":
+                self._raise_content_block(content or "")
+            return content
         raise Exception(f"Пустой ответ: {result}")
+
+    @staticmethod
+    def _raise_content_block(text):
+        """A ``content_filter`` finish reason is a block, not a finished answer.
+
+        OmniRoute folds Gemini's SAFETY, PROHIBITED_CONTENT, RECITATION and
+        BLOCKLIST into it. With a tail the block is reported the way the Gemini
+        handler reports its own (a partial with a block reason), so the
+        content-filter fallback and the «Не повторять блокировки» option see it.
+        """
+        if text:
+            raise PartialGenerationError(
+                "Генерация прервана фильтром контента (finish_reason: content_filter)",
+                partial_text=text,
+                reason=CONTENT_BLOCK_REASON,
+            )
+        raise ContentFilterError("Ответ заблокирован фильтром контента (finish_reason: content_filter)")
 
     def setup_client(self, client_override=None, proxy_settings=None):
         super().setup_client(client_override, proxy_settings)
@@ -244,13 +321,14 @@ class OpenRouterApiHandler(BaseApiHandler):
 
                     txt_low = response_text.lower()
                     
+                    if response.status == 429:
+                        self._raise_rate_limited(response, response_text)
                     if self._is_model_access_denied_error(response.status, response_text):
                         raise ModelNotFoundError(
                             f"Model {self.worker.model_id} is not allowed for this API key: {response_text[:150]}"
                         )
                     if response.status in [401, 403]: raise RateLimitExceededError(f"Ошибка доступа ({response.status}): {response_text[:150]}")
                     if response.status == 402 or "quota" in txt_low: raise RateLimitExceededError("Недостаточно средств/Квота (402).")
-                    if response.status == 429: raise TemporaryRateLimitError("Лимит запросов (429).", delay_seconds=20)
                     if response.status == 404: raise ModelNotFoundError(f"Модель {self.worker.model_id} не найдена (404).")
                     
                     raise NetworkError(f"Ошибка ({response.status}): {response_text[:150]}")

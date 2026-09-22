@@ -17,6 +17,10 @@ from gemini_translator.api.errors import (
 
 class ErrorAnalyzer:
     INFINITE_RETRY_PACKAGE_TYPES = {'epub_batch', 'glossary_batch_task'}
+    # Причины PartialGenerationError, за которыми стоит блокировка контента:
+    # SAFETY/PROHIBITED_CONTENT ставит обработчик Gemini, CONTENT_FILTER —
+    # OpenAI-совместимые обработчики на finish_reason "content_filter".
+    CONTENT_BLOCK_REASONS = ("SAFETY", "PROHIBITED_CONTENT", "CONTENT_FILTER")
     TERMINAL_PACKAGE_ERRORS = {ErrorType.CONTENT_FILTER, ErrorType.API_ERROR, ErrorType.VALIDATION}
     
     # --- Конфигурация правил отказов ---
@@ -99,10 +103,10 @@ class ErrorAnalyzer:
 
             if not partial_text.strip() and is_first_attempt:
                 # ЭСКАЛАЦИЯ: Пустой хвост на первой попытке. Перезаписываем ошибку для правил.
-                new_error = ErrorType.CONTENT_FILTER if reason in ["SAFETY", "PROHIBITED_CONTENT"] else ErrorType.API_ERROR
+                new_error = ErrorType.CONTENT_FILTER if reason in self.CONTENT_BLOCK_REASONS else ErrorType.API_ERROR
                 error_for_rules = new_error
                 error_for_history = new_error
-            elif reason in ["SAFETY", "PROHIBITED_CONTENT"]:
+            elif reason in self.CONTENT_BLOCK_REASONS:
                 # ПЕРЕКЛАССИФИКАЦИЯ ДЛЯ ИСТОРИИ: Хвост есть, но причина - фильтр.
                 error_for_history = ErrorType.CONTENT_FILTER
         
@@ -145,7 +149,7 @@ class ErrorAnalyzer:
             self.worker._post_event('api_connection_healthy')
 
         # Опция «Не повторять блокировки»: глава/чанк, заблокированные
-        # контент-фильтром (включая partial с reason SAFETY/PROHIBITED_CONTENT),
+        # контент-фильтром (включая partial с reason SAFETY/PROHIBITED_CONTENT/CONTENT_FILTER),
         # проваливаются сразу — без повторных отправок, которые приводят к
         # усечению текста при до-генерации. Для epub_batch воркер сам разбивает
         # пакет (_split_batch_after_content_filter имеет приоритет), поэтому

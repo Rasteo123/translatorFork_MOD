@@ -61,6 +61,12 @@ class ClassifierTests(unittest.TestCase):
         )
         self.assertFalse(cff.is_content_block_exception(NetworkError("x")))
 
+    def test_content_filter_reason_from_openai_compatible_handlers_is_a_block(self):
+        # OpenRouterApiHandler reports ``finish_reason: "content_filter"`` this way.
+        self.assertTrue(
+            cff.is_content_block_exception(PartialGenerationError("x", "tail", "CONTENT_FILTER"))
+        )
+
     def test_transient_detection(self):
         self.assertTrue(cff.is_transient_exception(NetworkError("x")))
         self.assertTrue(cff.is_transient_exception(RateLimitExceededError("x")))

@@ -2,7 +2,7 @@
 """Reactive fallback when the main model returns a content block.
 
 On a content block (ContentFilterError, or PartialGenerationError with a
-SAFETY/PROHIBITED_CONTENT reason) the blocked chunk/chapter is re-sent to a
+SAFETY/PROHIBITED_CONTENT/CONTENT_FILTER reason) the blocked chunk/chapter is re-sent to a
 user-chosen fallback provider+model, drawing from the pool of green (non-
 exhausted) keys for that provider. A content block from the fallback is
 terminal (task goes to error, as before). Transient errors rotate through
@@ -17,8 +17,10 @@ from gemini_translator.api.errors import (
     TemporaryRateLimitError,
 )
 
-# Content-block reasons reported by handlers via PartialGenerationError.reason.
-SAFETY_REASONS = {"SAFETY", "PROHIBITED_CONTENT"}
+# Content-block reasons reported by handlers via PartialGenerationError.reason:
+# Gemini's own finish reasons, and CONTENT_FILTER from OpenAI-compatible
+# handlers (``finish_reason: "content_filter"``, e.g. OmniRoute).
+SAFETY_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "CONTENT_FILTER"}
 
 # Transient errors during a fallback attempt get the same overall budget as the
 # main model. Mirrors gemini_translator.core.worker_helpers.error_analyzer

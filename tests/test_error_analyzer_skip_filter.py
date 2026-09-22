@@ -96,5 +96,28 @@ class SkipContentFilterRetryTests(unittest.TestCase):
         self.assertEqual(error_type.name, "NETWORK")
 
 
+class ContentFilterReasonTests(unittest.TestCase):
+    """``CONTENT_FILTER`` — причина, которую ставят OpenAI-совместимые
+    обработчики на ``finish_reason: "content_filter"``; для анализатора это
+    та же блокировка, что SAFETY и PROHIBITED_CONTENT у Gemini."""
+
+    def test_partial_content_filter_with_tail_fails_immediately_when_flag_on(self):
+        worker = _DummyWorker(skip_content_filter_retry=True)
+        action, error_type, _ = ErrorAnalyzer(worker).analyze_and_act(
+            PartialGenerationError("interrupted", "<p>часть</p>", "CONTENT_FILTER"), TASK, EMPTY
+        )
+        self.assertEqual(action, WorkerAction.FAIL_PERMANENTLY)
+        self.assertEqual(error_type.name, "CONTENT_FILTER")
+
+    def test_partial_content_filter_empty_tail_escalates_to_content_filter(self):
+        worker = _DummyWorker()
+        action, error_type, _ = ErrorAnalyzer(worker).analyze_and_act(
+            PartialGenerationError("interrupted", "", "CONTENT_FILTER"), TASK, EMPTY
+        )
+        self.assertEqual(action, WorkerAction.RETRY_COUNTABLE)
+        self.assertEqual(error_type.name, "CONTENT_FILTER")
+        self.assertIn("CONTENT_FILTER", worker.task_manager.failures)
+
+
 if __name__ == "__main__":
     unittest.main()
