@@ -47,6 +47,9 @@ _TOOLS = [
     ("📊", "Бенчмарк промптов",
      "Сравнение промптов и моделей.",
      "prompt_benchmark", False),
+    ("🪟", "Системные окна",
+     "Рамки для статусов, навыков и уведомлений LitRPG перед выкладкой на Rulate.",
+     "system_windows", False),
 ]
 
 _TRANSPARENT = QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents

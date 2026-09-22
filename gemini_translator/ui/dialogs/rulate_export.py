@@ -43,6 +43,15 @@ from ...utils.epub_tools import (
 )
 
 
+# Блоки системных окон (см. utils/system_windows.py) уходят на Rulate как
+# сырой HTML: загрузчик сайта пропускает инлайн-стили, но оборачивает каждую
+# строку файла в <p>, поэтому блок обязан остаться одной строкой. Атрибут
+# data-sys-orig хранит исходные абзацы для снятия оформления и сайту не нужен.
+SYSTEM_BLOCK_RE = re.compile(r'<div\b[^>]*\bdata-sys="[^"]*"[^>]*>.*?</div>', re.IGNORECASE | re.DOTALL)
+SYSTEM_BLOCK_ORIG_RE = re.compile(r'\s*\bdata-sys-orig="[^"]*"', re.IGNORECASE)
+_SYSTEM_BLOCK_PLACEHOLDER = "\x00SYSBLOCK{index}\x00"
+
+
 class SimpleEpubReader:
     def __init__(self, filepath):
         self.filepath = filepath
@@ -248,6 +257,15 @@ class EPUBConverterThread(QThread):
 
     def _html_to_plain_text(self, html_content):
         text = html_content
+        system_blocks = []
+
+        def keep_system_block(match):
+            block = SYSTEM_BLOCK_ORIG_RE.sub("", match.group(0))
+            block = re.sub(r"\s*\n\s*", " ", block).strip()
+            system_blocks.append(block)
+            return "\n\n" + _SYSTEM_BLOCK_PLACEHOLDER.format(index=len(system_blocks) - 1) + "\n\n"
+
+        text = SYSTEM_BLOCK_RE.sub(keep_system_block, text)
         text = re.sub(r"<(script|style|head)[^>]*>.*?</\1>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"</(p|div|h[1-6]|li|blockquote)>", "\n\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
@@ -261,7 +279,10 @@ class EPUBConverterThread(QThread):
             if stripped:
                 lines.append(stripped)
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        for index, block in enumerate(system_blocks):
+            result = result.replace(_SYSTEM_BLOCK_PLACEHOLDER.format(index=index), block)
+        return result
 
     def _clean_xml_artifacts(self, content):
         content = re.sub(r"xml version='[^']+' encoding='[^']+'?", "", content)

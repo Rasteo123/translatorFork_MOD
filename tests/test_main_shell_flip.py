@@ -65,6 +65,13 @@ class OpenToolInShellTests(unittest.TestCase):
         self.assertEqual(shell.navigation.depth, 2)
         self.assertIsInstance(shell.navigation.current_page(), ChapterSplitterPage)
 
+    def test_push_system_windows_page(self):
+        from gemini_translator.ui.pages.system_windows_page import SystemWindowsPage
+        shell, main = self._shell()
+        main.open_tool_in_shell(shell, "system_windows")
+        self.assertEqual(shell.navigation.depth, 2)
+        self.assertIsInstance(shell.navigation.current_page(), SystemWindowsPage)
+
     def test_gemini_reader_is_embedded_in_shell_navigation(self):
         from unittest.mock import patch
 

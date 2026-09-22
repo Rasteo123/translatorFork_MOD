@@ -238,6 +238,7 @@ python -m playwright install chromium
 - [`docs/user-guide/04-glossary-manager.md`](./docs/user-guide/04-glossary-manager.md): работа с глоссариями, конфликтами и импортом.
 - [`docs/user-guide/05-rulate-export.md`](./docs/user-guide/05-rulate-export.md): экспорт EPUB в Rulate Markdown.
 - [`docs/user-guide/06-chapter-splitter.md`](./docs/user-guide/06-chapter-splitter.md): разбиение крупных глав на части.
+- [`docs/user-guide/14-system-windows.md`](./docs/user-guide/14-system-windows.md): рамки для системных окон LitRPG перед выкладкой на Rulate.
 - [`docs/user-guide/07-gemini-reader.md`](./docs/user-guide/07-gemini-reader.md): озвучивание EPUB и сборка аудио.
 - [`docs/user-guide/08-ranobelib-uploader.md`](./docs/user-guide/08-ranobelib-uploader.md): публикация глав на RanobeLib и работа с Rulate.
 - [`docs/user-guide/09-providers-models-keys.md`](./docs/user-guide/09-providers-models-keys.md): провайдеры, модели, API-ключи и основные параметры.
