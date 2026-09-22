@@ -1279,6 +1279,9 @@ def open_tool_in_shell(shell, tool_id):
         elif tool_id == 'prompt_benchmark':
             from gemini_translator.ui.pages.benchmark_page import PromptBenchmarkPage
             nav.push(PromptBenchmarkPage())
+        elif tool_id == 'system_windows':
+            from gemini_translator.ui.pages.system_windows_page import SystemWindowsPage
+            nav.push(SystemWindowsPage())
         elif tool_id == 'gemini_reader':
             window, _ = launch_gemini_reader()
             if window is not None:

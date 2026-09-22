@@ -28,7 +28,7 @@ class HomePageTests(unittest.TestCase):
         expected = {
             "translator", "validator", "glossary", "rulate_export",
             "chapter_splitter", "gemini_reader", "ranobelib_uploader",
-            "qidian_rulate_creator", "prompt_benchmark",
+            "qidian_rulate_creator", "prompt_benchmark", "system_windows",
         }
         self.assertEqual(set(home.tool_buttons.keys()), expected)
 

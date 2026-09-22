@@ -95,11 +95,16 @@ def split_plain_text_units(text, target_size):
     return units
 
 
+def _is_html_block_line(text):
+    """Однострочный HTML-блок (системное окно для Rulate): резать нельзя."""
+    return text.startswith("<div") and text.endswith("</div>") and "\n" not in text
+
+
 def _explode_text_unit(text, target_size):
     text = text.strip()
     if not text:
         return []
-    if len(text) <= max(target_size, 1):
+    if len(text) <= max(target_size, 1) or _is_html_block_line(text):
         return [text]
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
