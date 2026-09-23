@@ -6825,9 +6825,15 @@ class InitialSetupPage(ShellPage):
                 api_config.set_custom_provider_models(custom_models_snapshot)
                 self.global_settings = self._get_full_ui_settings()
                 self._apply_full_ui_settings(local_settings)
-                self.local_set = True
             else:
-                print("[INFO] Файл настроек проекта не найден. Используются текущие настройки UI.")
+                # Файла ещё нет: создаём его из текущих настроек, как обещает
+                # подсказка кнопки. Раньше кнопка показывала «Настройки
+                # проекта», а local_set оставался False, и всё, что меняли
+                # «для проекта», сохранялось в глобальные настройки.
+                print("[INFO] Файл настроек проекта не найден. Создаю его из текущих настроек UI.")
+                self.global_settings = self._get_full_ui_settings()
+                self._save_project_settings_only()
+            self.local_set = True
         else:
             print("[SETTINGS] Переключение на глобальные настройки…")
             if self.global_settings:
