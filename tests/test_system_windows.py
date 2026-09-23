@@ -606,3 +606,9 @@ def test_short_values_are_still_key_values():
 def test_levelup_needs_the_level_up_phrase_itself():
     assert classify_kind(["[Повышение уровня]", "[Уровень повышен +2]"]) == "levelup"
     assert classify_kind(["[Тюрьма Страданий]", "[Раз в сутки характеристики уровня повышаются на 5%]"]) != "levelup"
+
+
+def test_default_exclusion_skips_chapter_end_markers():
+    html = _chapter("[Динь! Награда]", "Текст.", "[Конец главы]", "Текст.", "[Продолжение следует…]")
+
+    assert [window.lines for window in find_windows(html)] == [["[Динь! Награда]"]]
