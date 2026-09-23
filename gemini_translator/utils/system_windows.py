@@ -288,7 +288,8 @@ _STAT_KEYS = frozenset(
     "выносливость скорость магия класс опыт награда ранг навык навыки способность способности талант "
     "статус очки мировоззрение возраст пол прочность защита атака урон звание профессия оружие броня "
     "снаряжение питомец задание квест условие эффект описание тип стоимость длительность hp mp sp exp "
-    "дух кольца кольцо культивация культивации техника техники атрибут атрибуты стихия свойство свойства".split()
+    "дух кольца кольцо культивация культивации техника техники атрибут атрибуты стихия свойство свойства "
+    "характеристика характеристики богатство богатства баллы баллов репутация известность".split()
     + ["боевой дух", "духовная сила", "духовные кольца", "духовное кольцо", "ранг духа", "боевая мощь", "очки системы"]
 )
 _STAT_VALUE_MAX = 300
@@ -304,8 +305,38 @@ _META_KEYS = frozenset(
 
 
 def _is_stat_key(key: str) -> bool:
-    words = key.lower().split()
-    return bool(words) and (key.lower() in _STAT_KEYS or words[0] in _STAT_KEYS)
+    """Ключ-характеристика: не длиннее трёх слов, одно из них из списка.
+
+    Четыре слова перед двоеточием («Награда оказалась весьма щедрой: …») —
+    уже фраза, а не поле карточки.
+    """
+    words = re.findall(r"[^\W\d_]+", key.lower())
+    if not words or len(words) > 3:
+        return False
+    return key.lower() in _STAT_KEYS or any(word in _STAT_KEYS for word in words)
+
+
+_STAT_LINE_RE = re.compile(r"^([^:：]{1,40})[:：]\s*(\S.*)$")
+_STAT_LINE_VALUE_MAX = 60
+
+
+def is_single_stat_line(text: str) -> bool:
+    """Одинокая строка показателя с числом: ``Очки: 100.``, ``Здоровье: 22%``.
+
+    Такая строка сама по себе окно: интерфейс системы в прозе описывают по
+    одной строке. Нужны известный ключ и короткое значение с цифрой, иначе это
+    фраза вроде «Награда оказалась щедрой: помимо 2000 баллов…».
+    """
+    if not text or text[0] in _QUOTE_CHARS + "(—–-[【〖":
+        return False
+    match = _STAT_LINE_RE.match(text)
+    if match is None:
+        return False
+    key = match.group(1).strip().strip(_KEY_QUOTES)
+    value = match.group(2).strip()
+    if not _is_stat_key(key):
+        return False
+    return len(value) <= _STAT_LINE_VALUE_MAX and any(char.isdigit() for char in value)
 
 
 def is_key_value(text: str) -> bool:
@@ -379,7 +410,12 @@ _SINGLE_SHAPES = ("full", "quoted", "dashed")
 
 
 def _is_data_line(text: str) -> bool:
-    return bracket_shape(text) in _DATA_SHAPES or is_key_value(text) or _is_decorated(text)
+    return (
+        bracket_shape(text) in _DATA_SHAPES
+        or is_key_value(text)
+        or is_single_stat_line(text)
+        or _is_decorated(text)
+    )
 
 
 def classify_kind(lines: list[str]) -> str:
@@ -387,11 +423,11 @@ def classify_kind(lines: list[str]) -> str:
     ``Ключ: значение`` (статус даже при слове «титул» внутри), затем по словам."""
     texts = [strip_brackets(line) for line in lines]
     joined = " ".join(texts)
-    key_value_count = sum(1 for text in texts if is_key_value(text))
+    key_value_count = sum(1 for text in texts if is_key_value(text) or is_single_stat_line(text))
     rules = dict(_KIND_RULES)
     if rules["levelup"].search(joined):
         return "levelup"
-    if key_value_count >= 2:
+    if key_value_count >= 2 or (texts and key_value_count == len(texts)):
         return "status"
     for kind, pattern in _KIND_RULES[1:]:
         if pattern.search(joined):
@@ -557,7 +593,10 @@ def find_windows(
                 index += 1
                 continue
             stop = span_end + 1
-        elif not (shape in _DATA_SHAPES or is_marked or _is_header(text, settings) or is_key_value(text)):
+        single_stat = is_single_stat_line(text)
+        if shape == "open":
+            pass
+        elif not (shape in _DATA_SHAPES or is_marked or single_stat or _is_header(text, settings) or is_key_value(text)):
             index += 1
             continue
 
@@ -570,7 +609,7 @@ def find_windows(
             stop += 1
 
         length = stop - index
-        accepted = length >= 2 or ((shape in _SINGLE_SHAPES or is_marked) and settings.single_bracketed)
+        accepted = length >= 2 or single_stat or ((shape in _SINGLE_SHAPES or is_marked) and settings.single_bracketed)
         if not accepted:
             index += 1
             continue
