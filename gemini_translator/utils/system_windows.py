@@ -875,7 +875,7 @@ def find_source_epub(project_folder) -> str | None:
         return None
     if not originals:
         return None
-    best_path, best_score = None, 0
+    best_path, best_key = None, None
     for name in names:
         if not name.lower().endswith(".epub"):
             continue
@@ -885,10 +885,14 @@ def find_source_epub(project_folder) -> str | None:
                 score = len(originals.intersection(archive.namelist()))
         except (OSError, zipfile.BadZipFile):
             continue
-        if score > best_score:
-            best_path, best_score = path, score
-    if best_score * 2 < len(originals):
-        return None
+        if score * 2 < len(originals):
+            continue
+        lowered = name.lower()
+        translated = any(mark in lowered for mark in ("(ru)", "перевод", "translated", "тест"))
+        # Сначала архив без пометок перевода, среди них — с наибольшим покрытием.
+        key = (not translated, score)
+        if best_key is None or key > best_key:
+            best_path, best_key = path, key
     return best_path
 
 

@@ -364,9 +364,9 @@ class SystemWindowsPage(ShellPage):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setColumnWidth(1, 220)
-        self.table.setColumnWidth(2, 170)
-        self.table.setColumnWidth(3, 64)
+        self.table.setColumnWidth(1, 180)
+        self.table.setColumnWidth(2, 150)
+        self.table.setColumnWidth(3, 56)
         self.table.itemSelectionChanged.connect(self._refresh_preview)
         self.table.itemChanged.connect(self._on_table_item_changed)
         self.table_stack.addWidget(self.table)
@@ -393,7 +393,7 @@ class SystemWindowsPage(ShellPage):
         splitter.addWidget(preview_panel)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([3000, 2000])
+        splitter.setSizes([3400, 1600])
         return splitter
 
     def _build_empty_state(self) -> QWidget:

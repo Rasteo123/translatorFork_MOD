@@ -928,3 +928,17 @@ def test_find_source_epub_picks_the_archive_that_holds_the_chapters(tmp_path):
 
     assert find_source_epub(project) == str(project / "Книга.epub")
     assert find_source_epub(tmp_path) is None
+
+
+def test_find_source_epub_prefers_an_archive_without_translation_marks(tmp_path):
+    import zipfile
+
+    from gemini_translator.utils.system_windows import find_source_epub
+
+    project = _windows_project(tmp_path)
+    for name in ("Книга (RU).epub", "Книга (перевод).epub", "Книга.epub"):
+        with zipfile.ZipFile(project / name, "w") as archive:
+            archive.writestr("OEBPS/chapter1.xhtml", _source("一"))
+            archive.writestr("OEBPS/chapter2.xhtml", _source("二"))
+
+    assert find_source_epub(project) == str(project / "Книга.epub")
