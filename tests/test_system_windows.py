@@ -1111,7 +1111,8 @@ def test_magic_section_keeps_its_name_bullets_and_chant_line():
 
     windows = find_windows(html)
 
-    assert [window.lines for window in windows] == [stats, magic]
+    # «…» делит части одного листа статуса: окно одно.
+    assert [window.lines for window in windows] == [stats + ["…"] + magic]
     assert windows[0].kind == "status"
 
 
@@ -1178,15 +1179,14 @@ def test_skill_names_with_bullets_follow_a_section_label():
     assert [window.lines for window in find_windows(html)] == [skills]
 
 
-def test_level_line_label_or_bullets_alone_are_not_windows():
+def test_level_line_label_or_single_bullet_alone_are_not_windows():
     html = _chapter(
         "Шарль, Ур. 1.",
         "Он вздохнул и убрал лист.",
         "Навыки:",
         "Он долго думал о том, какие навыки ему пригодятся в подземелье, и так ничего и не решил.",
-        "Он составил план:",
-        "· купить еды;",
-        "· найти ночлег.",
+        "Он вспомнил одно:",
+        "· купить еды.",
         "«Тепло.»",
         "Потом лёг спать.",
     )
@@ -1251,3 +1251,204 @@ def test_render_section_labels_as_bold_rows_and_unquoted_titles():
     assert re.search(r"<b [^>]*>Навыки:</b><br />Тяжелое Бремя<br />", block)
     assert re.search(r"<b [^>]*>Магия:</b></div>$", block)
     assert "◆ Новичок Восьмого Уровня ◆" in skill
+    starred = render_window(["Навыки:", "* «Пламенная Душа» (пассивный навык):", "· Эффект."], "skill")
+    assert re.search(r"<b [^>]*>Пламенная Душа \(пассивный навык\):</b>", starred)
+
+
+# --- «Рефреш»: приросты, описания предметов и навыков ------------------------------
+
+from gemini_translator.utils import system_windows as system_windows_module  # noqa: E402
+
+
+def test_level_increment_line_heads_the_card():
+    # «Рефреш», глава 303.
+    card = ["Шарль: lv2→lv3.", "Сила: SS1001→I0.", "Выносливость: SSS1452→I0."]
+    html = _chapter("Благословение на спине ожило, цифры поплыли…", *card, "…")
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [card]
+    assert windows[0].kind == "levelup"
+
+
+def test_lone_level_increment_is_a_window_but_rank_letters_are_not():
+    html = _chapter(
+        "Вспышка…",
+        "Ур. 1 → Ур. 2 → Ур. 3!",
+        "Шарль заполнил тело Альфии Великими Деяниями.",
+        "Повышение уровня: 5 → 6!",
+        "Он выдохнул.",
+        "Lv7 → lv8!",
+        "Он улыбнулся.",
+        "S → A → B → … I0.",
+    )
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [["Ур. 1 → Ур. 2 → Ур. 3!"], ["Повышение уровня: 5 → 6!"], ["Lv7 → lv8!"]]
+    assert {window.kind for window in windows} == {"levelup"}
+
+
+def test_stat_value_of_quoted_names_and_empty_cells_is_data():
+    # «Рефреш», глава 343.
+    assert is_key_value("Магия: «Эйнсел», [ ], [ ].")
+
+
+def test_level_header_makes_a_status_card():
+    card = ["Фильвис Шалия, уровень 1.", "Сила: I 0 / Выносливость: I 0 / Ловкость: I 0 / Проворство: I 0 / Магия: I 0."]
+    html = _chapter("Проявился совершенно новый интерфейс.", *card, "— Вы поразительны.")
+
+    windows = find_windows(html)
+
+    assert [(window.kind, window.lines) for window in windows] == [("status", card)]
+
+
+def test_starred_skill_entry_with_note_joins_the_card():
+    # «Рефреш», глава 315: пункты со звёздочкой и пояснением в скобках.
+    lines = [
+        "Навыки: «Перегрузка», «Аура Гениальности».",
+        "* «Пламенная Душа» (пассивный навык Лины из DOTA):",
+        "· Каждый раз, когда заклинание поражает врага, слегка увеличивает скорость атаки и передвижения.",
+        "Максимальное количество зарядов: 3/уровень.",
+        "· Каждое использование магии обновляет время действия эффекта.",
+    ]
+    html = _chapter("Он вытянул несколько способностей.", *lines, "… …", "Что касается Бочи…")
+
+    assert [window.lines for window in find_windows(html)] == [lines]
+
+
+def test_skill_name_with_note_or_exclamation_heads_its_bullets():
+    pegasus = [
+        "«Наследие Пегаса» (Реликвия Пегаса)",
+        "· Действует постоянно.",
+        "· Восприятие Громовой Сети: обнаружение целей в радиусе 400 метров. (Изменяется с уровнем)",
+    ]
+    spin = ["«Крути до победного!»", "· Дополнительно дает 20 попыток обновления!"]
+    html = _chapter("— Ещё один новый навык?", *pegasus, "…", "Зажглась аномальная способность:", *spin, "Охренеть…")
+
+    assert [window.lines for window in find_windows(html)] == [pegasus, spin]
+
+
+def test_starred_bullets_continue_a_skill():
+    # «Рефреш», глава 479.
+    skill = [
+        "«Принцесса Мести»:",
+        "* Свободная активация;",
+        "* Значительное усиление атаки против монстров;",
+        "* Эффективность растет пропорционально силе ненависти.",
+    ]
+    html = _chapter("Их решением было просто запретить ей использовать эту мощь.", *skill, "Этот навык был вовсе не таким простым.")
+
+    assert [window.lines for window in find_windows(html)] == [skill]
+
+
+def test_bullet_run_is_a_window_with_its_short_heading_lines():
+    # «Рефреш», главы 205, 314 и 362.
+    armor = [
+        "Нагрудник [«Скрытность» (2)]",
+        "Руна 7 Таль + руна 5 Эт.",
+        "· +25% к скорости бега и ходьбы, скорости сотворения заклинаний.",
+        "· Сопротивление яду +30%.",
+    ]
+    auras = [
+        "• Красный круг «Казан Души Клинка» умеренно повышал Силу и Магию.",
+        "• «Аура Шипов» преобразовывала малую часть урона от ближних атак в магический урон.",
+    ]
+    sword = [
+        "Tal-Thul-Ort-Amn.",
+        "Первый ранг · Двуручный меч с широким лезвием.",
+        "· Значительное усиление навыков и магических эффектов (ур.+2);",
+        "· Среднее увеличение магической силы и выносливости;",
+    ]
+    html = _chapter(
+        "Например, тот комплект, что сейчас держал в руках Шарль:",
+        *armor,
+        "… …",
+        "Альфия прислушалась к своим ощущениям, разбирая дарованное Шарлем усиление:",
+        *auras,
+        "Альфия поочередно проверяла эффекты и не скрывала удивления:",
+        "…",
+        *sword,
+        "…",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [armor, auras, sword]
+
+
+def test_increments_render_one_per_row_like_danmachi_statuses():
+    one_line = render_window(
+        ["Шарль, Ур. 1.", "Сила: I40 → I50 | Выносливость: I50 → I60 | Магия: I0 → I0."], "status",
+    )
+    slashes = render_window(["Лилирука Эрде. Ур. 1.", "Сила: I11 → H105 / Выносливость: I25 → H100."], "status")
+    separate = render_window(["Альфия. Ур. 3.", "Сила: S999 → I0.", "Выносливость: S999 → I0.", "Ловкость: S999 → I0."], "status")
+
+    for block, count in ((one_line, 3), (slashes, 2), (separate, 3)):
+        rows = block.split("<br />")[1:]
+        assert len(rows) == count
+        assert all(row.count("</b>") == 1 for row in rows)
+    assert "Выносливость:</b> I50 → I60" in one_line
+    assert system_windows_module._SEPARATOR not in separate
+
+
+def test_card_parts_split_by_ellipsis_lines_stay_one_window():
+    # «Рефреш», глава 10: части карточки разделены строками «…».
+    card = ["Скорость: I 50 → I 66.", "Магия: I 0 → I 0.", "…", "Магия: 【 】", "…", "Навыки:", "【Хрупкий Студент】"]
+    html = _chapter("Цифры замелькали.", *card, "…", "— Ну и ну.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_dashed_section_word_between_header_and_stats_joins_the_card():
+    # «Рефреш», глава 47.
+    card = ["Шарль lv1.", "— Характеристики…", "Сила: H129 → H151.", "Выносливость: F377 → B705."]
+    html = _chapter("Цифры стремительно замелькали.", *card, "Он выдохнул.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_quoted_name_header_and_lone_magic_lines():
+    sage = ["«Мудрец» (имя изменено), lv1.", "Сила: F358.", "Выносливость: S999."]
+    html = _chapter(
+        "Мышцы лица Фелс дёрнулись, она приняла пергамент.",
+        *sage,
+        "Она долго молчала.",
+        "Магия: «Потерянный Котенок».",
+        "Это было заклинание Ани.",
+        "Магия – это чудо, неизведанное, аномалия.",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [sage, ["Магия: «Потерянный Котенок»."]]
+    assert not system_windows_module.is_single_stat_line("Глава 302. Основное задание: «Тематическая зона»")
+    assert not system_windows_module.is_single_stat_line("Имя автора: «Серьезная, Суровая, Нестрогая».")
+    assert not system_windows_module.is_single_stat_line("Весь класс: «??»")
+    assert not system_windows_module.is_single_stat_line("Весь класс: «…»")
+
+
+def test_three_word_label_heads_a_list_of_skill_names():
+    # «Рефреш», глава 315.
+    skills = [
+        "Способности Пищевой Цепи:",
+        "«Казан Души Клинка.»",
+        "«Аура Шипов.»",
+        "* «Дикое Сердце» (Beastmaster из DOTA):",
+        "· Воодушевляет ближайших союзников, значительно повышая скорость их атаки.",
+    ]
+    html = _chapter("Что касается Бочи…", *skills, "Он кивнул.")
+
+    assert [window.lines for window in find_windows(html)] == [skills]
+
+
+def test_window_never_ends_on_an_ellipsis_line():
+    html = _chapter("[Динь! Первое]", "[Динь! Второе]", "… …", "[Конец главы]")
+
+    assert [window.lines for window in find_windows(html)] == [["[Динь! Первое]", "[Динь! Второе]"]]
+
+
+def test_rank_values_render_one_per_row_but_ordinary_stats_keep_columns():
+    ranks = render_window(["«Мудрец» (имя изменено), lv1.", "Сила: F358.", "Выносливость: S999.", "Ловкость: G297."], "status")
+    slashes = render_window(["Фильвис Шалия, уровень 1.", "Сила: I 0 / Выносливость: I 0 / Магия: I 0."], "status")
+    ordinary = render_window(["◆ СТАТУС ◆", "Имя: Ёдыре", "Раса: Человек", "Уровень: 14"], "status")
+
+    assert len(ranks.split("<br />")) == 4
+    assert len(slashes.split("<br />")) == 4
+    assert system_windows_module._SEPARATOR in ordinary
