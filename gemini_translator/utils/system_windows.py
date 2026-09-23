@@ -312,7 +312,8 @@ _STAT_KEYS = frozenset(
     "снаряжение питомец задание квест условие эффект описание тип стоимость длительность hp mp sp exp "
     "дух кольца кольцо культивация культивации техника техники атрибут атрибуты стихия свойство свойства "
     "характеристика характеристики богатство богатства баллы баллов репутация известность "
-    "проворство заклинание заклинания".split()
+    "проворство заклинание заклинания удача качество слот блокирование уклонение сопротивление "
+    "меткость точность".split()
     + ["боевой дух", "духовная сила", "духовные кольца", "духовное кольцо", "ранг духа", "боевая мощь", "очки системы"]
 )
 _STAT_VALUE_MAX = 300
@@ -339,12 +340,20 @@ _META_KEYS = frozenset(
 )
 
 
+# Бонус комплекта снаряжения: «2 вещи: …», «4 предмета: …».
+_SET_BONUS_KEY_RE = re.compile(r"^\d+\s+(?:вещ|предмет|част|элемент)[а-яё]*$", re.I)
+# Значение-число со знаком: «+2.», «-10%», «−5».
+_SIGNED_NUMBER_RE = re.compile(r"^[+＋\-−–]\s?\d")
+
+
 def _is_stat_key(key: str) -> bool:
     """Ключ-характеристика: не длиннее трёх слов, одно из них из списка.
 
     Четыре слова перед двоеточием («Награда оказалась весьма щедрой: …») —
     уже фраза, а не поле карточки.
     """
+    if _SET_BONUS_KEY_RE.match(key.strip()):
+        return True
     words = re.findall(r"[^\W\d_]+", key.lower())
     if not words or len(words) > 3:
         return False
@@ -594,7 +603,11 @@ def is_key_value(text: str) -> bool:
             continue
         # Значение с кавычки — сценарная реплика «Имя: «…»», но у известной
         # характеристики это имя навыка или магии: «Магия: «Золушка.»».
-        if value[0] in _VALUE_BAD_START and not (stat_key and value[0] in _QUOTE_CHARS):
+        if (
+            value[0] in _VALUE_BAD_START
+            and not (stat_key and value[0] in _QUOTE_CHARS)
+            and _SIGNED_NUMBER_RE.match(value) is None
+        ):
             continue
         if len(value) > (_STAT_VALUE_MAX if stat_key else _VALUE_MAX):
             continue
@@ -605,7 +618,8 @@ def is_key_value(text: str) -> bool:
         # Прирост со стрелкой — данные при любом ключе: «Шарль: lv2→lv3.».
         if (ends_with_period or ends_with_ellipsis) and not stat_key and _INCREMENT_RE.search(value) is None:
             numeric = any(char.isdigit() for char in value)
-            if ends_with_ellipsis or not (value[0].isupper() or value[0].isdigit()):
+            signed = _SIGNED_NUMBER_RE.match(value) is not None
+            if ends_with_ellipsis or not (value[0].isupper() or value[0].isdigit() or signed):
                 continue
             if len(value) > 40 and not numeric:
                 continue
@@ -1014,7 +1028,7 @@ def find_windows(
 DEFAULT_TEMPLATES = {
     "status": {
         "label": "Статус", "border": "#4fc3f7", "background": "#0b1622", "text": "#e6edf5",
-        "accent": "#7fd3ff", "icon": "◆", "upper": True, "columns": 3,
+        "accent": "#7fd3ff", "icon": "◆", "upper": True, "columns": 1,
     },
     "levelup": {
         "label": "Уровень", "border": "#4fc3f7", "background": "#0b1622", "text": "#e6edf5",
@@ -1084,6 +1098,18 @@ def _strip_outer_quotes(text: str) -> str:
     return match.group(1).strip() + match.group(2) if match else text
 
 
+def _drop_field_period(text: str) -> str:
+    """«Качество: Легендарное.» → без точки: в столбике полей она лишняя."""
+    if not text.endswith(".") or text.endswith(".."):
+        return text
+    bare = text[:-1]
+    if _STAT_DELTA_FIELD_RE.match(bare) and _KV_RE.match(bare) is None:
+        return bare
+    if _KV_RE.match(bare) and len(re.split(r"[:：]", bare, maxsplit=1)[1].strip()) <= _SHORT_VALUE:
+        return bare
+    return text
+
+
 def _render_row(text: str, accent: str, italic_allowed: bool):
     """Строки окна: [(html, короткая ли это пара ключ-значение для колонок)]."""
     if bracket_shape(text) == "keyed":
@@ -1094,7 +1120,11 @@ def _render_row(text: str, accent: str, italic_allowed: bool):
         # «Пламенная Душа» (пассивный навык) → Пламенная Душа (пассивный навык)
         label = re.sub(r"^«([^«»]+)»", r"\1", label).rstrip(".").strip()
         return [(f'<b style="color:{accent};">{_escape(label)}:</b>', False)]
-    text = _strip_outer_quotes(strip_brackets(text))
+    text = _drop_field_period(_strip_outer_quotes(strip_brackets(text)))
+    delta = _STAT_DELTA_FIELD_RE.match(text)
+    if delta and _KV_RE.match(text) is None:
+        name, amount = delta.group(1).strip(), delta.group(2).strip()
+        return [(f'<b style="color:{accent};">{_escape(name)}</b> {_escape(amount)}', False)]
     if is_key_value(text):
         parts = _stat_parts(text)
         # Приросты и ранги пишут столбиком, как статусы в DanMachi: по одному в строке.
@@ -1155,6 +1185,111 @@ def _group_columns(rows, columns: int) -> list[str]:
     return grouped
 
 
+# --- карточка одним абзацем ---------------------------------------------------
+
+# Предмет или монстр одним абзацем, как в «Щите небосвода»: «[Меч]: Уровень: 38,
+# Качество: Легендарное. Атака: 180~220. Сила +60. …». В рамке такие поля
+# идут по одному в строке.
+_CARD_FIELDS_MIN = 3
+_CARD_FIELD_VALUE_MAX = 60
+_CARD_LABEL_WORDS_MAX = 3
+# Характеристика со знаком: «Сила +60», «Опыт +100 000», «Скорость -10%».
+_STAT_DELTA_FIELD_RE = re.compile(
+    r"^([^\W\d_][^:：+＋\-−–!?.…]{0,40}?)\s([+＋\-−–]\s?\d[\d\s]*(?:[.,]\d+)?\s?%?)$"
+)
+# Сокращения, после точки которых предложение не кончается.
+_ABBREVIATIONS = frozenset("ед ур сек мин ч шт им г гг т тд тп др см стр св кг км м ок".split())
+_PAIRS = {"«": "»", "(": ")", "[": "]", "【": "】", "〖": "〗"}
+
+
+def _split_top_level(text: str, boundary) -> list[str]:
+    """Разрезать текст по границам вне кавычек и скобок.
+
+    ``boundary(text, index)`` решает, кончается ли кусок на символе ``index``.
+    """
+    pieces, stack, start = [], [], 0
+    for index, char in enumerate(text):
+        if stack and char == stack[-1]:
+            stack.pop()
+        elif char in _PAIRS:
+            stack.append(_PAIRS[char])
+        elif not stack and boundary(text, index):
+            pieces.append(text[start:index + 1].strip())
+            start = index + 1
+    pieces.append(text[start:].strip())
+    return [piece for piece in pieces if piece]
+
+
+def _sentence_end(text: str, index: int) -> bool:
+    if text[index] != "." or index + 2 >= len(text) or not text[index + 1].isspace():
+        return False
+    following = text[index + 2:].lstrip()[:1]
+    if not following or not (following.isupper() or following.isdigit() or following in "«(["):
+        return False
+    word = re.search(r"([^\W\d_]+)$", text[:index])
+    return not (word and word.group(1).lower() in _ABBREVIATIONS)
+
+
+def _comma(text: str, index: int) -> bool:
+    return text[index] == "," and index + 1 < len(text) and text[index + 1].isspace()
+
+
+def _is_card_field(piece: str) -> bool:
+    piece = piece.strip().rstrip(".")
+    if _STAT_DELTA_FIELD_RE.match(piece) and _KV_RE.match(piece) is None:
+        return True
+    if _KV_RE.match(piece) is None:
+        return False
+    key, value = re.split(r"[:：]", piece, maxsplit=1)
+    key, value = key.strip().strip(_KEY_QUOTES), value.strip()
+    return bool(value) and len(key.split()) <= 4 and len(value) <= _CARD_FIELD_VALUE_MAX
+
+
+def _is_card_label(piece: str) -> bool:
+    """Короткая пометка перед полем: «Одноручный меч, Атака: 180~220»."""
+    return (
+        len(piece.split()) <= _CARD_LABEL_WORDS_MAX
+        and _KV_RE.match(piece) is None
+        and not any(char.isdigit() for char in piece)
+    )
+
+
+def _card_pieces(text: str) -> list[tuple[str, bool]]:
+    """Поля карточки по одному: ``[(строка, это ли название карточки)]``.
+
+    Абзац без трёх коротких полей остаётся одной строкой: сообщение прозой
+    («Игрок принял задание … Пожалуйста, выберите сложность.») не режем.
+    """
+    stripped = text.strip()
+    # Бонус комплекта «4 вещи: … . … .» — одно поле со списком эффектов.
+    if _KV_RE.match(stripped) and _SET_BONUS_KEY_RE.match(re.split(r"[:：]", stripped, maxsplit=1)[0].strip()):
+        return [(text, False)]
+    head, body = None, stripped
+    shape = bracket_shape(stripped)
+    if shape == "keyed":
+        match = _KEYED_RE.match(stripped)
+        rest = match.group(2).strip()
+        if rest.startswith((":", "：")):
+            head, body = f"[{match.group(1).strip()}]", rest[1:].strip()
+    elif shape == "full":
+        body = strip_brackets(stripped)
+    pieces: list[str] = []
+    for sentence in _split_top_level(body, _sentence_end):
+        parts = _split_top_level(sentence, _comma)
+        parts = [part.rstrip(",").strip() for part in parts]
+        if len(parts) > 1 and all(
+            _is_card_field(part) or (position == 0 and _is_card_label(part))
+            for position, part in enumerate(parts)
+        ):
+            pieces.extend(parts)
+        else:
+            pieces.append(sentence)
+    fields = sum(1 for piece in pieces if _is_card_field(piece))
+    if fields < _CARD_FIELDS_MIN or fields * 2 < len(pieces):
+        return [(text, False)]
+    return ([(head, True)] if head else []) + [(piece, False) for piece in pieces]
+
+
 def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     """Собрать одну строку HTML с рамкой для серии системных строк.
 
@@ -1167,14 +1302,25 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     accent = template["accent"]
 
     texts = [" ".join(str(line).split()) for line in lines]
-    texts = [text for text in texts if text]
+    items = [item for text in texts if text for item in _card_pieces(text)]
+    texts = [text for text, _ in items]
+    heads = [head for _, head in items]
     if texts and bracket_shape(texts[0]) not in ("keyed", "list"):
         texts[0] = _strip_outer_quotes(strip_brackets(texts[0]))
     title = None
-    if len(texts) >= 2 and _looks_like_title(texts[0]):
-        title, texts = _strip_outer_quotes(texts[0].rstrip(":：").strip()), texts[1:]
+    # Несколько карточек в одной рамке: названия одинаково выделены строками,
+    # а не первое заголовком рамки.
+    if len(texts) >= 2 and sum(heads) <= 1 and _looks_like_title(texts[0]):
+        title = _strip_outer_quotes(texts[0].rstrip(":：").strip())
+        texts, heads = texts[1:], heads[1:]
 
-    rows = [row for text in texts for row in _render_row(text, accent, italic_allowed=title is not None)]
+    rows = []
+    for text, head in zip(texts, heads):
+        if head:
+            name = _strip_outer_quotes(strip_brackets(text))
+            rows.append((f'<b style="color:{accent};">{_escape(name)}</b>', False))
+        else:
+            rows.extend(_render_row(text, accent, italic_allowed=title is not None))
     body_rows = _group_columns(rows, int(template.get("columns") or 1))
 
     pieces = []
