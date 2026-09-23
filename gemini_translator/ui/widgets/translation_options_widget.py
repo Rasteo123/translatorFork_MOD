@@ -216,10 +216,22 @@ class TranslationOptionsWidget(QGroupBox):
             "\u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0442 \u043a\u0430\u043a \u043e\u0431\u044b\u0447\u043d\u043e."
         )
 
+        # Правила оформления системного текста LitRPG в промпте перевода.
+        # Выключено по умолчанию: в книгах без системы правила только отвлекают модель.
+        self.system_text_rules_checkbox = QCheckBox("Системный текст LitRPG")
+        self.system_text_rules_checkbox.setToolTip(
+            "Добавляет в промпт правила для текста системы: уведомления, статусы и карточки\n"
+            "навыков остаются в квадратных скобках, поля статуса идут по одному, приросты\n"
+            "пишутся как «I40 → I50», а заклинания и чат переводятся как речь.\n"
+            "Так «Системные окна» потом оформят перевод точнее.\n"
+            "Включайте только для книг с системой."
+        )
+
         modes_layout.addWidget(self.batch_checkbox)
         modes_layout.addWidget(self.chunking_checkbox)
         modes_layout.addWidget(self.chunk_on_error_checkbox)
         modes_layout.addWidget(self.sequential_checkbox)
+        modes_layout.addWidget(self.system_text_rules_checkbox)
 
         settings_group = QGroupBox(
             "\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u0438 "
@@ -331,6 +343,7 @@ class TranslationOptionsWidget(QGroupBox):
         self.chunk_on_error_checkbox.toggled.connect(self._on_mode_changed)
         self.sequential_checkbox.toggled.connect(self._on_mode_changed)
         self.sequential_splits_spin.valueChanged.connect(self._on_mode_changed)
+        self.system_text_rules_checkbox.toggled.connect(lambda _checked: self.settings_changed.emit())
         self.parallel_providers_checkbox.toggled.connect(self._on_mode_changed)
         self.parallel_providers_edit.textChanged.connect(self._on_mode_changed)
         self.parallel_provider_strategy_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -353,6 +366,7 @@ class TranslationOptionsWidget(QGroupBox):
             "chunk_on_error": self.chunk_on_error_checkbox.isChecked(),
             "sequential_translation": self.sequential_checkbox.isChecked(),
             "sequential_translation_splits": self.sequential_splits_spin.value(),
+            "system_text_rules": self.system_text_rules_checkbox.isChecked(),
             "parallel_providers_enabled": self.parallel_providers_checkbox.isChecked(),
             "parallel_provider_list": self.parallel_providers_edit.text().strip(),
             "parallel_provider_strategy": self.parallel_provider_strategy_combo.currentData() or "merge",
@@ -491,6 +505,7 @@ class TranslationOptionsWidget(QGroupBox):
         current_chunk_on_error = self.chunk_on_error_checkbox.isChecked()
         current_sequential = self.sequential_checkbox.isChecked()
         current_sequential_splits = self.sequential_splits_spin.value()
+        current_system_text_rules = self.system_text_rules_checkbox.isChecked()
         current_parallel_enabled = self.parallel_providers_checkbox.isChecked()
         current_parallel_list = self.parallel_providers_edit.text()
         current_parallel_strategy = self.parallel_provider_strategy_combo.currentData() or "merge"
@@ -518,6 +533,9 @@ class TranslationOptionsWidget(QGroupBox):
             )
             self.sequential_splits_spin.setValue(
                 settings.get("sequential_translation_splits", current_sequential_splits)
+            )
+            self.system_text_rules_checkbox.setChecked(
+                bool(settings.get("system_text_rules", current_system_text_rules))
             )
             self.parallel_providers_checkbox.setChecked(
                 settings.get("parallel_providers_enabled", current_parallel_enabled)

@@ -1,0 +1,21 @@
+## SYSTEM AND INTERFACE TEXT (LitRPG)
+This book has a game system. Text that the system or interface displays (notifications, prompts, status panels, skill, item and quest cards, rewards, level-ups) must look the same everywhere:
+- Keep it in square brackets. Source 【…】, 〖…〗 and […] around such text become […]. Never replace them with quotation marks and never drop them.
+- Keep status and card fields as separate `Key: value` entries, one per line or paragraph exactly as in the source. Never merge fields into a sentence. Keep numbers, ranks and increments as written: `I40 → I50`.
+- Keep list markers of skill and item effects: each effect starts with `·`.
+Speech, thoughts, spell chants, spell names shouted in battle, chat messages, news and slogans are not interface text even when the source puts them in 【…】: translate them by the dialogue and quotation rules above.
+
+System text examples:
+Src: <p>【叮！恭喜宿主获得技能：火球术】</p>
+Tgt: <p>[Динь! Поздравляем, носитель получил навык: Огненный шар]</p>
+
+Src: <p>【姓名：林凡】</p><p>【等级：3】</p><p>【力量：12→15】</p>
+Tgt: <p>[Имя: Линь Фань]</p><p>[Уровень: 3]</p><p>[Сила: 12 → 15]</p>
+*(Context: every field stays in its own brackets and paragraph.)*
+
+Src: <p>【技能：火球术】</p><p>·造成火焰伤害。</p><p>·冷却时间：10秒。</p>
+Tgt: <p>[Навык: Огненный шар]</p><p>· Наносит урон огнём.</p><p>· Перезарядка: 10 секунд.</p>
+
+Src: <p>“【冰柱】！”他大喊。</p>
+Tgt: <p>─ «Ледяной столб»! ─ крикнул он.</p>
+*(Context: a spell shouted by a character is speech, not interface text.)*

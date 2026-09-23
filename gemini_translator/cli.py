@@ -483,6 +483,7 @@ def build_session_settings(settings_manager, project_manager, chapters: list[str
         "chunk_on_error": bool(saved_settings.get("chunk_on_error", False)),
         "sequential_translation": bool(saved_settings.get("sequential_translation", False)),
         "sequential_translation_splits": int(saved_settings.get("sequential_translation_splits", 1) or 1),
+        "system_text_rules": bool(saved_settings.get("system_text_rules", False)),
         "task_size_limit": int(saved_settings.get("task_size_limit", 30000) or 30000),
         "dynamic_glossary": bool(saved_settings.get("dynamic_glossary", True)),
         "use_jieba": bool(saved_settings.get("use_jieba", False)),

@@ -298,6 +298,8 @@ def build_prompt_bundle(
     system_instruction = _load_system_instruction(prompt_spec, defaults, base_dir)
     use_system_instruction = bool(prompt_spec.get("use_system_instruction", defaults.get("use_system_instruction", True)))
     mode = str(prompt_spec.get("mode") or defaults.get("prompt_mode") or "project").strip().lower()
+    # Флажок «Системный текст LitRPG»: те же правила, что и в переводе.
+    system_text_rules = bool(prompt_spec.get("system_text_rules", defaults.get("system_text_rules", False)))
 
     if mode == "raw":
         glossary_text = _format_glossary_preview(glossary, source_html)
@@ -311,6 +313,7 @@ def build_prompt_bundle(
                 or defaults.get("previous_chapter_reference")
                 or ""
             ),
+            system_text_rules=api_config.system_text_rules() if system_text_rules else "",
         )
         return PromptBundle(
             user_prompt=user_prompt,
@@ -327,6 +330,7 @@ def build_prompt_bundle(
         context_manager,
         use_system_instruction=use_system_instruction,
         sequential_mode=bool(prompt_spec.get("sequential_mode", defaults.get("sequential_mode", False))),
+        system_text_rules=system_text_rules,
     )
     seed_key = f"{prompt_spec.get('id') or 'prompt'}::{case_spec.get('id') or 'benchmark_case'}"
     with _deterministic_glossary_shuffle(seed_key):

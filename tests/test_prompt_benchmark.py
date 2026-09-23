@@ -98,6 +98,32 @@ class PromptBenchmarkRunnerTests(unittest.TestCase):
             self.assertTrue(prompt_path.exists())
             self.assertIn("<p>Hello</p>", prompt_path.read_text(encoding="utf-8"))
 
+    def test_system_text_rules_flag_adds_the_rules_to_the_compiled_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "benchmark.json"
+            output_dir = tmp_path / "out"
+            template = "Examples:\n{format_examples}\n{system_text_rules}\nTranslate:\n{text}"
+            config = {
+                "name": "rules",
+                "prompts": [
+                    {"id": "plain", "mode": "raw", "template": template},
+                    {"id": "litrpg", "mode": "raw", "template": template, "system_text_rules": True},
+                ],
+                "models": [{"id": "dummy", "provider": "local", "model_id": "dummy"}],
+                "cases": [{"id": "case1", "source_html": "<p>【叮！】</p>"}],
+            }
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+
+            report = BenchmarkRunner(config_path, output_dir=output_dir, prompt_only=True).run()
+
+            prompts = {
+                result["prompt_id"]: (output_dir / result["prompt_path"]).read_text(encoding="utf-8")
+                for result in report["results"]
+            }
+            self.assertNotIn("SYSTEM AND INTERFACE TEXT", prompts["plain"])
+            self.assertIn("SYSTEM AND INTERFACE TEXT", prompts["litrpg"])
+
     def test_prompt_only_accepts_docx_source_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
