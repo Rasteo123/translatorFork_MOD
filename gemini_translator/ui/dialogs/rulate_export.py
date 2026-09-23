@@ -47,8 +47,10 @@ from ...utils.epub_tools import (
 # сырой HTML: загрузчик сайта пропускает инлайн-стили, но оборачивает каждую
 # строку файла в <p>, поэтому блок обязан остаться одной строкой. Атрибут
 # data-sys-orig хранит исходные абзацы для снятия оформления и сайту не нужен.
+# Сборка EPUB пересобирает главы через BeautifulSoup, а он пишет значение
+# с двойными кавычками внутри в одинарных кавычках.
 SYSTEM_BLOCK_RE = re.compile(r'<div\b[^>]*\bdata-sys="[^"]*"[^>]*>.*?</div>', re.IGNORECASE | re.DOTALL)
-SYSTEM_BLOCK_ORIG_RE = re.compile(r'\s*\bdata-sys-orig="[^"]*"', re.IGNORECASE)
+SYSTEM_BLOCK_ORIG_RE = re.compile(r"""\s*\bdata-sys-orig=(?:"[^"]*"|'[^']*')""", re.IGNORECASE)
 _SYSTEM_BLOCK_PLACEHOLDER = "\x00SYSBLOCK{index}\x00"
 
 

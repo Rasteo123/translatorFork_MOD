@@ -297,6 +297,24 @@ def test_strip_restores_the_original_html_exactly():
     assert restored == html
 
 
+def test_strip_restores_paragraphs_after_beautifulsoup_requoted_the_source():
+    # Сборка EPUB пересобирает главу через BeautifulSoup: значение атрибута
+    # с двойными кавычками внутри он пишет в одинарных кавычках.
+    from bs4 import BeautifulSoup
+
+    html = _chapter("Начало.", "[Динь! Первая]", "Конец.").replace(
+        "<p>[Динь", '<p class="no-indent">[Динь'
+    )
+    wrapped, _ = apply_windows(html, find_windows(html))
+    requoted = str(BeautifulSoup(wrapped, "html.parser"))
+    assert "data-sys-orig='" in requoted
+
+    restored, count = strip_windows(requoted)
+
+    assert count == 1
+    assert '<p class="no-indent">[Динь! Первая]</p>' in restored
+
+
 def test_apply_only_selected_candidates():
     html = _chapter("[Динь! Одна]", "Текст.", "[Динь! Две]")
     windows = find_windows(html)

@@ -59,6 +59,30 @@ def test_system_window_block_with_line_breaks_is_collapsed_to_one_line():
     assert "<b>Динь!</b> <br /> Очки +1" in lines[1]
 
 
+def test_system_window_block_from_a_built_epub_loses_its_source_attribute():
+    # Сборка EPUB пересобирает главу через BeautifulSoup, и атрибут с кавычками
+    # внутри уходит в одинарные кавычки; на сайт он попадать не должен.
+    from bs4 import BeautifulSoup
+
+    from gemini_translator.utils.system_windows import apply_windows, find_windows
+
+    chapter = (
+        "<html><head><title>t</title></head><body><h1>Глава 1</h1>"
+        '<p class="no-indent">До окна.</p><p class="no-indent">[Динь! Очки +1]</p>'
+        '<p class="no-indent">После окна.</p></body></html>'
+    )
+    wrapped, _ = apply_windows(chapter, find_windows(chapter))
+    built = str(BeautifulSoup(wrapped, "html.parser"))
+    assert "data-sys-orig='" in built
+
+    text = EPUBConverterThread("book.epub")._html_to_plain_text(built)
+
+    frame = [line for line in text.split("\n") if line.startswith("<div")]
+    assert len(frame) == 1
+    assert "data-sys-orig" not in frame[0]
+    assert frame[0].endswith("</div>")
+
+
 def test_two_system_window_blocks_keep_their_order():
     converter = EPUBConverterThread("book.epub")
     html = f"<body>{_block('Первый')}<p>Между.</p>{_block('Второй')}</body>"

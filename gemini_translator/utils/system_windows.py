@@ -795,7 +795,9 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
 # --- применение и снятие ----------------------------------------------------
 
 _BLOCK_RE = re.compile(r'<div\b[^>]*\bdata-sys="[^"]*"[^>]*>.*?</div>', re.S)
-_ORIG_RE = re.compile(r'\bdata-sys-orig="([^"]*)"')
+# BeautifulSoup (им пересобирает главы сборка EPUB) пишет значение с двойными
+# кавычками внутри в одинарных кавычках.
+_ORIG_RE = re.compile(r"""\bdata-sys-orig=(?:"([^"]*)"|'([^']*)')""")
 _BR_RE = re.compile(r"<br\s*/?>", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -858,7 +860,8 @@ def strip_windows(html: str) -> tuple[str, int]:
         count += 1
         if original is None:
             return _fallback_paragraphs(block)
-        return html_module.unescape(original.group(1))
+        value = original.group(1) if original.group(1) is not None else original.group(2)
+        return html_module.unescape(value)
 
     return _BLOCK_RE.sub(restore, html), count
 
