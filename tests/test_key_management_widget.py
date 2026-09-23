@@ -559,6 +559,18 @@ class ActiveKeysOwnershipTests(unittest.TestCase):
         self._select_provider(widget, "gemini")
         self.assertEqual(self._active_list_keys(widget), ["gemini-1"])
 
+    def test_session_placeholder_does_not_replace_active_keys(self):
+        # У local на экране строка встроенной сессии с ключом-заглушкой;
+        # раньше при возврате на gemini заглушка становилась его набором.
+        widget = self._widget()
+        widget.set_active_keys_for_provider("gemini", ["gemini-1"])
+
+        self._select_provider(widget, "local")
+        self._select_provider(widget, "gemini")
+
+        self.assertEqual(widget.current_active_keys_by_provider["gemini"], {"gemini-1"})
+        self.assertEqual(self._active_list_keys(widget), ["gemini-1"])
+
     def test_keys_added_on_screen_stay_with_their_provider_after_switch(self):
         # «Добавить все» переносит ключи только на экране, набор провайдера
         # обновляется снимком экранного списка перед сменой провайдера.
@@ -571,6 +583,17 @@ class ActiveKeysOwnershipTests(unittest.TestCase):
 
         self.assertEqual(self._active_list_keys(widget), ["gemini-1", "gemini-2"])
         self.assertEqual(widget.current_active_keys_by_provider.get("deepseek", set()), set())
+
+    def test_keys_added_on_screen_survive_mcp_detour(self):
+        widget = self._widget(server_manager=_ServerManagerStub())
+        widget.mcp_control_card.refresh_status = lambda: None
+        widget.set_active_keys_for_provider("gemini", [])
+        widget._add_all_to_active()
+
+        self._select_provider(widget, MCP_PROVIDER_ID)
+        self._select_provider(widget, "gemini")
+
+        self.assertEqual(self._active_list_keys(widget), ["gemini-1", "gemini-2"])
 
     def test_mcp_detour_does_not_copy_active_keys_into_next_provider(self):
         widget = self._widget(server_manager=_ServerManagerStub())

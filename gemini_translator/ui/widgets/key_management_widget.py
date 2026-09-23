@@ -632,7 +632,10 @@ class KeyManagementWidget(EventBusMixin, QWidget):
             self.active_keys_changed.emit()
 
     def _apply_mcp_provider_mode(self):
-        self._remember_active_keys_for_provider(self._last_real_provider_id)
+        # Как и в _on_provider_changed: при смене через
+        # set_active_keys_for_provider экран мог устареть, его не снимаем.
+        if not self._skip_next_visual_active_snapshot:
+            self._remember_active_keys_for_provider(self._last_real_provider_id)
         self.key_status_card.setVisible(False)
         self.mcp_control_card.setVisible(True)
         self.mcp_control_card.set_auto_refresh_enabled(True)

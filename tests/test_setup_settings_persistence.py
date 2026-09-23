@@ -6,8 +6,14 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6 import QtCore, QtWidgets
+
 from gemini_translator.api import config as api_config
 from gemini_translator.ui.dialogs.setup import InitialSetupDialog
+from gemini_translator.ui.widgets.key_management_widget import (
+    KeyManagementWidget,
+    MCP_PROVIDER_ID,
+)
 
 
 class _SettingsManagerStub:
@@ -347,6 +353,21 @@ class _SavedKeysSettingsManagerStub(_SettingsManagerStub):
         ]
 
 
+class _WidgetKeysSettingsManagerStub(_SavedKeysSettingsManagerStub):
+    """То же хранилище ключей, но годное и для настоящего KeyManagementWidget."""
+
+    config_dir = ""
+
+    def is_key_limit_active(self, key_info, model_id):
+        return False
+
+    def get_request_count(self, key_info, model_id):
+        return 0
+
+    def _get_status_for_model(self, key_info, model_id):
+        return {"exhausted_level": 0}
+
+
 class ActiveKeysOwnershipPersistenceTests(unittest.TestCase):
     """Наборы активных ключей в настройках держат только ключи своего провайдера.
 
@@ -355,9 +376,46 @@ class ActiveKeysOwnershipPersistenceTests(unittest.TestCase):
     лишние ключи отбрасываются при следующей загрузке и сохранении.
     """
 
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
     def setUp(self):
         api_config.initialize_configs()
         self.placeholder = api_config.provider_placeholder_api_key("workascii_chatgpt")
+
+    def test_restore_keeps_loaded_set_of_provider_shown_before_it(self):
+        # При запуске окно ключей уже показывает gemini без активных ключей,
+        # а восстановление кладёт наборы в память и программно переключает
+        # на сохранённого провайдера. Устаревший экран gemini не должен
+        # затереть его восстановленный набор.
+        for saved_provider in ("deepseek", MCP_PROVIDER_ID):
+            with self.subTest(saved_provider=saved_provider):
+                settings_manager = _WidgetKeysSettingsManagerStub()
+                widget = KeyManagementWidget(settings_manager)
+                self.addCleanup(widget.close)
+                widget.mcp_control_card.refresh_status = lambda: None
+                page = MagicMock()
+                page.settings_manager = settings_manager
+                page.key_management_widget = widget
+
+                InitialSetupDialog._apply_full_ui_settings(
+                    page,
+                    {
+                        "provider": saved_provider,
+                        "active_keys_by_provider": {"gemini": ["gemini-2", "deepseek-1"]},
+                    },
+                )
+
+                self.assertEqual(widget.current_active_keys_by_provider["gemini"], {"gemini-2"})
+                widget.provider_combo.setCurrentIndex(widget.provider_combo.findData("gemini"))
+                self.assertEqual(
+                    [
+                        widget.active_keys_list.item(row).data(QtCore.Qt.ItemDataRole.UserRole)
+                        for row in range(widget.active_keys_list.count())
+                    ],
+                    ["gemini-2"],
+                )
 
     def test_saved_sets_drop_keys_of_other_providers(self):
         harness = _SetupSettingsHarness(settings_manager=_SavedKeysSettingsManagerStub())
