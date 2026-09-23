@@ -44,7 +44,6 @@ from gemini_translator.ui.shell import ShellPage
 from gemini_translator.ui.widgets.common_widgets import NoScrollComboBox
 from gemini_translator.utils.qt_utils import deferred_column_autosize
 from gemini_translator.utils.system_windows import (
-    DEFAULT_EXCLUDE,
     DEFAULT_TEMPLATES,
     DEFAULT_TRIGGERS,
     KIND_ORDER,
@@ -56,6 +55,7 @@ from gemini_translator.utils.system_windows import (
     render_window,
     scan_project,
     strip_project,
+    user_exclude_pattern,
 )
 
 UI_STATE_KEY = "system_windows_ui"
@@ -267,12 +267,15 @@ class SystemWindowsPage(ShellPage):
         self.single_check = QCheckBox("Оформлять одиночные строки в скобках")
         self.single_check.setChecked(True)
         options_row.addWidget(self.single_check)
-        exclude_label = QLabel("Не трогать строки")
+        exclude_label = QLabel("Ещё не трогать строки")
         exclude_label.setObjectName("helperLabel")
         options_row.addWidget(exclude_label)
-        self.exclude_edit = QLineEdit(DEFAULT_EXCLUDE)
+        self.exclude_edit = QLineEdit("")
+        self.exclude_edit.setPlaceholderText("регулярное выражение, например ^\\[Реклама")
         self.exclude_edit.setToolTip(
-            "Регулярное выражение. Подходящие строки никогда не оформляются, пустое поле снимает ограничение."
+            "Свои исключения, регулярное выражение: подходящие строки никогда не оформляются.\n"
+            "Примечания автора и переводчика, P.S., благодарности за донаты и пометки\n"
+            "«Конец главы», «Продолжение следует» исключены всегда."
         )
         options_row.addWidget(self.exclude_edit, 1)
         layout.addLayout(options_row)
@@ -534,7 +537,9 @@ class SystemWindowsPage(ShellPage):
         if "single_bracketed" in state:
             self.single_check.setChecked(bool(state["single_bracketed"]))
         if "exclude_pattern" in state:
-            self.exclude_edit.setText(str(state["exclude_pattern"]))
+            # Старые версии сохраняли копию встроенных исключений (или пустое поле);
+            # в поле остаются только свои правила пользователя.
+            self.exclude_edit.setText(user_exclude_pattern(state["exclude_pattern"]))
         colors = state.get("colors") or {}
         for row in range(self.colors_table.rowCount()):
             kind = self.colors_table.item(row, 0).data(Qt.ItemDataRole.UserRole)

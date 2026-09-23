@@ -1452,3 +1452,69 @@ def test_rank_values_render_one_per_row_but_ordinary_stats_keep_columns():
     assert len(ranks.split("<br />")) == 4
     assert len(slashes.split("<br />")) == 4
     assert system_windows_module._SEPARATOR in ordinary
+
+
+# --- встроенные исключения и поле пользователя ---------------------------------
+
+def test_builtin_exclusions_apply_even_with_an_empty_user_pattern():
+    # Первые версии страницы сохраняли пустое поле, и встроенные исключения пропадали.
+    html = _chapter("[Динь! Награда]", "Текст.", "[Конец главы]", "Ещё текст.", "[Примечание автора: спасибо за донат]")
+
+    windows = find_windows(html, DetectorSettings(exclude_pattern=""))
+
+    assert [window.lines for window in windows] == [["[Динь! Награда]"]]
+
+
+def test_saved_default_exclusions_become_an_empty_user_field():
+    assert system_windows_module.user_exclude_pattern("") == ""
+    assert system_windows_module.user_exclude_pattern(system_windows_module.DEFAULT_EXCLUDE) == ""
+    for old in system_windows_module.LEGACY_EXCLUDE_DEFAULTS:
+        assert system_windows_module.user_exclude_pattern(old) == ""
+    assert system_windows_module.user_exclude_pattern(r"^\[Реклама") == r"^\[Реклама"
+
+
+def test_reference_list_after_a_colon_header_is_one_window():
+    # «Боевой континент 2», глава 16: справочник рангов в конце главы.
+    ranks = [
+        "[Справочник рангов:]",
+        "Младший боец (Сила удара 900 кг, 25 м/с)",
+        "Средний боец (Сила удара 2000 кг, 40 м/с)",
+        "Старший бог войны (Сила удара 256 000 кг)",
+    ]
+    note = "Уровни ментального телекинеза соответствуют уровням воинов."
+    html = _chapter("Седоволосый старик благоговейно распростерся на земле.", *ranks, note, "(Конец главы)")
+
+    # Примечание без цифр остаётся текстом: после «[Динь! Получено:]» так же
+    # осталась бы и короткая проза вроде «Он замер.».
+    assert [window.lines for window in find_windows(html)] == [ranks]
+
+
+def test_colon_header_lists_stop_at_prose():
+    # «Боевой континент 2», глава 8.
+    stars = ["«Пожиратель Звёзд»:", "Младший боец (сила удара 900 кг, скорость 25 м/с)", "Средний боец (сила удара 2000 кг, скорость 40 м/с)"]
+    dou = ["«Расколотая Битвой Небесная Высь»:", "Сила Доу.", "Практик Доу.", "Мастер Доу."]
+    html = _chapter(
+        "[Классификация уровней миров]",
+        *stars,
+        *dou,
+        "Хо Юйхао долго смотрел на эти строки. Потом закрыл глаза и начал медитировать, как учил наставник.",
+        "[Динь! Получено:]",
+        "— Что это? — спросил он.",
+    )
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [["[Классификация уровней миров]", *stars, *dou], ["[Динь! Получено:]"]]
+
+
+def test_list_mode_takes_short_enumerations_but_not_prose_with_commas():
+    skill = ["«Принцесса Мести»:", "* Свободная активация;", "* Значительное усиление атаки против монстров;"]
+    stages = ["«Путь Смертного к Бессмертию»:", "Закалка Ци, заложение основ, формирование ядра, зарождение души, истинный бессмертный."]
+    html = _chapter(
+        *skill,
+        "Этот навык, который Локи называла «сильнейшим атакующим навыком Нижнего Мира», был вовсе не таким простым, как многие привыкли считать.",
+        *stages,
+        "…— Вы поразительны, господин Шарль, — восхищенно прошептала Фильвис, — обладать такими познаниями, это же мастерство!",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [skill, stages]
