@@ -2,8 +2,9 @@
 """SystemWindowsPage — рамки для системных окон в переведённых главах проекта.
 
 Страница тонкая: поиск, применение и снятие оформления живут в
-``gemini_translator.utils.system_windows`` и гоняются в потоке. Здесь только
-таблица кандидатов с галочками, предпросмотр и настройки поиска и цветов.
+``gemini_translator.utils.system_windows`` и гоняются в потоке. Здесь
+композиция: шапка с проектом и главным действием, свёрнутые настройки,
+панель фильтров, таблица кандидатов с предпросмотром и футер с действиями.
 """
 
 import os
@@ -20,7 +21,7 @@ from PyQt6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QFileDialog,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -39,6 +41,7 @@ from PyQt6.QtWidgets import (
 
 from gemini_translator.ui import theme_manager
 from gemini_translator.ui.shell import ShellPage
+from gemini_translator.ui.widgets.common_widgets import NoScrollComboBox
 from gemini_translator.utils.qt_utils import deferred_column_autosize
 from gemini_translator.utils.system_windows import (
     DEFAULT_EXCLUDE,
@@ -59,6 +62,9 @@ _COLOR_COLUMNS = (("border", "Рамка"), ("background", "Фон"), ("text", "
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _PREVIEW_FILE = "translatorfork_system_windows_preview.html"
 _SWATCH_SIZE = 16
+_PAGE_MARGIN = 16
+_BLOCK_GAP = 12
+_ROW_GAP = 8
 
 
 class _Worker(QThread):
@@ -84,8 +90,50 @@ class _Worker(QThread):
         self.progress.emit(int(done / total * 100) if total else 100)
 
 
+class _Disclosure(QWidget):
+    """Раскрывающийся раздел: заголовок со стрелкой и тело, свёрнутое по умолчанию."""
+
+    toggled = pyqtSignal(bool)
+    _CLOSED = "\u25b8"
+    _OPEN = "\u25be"
+
+    def __init__(self, title: str, body: QWidget, parent=None):
+        super().__init__(parent)
+        self.body = body
+        self._title = title
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_ROW_GAP)
+        self.button = QPushButton()
+        self.button.setCheckable(True)
+        self.button.setFlat(True)
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.setStyleSheet(
+            "QPushButton { text-align: left; border: none; background: transparent; padding: 4px 6px;"
+            f" color: {theme_manager.color('text_primary')}; font-weight: 600; }}"
+            f"QPushButton:hover {{ color: {theme_manager.color('accent')}; }}"
+        )
+        self.button.toggled.connect(self._on_toggled)
+        self._on_toggled(False)
+        layout.addWidget(self.button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.body)
+        self.body.setVisible(False)
+
+    def is_open(self) -> bool:
+        return self.button.isChecked()
+
+    def set_open(self, flag: bool) -> None:
+        self.button.setChecked(bool(flag))
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.body.setVisible(checked)
+        self.button.setText(f"{self._OPEN if checked else self._CLOSED}  {self._title}")
+        self.toggled.emit(checked)
+
+
 class SystemWindowsPage(ShellPage):
     page_title = "Системные окна"
+    preferred_window_size = (1200, 840)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,6 +141,8 @@ class SystemWindowsPage(ShellPage):
         self._scans = []
         self._build_ui()
         self._restore_ui_state()
+        self._update_counter()
+        self._refresh_preview()
 
     # --- жизненный цикл -----------------------------------------------------
 
@@ -105,49 +155,124 @@ class SystemWindowsPage(ShellPage):
     # --- интерфейс ----------------------------------------------------------
 
     def _build_ui(self):
-        main_layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(_PAGE_MARGIN, _PAGE_MARGIN, _PAGE_MARGIN, _PAGE_MARGIN)
+        root.setSpacing(_BLOCK_GAP)
 
-        project_group = QGroupBox("Проект перевода")
-        project_layout = QHBoxLayout(project_group)
+        root.addWidget(self._build_header())
+        root.addWidget(self._build_settings_disclosure())
+        root.addWidget(self._build_colors_disclosure())
+        root.addLayout(self._build_toolbar())
+        root.addWidget(self._build_workspace(), 1)
+        root.addWidget(self._build_action_bar())
+        root.addWidget(self._build_log_disclosure())
+
+    def _build_header(self) -> QWidget:
+        self.header_card = QFrame()
+        self.header_card.setObjectName("projectHeaderCard")
+        layout = QVBoxLayout(self.header_card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(_ROW_GAP)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(_ROW_GAP)
+        intro = QVBoxLayout()
+        intro.setSpacing(2)
+        eyebrow = QLabel("Оформление глав")
+        eyebrow.setObjectName("sectionEyebrow")
+        intro.addWidget(eyebrow)
+        title = QLabel("Системные окна")
+        title.setObjectName("heroTitle")
+        intro.addWidget(title)
+        subtitle = QLabel(
+            "Найдите в переведённых главах системные сообщения, статусы и навыки, "
+            "проверьте список и оформите их рамками. Дальше сборка EPUB и «EPUB → Rulate MD»."
+        )
+        subtitle.setObjectName("heroSubtitle")
+        subtitle.setWordWrap(True)
+        intro.addWidget(subtitle)
+        top_row.addLayout(intro, 1)
+
+        self.status_chip = QLabel()
+        self.status_chip.setObjectName("statusChip")
+        self.status_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top_row.addWidget(self.status_chip, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(top_row)
+
+        project_row = QHBoxLayout()
+        project_row.setSpacing(_ROW_GAP)
         self.project_edit = QLineEdit()
-        self.project_edit.setPlaceholderText("Папка проекта с translation_map.json")
-        browse_button = QPushButton("Обзор...")
+        self.project_edit.setPlaceholderText("Папка проекта с файлом translation_map.json")
+        self.project_edit.setClearButtonEnabled(True)
+        self.project_edit.returnPressed.connect(lambda: self.scan())
+        self.project_edit.textChanged.connect(self._on_project_changed)
+        project_row.addWidget(self.project_edit, 1)
+        browse_button = QPushButton("Обзор")
+        browse_button.setObjectName("compactActionButton")
         browse_button.clicked.connect(self._choose_project)
-        self.scan_button = QPushButton("🔍 Найти окна")
+        project_row.addWidget(browse_button)
+        self.scan_button = QPushButton("Найти окна")
+        self.scan_button.setObjectName("primaryActionButton")
+        self.scan_button.setMinimumHeight(36)
+        self.scan_button.setDefault(True)
         self.scan_button.clicked.connect(self.scan)
-        project_layout.addWidget(self.project_edit, 1)
-        project_layout.addWidget(browse_button)
-        project_layout.addWidget(self.scan_button)
-        main_layout.addWidget(project_group)
+        project_row.addWidget(self.scan_button)
+        layout.addLayout(project_row)
+        self._set_status("Проект не выбран")
+        return self.header_card
 
-        settings_group = QGroupBox("Поиск")
-        settings_layout = QVBoxLayout(settings_group)
+    def _build_settings_disclosure(self) -> QWidget:
+        body = QFrame()
+        body.setObjectName("statusSurface")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(_ROW_GAP)
+
         triggers_row = QHBoxLayout()
-        triggers_row.addWidget(QLabel("Слова заголовков:"))
+        triggers_row.setSpacing(_ROW_GAP)
+        triggers_label = QLabel("Слова заголовков")
+        triggers_label.setObjectName("helperLabel")
+        triggers_row.addWidget(triggers_label)
         self.triggers_edit = QLineEdit(", ".join(DEFAULT_TRIGGERS))
         self.triggers_edit.setToolTip(
             "Короткая строка без скобок считается заголовком окна, если содержит одно из этих слов.\n"
             "Строки в скобках [ ] и 【 】 считаются системными всегда."
         )
         triggers_row.addWidget(self.triggers_edit, 1)
-        settings_layout.addLayout(triggers_row)
+        layout.addLayout(triggers_row)
+
         options_row = QHBoxLayout()
-        self.single_check = QCheckBox("Одиночные строки в скобках тоже оформлять")
+        options_row.setSpacing(_ROW_GAP)
+        self.single_check = QCheckBox("Оформлять одиночные строки в скобках")
         self.single_check.setChecked(True)
         options_row.addWidget(self.single_check)
-        options_row.addWidget(QLabel("Не трогать строки (регулярное выражение):"))
+        exclude_label = QLabel("Не трогать строки")
+        exclude_label.setObjectName("helperLabel")
+        options_row.addWidget(exclude_label)
         self.exclude_edit = QLineEdit(DEFAULT_EXCLUDE)
-        self.exclude_edit.setToolTip("Строки, подходящие под это выражение, никогда не оформляются. Пусто = без исключений.")
+        self.exclude_edit.setToolTip(
+            "Регулярное выражение. Подходящие строки никогда не оформляются, пустое поле снимает ограничение."
+        )
         options_row.addWidget(self.exclude_edit, 1)
-        settings_layout.addLayout(options_row)
-        main_layout.addWidget(settings_group)
+        layout.addLayout(options_row)
 
-        colors_group = QGroupBox("Цвета рамок")
-        colors_layout = QVBoxLayout(colors_group)
+        self.settings_disclosure = _Disclosure("Настройки поиска", body)
+        return self.settings_disclosure
+
+    def _build_colors_disclosure(self) -> QWidget:
+        body = QFrame()
+        body.setObjectName("statusSurface")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(_ROW_GAP)
+        hint = QLabel("Двойной щелчок по ячейке открывает палитру, значение можно вписать и как #hex.")
+        hint.setObjectName("helperLabel")
+        layout.addWidget(hint)
         self.colors_table = QTableWidget(len(KIND_ORDER), 1 + len(_COLOR_COLUMNS))
         self.colors_table.setHorizontalHeaderLabels(["Тип"] + [title for _, title in _COLOR_COLUMNS])
         self.colors_table.verticalHeader().setVisible(False)
         self.colors_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.colors_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         for row, kind in enumerate(KIND_ORDER):
             template = DEFAULT_TEMPLATES[kind]
             label_item = QTableWidgetItem(template["label"])
@@ -156,88 +281,174 @@ class SystemWindowsPage(ShellPage):
             self.colors_table.setItem(row, 0, label_item)
             for column, (key, _title) in enumerate(_COLOR_COLUMNS, start=1):
                 item = QTableWidgetItem(template[key])
-                item.setToolTip("Двойной щелчок открывает палитру, можно вписать и #hex вручную.")
+                item.setToolTip("Двойной щелчок открывает палитру.")
                 self._update_swatch(item)
                 self.colors_table.setItem(row, column, item)
         self.colors_table.setMaximumHeight(self.colors_table.rowHeight(0) * (len(KIND_ORDER) + 1) + 12)
         self.colors_table.itemChanged.connect(self._on_color_item_changed)
         self.colors_table.cellDoubleClicked.connect(self._pick_color)
-        colors_layout.addWidget(self.colors_table)
-        main_layout.addWidget(colors_group)
+        layout.addWidget(self.colors_table)
+        self.colors_disclosure = _Disclosure("Цвета рамок", body)
+        return self.colors_disclosure
 
+    def _build_toolbar(self) -> QHBoxLayout:
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(_ROW_GAP)
+        self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("keySearchField")
+        self.search_edit.setPlaceholderText("Поиск по тексту окна или названию главы")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._apply_filter)
+        toolbar.addWidget(self.search_edit, 2)
+        self.kind_filter = QComboBox()
+        self.kind_filter.addItem("Все типы", None)
+        for kind in KIND_ORDER:
+            self.kind_filter.addItem(DEFAULT_TEMPLATES[kind]["label"], kind)
+        self.kind_filter.currentIndexChanged.connect(self._apply_filter)
+        toolbar.addWidget(self.kind_filter)
+        self.counter_label = QLabel()
+        self.counter_label.setObjectName("helperLabel")
+        toolbar.addWidget(self.counter_label)
+        toolbar.addStretch(1)
+        check_all = QPushButton("Отметить все")
+        check_all.setObjectName("compactActionButton")
+        check_all.setToolTip("Отметить строки, видимые при текущем фильтре.")
+        check_all.clicked.connect(lambda: self._set_all_checked(True))
+        toolbar.addWidget(check_all)
+        check_none = QPushButton("Снять отметки")
+        check_none.setObjectName("compactActionButton")
+        check_none.setToolTip("Снять отметки со строк, видимых при текущем фильтре.")
+        check_none.clicked.connect(lambda: self._set_all_checked(False))
+        toolbar.addWidget(check_none)
+        return toolbar
+
+    def _build_workspace(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        table_widget = QWidget()
-        table_layout = QVBoxLayout(table_widget)
-        table_layout.setContentsMargins(0, 0, 0, 0)
+        splitter.setChildrenCollapsible(False)
+
+        self.table_stack = QStackedWidget()
+        self.empty_state = self._build_empty_state()
+        self.table_stack.addWidget(self.empty_state)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["", "Глава", "Тип", "Строк", "Текст"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(1, 240)
+        self.table.setColumnWidth(1, 220)
+        self.table.setColumnWidth(2, 170)
         self.table.setColumnWidth(3, 64)
         self.table.itemSelectionChanged.connect(self._refresh_preview)
-        table_layout.addWidget(self.table, 1)
-        check_row = QHBoxLayout()
-        check_all = QPushButton("Отметить все")
-        check_all.clicked.connect(lambda: self._set_all_checked(True))
-        check_none = QPushButton("Снять отметки")
-        check_none.clicked.connect(lambda: self._set_all_checked(False))
-        check_row.addWidget(check_all)
-        check_row.addWidget(check_none)
-        check_row.addStretch(1)
-        table_layout.addLayout(check_row)
-        splitter.addWidget(table_widget)
+        self.table.itemChanged.connect(self._on_table_item_changed)
+        self.table_stack.addWidget(self.table)
+        self.table_stack.setCurrentWidget(self.empty_state)
+        splitter.addWidget(self.table_stack)
 
-        preview_widget = QWidget()
-        preview_layout = QVBoxLayout(preview_widget)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_panel = QFrame()
+        preview_panel.setObjectName("statusSurface")
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(14, 12, 14, 12)
+        preview_layout.setSpacing(_ROW_GAP)
         self.preview_label = QLabel("Образцы всех типов")
+        self.preview_label.setObjectName("sectionEyebrow")
         preview_layout.addWidget(self.preview_label)
         self.preview = QTextBrowser()
         self.preview.setOpenExternalLinks(False)
+        self.preview.setFrameShape(QFrame.Shape.NoFrame)
         preview_layout.addWidget(self.preview, 1)
-        self.browser_button = QPushButton("🌐 Открыть в браузере")
+        self.browser_button = QPushButton("Открыть в браузере")
+        self.browser_button.setObjectName("ghostActionButton")
         self.browser_button.setToolTip("Точный вид рамок в настоящем браузере: выбранное окно и образцы.")
         self.browser_button.clicked.connect(self.open_preview_in_browser)
-        preview_layout.addWidget(self.browser_button)
-        splitter.addWidget(preview_widget)
+        preview_layout.addWidget(self.browser_button, 0, Qt.AlignmentFlag.AlignRight)
+        splitter.addWidget(preview_panel)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(splitter, 1)
+        splitter.setSizes([3000, 2000])
+        return splitter
 
-        actions = QHBoxLayout()
-        self.apply_button = QPushButton("✔ Применить к отмеченным")
-        self.apply_button.setMinimumHeight(40)
-        self.apply_button.setStyleSheet(
-            f"font-weight: bold; background-color: {theme_manager.color('accent')}; "
-            f"color: {theme_manager.color('panel_bg')};"
+    def _build_empty_state(self) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("statusSurface")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.addStretch(1)
+        card = QWidget()
+        card.setFixedWidth(460)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setSpacing(6)
+        title = QLabel("Окон пока нет")
+        title.setObjectName("projectCardValue")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(title)
+        text = QLabel(
+            "Укажите папку проекта и нажмите «Найти окна». Здесь появится список серий "
+            "системных строк: глава, тип рамки и первые строки, а справа их вид."
         )
-        self.apply_button.clicked.connect(self.apply_selected)
-        self.strip_button = QPushButton("↩ Снять оформление во всех главах")
-        self.strip_button.setMinimumHeight(40)
-        self.strip_button.clicked.connect(self.strip_all)
-        actions.addWidget(self.apply_button, 2)
-        actions.addWidget(self.strip_button, 1)
-        main_layout.addLayout(actions)
+        text.setObjectName("helperLabel")
+        text.setWordWrap(True)
+        text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(text)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(card)
+        row.addStretch(1)
+        layout.addLayout(row)
+        layout.addStretch(1)
+        return frame
 
+    def _build_action_bar(self) -> QWidget:
+        bar = QFrame()
+        bar.setObjectName("actionBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(_ROW_GAP)
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
-        main_layout.addWidget(self.progress_bar)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar, 1)
+        layout.addStretch(1)
+        self.strip_button = QPushButton("Убрать рамки")
+        self.strip_button.setObjectName("ghostActionButton")
+        self.strip_button.setToolTip("Вернуть исходные абзацы во всех главах проекта.")
+        self.strip_button.clicked.connect(self.strip_all)
+        layout.addWidget(self.strip_button)
+        self.apply_button = QPushButton("Применить к отмеченным")
+        self.apply_button.setObjectName("primaryActionButton")
+        self.apply_button.setMinimumHeight(36)
+        self.apply_button.clicked.connect(self.apply_selected)
+        layout.addWidget(self.apply_button)
+        return bar
 
+    def _build_log_disclosure(self) -> QWidget:
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setFont(QtGui.QFont("Courier New", 10))
         self.log_output.setMaximumHeight(120)
-        main_layout.addWidget(self.log_output)
-        self._refresh_preview()
+        self.log_disclosure = _Disclosure("Журнал", self.log_output)
+        return self.log_disclosure
+
+    # --- состояние шапки ------------------------------------------------------
+
+    def _set_status(self, text: str, tone: str = "") -> None:
+        self.status_chip.setText(text)
+        self.status_chip.setProperty("tone", tone)
+        style = self.status_chip.style()
+        style.unpolish(self.status_chip)
+        style.polish(self.status_chip)
+
+    def _on_project_changed(self, text: str) -> None:
+        if not self._scans:
+            self._set_status("Проект выбран" if text.strip() else "Проект не выбран")
 
     # --- настройки ----------------------------------------------------------
 
@@ -293,6 +504,8 @@ class SystemWindowsPage(ShellPage):
                 value = (colors.get(kind) or {}).get(key)
                 if isinstance(value, str) and _HEX_RE.match(value):
                     self.colors_table.item(row, column).setText(value)
+        self.settings_disclosure.set_open(bool(state.get("settings_open", False)))
+        self.colors_disclosure.set_open(bool(state.get("colors_open", False)))
 
     def _save_ui_state(self):
         manager = self._settings_manager()
@@ -308,6 +521,8 @@ class SystemWindowsPage(ShellPage):
             "single_bracketed": self.single_check.isChecked(),
             "exclude_pattern": self.exclude_edit.text().strip(),
             "colors": colors,
+            "settings_open": self.settings_disclosure.is_open(),
+            "colors_open": self.colors_disclosure.is_open(),
         }
         try:
             manager.save_ui_state({UI_STATE_KEY: state})
@@ -324,10 +539,19 @@ class SystemWindowsPage(ShellPage):
             self._fill_rows()
         self.table.blockSignals(False)
         chapters_with_windows = sum(1 for scan in self._scans if scan.candidates)
+        total = self.table.rowCount()
         self._log(
             f"Глав просмотрено: {len(self._scans)}, с окнами: {chapters_with_windows}, "
-            f"окон найдено: {self.table.rowCount()}."
+            f"окон найдено: {total}."
         )
+        if total:
+            self._set_status(f"Найдено окон: {total} в главах: {chapters_with_windows}", "success")
+            self.table_stack.setCurrentWidget(self.table)
+        else:
+            self._set_status("Окон не найдено" if self._scans else "Проект не выбран")
+            self.table_stack.setCurrentWidget(self.empty_state)
+        self._apply_filter()
+        self._update_counter()
         self._refresh_preview()
 
     def _fill_rows(self):
@@ -340,18 +564,25 @@ class SystemWindowsPage(ShellPage):
                 check_item.setCheckState(Qt.CheckState.Checked)
                 check_item.setData(Qt.ItemDataRole.UserRole, (scan_index, candidate_index))
                 self.table.setItem(row, 0, check_item)
-                self.table.setItem(row, 1, QTableWidgetItem(scan.title))
-                combo = QComboBox()
+                title_item = QTableWidgetItem(scan.title)
+                title_item.setToolTip(scan.title)
+                self.table.setItem(row, 1, title_item)
+                combo = NoScrollComboBox()
+                combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
                 for kind in KIND_ORDER:
                     combo.addItem(DEFAULT_TEMPLATES[kind]["label"], kind)
                 combo.setCurrentIndex(max(combo.findData(candidate.kind), 0))
                 combo.currentIndexChanged.connect(lambda _index, r=row: self._on_kind_changed(r))
                 self.table.setCellWidget(row, 2, combo)
-                self.table.setItem(row, 3, QTableWidgetItem(str(len(candidate.lines))))
+                count_item = QTableWidgetItem(str(len(candidate.lines)))
+                count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, 3, count_item)
                 preview_text = " / ".join(candidate.lines[:2])
                 if len(preview_text) > 160:
                     preview_text = preview_text[:157] + "…"
-                self.table.setItem(row, 4, QTableWidgetItem(preview_text))
+                text_item = QTableWidgetItem(preview_text)
+                text_item.setToolTip("\n".join(candidate.lines))
+                self.table.setItem(row, 4, text_item)
 
     def _row_candidate(self, row):
         item = self.table.item(row, 0)
@@ -366,14 +597,47 @@ class SystemWindowsPage(ShellPage):
         combo = self.table.cellWidget(row, 2)
         if candidate is not None and combo is not None:
             candidate.kind = combo.currentData()
+        self._apply_filter()
         self._refresh_preview()
+
+    def _on_table_item_changed(self, item):
+        if item.column() == 0:
+            self._update_counter()
+
+    def _apply_filter(self, *_args):
+        wanted_kind = self.kind_filter.currentData()
+        needle = self.search_edit.text().strip().lower()
+        for row in range(self.table.rowCount()):
+            combo = self.table.cellWidget(row, 2)
+            kind = combo.currentData() if combo is not None else None
+            haystack = " ".join(
+                self.table.item(row, column).text() for column in (1, 4) if self.table.item(row, column)
+            ).lower()
+            visible = (wanted_kind is None or kind == wanted_kind) and (not needle or needle in haystack)
+            self.table.setRowHidden(row, not visible)
+        self._update_counter()
+
+    def _update_counter(self):
+        total = self.table.rowCount()
+        checked = sum(
+            1 for row in range(total)
+            if self.table.item(row, 0) is not None and self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+        )
+        visible = sum(1 for row in range(total) if not self.table.isRowHidden(row))
+        text = f"Отмечено {checked} из {total}"
+        if visible != total:
+            text += f", показано {visible}"
+        self.counter_label.setText(text)
 
     def _set_all_checked(self, checked: bool):
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if item is not None:
+            if item is not None and not self.table.isRowHidden(row):
                 item.setCheckState(state)
+        self.table.blockSignals(False)
+        self._update_counter()
 
     def selected_candidates(self):
         """[(путь файла главы, [кандидаты])] для отмеченных строк, в порядке книги."""
@@ -493,12 +757,12 @@ class SystemWindowsPage(ShellPage):
             return None
         return folder
 
-    def _start(self, job, *args, on_done, **kwargs):
+    def _start(self, job, *args, on_done, busy_label, busy_button, **kwargs):
         if self.worker and self.worker.isRunning():
             QMessageBox.warning(self, "Подождите", "Предыдущая операция ещё идёт.")
             return False
         self.progress_bar.setValue(0)
-        self._set_busy(True)
+        self._set_busy(True, busy_label, busy_button)
         self.worker = _Worker(job, *args, **kwargs)
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.finished_work.connect(lambda result: self._finish(on_done, result))
@@ -508,18 +772,28 @@ class SystemWindowsPage(ShellPage):
 
     def _finish(self, on_done, result):
         self._set_busy(False)
-        self.progress_bar.setValue(100)
         on_done(result)
 
     def _on_error(self, error_text):
         self._set_busy(False)
-        self.progress_bar.setValue(0)
+        self._set_status("Ошибка", "danger")
         self._log(error_text)
+        self.log_disclosure.set_open(True)
         QMessageBox.critical(self, "Ошибка", error_text)
 
-    def _set_busy(self, busy: bool):
-        for button in (self.scan_button, self.apply_button, self.strip_button):
-            button.setEnabled(not busy)
+    def _set_busy(self, busy: bool, label: str = "", button=None):
+        self.progress_bar.setVisible(busy)
+        for action in (self.scan_button, self.apply_button, self.strip_button):
+            action.setEnabled(not busy)
+        if busy:
+            self._busy_button = (button, button.text()) if button is not None else None
+            if button is not None:
+                button.setText(label)
+            self._set_status(label)
+        elif getattr(self, "_busy_button", None):
+            button, text = self._busy_button
+            button.setText(text)
+            self._busy_button = None
 
     def scan(self):
         folder = self._project_folder()
@@ -533,7 +807,10 @@ class SystemWindowsPage(ShellPage):
             return
         self._save_ui_state()
         self._log("Ищу системные окна…")
-        self._start(scan_project, folder, settings, on_done=self.set_scan_results)
+        self._start(
+            scan_project, folder, settings,
+            on_done=self.set_scan_results, busy_label="Ищу окна…", busy_button=self.scan_button,
+        )
 
     def apply_selected(self):
         selections = self.selected_candidates()
@@ -541,13 +818,16 @@ class SystemWindowsPage(ShellPage):
             QMessageBox.warning(self, "Ничего не отмечено", "Отметьте окна, которые нужно оформить.")
             return
         self._save_ui_state()
-        self._start(apply_project, selections, templates=self.templates(), on_done=self._on_applied)
+        self._start(
+            apply_project, selections, templates=self.templates(),
+            on_done=self._on_applied, busy_label="Применяю…", busy_button=self.apply_button,
+        )
 
     def _on_applied(self, result):
         chapters, windows = result
         self._log(f"Оформлено окон: {windows} в главах: {chapters}.")
-        self.table.setRowCount(0)
-        self._refresh_preview()
+        self.set_scan_results([])
+        self._set_status(f"Оформлено окон: {windows} в главах: {chapters}", "success")
         QMessageBox.information(
             self, "Готово",
             f"Оформлено окон: {windows} в главах: {chapters}.\n"
@@ -559,19 +839,22 @@ class SystemWindowsPage(ShellPage):
         if folder is None:
             return
         answer = QMessageBox.question(
-            self, "Снять оформление",
+            self, "Убрать рамки",
             "Убрать рамки во всех главах проекта и вернуть исходные абзацы?",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._start(strip_project, folder, on_done=self._on_stripped)
+        self._start(
+            strip_project, folder,
+            on_done=self._on_stripped, busy_label="Убираю рамки…", busy_button=self.strip_button,
+        )
 
     def _on_stripped(self, result):
         chapters, windows = result
-        self._log(f"Снято оформление: окон {windows} в главах: {chapters}.")
-        self.table.setRowCount(0)
-        self._refresh_preview()
-        QMessageBox.information(self, "Готово", f"Снято оформление: окон {windows} в главах: {chapters}.")
+        self._log(f"Убраны рамки: окон {windows} в главах: {chapters}.")
+        self.set_scan_results([])
+        self._set_status(f"Убраны рамки: окон {windows} в главах: {chapters}", "success")
+        QMessageBox.information(self, "Готово", f"Убраны рамки: окон {windows} в главах: {chapters}.")
 
     def _log(self, message):
         self.log_output.appendPlainText(message)

@@ -233,3 +233,100 @@ class SystemWindowsPreviewAndPaletteTests(unittest.TestCase):
         self.assertIn("Хозяин", html)
         self.assertIn('data-sys="achievement"', html)
         self.assertNotIn("data-sys-orig", html)
+
+
+class SystemWindowsLayoutTests(unittest.TestCase):
+    """Новая компоновка: заголовок с главным действием, фильтры, пустое состояние."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project = _project(Path(self._tmp.name))
+
+    def _page(self):
+        page = SystemWindowsPage()
+        self.addCleanup(page.close)
+        return page
+
+    def test_new_widgets_exist(self):
+        page = self._page()
+        for attr in (
+            "header_card", "status_chip", "search_edit", "kind_filter", "counter_label",
+            "empty_state", "table_stack", "settings_disclosure", "colors_disclosure", "log_disclosure",
+        ):
+            self.assertTrue(hasattr(page, attr), f"missing widget: {attr}")
+
+    def test_buttons_carry_no_emoji_and_use_theme_roles(self):
+        page = self._page()
+        for button in page.findChildren(QtWidgets.QPushButton):
+            text = button.text()
+            self.assertFalse(any(ord(char) > 0x2FFF for char in text), f"emoji in button text: {text!r}")
+        self.assertEqual(page.scan_button.objectName(), "primaryActionButton")
+        self.assertEqual(page.apply_button.objectName(), "primaryActionButton")
+        self.assertEqual(page.strip_button.objectName(), "ghostActionButton")
+        self.assertEqual(page.browser_button.objectName(), "ghostActionButton")
+
+    def test_empty_state_shows_until_results_arrive(self):
+        page = self._page()
+        self.assertIs(page.table_stack.currentWidget(), page.empty_state)
+        page.set_scan_results(scan_project(self.project))
+        self.assertIs(page.table_stack.currentWidget(), page.table)
+        page.set_scan_results([])
+        self.assertIs(page.table_stack.currentWidget(), page.empty_state)
+
+    def test_status_chip_reports_results(self):
+        page = self._page()
+        self.assertIn("не выбран", page.status_chip.text())
+        page.set_scan_results(scan_project(self.project))
+        self.assertIn("2", page.status_chip.text())
+
+    def test_kind_filter_hides_other_rows_but_keeps_their_checks(self):
+        page = self._page()
+        page.set_scan_results(scan_project(self.project))
+        page.kind_filter.setCurrentIndex(page.kind_filter.findData("status"))
+        hidden = [page.table.isRowHidden(row) for row in range(page.table.rowCount())]
+        self.assertEqual(hidden, [True, False])
+        self.assertEqual(sum(len(candidates) for _path, candidates in page.selected_candidates()), 2)
+        page.kind_filter.setCurrentIndex(0)
+        self.assertEqual([page.table.isRowHidden(row) for row in range(2)], [False, False])
+
+    def test_text_search_filters_rows(self):
+        page = self._page()
+        page.set_scan_results(scan_project(self.project))
+        page.search_edit.setText("хозяин")
+        self.assertEqual([page.table.isRowHidden(row) for row in range(2)], [True, False])
+        page.search_edit.clear()
+        self.assertEqual([page.table.isRowHidden(row) for row in range(2)], [False, False])
+
+    def test_counter_follows_checks_and_check_buttons_act_on_visible_rows(self):
+        page = self._page()
+        page.set_scan_results(scan_project(self.project))
+        self.assertEqual(page.counter_label.text(), "Отмечено 2 из 2")
+        page.kind_filter.setCurrentIndex(page.kind_filter.findData("status"))
+        page._set_all_checked(False)
+        self.assertEqual(page.counter_label.text(), "Отмечено 1 из 2, показано 1")
+        self.assertEqual(page.table.item(0, 0).checkState(), QtCore.Qt.CheckState.Checked)
+
+    def test_disclosures_start_collapsed_and_toggle(self):
+        page = self._page()
+        self.assertFalse(page.settings_disclosure.is_open())
+        self.assertFalse(page.colors_disclosure.is_open())
+        self.assertFalse(page.triggers_edit.isVisibleTo(page))
+        page.settings_disclosure.set_open(True)
+        self.assertTrue(page.triggers_edit.isVisibleTo(page))
+        page.colors_disclosure.set_open(True)
+        self.assertTrue(page.colors_table.isVisibleTo(page))
+
+    def test_enter_in_project_field_starts_scan(self):
+        page = self._page()
+        with patch.object(page, "scan") as scan:
+            page.project_edit.setText(str(self.project))
+            page.project_edit.returnPressed.emit()
+        scan.assert_called_once()
