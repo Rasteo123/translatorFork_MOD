@@ -103,6 +103,22 @@ class SystemWindowsPageTests(unittest.TestCase):
         self.assertFalse(settings.single_bracketed)
         self.assertEqual(settings.exclude_pattern, r"прим\.")
 
+    def test_saved_default_exclusions_turn_into_an_empty_extra_field(self):
+        from gemini_translator.utils.system_windows import LEGACY_EXCLUDE_DEFAULTS
+
+        page = self._page()
+        for saved, shown in (("", ""), (LEGACY_EXCLUDE_DEFAULTS[0], ""), (r"^\[Реклама", r"^\[Реклама")):
+            state = {"system_windows_ui": {"exclude_pattern": saved}}
+            manager = type("Manager", (), {"load_settings": lambda self, state=state: state})()
+            with patch.object(page, "_settings_manager", return_value=manager):
+                page._restore_ui_state()
+            self.assertEqual(page.exclude_edit.text(), shown)
+
+    def test_extra_exclusions_field_starts_empty(self):
+        page = self._page()
+        self.assertEqual(page.exclude_edit.text(), "")
+        self.assertEqual(page.detector_settings().exclude_pattern, "")
+
     def test_templates_come_from_colors_table(self):
         page = self._page()
         row = page.colors_table.findItems("Достижение", QtCore.Qt.MatchFlag.MatchExactly)[0].row()

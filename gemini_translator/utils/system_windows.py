@@ -44,21 +44,41 @@ _KV_RE = re.compile(r"^[^:：]{1,40}[:：]\s*\S")
 _TRAILING_PUNCT = ".!?…。！？"
 _MAX_SPAN_PARAGRAPHS = 20
 # Авторские и переводческие примечания в скобках и служебные пометки
-# вроде «[Конец главы]» — не системные окна.
+# вроде «[Конец главы]», «(Конец главы)» — не системные окна. Эти исключения
+# действуют всегда; поле страницы только добавляет к ним свои.
 DEFAULT_EXCLUDE = (
     r"прим(\.|ечани\w*)\s*(автора|авт\.|пер\.|переводчика)|^[\[【(]?\s*P\.?\s?S\.?\b"
-    r"|^[\[【]?\s*(конец главы|конец книги|продолжение следует)"
+    r"|^\W*(конец главы|конец книги|продолжение следует)"
     r"|благодар\w*\s+(за\s+(донат|пожертв|поддержк|лунн|подар)|читател)"
+)
+_BUILTIN_EXCLUDE_RE = re.compile(DEFAULT_EXCLUDE, re.I)
+# Прежние значения поля «Не трогать строки» по умолчанию. Сохранённое такое
+# значение (и пустое поле первых версий) — не правило пользователя, а старая
+# копия встроенных исключений.
+LEGACY_EXCLUDE_DEFAULTS = (
+    'прим(\\.|ечани\\w*)\\s*(автора|пер\\.|переводчика)|^[\\[【]?\\s*P\\.?\\s?S\\.?\\b',
+    'прим(\\.|ечани\\w*)\\s*(автора|пер\\.|переводчика)|^[\\[【]?\\s*P\\.?\\s?S\\.?\\b|^[\\[【]?\\s*(конец главы|продолжение следует)',
+    'прим(\\.|ечани\\w*)\\s*(автора|авт\\.|пер\\.|переводчика)|^[\\[【(]?\\s*P\\.?\\s?S\\.?\\b|^[\\[【]?\\s*(конец главы|продолжение следует)|благодар\\w*\\s+за\\s+(донат|пожертв|поддержк|лунн|подар)',
+    'прим(\\.|ечани\\w*)\\s*(автора|авт\\.|пер\\.|переводчика)|^[\\[【(]?\\s*P\\.?\\s?S\\.?\\b|^[\\[【]?\\s*(конец главы|конец книги|продолжение следует)|благодар\\w*\\s+(за\\s+(донат|пожертв|поддержк|лунн|подар)|читател)',
 )
 _CLOSING_P_RE = re.compile(r"</p\s*>", re.I)
 _OPENING_P_RE = re.compile(r"<p[\s>/]", re.I)
+
+
+def user_exclude_pattern(saved) -> str:
+    """Своё правило пользователя из сохранённого поля: старые значения по умолчанию — пусто."""
+    saved = str(saved or "").strip()
+    if not saved or saved == DEFAULT_EXCLUDE or saved in LEGACY_EXCLUDE_DEFAULTS:
+        return ""
+    return saved
 
 
 @dataclass(frozen=True)
 class DetectorSettings:
     triggers: tuple[str, ...] = DEFAULT_TRIGGERS
     single_bracketed: bool = True
-    exclude_pattern: str = DEFAULT_EXCLUDE
+    #: Свои исключения пользователя сверх встроенных ``DEFAULT_EXCLUDE``.
+    exclude_pattern: str = ""
 
 
 @dataclass
@@ -268,7 +288,8 @@ def _is_caps(text: str) -> bool:
 
 
 def _is_dialogue(text: str) -> bool:
-    return text.startswith(("—", "–", "- "))
+    # Реплика после паузы: «…— Вы поразительны, господин Шарль».
+    return text.lstrip("….").lstrip().startswith(("—", "–", "- "))
 
 
 _QUOTE_CHARS = "«\"“„'"
@@ -464,6 +485,64 @@ def _is_heading_line(text: str) -> bool:
         and not text.rstrip().endswith((":", "："))
         and any(char.isalpha() for char in text)
         and not is_bullet_line(text)
+    )
+
+
+# Шапка списка: строка в скобках или имя в кавычках, кончается двоеточием —
+# «[Справочник рангов:]», ««Пожиратель Звёзд»:». Обычное «Навыки:» список не
+# открывает: под ним берётся одна строка значения.
+_LIST_HEADER_RE = re.compile(r"^(?:[\[【〖].*[:：]\s*[\]】〗]|«[^«»]+»(?:\s*\([^()]*\))?\s*[:：])$")
+_LIST_ITEM_MAX = 120
+_LIST_WORD_MAX = 30
+_ENUMERATION_MAX = 600
+
+
+def _opens_list(text: str) -> bool:
+    return _LIST_HEADER_RE.match(_BULLET_MARK_RE.sub("", text.strip(), count=1)) is not None
+
+
+def _is_short_item(text: str) -> bool:
+    return (
+        bool(text)
+        and len(text) <= _LIST_WORD_MAX
+        and len(text.split()) <= 3
+        and not _is_dialogue(text)
+        and not text.rstrip().endswith(("…", ":", "："))
+    )
+
+
+def _is_list_item(text: str, previous: str = "", following: str = "") -> bool:
+    """Строка списка под шапкой: «Младший боец (сила удара 900 кг)», «Сила Доу.».
+
+    Одно предложение с числом или скобками, перечень через запятые или короткая
+    строка в столбике таких же («Сила Доу.», «Практик Доу.»). Одинокая короткая
+    проза «Он кивнул.», реплики и «…» списка не продолжают.
+    """
+    if not text or _is_dialogue(text) or _ELLIPSIS_LINE_RE.match(text) or text.rstrip().endswith("…"):
+        return False
+    if _NEXT_SENTENCE_RE.search(text):
+        return False
+    if len(text) <= _LIST_ITEM_MAX and (any(char.isdigit() for char in text) or "(" in text):
+        return True
+    if _is_short_item(text):
+        return _is_short_item(previous) or _is_short_item(following)
+    return _is_enumeration(text)
+
+
+_ENUMERATION_PARTS_MIN = 4
+_ENUMERATION_PART_WORDS = 3
+
+
+def _is_enumeration(text: str) -> bool:
+    """Перечень через запятые: «Закалка Ци, заложение основ, формирование ядра, …».
+
+    Части короткие, в два-три слова; во фразе прозы с запятыми они длиннее.
+    """
+    if len(text) > _ENUMERATION_MAX:
+        return False
+    parts = [part.strip() for part in text.rstrip(".").split(",")]
+    return len(parts) >= _ENUMERATION_PARTS_MIN and all(
+        0 < len(part.split()) <= _ENUMERATION_PART_WORDS for part in parts
     )
 
 
@@ -754,7 +833,7 @@ def find_windows(
     передаёт уже отобранные номера абзацев (см. :func:`scan_chapters`).
     """
     settings = settings or DetectorSettings()
-    exclude = re.compile(settings.exclude_pattern, re.I) if settings.exclude_pattern else None
+    extra_exclude = re.compile(settings.exclude_pattern, re.I) if settings.exclude_pattern else None
     paragraphs = _paragraphs(html)
     if source_marks is not None:
         marked = set(source_marks)
@@ -764,7 +843,12 @@ def find_windows(
         marked = set()
 
     def excluded(paragraph: _Paragraph) -> bool:
-        return not paragraph.text or (exclude is not None and exclude.search(paragraph.text) is not None)
+        text = paragraph.text
+        return (
+            not text
+            or _BUILTIN_EXCLUDE_RE.search(text) is not None
+            or (extra_exclude is not None and extra_exclude.search(text) is not None)
+        )
 
     def confirmed(position: int) -> bool:
         return position in marked and _source_confirms(paragraphs[position].text)
@@ -886,12 +970,18 @@ def find_windows(
             index += 1
             continue
 
+        # После шапки с двоеточием окно продолжают строки списка.
+        in_list = _opens_list(paragraphs[stop - 1].text)
         while (
             stop < len(paragraphs)
             and paragraphs[stop].adjacent
             and not excluded(paragraphs[stop])
-            and continues(stop)
         ):
+            following = paragraphs[stop].text
+            after = paragraphs[stop + 1].text if stop + 1 < len(paragraphs) and paragraphs[stop + 1].adjacent else ""
+            if not (continues(stop) or (in_list and _is_list_item(following, paragraphs[stop - 1].text, after))):
+                break
+            in_list = in_list or _opens_list(following)
             stop += 1
 
         while stop - 1 > index and _ELLIPSIS_LINE_RE.match(paragraphs[stop - 1].text):
