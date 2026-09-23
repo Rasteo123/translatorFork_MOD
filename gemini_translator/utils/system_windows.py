@@ -528,6 +528,14 @@ def _is_short_item(text: str) -> bool:
     )
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+(?=[A-ZА-ЯЁ])")
+
+
+def _is_item_sentence(text: str) -> bool:
+    """Пункт перечня: одно предложение с числом или пояснением в скобках."""
+    return len(text) <= _LIST_ITEM_MAX and (any(char.isdigit() for char in text) or "(" in text)
+
+
 def _is_list_item(text: str, previous: str = "", following: str = "") -> bool:
     """Строка списка под шапкой: «Младший боец (сила удара 900 кг)», «Сила Доу.».
 
@@ -538,8 +546,11 @@ def _is_list_item(text: str, previous: str = "", following: str = "") -> bool:
     if not text or _is_dialogue(text) or _ELLIPSIS_LINE_RE.match(text) or text.rstrip().endswith("…"):
         return False
     if _NEXT_SENTENCE_RE.search(text):
-        return False
-    if len(text) <= _LIST_ITEM_MAX and (any(char.isdigit() for char in text) or "(" in text):
+        # Две ступени в одной строке: «Пик почтенного Доу (с первого по десятый
+        # ранги), выход за грани смертного. Полусвятой (младший, средний уровни).»
+        sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()]
+        return len(sentences) >= 2 and all(_is_item_sentence(sentence) for sentence in sentences)
+    if _is_item_sentence(text):
         return True
     if _is_short_item(text):
         return _is_short_item(previous) or _is_short_item(following)
