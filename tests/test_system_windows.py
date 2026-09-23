@@ -5,7 +5,9 @@ import re
 
 from gemini_translator.utils.system_windows import (
     DetectorSettings,
+    classify_kind,
     find_windows,
+    is_key_value,
 )
 
 
@@ -473,3 +475,134 @@ def test_preview_document_lists_extra_blocks_before_samples():
     assert document.index("Хозяин найден") < document.index('data-sys="status"')
     assert document.count("<div data-sys=") == 1 + len(SAMPLE_WINDOWS)
     assert "data-sys-orig" not in document
+
+
+# --- формы из «Реинкарнации в злого дракона» ----------------------------------
+
+def test_bracketed_line_with_punctuation_outside_counts_and_keeps_it_inside():
+    html = _chapter("Текст.", "[Покупка совершена, доспех установлен].", "Ещё текст.")
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert [window.lines for window in windows] == [["[Покупка совершена, доспех установлен]."]]
+    assert "Покупка совершена, доспех установлен." in block
+    assert "]" not in block.split(">", 1)[1]
+
+
+def test_bracketed_line_with_attribution_is_prose():
+    html = _chapter("[Вы поразительно догадливы!], – искренне польстила система.", "[Динь! Ответ]")
+
+    assert [window.lines for window in find_windows(html)] == [["[Динь! Ответ]"]]
+
+
+def test_keyed_lines_form_a_window_with_bold_terms():
+    html = _chapter(
+        "Список особенностей:",
+        "[Вождь] – лидер племени.",
+        "[Метание] – бросают камни, оружие и всё подряд.",
+        "[Текущая благосклонность]: 80 (обожание)",
+        "Он присвистнул.",
+    )
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert len(windows) == 1 and len(windows[0].lines) == 3
+    assert re.search(r"<b [^>]*>Вождь</b> – лидер племени\.", block)
+    assert re.search(r"<b [^>]*>Текущая благосклонность:</b> 80 \(обожание\)", block)
+
+
+def test_keyed_line_with_sentence_inside_brackets_is_dialogue():
+    html = _chapter("[Какой молодой?!] – голос на том конце взвился: [Отпустите его!]", "[Динь! Ответ]")
+
+    assert [window.lines for window in find_windows(html)] == [["[Динь! Ответ]"]]
+
+
+def test_bracket_group_list_is_a_data_line_rendered_without_brackets():
+    html = _chapter("[Динь! Наложены дебаффы:]", "[Тошнота], [Отравление], [Потеря обоняния].")
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert len(windows) == 1 and len(windows[0].lines) == 2
+    assert "Тошнота, Отравление, Потеря обоняния." in block
+
+
+def test_multi_paragraph_bracket_span_is_one_window():
+    html = _chapter(
+        "Система показала список.",
+        "[Доступные для исследования технологии:",
+        "(1) Закаленное вооружение (требуется рудник)",
+        "(2) Кровь магического дракона (требуется кровь)]",
+        "Су Нянь задумался.",
+    )
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert [len(window.lines) for window in windows] == [3]
+    assert "Доступные для исследования технологии" in block
+    assert "технологии:" not in block
+    assert "(2) Кровь магического дракона (требуется кровь)<" in block
+    assert "[" not in block.split(">", 1)[1] and "]" not in block.split(">", 1)[1]
+
+
+def test_span_opener_with_attribution_is_not_a_span():
+    html = _chapter(
+        "[Для производства требуется 10 очков системы!] – раздался голос.",
+        "— М-м? — Су Нянь нахмурился.",
+        "Система тут же исправилась: [Ошибка в расчетах…]",
+    )
+
+    assert find_windows(html) == []
+
+
+def test_span_without_closing_within_reach_is_ignored():
+    html = _chapter("[Начало без конца", *["Обычный абзац." for _ in range(14)], "конец]")
+
+    assert find_windows(html) == []
+
+
+def test_prose_ending_with_colon_does_not_start_a_run():
+    html = _chapter(
+        "Произошло чудо: на скале возник фундамент, и система тут же подала голос:",
+        "[Для постройки требуется: камень – 10 тонн]",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [["[Для постройки требуется: камень – 10 тонн]"]]
+
+
+def test_system_speech_line_is_not_a_header():
+    html = _chapter("Система: «…»", "[Динь! Обнаружен призыв]")
+
+    assert [window.lines for window in find_windows(html)] == [["[Динь! Обнаружен призыв]"]]
+
+
+def test_emoticon_values_are_not_key_values():
+    html = _chapter("Пастер-Нореджи: (º Д º*)", "Анна: Σ(っ °Д °;)っ")
+
+    assert find_windows(html) == []
+
+
+def test_default_exclusion_skips_author_notes_but_keeps_system_notes():
+    html = _chapter(
+        "[Примечание автора: спасибо за подарки]",
+        "Текст.",
+        "[P.S. по сюжету прошло пять дней].",
+        "Текст.",
+        "[Примечание: карта черпает силы носителя]",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [["[Примечание: карта черпает силы носителя]"]]
+
+
+def test_short_values_are_still_key_values():
+    assert is_key_value("[Уровень: 3]")
+    assert is_key_value("Ранг: F")
+    assert not is_key_value("Анна: Σ(っ °Д °;)っ")
+
+
+def test_levelup_needs_the_level_up_phrase_itself():
+    assert classify_kind(["[Повышение уровня]", "[Уровень повышен +2]"]) == "levelup"
+    assert classify_kind(["[Тюрьма Страданий]", "[Раз в сутки характеристики уровня повышаются на 5%]"]) != "levelup"

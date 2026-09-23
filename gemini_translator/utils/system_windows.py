@@ -33,7 +33,7 @@ DEFAULT_TRIGGERS = (
 )
 
 _KIND_RULES = (
-    ("levelup", re.compile(r"уров(ень|ня) повыш|повышение уровня|level ?up", re.I)),
+    ("levelup", re.compile(r"уровень повышен|повышение уровня|level ?up", re.I)),
     ("achievement", re.compile(r"достижени|титул", re.I)),
     ("status", re.compile(r"статус|панель|характеристик|status", re.I)),
     ("skill", re.compile(r"навык|способност|умени[ея]|заклинани|skill", re.I)),
@@ -41,6 +41,10 @@ _KIND_RULES = (
 DEFAULT_KIND = "notice"
 
 _KV_RE = re.compile(r"^[^:：]{1,40}[:：]\s*\S")
+_TRAILING_PUNCT = ".!?…"
+_MAX_SPAN_PARAGRAPHS = 12
+# Авторские и переводческие примечания в скобках — не системные окна.
+DEFAULT_EXCLUDE = r"прим(\.|ечани\w*)\s*(автора|пер\.|переводчика)|^[\[【]?\s*P\.?\s?S\.?\b"
 _CLOSING_P_RE = re.compile(r"</p\s*>", re.I)
 _OPENING_P_RE = re.compile(r"<p[\s>/]", re.I)
 
@@ -49,7 +53,7 @@ _OPENING_P_RE = re.compile(r"<p[\s>/]", re.I)
 class DetectorSettings:
     triggers: tuple[str, ...] = DEFAULT_TRIGGERS
     single_bracketed: bool = True
-    exclude_pattern: str = ""
+    exclude_pattern: str = DEFAULT_EXCLUDE
 
 
 @dataclass
@@ -119,17 +123,73 @@ def _paragraphs(raw: str) -> list[_Paragraph]:
 
 # --- классификация строк ----------------------------------------------------
 
-def is_bracketed(text: str) -> bool:
-    if len(text) < 2 or text[0] not in _BRACKET_PAIRS:
-        return False
+_FULL_RE = re.compile(r"^([\[【〖])(.*)([\]】〗])([.!?…]*)$", re.S)
+_KEYED_RE = re.compile(r"^[\[【〖]([^\]】〗]{1,60})[\]】〗](.*)$", re.S)
+_GROUP_LIST_RE = re.compile(r"^(\s*[,;]?\s*[\[【〖][^\[\]【】〖〗]{1,60}[\]】〗])*\s*[.!?…]*$")
+_ATTRIBUTION_RE = re.compile(
+    r"^[–—-]\s*(?:\w+\s+){0,3}(?:сказал|ответил|добавил|произн|спросил|воскликн|отозвал|проговор|"
+    r"пробормот|заяв|подтверд|уточн|польстил|взвил|отрезал|напомнил|голос)",
+    re.I,
+)
+
+
+def bracket_shape(text: str):
+    """Форма строки со скобками.
+
+    ``full`` — строка целиком в скобках (точка снаружи допускается),
+    ``keyed`` — ``[Термин] – описание`` или ``[Термин]: значение``,
+    ``list`` — перечень групп ``[А], [Б], [В]``,
+    ``open`` — скобка открыта и не закрыта (окно тянется по абзацам),
+    ``close`` — закрывающая скобка без открывающей, ``None`` — обычный текст.
+    """
+    if len(text) < 2:
+        return None
     opening = text[0]
-    closing = _BRACKET_PAIRS[opening]
-    return text[-1] == closing and text.count(opening) == 1 and text.count(closing) == 1
+    if opening in _BRACKET_PAIRS:
+        closing = _BRACKET_PAIRS[opening]
+        match = _FULL_RE.match(text)
+        if match and match.group(3) == closing and opening not in match.group(2) and closing not in match.group(2):
+            return "full"
+        keyed = _KEYED_RE.match(text)
+        if keyed:
+            group, rest = keyed.group(1), keyed.group(2)
+            if _GROUP_LIST_RE.match(rest) and rest.strip(" .!?…,;"):
+                return "list"
+            rest = rest.lstrip()
+            if (
+                rest
+                and not any(char in group for char in "!?")
+                and not rest.startswith((",", ";"))
+                and _ATTRIBUTION_RE.match(rest) is None
+            ):
+                return "keyed"
+            return None
+        if closing not in text:
+            return "open"
+        return None
+    stripped = text.rstrip(_TRAILING_PUNCT)
+    for pair_opening, pair_closing in _BRACKET_PAIRS.items():
+        if stripped.endswith(pair_closing) and pair_opening not in text:
+            return "close"
+    return None
+
+
+def is_bracketed(text: str) -> bool:
+    return bracket_shape(text) == "full"
 
 
 def strip_brackets(text: str) -> str:
-    if is_bracketed(text):
-        return text[1:-1].strip()
+    """Текст для показа: без скобок вокруг, знак после скобки остаётся внутри."""
+    shape = bracket_shape(text)
+    if shape == "full":
+        match = _FULL_RE.match(text)
+        return match.group(2).strip() + match.group(4)
+    if shape == "list":
+        return " ".join(re.sub(r"[\[\]【】〖〗]", "", text).split())
+    if shape == "open":
+        return text[1:].strip()
+    if shape == "close":
+        return re.sub(r"[\]】〗]([.!?…]*)$", r"\1", text).strip()
     return text
 
 
@@ -151,6 +211,13 @@ _VALUE_BAD_START = _QUOTE_CHARS + "—–-"
 _SENTENCE_END = (".", "!", "?", "…", ":", ";", ",")
 
 
+def _mostly_alphanumeric(value: str) -> bool:
+    """Значение из букв и цифр, а не смайлик вроде ``(º Д º*)``."""
+    compact = value.replace(" ", "")
+    alphanumeric = sum(1 for char in compact if char.isalnum())
+    return alphanumeric > 0 and alphanumeric * 2 >= len(compact)
+
+
 def is_key_value(text: str) -> bool:
     """Строка вида ``Ключ: значение`` (или несколько таких через ``|``).
 
@@ -161,7 +228,7 @@ def is_key_value(text: str) -> bool:
     inner = strip_brackets(text)
     if not inner or _is_dialogue(inner) or len(inner) > 200:
         return False
-    if inner[0] in _QUOTE_CHARS or inner.rstrip().endswith((".", "!", "?", "…")):
+    if inner[0] in _QUOTE_CHARS or inner.rstrip().endswith((".", "!", "?", "…", ":")):
         return False
     parts = [part.strip() for part in inner.split("|")] if "|" in inner else [inner]
     for part in parts:
@@ -169,7 +236,13 @@ def is_key_value(text: str) -> bool:
             continue
         key, value = re.split(r"[:：]", part, maxsplit=1)
         value = value.strip()
-        if len(key.split()) <= 4 and value and value[0] not in _VALUE_BAD_START and len(value) <= 120:
+        if (
+            len(key.split()) <= 4
+            and value
+            and value[0] not in _VALUE_BAD_START
+            and len(value) <= 120
+            and _mostly_alphanumeric(value)
+        ):
             return True
     return False
 
@@ -184,6 +257,8 @@ def _is_header(text: str, settings: DetectorSettings) -> bool:
         return True
     if len(text) > 80 or _is_dialogue(text) or text[0] in _QUOTE_CHARS:
         return False
+    if re.search(r"[:：]\s*[«\"“]", text):
+        return False
     if _is_decorated(text) or _is_caps(text):
         return True
     if text.rstrip().endswith(_SENTENCE_END):
@@ -192,7 +267,7 @@ def _is_header(text: str, settings: DetectorSettings) -> bool:
 
 
 def _is_data_line(text: str) -> bool:
-    return is_bracketed(text) or is_key_value(text) or _is_decorated(text)
+    return bracket_shape(text) in ("full", "keyed", "list") or is_key_value(text) or _is_decorated(text)
 
 
 def classify_kind(lines: list[str]) -> str:
@@ -209,6 +284,20 @@ def classify_kind(lines: list[str]) -> str:
 
 # --- поиск серий ------------------------------------------------------------
 
+def _span_end(paragraphs, start: int, excluded) -> int | None:
+    """Индекс абзаца, закрывающего скобку, открытую в ``start``; None, если его нет."""
+    for index in range(start + 1, min(start + _MAX_SPAN_PARAGRAPHS + 1, len(paragraphs))):
+        paragraph = paragraphs[index]
+        if not paragraph.adjacent or excluded(paragraph):
+            return None
+        shape = bracket_shape(paragraph.text)
+        if shape == "open":
+            return None
+        if shape == "close":
+            return index
+    return None
+
+
 def find_windows(html: str, settings: DetectorSettings | None = None) -> list[WindowCandidate]:
     """Найти серии системных строк в HTML главы, в порядке документа."""
     settings = settings or DetectorSettings()
@@ -223,14 +312,22 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
     while index < len(paragraphs):
         first = paragraphs[index]
         text = first.text
-        starts_run = not excluded(first) and (
-            _is_header(text, settings) or is_key_value(text)
-        )
-        if not starts_run:
+        if excluded(first):
             index += 1
             continue
 
+        shape = bracket_shape(text)
         stop = index + 1
+        if shape == "open":
+            span_end = _span_end(paragraphs, index, excluded)
+            if span_end is None:
+                index += 1
+                continue
+            stop = span_end + 1
+        elif not (shape in ("full", "keyed") or _is_header(text, settings) or is_key_value(text)):
+            index += 1
+            continue
+
         while (
             stop < len(paragraphs)
             and paragraphs[stop].adjacent
@@ -240,11 +337,7 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
             stop += 1
 
         length = stop - index
-        accepted = (
-            length >= 2 and (_is_header(text, settings) or is_key_value(text))
-        ) or (
-            length == 1 and is_bracketed(text) and settings.single_bracketed
-        )
+        accepted = length >= 2 or (shape == "full" and settings.single_bracketed)
         if not accepted:
             index += 1
             continue
@@ -308,7 +401,7 @@ _TITLE_MAX_CHARS = 60
 
 
 def _looks_like_title(text: str) -> bool:
-    if len(text) > _TITLE_MAX_CHARS:
+    if len(text) > _TITLE_MAX_CHARS or bracket_shape(text) in ("keyed", "list"):
         return False
     if not is_key_value(text):
         return True
@@ -321,8 +414,19 @@ def _render_key_value_part(part: str, accent: str) -> str:
     return f'<b style="color:{accent};">{_escape(key.strip())}:</b> {_escape(value.strip())}'
 
 
+def _render_keyed(text: str, accent: str) -> str:
+    match = _KEYED_RE.match(text)
+    term, rest = match.group(1).strip(), match.group(2).strip()
+    if rest.startswith((":", "：")):
+        return f'<b style="color:{accent};">{_escape(term)}:</b> {_escape(rest[1:].strip())}'
+    return f'<b style="color:{accent};">{_escape(term)}</b> {_escape(rest)}'
+
+
 def _render_row(text: str, accent: str, italic_allowed: bool):
     """Вернуть (html строки, короткая ли это пара ключ-значение для колонок)."""
+    if bracket_shape(text) == "keyed":
+        return _render_keyed(text, accent), False
+    text = strip_brackets(text)
     if is_key_value(text):
         parts = [part.strip() for part in text.split("|")] if "|" in text else [text]
         rendered = []
@@ -369,11 +473,13 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     template.update(templates.get(kind, {}))
     accent = template["accent"]
 
-    texts = [strip_brackets(" ".join(str(line).split())) for line in lines]
+    texts = [" ".join(str(line).split()) for line in lines]
     texts = [text for text in texts if text]
+    if texts and bracket_shape(texts[0]) not in ("keyed", "list"):
+        texts[0] = strip_brackets(texts[0])
     title = None
     if len(texts) >= 2 and _looks_like_title(texts[0]):
-        title, texts = texts[0], texts[1:]
+        title, texts = texts[0].rstrip(":：").strip(), texts[1:]
 
     rows = [_render_row(text, accent, italic_allowed=title is not None) for text in texts]
     body_rows = _group_columns(rows, int(template.get("columns") or 1))
