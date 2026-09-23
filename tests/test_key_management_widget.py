@@ -94,6 +94,23 @@ class _KeyStatusSettingsStub(_KeySettingsStub):
         return "Сброс позже"
 
 
+class _ProviderKeysSettingsStub(_KeySettingsStub):
+    """Сохранённые ключи нескольких провайдеров, все без лимитов."""
+
+    def __init__(self, keys_by_provider):
+        self._statuses = [
+            {"provider": provider_id, "key": key}
+            for provider_id, keys in keys_by_provider.items()
+            for key in keys
+        ]
+
+    def load_key_statuses(self):
+        return [dict(item) for item in self._statuses]
+
+    def _get_status_for_model(self, key_info, model_id):
+        return {"exhausted_level": 0}
+
+
 class _ServerManagerStub(QtCore.QObject):
     server_status_changed = QtCore.pyqtSignal(bool, object)
 
@@ -481,6 +498,110 @@ class KeyManagementWidgetProviderModeTests(unittest.TestCase):
         layout = card.layout()
         # Проверяем, что первый столбец не имеет принудительного растяжения (stretch 0)
         self.assertEqual(layout.stretch(1), 0)
+
+
+class ActiveKeysOwnershipTests(unittest.TestCase):
+    """Набор активных ключей остаётся у провайдера, чьи ключи в нём лежат.
+
+    Раньше перестройка списков после смены провайдера снимала экранный список
+    активных ключей прежнего провайдера и записывала его в набор нового:
+    в настройках у deepseek оказывались ключи Gemini, у openrouter — ключи NVIDIA.
+    """
+
+    KEYS = {
+        "gemini": ["gemini-1", "gemini-2"],
+        "deepseek": ["deepseek-1"],
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        api_config.initialize_configs()
+
+    def _widget(self, **kwargs):
+        widget = KeyManagementWidget(_ProviderKeysSettingsStub(self.KEYS), **kwargs)
+        self.addCleanup(widget.close)
+        return widget
+
+    def _select_provider(self, widget, provider_id):
+        index = widget.provider_combo.findData(provider_id)
+        self.assertGreaterEqual(index, 0, provider_id)
+        widget.provider_combo.setCurrentIndex(index)
+
+    def _active_list_keys(self, widget):
+        return sorted(
+            widget.active_keys_list.item(row).data(QtCore.Qt.ItemDataRole.UserRole)
+            for row in range(widget.active_keys_list.count())
+        )
+
+    def test_user_switch_does_not_copy_active_keys_into_next_provider(self):
+        widget = self._widget()
+        widget.set_active_keys_for_provider("gemini", ["gemini-1", "gemini-2"])
+
+        self._select_provider(widget, "deepseek")
+
+        self.assertEqual(widget.current_active_keys_by_provider.get("deepseek", set()), set())
+        self.assertEqual(
+            widget.current_active_keys_by_provider["gemini"], {"gemini-1", "gemini-2"}
+        )
+        self.assertEqual(self._active_list_keys(widget), [])
+
+    def test_round_trip_keeps_each_provider_selection(self):
+        widget = self._widget()
+        widget.set_active_keys_for_provider("deepseek", ["deepseek-1"])
+        widget.set_active_keys_for_provider("gemini", ["gemini-1"])
+
+        self._select_provider(widget, "deepseek")
+        self.assertEqual(self._active_list_keys(widget), ["deepseek-1"])
+
+        self._select_provider(widget, "gemini")
+        self.assertEqual(self._active_list_keys(widget), ["gemini-1"])
+
+    def test_keys_added_on_screen_stay_with_their_provider_after_switch(self):
+        # «Добавить все» переносит ключи только на экране, набор провайдера
+        # обновляется снимком экранного списка перед сменой провайдера.
+        widget = self._widget()
+        widget.set_active_keys_for_provider("gemini", [])
+        widget._add_all_to_active()
+
+        self._select_provider(widget, "deepseek")
+        self._select_provider(widget, "gemini")
+
+        self.assertEqual(self._active_list_keys(widget), ["gemini-1", "gemini-2"])
+        self.assertEqual(widget.current_active_keys_by_provider.get("deepseek", set()), set())
+
+    def test_mcp_detour_does_not_copy_active_keys_into_next_provider(self):
+        widget = self._widget(server_manager=_ServerManagerStub())
+        widget.mcp_control_card.refresh_status = lambda: None
+        widget.set_active_keys_for_provider("gemini", ["gemini-1"])
+
+        self._select_provider(widget, MCP_PROVIDER_ID)
+        # Обновление статусов ключей в режиме MCP заново строит списки
+        # последнего настоящего провайдера (gemini).
+        widget.on_event({"event": "key_statuses_updated", "data": {}})
+        self._select_provider(widget, "deepseek")
+
+        self.assertEqual(widget.current_active_keys_by_provider.get("deepseek", set()), set())
+        self.assertEqual(widget.current_active_keys_by_provider["gemini"], {"gemini-1"})
+
+        self._select_provider(widget, "gemini")
+        self.assertEqual(self._active_list_keys(widget), ["gemini-1"])
+
+    def test_programmatic_switch_keeps_restored_set_of_displayed_provider(self):
+        # Так восстанавливаются настройки при запуске: списки уже показывают
+        # gemini без активных ключей, наборы кладутся в память напрямую, затем
+        # set_active_keys_for_provider переключает на сохранённого провайдера.
+        # Экранный список gemini устарел и не должен затереть его набор.
+        widget = self._widget()
+        widget.set_active_keys_for_provider("gemini", [])
+        widget.current_active_keys_by_provider["gemini"] = {"gemini-2"}
+
+        widget.set_active_keys_for_provider("deepseek", ["deepseek-1"])
+
+        self.assertEqual(widget.current_active_keys_by_provider["gemini"], {"gemini-2"})
+        self.assertEqual(self._active_list_keys(widget), ["deepseek-1"])
 
 
 if __name__ == "__main__":

@@ -839,6 +839,16 @@ class KeyManagementWidget(EventBusMixin, QWidget):
             self._apply_mcp_provider_mode()
             return
 
+        previous_provider_id = self._last_real_provider_id
+        if previous_provider_id != provider_id:
+            # Списки на экране ещё показывают прежнего провайдера: их снимок
+            # принадлежит ему. Перестройка под нового провайдера снимок
+            # пропускает, иначе в набор нового попали бы чужие ключи.
+            # При смене через set_active_keys_for_provider наборы уже заданы
+            # в памяти, а экран мог устареть, поэтому его не снимаем.
+            if not self._skip_next_visual_active_snapshot:
+                self._remember_active_keys_for_provider(previous_provider_id)
+            self._skip_next_visual_active_snapshot = True
         self._last_real_provider_id = provider_id
         self._restore_key_provider_mode()
         self.available_keys_group.setTitle(
@@ -856,7 +866,10 @@ class KeyManagementWidget(EventBusMixin, QWidget):
         })
         self._emit_ai_provider_mode_changed(provider_id, is_mcp=False)
 
-        self._load_and_refresh_keys()
+        try:
+            self._load_and_refresh_keys()
+        finally:
+            self._skip_next_visual_active_snapshot = False
         self._update_server_button_visibility()
 
     def _update_key_request_count_text(self, key_to_update, new_count):
