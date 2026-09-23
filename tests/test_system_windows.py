@@ -297,6 +297,24 @@ def test_strip_restores_the_original_html_exactly():
     assert restored == html
 
 
+def test_strip_restores_paragraphs_after_beautifulsoup_requoted_the_source():
+    # Сборка EPUB пересобирает главу через BeautifulSoup: значение атрибута
+    # с двойными кавычками внутри он пишет в одинарных кавычках.
+    from bs4 import BeautifulSoup
+
+    html = _chapter("Начало.", "[Динь! Первая]", "Конец.").replace(
+        "<p>[Динь", '<p class="no-indent">[Динь'
+    )
+    wrapped, _ = apply_windows(html, find_windows(html))
+    requoted = str(BeautifulSoup(wrapped, "html.parser"))
+    assert "data-sys-orig='" in requoted
+
+    restored, count = strip_windows(requoted)
+
+    assert count == 1
+    assert '<p class="no-indent">[Динь! Первая]</p>' in restored
+
+
 def test_apply_only_selected_candidates():
     html = _chapter("[Динь! Одна]", "Текст.", "[Динь! Две]")
     windows = find_windows(html)
@@ -849,15 +867,22 @@ def test_source_paragraphs_from_p_tags_and_from_br_separated_text():
 
 
 def test_source_marked_quoted_line_becomes_a_window():
-    source = _source("翌日，太阳升起。", "【标记】！", "他愣住了。")
-    html = _chapter("На следующий день взошло солнце.", "«Метка»!", "Он замер.")
+    source = _source("翌日，太阳升起。", "【你获得了标记】！", "他愣住了。")
+    html = _chapter("На следующий день взошло солнце.", "«Вы нашли метку»!", "Он замер.")
 
     windows = find_windows(html, source_html=source)
     block = render_window(windows[0].lines, windows[0].kind)
 
-    assert [window.lines for window in windows] == [["«Метка»!"]]
+    assert [window.lines for window in windows] == [["«Вы нашли метку»!"]]
     assert windows[0].origin == "source"
-    assert "Метка!" in block and "«" not in block.split(">", 1)[1]
+    assert "Вы нашли метку!" in block and "«" not in block.split(">", 1)[1]
+
+
+def test_source_marked_shout_or_bare_name_stays_prose():
+    source = _source("翌日，太阳升起。", "【标记】！", "他愣住了。")
+    html = _chapter("На следующий день взошло солнце.", "«Метка»!", "Он замер.")
+
+    assert find_windows(html, source_html=source) == []
 
 
 def test_source_marks_skip_dialogue_lines_and_garbage():
@@ -929,7 +954,7 @@ def test_scan_project_reads_the_source_epub(tmp_path):
 
     project = _windows_project(tmp_path)
     (project / "OEBPS/chapter2_translated_gemini.html").write_text(
-        _chapter("Утро.", "«Метка»!", "Он замер."), encoding="utf-8",
+        _chapter("Утро.", "«Вы нашли метку»!", "Он замер."), encoding="utf-8",
     )
     epub = tmp_path / "book.epub"
     with zipfile.ZipFile(epub, "w") as archive:
@@ -1034,3 +1059,195 @@ def test_single_stat_line_needs_a_short_numeric_value():
     )
 
     assert find_windows(html) == []
+
+
+# --- карточки статуса: шапка с уровнем, разделы, маркеры -------------------------
+
+from gemini_translator.utils.system_windows import (  # noqa: E402
+    is_bullet_line,
+    is_level_header,
+    is_section_label,
+)
+
+
+def test_status_card_with_level_header_sections_and_bullets_is_one_window():
+    # «Рефреш», глава 2: карточка между двумя «…».
+    card = [
+        "Шарль, Ур. 1.",
+        "Сила: I40 → I50 | Выносливость: I50 → I60 | Ловкость: I70 → I80 | Скорость: I33 → I50 | Магия: I0 → I0.",
+        "Магия: 【 】",
+        "Навыки:",
+        "【Тяжелое Бремя】",
+        "· Снижает вес экипировки, незначительно повышает выносливость.",
+        "· Чем больше вес, тем сильнее эффект.",
+        "【？？？】",
+    ]
+    html = _chapter("Шарль взял лист и впился в него глазами.", "…", *card, "…", "— Ох… ну и жалкие характеристики.")
+
+    windows = find_windows(html)
+
+    assert [(window.kind, window.lines) for window in windows] == [("status", card)]
+
+
+def test_magic_section_keeps_its_name_bullets_and_chant_line():
+    # «Рефреш», глава 20: характеристики и раздел магии разделены «…».
+    stats = [
+        "Шарль – Ур. 1.",
+        "Сила: I78 → H129.",
+        "Выносливость: H157 → F377.",
+        "Ловкость: I97 → H101.",
+        "Проворство: I66 → I84.",
+        "Магия: I0 → I0.",
+    ]
+    magic = [
+        "Магия:",
+        "«Колесо Чудес» / Miracle Wheel.",
+        "· Магия призыва.",
+        "· Расходует дух в зависимости от призываемой магии.",
+        "Текст заклинания: отсутствует (произвольный).",
+        "Навыки: «Хрупкий Студент», «Иду Куда Хочу».",
+    ]
+    html = _chapter("…", *stats, "…", *magic, "…", "— Ну и ну.")
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [stats, magic]
+    assert windows[0].kind == "status"
+
+
+def test_stat_keys_take_quoted_values_and_bracket_placeholders():
+    # «Рефреш», глава 75.
+    card = [
+        "Лилирука Эрде. Ур. 1.",
+        "Сила: I11 → H105 / Выносливость: I25 → H100 / Ловкость: I45 → G154 / Скорость: I47 → H109 / Магия: I20 → I89.",
+        "Магия: «Золушка.»",
+        "Навыки: «Закулисный Герой.»",
+    ]
+    html = _chapter("…", *card, "…", "— Господин Шарль?")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+    assert is_key_value("Магия: 【 】")
+    assert not is_key_value("Шарль: «Привет!»")
+    assert not is_key_value("Система: «Добро пожаловать»")
+
+
+def test_quoted_section_labels_and_skill_entries_with_bullets():
+    # «Рефреш», глава 232.
+    card = [
+        "Альфия. Ур. 3.",
+        "Сила: S999 → I0.",
+        "Выносливость: S999 → I0.",
+        "Развиваемые способности: «Магическое мастерство C», «Сопротивление Аномалиям E», «Исцеление I».",
+        "«Магия.»",
+        "«Сатанас Верион», «Силентиум Эдем», «Генос Ангелус».",
+        "«Навыки.»",
+        "«Цена Таланта», «Разделенная Судьба».",
+    ]
+    skill = [
+        "«Новичок Восьмого Уровня»:",
+        "• Активируется при игре в «волка в овечьей шкуре».",
+        "• При расчете опыта расчет ведется исходя из уровня продемонстрированной силы.",
+    ]
+    html = _chapter(
+        "Итоговая панель замерла на значениях:",
+        *card,
+        "«Гармония Света» (увеличивает мощь магии, снижает расход духа).",
+        *skill,
+        "…",
+        "— Двойное Возвышение?!",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [card, skill]
+
+
+def test_skill_names_with_bullets_follow_a_section_label():
+    # «Рефреш», глава 152.
+    skills = [
+        "Навыки:",
+        "«Тепло.»",
+        "· Постоянно и значительно восстанавливает Дух себе и союзникам.",
+        "«Аура Вампиризма.»",
+        "· Союзники в радиусе действия восстанавливают выносливость и здоровье в размере 20% от нанесенного урона.",
+    ]
+    html = _chapter(
+        "Энергия, поднявшаяся от поверженных врагов, начала вливаться в тела союзников.",
+        *skills,
+        "Сочетание двух навыков на восстановление делало их практически неуязвимыми.",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [skills]
+
+
+def test_level_line_label_or_bullets_alone_are_not_windows():
+    html = _chapter(
+        "Шарль, Ур. 1.",
+        "Он вздохнул и убрал лист.",
+        "Навыки:",
+        "Он долго думал о том, какие навыки ему пригодятся в подземелье, и так ничего и не решил.",
+        "Он составил план:",
+        "· купить еды;",
+        "· найти ночлег.",
+        "«Тепло.»",
+        "Потом лёг спать.",
+    )
+
+    assert find_windows(html) == []
+
+
+def test_card_line_helpers():
+    assert is_level_header("Шарль, Ур. 1.")
+    assert is_level_header("Зард, уровень 8.")
+    assert not is_level_header("Ур. 1 → Ур. 2 → Ур. 3!")
+    assert not is_level_header("— Шарль, Ур. 1.")
+    assert not is_level_header("Таллис глянул на свой уровень – lv1.")
+    assert is_level_header("Римуру – Потенциальная способность: Ур. 3.")
+    assert is_section_label("Навыки:")
+    assert is_section_label("«Магия.»")
+    assert is_section_label("«Инстинкт Игрока»:")
+    assert not is_section_label("Шарль моргнул:")
+    assert not is_section_label("«Впрочем, неважно».")
+    assert is_bullet_line("· Магия призыва.")
+    assert is_bullet_line("• Активируется при игре.")
+    assert not is_bullet_line("— Магия призыва.")
+    assert not is_bullet_line("······")
+
+
+# --- сверка с исходником: скобки исходника — не всегда система ---------------------
+
+def test_source_marks_skip_spell_shouts_names_chat_and_lead_ins():
+    # В «Рефреше» 【】 исходника — имена заклинаний и песнопения, в «Полоске»
+    # ещё и чат; переводчик передал их кавычками.
+    html = _chapter(
+        "Лили села и повторила жест.",
+        "«Вана Сейдр»!",
+        "«Тепло.»",
+        "Дядя Ли: «Какие ощущения от ожерелья?»",
+        "Шарль моргнул:",
+        "«Отворись же, Пятый Сад! Прозвучи, Девятая Песнь…»",
+        "«Вы проходите обряд очищения особой силой… Обряд завершен.»",
+        "«Индекс загрязнения: 0.»",
+        "Он прочитал сообщения.",
+        "«Лично я считаю, что вы слишком сильно выставились».",
+        "«Борьба за каждый балл – залог успеха всей жизни».",
+    )
+
+    windows = find_windows(html, source_marks={1, 2, 3, 4, 5, 6, 7, 9, 10})
+
+    assert [window.lines for window in windows] == [[
+        "«Вы проходите обряд очищения особой силой… Обряд завершен.»",
+        "«Индекс загрязнения: 0.»",
+    ]]
+    assert windows[0].origin == "source"
+
+
+def test_render_section_labels_as_bold_rows_and_unquoted_titles():
+    block = render_window(
+        ["Шарль, Ур. 1.", "Магия: 【 】", "Навыки:", "【Тяжелое Бремя】", "· Снижает вес экипировки.", "«Магия.»"],
+        "status",
+    )
+    skill = render_window(["«Новичок Восьмого Уровня»:", "• Активируется при игре."], "skill")
+
+    assert "◆ ШАРЛЬ, УР. 1. ◆" in block
+    assert re.search(r"<b [^>]*>Навыки:</b><br />Тяжелое Бремя<br />", block)
+    assert re.search(r"<b [^>]*>Магия:</b></div>$", block)
+    assert "◆ Новичок Восьмого Уровня ◆" in skill
