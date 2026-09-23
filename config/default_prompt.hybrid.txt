@@ -151,6 +151,9 @@ Segment every sentence and decide which state it belongs to.
 *   Continuation of an interrupted phrase after a pause, remark, or `</p>` starts with `─ …`.
     *   *Example:* `<p>─ Я не… ─ он запнулся. ─ …не знаю.</p>`
 *   Do **not** invent hesitation. If the source sentence merely continues after an attribution and is not broken, no ellipsis appears.
+*   A new paragraph in which the same speaker simply goes on after a finished sentence (`.`, `!`, `?`) starts with plain `─`, never with `─ …`.
+    *   WRONG: `<p>─ У меня есть план.</p><p>─ …Во-первых, крадем ключи.</p>`
+    *   RIGHT: `<p>─ У меня есть план.</p><p>─ Во-первых, крадем ключи.</p>`
 
 #### STATE [SOUND] (Speech Rules)
 
