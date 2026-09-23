@@ -12,7 +12,13 @@ source-архивов) по транзакционному протоколу:
 4. подтверждение — чистка; выход без подтверждения — откат; живой процесс
    без подтверждения — оставить всё как есть и записать HEALTH-TIMEOUT
    (живой exe на Windows заблокирован, а медленный первый запуск может
-   ещё стать здоровым — восстанавливать поверх нельзя).
+   ещё стать здоровым — восстанавливать поверх нельзя). Установщик Windows
+   сам выбирает папку, поэтому его хелпер сверяет версию в подтверждении:
+   чужая версия — VERSION-MISMATCH, бэкап и установщик остаются.
+
+Хелпер дублирует свои строки в журнал попытки, а приложение перед его
+запуском оставляет метку (pending-update.json): по ним следующий запуск
+объясняет пользователю, чем кончилась установка.
 """
 import os
 import re
@@ -25,6 +31,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from gemini_translator.utils.io_utils import atomic_write_json
 from gemini_translator.version import __version__
 
 ACK_ENV = "GT_UPDATE_ACK_FILE"
@@ -60,6 +67,16 @@ def update_log_path() -> Path:
     return staging_root() / "updater.log"
 
 
+def attempt_log_path(version_label: str) -> Path:
+    """Строки хелпера одной попытки: по ним следующий запуск объясняет итог."""
+    return staging_root() / f"attempt-{version_label}.log"
+
+
+def setup_log_path(version_label: str) -> Path:
+    """Собственный журнал Inno Setup (ключ /LOG)."""
+    return staging_root() / f"setup-{version_label}.log"
+
+
 def log_update_event(message: str) -> None:
     """Строка в журнал апдейтера; сбой журнала никогда не валит апдейт."""
     try:
@@ -87,8 +104,9 @@ def write_startup_acknowledgement(env=None) -> None:
         path = Path(ack_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"pid": os.getpid(), "version": __version__}
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
+        # Хелпер читает версию из ack, как только увидит файл: под итоговым
+        # именем появляется только дописанный JSON.
+        atomic_write_json(path, payload)
         try:
             del env[ACK_ENV]
         except (KeyError, TypeError):
@@ -118,6 +136,214 @@ def cleanup_stale_staging(max_age_days: int = 7, root=None) -> None:
                 continue
     except Exception:
         pass
+
+
+# --- Итог прошлой установки -----------------------------------------------
+#
+# Хелпер доделывает установку, когда приложения уже нет, и о сбое сказать
+# некому. Поэтому приложение оставляет метку о запущенной установке, хелпер
+# дублирует свои строки в журнал попытки, а следующий запуск по ним
+# объясняет пользователю, чем всё кончилось.
+
+PENDING_UPDATE_FILE = "pending-update.json"
+# Хелпер столько не работает: две минуты ждёт выхода, копирует папку,
+# ставит обновление и 90 секунд ждёт подтверждения. Живой PID старше
+# этого срока уже достался чужому процессу.
+HELPER_MAX_AGE_S = 30 * 60
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+
+
+def pending_update_path() -> Path:
+    return staging_root() / PENDING_UPDATE_FILE
+
+
+def record_pending_update(ctx, helper, now=None) -> None:
+    """Метка запущенной установки; сбой записи не мешает самому обновлению."""
+    if not ctx.expected_version:
+        return
+    payload = {
+        "version": ctx.expected_version,
+        "label": ctx.version_label,
+        "helper_pid": getattr(helper, "pid", None),
+        "executable": ctx.real_executable,
+        "started": time.time() if now is None else now,
+    }
+    try:
+        atomic_write_json(pending_update_path(), payload)
+    except Exception as e:  # noqa: BLE001 — метка вторична, обновление важнее
+        log_update_event(f"could not record pending update: {e}")
+
+
+def read_pending_update():
+    try:
+        with open(pending_update_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(data, dict) or not isinstance(data.get("version"), str)
+            or not data["version"]
+            or not isinstance(data.get("started"), (int, float))):
+        return None
+    return data
+
+
+def clear_pending_update() -> None:
+    try:
+        pending_update_path().unlink()
+    except OSError:
+        pass
+
+
+def pid_alive(pid) -> bool:
+    """Жив ли процесс. На Windows без os.kill: сигнал 0 там — CTRL_C_EVENT,
+    и у процесса без консоли CPython проваливается в TerminateProcess."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        return _windows_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True  # процесс есть, но принадлежит другому пользователю
+    except OSError:
+        return False
+    return True
+
+
+def _windows_pid_alive(pid, kernel32=None) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    if kernel32 is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, code):
+            return False
+        return code.value == _STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@dataclass(frozen=True)
+class PendingUpdateReport:
+    """Итог прошлой установки в виде, готовом для окна сообщения."""
+
+    state: str  # "installed" | "installing" | "failed"
+    version: str
+    title: str = ""
+    text: str = ""
+    informative: str = ""
+    details: str = ""
+
+
+def _attempt_lines(version_label: str) -> list:
+    """Сообщения хелпера из журнала попытки, без меток времени."""
+    if not version_label:
+        return []
+    try:
+        raw = attempt_log_path(version_label).read_bytes()
+    except OSError:
+        return []
+    lines = []
+    # PowerShell (Add-Content -Encoding UTF8) пишет BOM и CRLF
+    for line in raw.decode("utf-8", errors="replace").replace("﻿", "").splitlines():
+        _, marker, message = line.partition("[UPD] ")
+        message = (message if marker else line).strip()
+        if message:
+            lines.append(message)
+    return lines
+
+
+def _parent_dir(path: str) -> str:
+    """Папка файла; путь может быть и виндовым, и posix."""
+    cut = max(path.rfind("\\"), path.rfind("/"))
+    return path[:cut] if cut > 0 else path
+
+
+def _failure_reason(lines, pending) -> str:
+    if not lines:
+        return "Помощник установки не запустился: возможно, его остановил антивирус."
+    joined = "\n".join(lines)
+    if "setup failed" in joined:
+        match = re.search(r"setup failed with exit code (-?\d+)", joined)
+        code = f" (код {match.group(1)})" if match else ""
+        label = str(pending.get("label") or "")
+        return (f"Установщик завершился с ошибкой{code}, прежняя версия "
+                f"восстановлена. Журнал установщика: {setup_log_path(label)}")
+    if "exited without ack" in joined:
+        return "Новая версия закрылась сразу после запуска, поэтому вернулась прежняя."
+    if "app still running" in joined:
+        return "Программа не закрылась вовремя, поэтому установка не началась."
+    if "aborting untouched" in joined:
+        return "Установка не начиналась, программа осталась прежней."
+    return "Установка прервалась."
+
+
+def assess_pending_update(current_version, *, current_executable=None,
+                          download_url="", now=None, alive=None):
+    """Чем кончилась установка, начатая прошлым запуском; None — её не было."""
+    pending = read_pending_update()
+    if pending is None:
+        return None
+    target = pending["version"]
+    if current_version == target:
+        return PendingUpdateReport("installed", target)
+    now = time.time() if now is None else now
+    alive = pid_alive if alive is None else alive
+    if now - pending["started"] < HELPER_MAX_AGE_S and alive(pending.get("helper_pid")):
+        return PendingUpdateReport(
+            "installing", target,
+            title="Идёт установка обновления",
+            text=f"Сейчас устанавливается версия {target}.",
+            informative="Закройте программу, чтобы не мешать установке. "
+                        "Когда она закончится, новая версия откроется сама.")
+    lines = _attempt_lines(str(pending.get("label") or ""))
+    details = "\n".join(lines)
+    if any("health ack received" in line for line in lines):
+        # Новая версия подтвердила запуск, а открыта другая, старая копия.
+        if current_executable is None:
+            current_executable = get_real_executable()
+        return PendingUpdateReport(
+            "failed", target,
+            title="Открыта старая копия программы",
+            text=f"Версия {target} установлена, но сейчас открыта другая копия "
+                 f"программы, версии {current_version}.",
+            informative=f"Новая версия: {pending.get('executable')}\n"
+                        f"Открытая копия: {current_executable}\n\n"
+                        f"Запускайте программу из папки новой версии.",
+            details=details)
+    if any("VERSION-MISMATCH" in line for line in lines):
+        # Повтор ничего не даст: установщик снова поставит версию туда же.
+        folder = _parent_dir(str(pending.get("executable") or ""))
+        advice = (f"Установщик поставил новую версию не в ту папку, из которой "
+                  f"запущена программа ({folder}). Откройте Gemini Translator "
+                  f"из меню «Пуск»: этот ярлык ведёт к новой версии.")
+    else:
+        advice = (f"{_failure_reason(lines, pending)}\n\n"
+                  "Попробуйте обновиться ещё раз кнопкой «Проверить обновления»")
+        advice += f" или скачайте установщик вручную: {download_url}" if download_url else "."
+    return PendingUpdateReport(
+        "failed", target,
+        title="Обновление не установлено",
+        text=f"Обновление до версии {target} не установилось. "
+             f"Сейчас открыта версия {current_version}.",
+        informative=f"{advice}\n\nЖурнал обновления: {update_log_path()}",
+        details=details)
 
 
 # --- Исполняемый файл и окружение -----------------------------------------
@@ -191,6 +417,8 @@ class InstallContext:
     app_pid: int
     real_executable: str
     version_label: str
+    # Версия, которую обязан сообщить новый процесс в ack (release-каналы).
+    expected_version: str = ""
 
 
 def directory_size(path) -> int:
@@ -207,7 +435,7 @@ def directory_size(path) -> int:
 # --- Windows: установленная версия (Inno Setup) ---------------------------
 
 _WINDOWS_INSTALLED_TEMPLATE = r"""$ErrorActionPreference = 'Continue'
-function Log($m) { Add-Content -LiteralPath @@LOG@@ -Value ("[{0}] [UPD] {1}" -f (Get-Date -Format o), $m) }
+function Log($m) { $line = "[{0}] [UPD] {1}" -f (Get-Date -Format o), $m; Add-Content -LiteralPath @@LOG@@ -Value $line; Add-Content -LiteralPath @@ATTEMPT@@ -Value $line -Encoding UTF8 }
 function Restore {
   Log 'restoring backup'
   robocopy @@BACKUP@@ @@APPDIR@@ /MIR /R:2 /W:2 | Out-Null
@@ -221,9 +449,9 @@ Log 'creating snapshot backup'
 robocopy @@APPDIR@@ @@BACKUP@@ /MIR /R:2 /W:2 | Out-Null
 if ($LASTEXITCODE -ge 8) { Log 'snapshot failed; aborting untouched'; exit 1 }
 Log 'running setup'
-$setup = Start-Process -FilePath @@SETUP@@ -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+$setup = Start-Process -FilePath @@SETUP@@ -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',@@SETUP_LOG_ARG@@ -Wait -PassThru
 if ($setup.ExitCode -ne 0) {
-  Log ('setup failed with exit code ' + $setup.ExitCode)
+  Log ('setup failed with exit code ' + $setup.ExitCode + '; setup log ' + @@SETUP_LOG@@)
   if (Restore) { Start-Process -FilePath @@EXE@@ }
   exit 1
 }
@@ -233,10 +461,18 @@ $app = Start-Process -FilePath @@EXE@@ -PassThru
 $deadline = (Get-Date).AddSeconds(@@HEALTH@@)
 while ((Get-Date) -lt $deadline) {
   if (Test-Path -LiteralPath @@ACK@@) {
-    Log 'health ack received; cleaning up'
-    Remove-Item -Recurse -Force -LiteralPath @@BACKUP@@ -ErrorAction SilentlyContinue
-    Remove-Item -Force -LiteralPath @@SETUP@@ -ErrorAction SilentlyContinue
-    exit 0
+    $acked = $null
+    try { $acked = (Get-Content -LiteralPath @@ACK@@ -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop).version } catch { }
+    if ($acked) {
+      if ("$acked" -ne @@VERSION@@) {
+        Log ('VERSION-MISMATCH: started copy reports ' + $acked + ', expected ' + @@VERSION@@ + '; keeping backup and staged installer')
+        exit 3
+      }
+      Log 'health ack received; cleaning up'
+      Remove-Item -Recurse -Force -LiteralPath @@BACKUP@@ -ErrorAction SilentlyContinue
+      Remove-Item -Force -LiteralPath @@SETUP@@ -ErrorAction SilentlyContinue
+      exit 0
+    }
   }
   if ($app.HasExited) {
     Log 'new process exited without ack; rolling back'
@@ -250,24 +486,31 @@ exit 2"""
 
 
 def render_windows_installed_script(*, app_pid, setup_path, app_dir, backup_dir,
-                                    real_exe, ack_path, log_path) -> str:
+                                    real_exe, ack_path, log_path, attempt_log_path,
+                                    setup_log_path, expected_version) -> str:
     return _render(_WINDOWS_INSTALLED_TEMPLATE, {
         "PID": int(app_pid),
         "WAIT": APP_EXIT_WAIT_S,
         "HEALTH": HEALTH_WINDOW_S,
         "LOG": ps_quote(log_path),
+        "ATTEMPT": ps_quote(attempt_log_path),
         "SETUP": ps_quote(setup_path),
+        # Start-Process склеивает аргументы через пробел без кавычек;
+        # кавычки внутри элемента держат путь с пробелами целым для Inno.
+        "SETUP_LOG_ARG": ps_quote(f'/LOG="{setup_log_path}"'),
+        "SETUP_LOG": ps_quote(setup_log_path),
         "APPDIR": ps_quote(app_dir),
         "BACKUP": ps_quote(backup_dir),
         "EXE": ps_quote(real_exe),
         "ACK": ps_quote(ack_path),
+        "VERSION": ps_quote(expected_version),
     })
 
 
 # --- Windows: портативная версия ------------------------------------------
 
 _WINDOWS_PORTABLE_TEMPLATE = r"""$ErrorActionPreference = 'Continue'
-function Log($m) { Add-Content -LiteralPath @@LOG@@ -Value ("[{0}] [UPD] {1}" -f (Get-Date -Format o), $m) }
+function Log($m) { $line = "[{0}] [UPD] {1}" -f (Get-Date -Format o), $m; Add-Content -LiteralPath @@LOG@@ -Value $line; Add-Content -LiteralPath @@ATTEMPT@@ -Value $line -Encoding UTF8 }
 Log ('waiting for app pid ' + @@PID@@)
 Wait-Process -Id @@PID@@ -Timeout @@WAIT@@ -ErrorAction SilentlyContinue
 if (Get-Process -Id @@PID@@ -ErrorAction SilentlyContinue) { Log 'app still running; aborting untouched'; exit 1 }
@@ -309,16 +552,27 @@ exit 2"""
 
 
 def render_windows_portable_script(*, app_pid, staged_exe, real_exe,
-                                   ack_path, log_path) -> str:
+                                   ack_path, log_path, attempt_log_path) -> str:
     return _render(_WINDOWS_PORTABLE_TEMPLATE, {
         "PID": int(app_pid),
         "WAIT": APP_EXIT_WAIT_S,
         "HEALTH": HEALTH_WINDOW_S,
         "LOG": ps_quote(log_path),
+        "ATTEMPT": ps_quote(attempt_log_path),
         "STAGED": ps_quote(staged_exe),
         "EXE": ps_quote(real_exe),
         "ACK": ps_quote(ack_path),
     })
+
+
+def _fresh_attempt_log(version_label: str) -> Path:
+    """Путь журнала попытки без строк прошлой попытки с тем же ярлыком."""
+    path = attempt_log_path(version_label)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return path
 
 
 def _write_helper_script(name: str, content: str) -> Path:
@@ -337,6 +591,8 @@ def _powershell_argv(script_path) -> list:
 
 def prepare_windows_installed(staged_setup, ctx: InstallContext) -> subprocess.Popen:
     """Готовит и запускает хелпер установки Setup.exe с бэкапом каталога."""
+    if not ctx.expected_version:
+        raise UpdateInstallError("Не указана версия обновления, установка не начиналась")
     app_dir = Path(ctx.real_executable).parent
     root = staging_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -355,10 +611,15 @@ def prepare_windows_installed(staged_setup, ctx: InstallContext) -> subprocess.P
     script = render_windows_installed_script(
         app_pid=ctx.app_pid, setup_path=str(staged_setup), app_dir=str(app_dir),
         backup_dir=str(backup_dir), real_exe=ctx.real_executable,
-        ack_path=str(ack_path), log_path=str(update_log_path()))
+        ack_path=str(ack_path), log_path=str(update_log_path()),
+        attempt_log_path=str(_fresh_attempt_log(ctx.version_label)),
+        setup_log_path=str(setup_log_path(ctx.version_label)),
+        expected_version=ctx.expected_version)
     script_path = _write_helper_script(f"helper-installed-{ctx.version_label}.ps1", script)
     log_update_event(f"launching installed-update helper for {ctx.version_label}")
-    return launch_detached_helper(_powershell_argv(script_path), cwd=root)
+    helper = launch_detached_helper(_powershell_argv(script_path), cwd=root)
+    record_pending_update(ctx, helper)
+    return helper
 
 
 # --- Git-источники --------------------------------------------------------
@@ -473,7 +734,34 @@ def log(message):
         pass
 
 
+def windows_pid_alive(pid, kernel32=None):
+    import ctypes
+    from ctypes import wintypes
+
+    if kernel32 is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, code):
+            return False
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def pid_alive(pid):
+    # На Windows сигнал 0 — это CTRL_C_EVENT: без консоли os.kill
+    # проваливается в TerminateProcess и убивает закрывающееся приложение.
+    if sys.platform == "win32":
+        return windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -679,7 +967,7 @@ def prepare_source_archive(staged_zip, root, ctx: InstallContext,
 
 _MACOS_TEMPLATE = r"""#!/bin/bash
 exec >> @@LOG@@ 2>&1
-log() { echo "[$(date -u +%FT%TZ)] [UPD] $1"; }
+log() { local line="[$(date -u +%FT%TZ)] [UPD] $1"; echo "$line"; echo "$line" >> @@ATTEMPT@@; }
 LIVE=@@BUNDLE@@
 STAGED=@@STAGED@@
 ACK=@@ACK@@
@@ -746,12 +1034,14 @@ log "HEALTH-TIMEOUT: process alive without ack; keeping $LIVE.old and staged fil
 exit 2"""
 
 
-def render_macos_script(*, app_pid, staged, bundle, binary_name, ack, log, is_dmg) -> str:
+def render_macos_script(*, app_pid, staged, bundle, binary_name, ack, log, attempt,
+                        is_dmg) -> str:
     return _render(_MACOS_TEMPLATE, {
         "PID": int(app_pid),
         "WAIT_ITER": APP_EXIT_WAIT_S * 2,      # шаг 0.5 с
         "HEALTH_ITER": HEALTH_WINDOW_S * 2,
         "LOG": sh_quote(log),
+        "ATTEMPT": sh_quote(attempt),
         "BUNDLE": sh_quote(bundle),
         "STAGED": sh_quote(staged),
         "ACK": sh_quote(ack),
@@ -791,13 +1081,16 @@ def prepare_macos(staged_path, ctx: InstallContext) -> subprocess.Popen:
         app_pid=ctx.app_pid, staged=str(staged_path), bundle=bundle,
         binary_name=os.path.basename(ctx.real_executable),
         ack=str(ack_path), log=str(update_log_path()),
+        attempt=str(_fresh_attempt_log(ctx.version_label)),
         is_dmg=str(staged_path).lower().endswith(".dmg"))
     script_path = root / f"helper-macos-{ctx.version_label}.sh"
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(script)
     os.chmod(script_path, 0o700)
     log_update_event(f"launching macOS-update helper for {ctx.version_label}")
-    return launch_detached_helper(["/bin/bash", str(script_path)], cwd=root)
+    helper = launch_detached_helper(["/bin/bash", str(script_path)], cwd=root)
+    record_pending_update(ctx, helper)
+    return helper
 
 
 def prepare_windows_portable(staged_exe, ctx: InstallContext) -> subprocess.Popen:
@@ -812,7 +1105,10 @@ def prepare_windows_portable(staged_exe, ctx: InstallContext) -> subprocess.Pope
     script = render_windows_portable_script(
         app_pid=ctx.app_pid, staged_exe=str(staged_exe),
         real_exe=ctx.real_executable, ack_path=str(ack_path),
-        log_path=str(update_log_path()))
+        log_path=str(update_log_path()),
+        attempt_log_path=str(_fresh_attempt_log(ctx.version_label)))
     script_path = _write_helper_script(f"helper-portable-{ctx.version_label}.ps1", script)
     log_update_event(f"launching portable-update helper for {ctx.version_label}")
-    return launch_detached_helper(_powershell_argv(script_path), cwd=root)
+    helper = launch_detached_helper(_powershell_argv(script_path), cwd=root)
+    record_pending_update(ctx, helper)
+    return helper
