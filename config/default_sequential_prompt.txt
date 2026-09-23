@@ -44,6 +44,8 @@ Formatting examples:
 {format_examples}
 </formatting_examples>
 
+{system_text_rules}
+
 ## 5. HTML CONTRACT
 Preserve tags, comments, attributes, ids, classes, styles, media placeholders, and document order unless paragraph restructuring is required for natural Russian syntax. Translate visible text only.
 

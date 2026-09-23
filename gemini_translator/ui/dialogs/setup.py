@@ -3396,6 +3396,7 @@ class InitialSetupPage(ShellPage):
                 'chunk_on_error',
                 'sequential_translation',
                 'sequential_translation_splits',
+                'system_text_rules',
                 'task_size_limit',
                 'task_size_unit',
             )):

@@ -113,6 +113,7 @@ _HYBRID_TRANSLATION_PROMPT_FILE = get_resource_path("config/default_prompt.hybri
 _BASIC_TRANSLATION_PROMPT_FILE = get_resource_path("config/default_basic_translation_prompt.txt")
 _SHORT_BASIC_TRANSLATION_PROMPT_FILE = get_resource_path("config/default_basic_translation_prompt_short.txt")
 _SEQUENTIAL_PROMPT_FILE = get_resource_path("config/default_sequential_prompt.txt")
+_SYSTEM_TEXT_RULES_FILE = get_resource_path("config/system_text_rules.txt")
 _GLOSSARY_PROMPT_FILE = get_resource_path("config/default_glossary_prompt.txt")
 _GENRE_GLOSSARY_PROMPT_FILE = get_resource_path("config/default_genre_promt.txt")
 _CORRECTION_PROMPT_FILE = get_resource_path("config/default_correction_prompt.txt")
@@ -264,6 +265,16 @@ def _load_default_sequential_prompt():
             return _DEFAULT_SEQUENTIAL_PROMPT_TEXT
     return _DEFAULT_SEQUENTIAL_PROMPT_TEXT
 
+def _load_system_text_rules():
+    """Правила оформления системного текста LitRPG (флажок в режиме обработки)."""
+    if _SYSTEM_TEXT_RULES_FILE.exists():
+        try:
+            with open(_SYSTEM_TEXT_RULES_FILE, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception:
+            return ""
+    return ""
+
 def _load_default_glossary_prompt():
     if _GLOSSARY_PROMPT_FILE.exists():
         try:
@@ -402,6 +413,7 @@ _DEFAULT_PROMPT = ""
 _DEFAULT_BASIC_TRANSLATION_PROMPT = ""
 _SHORT_BASIC_TRANSLATION_PROMPT = ""
 _DEFAULT_SEQUENTIAL_PROMPT = ""
+_SYSTEM_TEXT_RULES = ""
 _DEFAULT_GLOSSARY_PROMPT = ""
 _DEFAULT_WORD_EXCEPTIONS = ""
 _DEFAULT_CORRECTION_PROMPT = ""
@@ -1200,7 +1212,7 @@ def _refresh_dynamic_provider_models(provider_id: str, force: bool = False) -> d
 
 # --- ЭТАП 3: ГЛАВНАЯ ФУНКЦИЯ-ИНИЦИАЛИЗАТОР ---
 def initialize_configs():
-    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_BASIC_TRANSLATION_PROMPT, _SHORT_BASIC_TRANSLATION_PROMPT, _DEFAULT_SEQUENTIAL_PROMPT, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS, _DYNAMIC_PROVIDER_MODELS, _DYNAMIC_PROVIDER_MODELS_TS
+    global _API_PROVIDERS, _DEFAULT_PROMPT, _DEFAULT_BASIC_TRANSLATION_PROMPT, _SHORT_BASIC_TRANSLATION_PROMPT, _DEFAULT_SEQUENTIAL_PROMPT, _SYSTEM_TEXT_RULES, _DEFAULT_GLOSSARY_PROMPT, _DEFAULT_CORRECTION_PROMPT, _DEFAULT_UNTRANSLATED_PROMPT, _DEFAULT_MANUAL_TRANSLATION_PROMPT, _DEFAULT_WORD_EXCEPTIONS, _ALL_MODELS, _PROVIDER_DISPLAY_MAP, _ALL_TRANSLATED_SUFFIXES, _INTERNAL_PROMPTS, _DYNAMIC_PROVIDER_MODELS, _DYNAMIC_PROVIDER_MODELS_TS
     
     print("[CONFIG INFO] Централизованная инициализация конфигураций…")
     _API_PROVIDERS = _load_providers_config()
@@ -1208,6 +1220,7 @@ def initialize_configs():
     _DEFAULT_BASIC_TRANSLATION_PROMPT = _load_default_basic_translation_prompt()
     _SHORT_BASIC_TRANSLATION_PROMPT = _load_short_basic_translation_prompt()
     _DEFAULT_SEQUENTIAL_PROMPT = _load_default_sequential_prompt()
+    _SYSTEM_TEXT_RULES = _load_system_text_rules()
     _DEFAULT_GLOSSARY_PROMPT = _load_default_glossary_prompt()
     _DEFAULT_WORD_EXCEPTIONS = _load_default_word_exceptions()
     _DEFAULT_CORRECTION_PROMPT = _load_default_correction_prompt()
@@ -1275,6 +1288,9 @@ def builtin_translation_prompt_variants():
 def default_sequential_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_SEQUENTIAL_PROMPT
+def system_text_rules():
+    _ensure_configs_initialized()
+    return _SYSTEM_TEXT_RULES
 def default_glossary_prompt():
     _ensure_configs_initialized()
     return _DEFAULT_GLOSSARY_PROMPT

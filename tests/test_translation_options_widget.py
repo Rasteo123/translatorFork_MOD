@@ -215,6 +215,15 @@ class TranslationOptionsWidgetTaskSizeTests(unittest.TestCase):
         self.assertTrue(settings["use_batching"])
         self.assertTrue(settings["chunking"])
 
+    def test_system_text_rules_checkbox_is_off_by_default_and_round_trips(self):
+        widget = self._create_widget()
+
+        self.assertFalse(widget.get_settings()["system_text_rules"])
+        widget.set_settings({"system_text_rules": True})
+
+        self.assertTrue(widget.system_text_rules_checkbox.isChecked())
+        self.assertTrue(widget.get_settings()["system_text_rules"])
+
     def test_orchestration_settings_round_trip(self):
         widget = self._create_widget()
 

@@ -54,8 +54,11 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
         sequential_chapter_order=None,
         sequential_chain_starts=None,
         sequential_reference_char_limit=60000,
+        system_text_rules=False,
     ):
         self.custom_prompt = custom_prompt
+        # Флажок «Системный текст LitRPG»: правила оформления окон системы.
+        self.system_text_rules = bool(system_text_rules)
         self.context_manager = context_manager
         self.use_system_instruction = use_system_instruction
         self.sequential_mode = bool(sequential_mode)
@@ -626,12 +629,23 @@ Any earlier instruction about raw HTML or chapter boundary markers is overridden
         # 2. Формируем пользовательский промпт, который теперь НИЧЕГО не знает о системных инструкциях.
         #    Он просто заполняет шаблон основного промпта.
         effective_prompt = self._effective_translation_prompt()
+        # Правила системного текста: в своё место шаблона, иначе перед примерами
+        # оформления, а в шаблоне без примеров safe_format допишет их в конец.
+        system_rules = api_config.system_text_rules() if self.system_text_rules else ""
+        if (
+            system_rules
+            and "{system_text_rules}" not in effective_prompt
+            and "{format_examples}" in effective_prompt
+        ):
+            examples_content = f"{system_rules}\n\n{examples_content}" if examples_content else system_rules
+            system_rules = ""
         user_prompt = safe_format(
             effective_prompt,
             text=text_for_api,
             glossary=glossary_string if glossary_string and "Глоссарий пуст" not in glossary_string else "",
             format_examples=examples_content, # <-- Вставляем динамические примеры
             previous_chapter_reference=previous_chapter_reference or "",
+            system_text_rules=system_rules,
         )
         
         # 3. Собираем отчет (без изменений)
