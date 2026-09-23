@@ -342,7 +342,10 @@ def is_key_value(text: str) -> bool:
         if not _mostly_alphanumeric(value):
             continue
         if (ends_with_period or ends_with_ellipsis) and not stat_key:
-            if ends_with_ellipsis or len(value) > 40 or not (value[0].isupper() or value[0].isdigit()):
+            numeric = any(char.isdigit() for char in value)
+            if ends_with_ellipsis or not (value[0].isupper() or value[0].isdigit()):
+                continue
+            if len(value) > 40 and not numeric:
                 continue
         return True
     return False

@@ -814,3 +814,13 @@ def test_martial_soul_card_with_long_values_is_a_status():
     windows = find_windows(html)
 
     assert [(window.kind, len(window.lines)) for window in windows] == [("status", 3)]
+
+
+def test_numeric_values_after_an_unknown_key_are_data():
+    html = _chapter(
+        "Миньон ближнего боя: 445 здоровья, 12 силы атаки, броня 2, сопротивление магии 0.",
+        "Миньон дальнего боя: 280 здоровья, 23 силы атаки, броня 0.",
+        "Он всё запомнил.",
+    )
+
+    assert [(window.kind, len(window.lines)) for window in find_windows(html)] == [("status", 2)]
