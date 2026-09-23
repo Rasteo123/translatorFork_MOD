@@ -559,7 +559,7 @@ def test_span_opener_with_attribution_is_not_a_span():
 
 
 def test_span_without_closing_within_reach_is_ignored():
-    html = _chapter("[Начало без конца", *["Обычный абзац." for _ in range(14)], "конец]")
+    html = _chapter("[Начало без конца", *["Обычный абзац." for _ in range(24)], "конец]")
 
     assert find_windows(html) == []
 
@@ -612,3 +612,165 @@ def test_default_exclusion_skips_chapter_end_markers():
     html = _chapter("[Динь! Награда]", "Текст.", "[Конец главы]", "Текст.", "[Продолжение следует…]")
 
     assert [window.lines for window in find_windows(html)] == [["[Динь! Награда]"]]
+
+
+
+# --- формы из аудита тринадцати книг --------------------------------------------
+
+def test_status_card_lines_ending_with_periods_form_a_window():
+    html = _chapter("Титул: Нет.", "Раса: Лавовый дракон.", "Здоровье: 31/31.", "Он усмехнулся.")
+
+    windows = find_windows(html)
+
+    assert len(windows) == 1 and windows[0].kind == "status"
+    assert windows[0].lines == ["Титул: Нет.", "Раса: Лавовый дракон.", "Здоровье: 31/31."]
+
+
+def test_prose_with_colon_and_period_is_not_a_status_card():
+    html = _chapter("Он сказал: привет.", "Она ответила: пока.")
+
+    assert find_windows(html) == []
+
+
+def test_quoted_key_is_a_key_value_line():
+    html = _chapter("[Имя: Цзян Ю]", "«Уровень»: средний уровень первого ранга.")
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert len(windows) == 1 and len(windows[0].lines) == 2
+    assert re.search(r"<b [^>]*>Уровень:</b> средний уровень первого ранга\.", block)
+
+
+def test_guillemet_system_message_is_a_window():
+    html = _chapter(
+        "Он замер.",
+        "«Динь! Ваш новый чит доставлен! Пожалуйста, распишитесь в получении!»",
+        "«Система, ты можешь объяснить, в чем твоя польза?»",
+        "«Система?»",
+        "«Динь!»",
+    )
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert [window.lines for window in windows] == [["«Динь! Ваш новый чит доставлен! Пожалуйста, распишитесь в получении!»"]]
+    assert "Динь! Ваш новый чит доставлен! Пожалуйста, распишитесь в получении!" in block
+    assert "«" not in block.split(">", 1)[1]
+
+
+def test_dash_bracket_system_line_is_a_window_but_spell_shout_is_not():
+    html = _chapter(
+        "— [Динь! Анализ завершен. Обнаружен талант первого ранга: «Выносливость»].",
+        "— [Шторм Душ]!",
+    )
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert [len(window.lines) for window in windows] == [1]
+    assert block.split(">", 1)[1].startswith("Динь! Анализ завершен.")
+    assert "Выносливость»]." not in block and "Выносливость»." in block
+
+
+def test_nested_bracket_groups_inside_a_full_line():
+    line = "[Система: Динь! Поздравляем игрока с получением [карты здания] × 1 и [специальной карты] × 1]"
+    html = _chapter(line)
+
+    windows = find_windows(html)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert [window.lines for window in windows] == [[line]]
+    assert "получением [карты здания] × 1" in block
+
+
+def test_keyed_line_with_semicolon_stats_is_data():
+    html = _chapter(
+        "[Мечник Света Магада]; Уровень: 85. Класс: Механический гуманоид.",
+        "[Мечник Теней Лунгада]; Уровень: 85. Класс: Механический гуманоид.",
+    )
+
+    assert [len(window.lines) for window in find_windows(html)] == [2]
+
+
+def test_parenthetical_lines_are_not_key_values():
+    html = _chapter("(Благодарность за донаты: Лилит)", "(Благодарность за лунный билет: книжный друг)")
+
+    assert find_windows(html) == []
+
+
+def test_default_exclusion_covers_author_note_abbreviations():
+    html = _chapter("[Прим. Авт.: по сеттингу третьей части]", "(P.S.: Папа научил меня этому.)", "【Серийные Прыжки】")
+
+    assert [window.lines for window in find_windows(html)] == [["【Серийные Прыжки】"]]
+
+
+def test_span_reaches_twenty_paragraphs():
+    html = _chapter("[Список:", *[f"({index}) пункт" for index in range(1, 18)], "последний пункт]", "Проза.")
+
+    assert [len(window.lines) for window in find_windows(html)] == [19]
+
+
+# --- уточнения после аудита тринадцати книг ---------------------------------------
+
+def test_sound_only_quotes_are_not_windows():
+    html = _chapter("«Динь-дон! Динь-дон!»", "«Динь… динь… динь!»", "«Динь! Ваш чит доставлен, распишитесь в получении!»")
+
+    assert [window.lines for window in find_windows(html)] == [["«Динь! Ваш чит доставлен, распишитесь в получении!»"]]
+
+
+def test_quoted_thought_with_a_generic_first_word_is_not_a_window():
+    html = _chapter(
+        "«Открыть через десять дней, иначе пеняйте на себя!»",
+        "«Задание нельзя откладывать, нужно поторапливаться…»",
+        "«Задание: собрать десять лунных трав до заката.»",
+        "«Новое задание получено: спасти старосту деревни.»",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [[
+        "«Задание: собрать десять лунных трав до заката.»",
+        "«Новое задание получено: спасти старосту деревни.»",
+    ]]
+
+
+def test_dashed_incantations_are_not_windows():
+    html = _chapter(
+        "— [Обнажись, сияющий клинок короля, повелитель магических мечей]!",
+        "Он взмахнул мечом.",
+        "— [У тебя осталось всего триста баллов. Подумай хорошенько].",
+        "— [Суждения Системы непогрешимы].",
+        "— [Вниманию жителей города Ботон! В нашем городе распространяется вирус.]",
+    )
+
+    windows = find_windows(html)
+
+    assert [len(window.lines) for window in windows] == [3]
+    assert windows[0].lines[0].startswith("— [У тебя осталось")
+
+
+def test_book_metadata_lines_are_not_status_cards():
+    html = _chapter("Название: Герой, призванный в покои Владыки.", "Автор: Старик-пройдоха Юй.", "Статус: Завершено.")
+    heading = _chapter("Глава 9: Нина.", "Титул: Нет.")
+
+    assert find_windows(html) == []
+    assert find_windows(heading) == []
+
+
+def test_default_exclusion_skips_donation_thanks():
+    html = _chapter("Благодарю за донаты: 2021, Годзилла.", "Благодарю за пожертвования пользователей: 2021, 2022")
+
+    assert find_windows(html) == []
+
+
+def test_book_info_page_is_not_a_status_card():
+    html = _chapter(
+        "Название: Я посмотрю, насколько отважен этот Герой.",
+        "Автор: Сверхзвуковой Бульдозер.",
+        "Статус: Завершено.",
+        "Количество слов: 2,1 миллиона.",
+        "Количество глав: 1274.",
+        "ID книги: 7253043603310644263.",
+        "Просмотров: 19178.",
+    )
+
+    assert find_windows(html) == []
