@@ -51,6 +51,7 @@ from gemini_translator.utils.system_windows import (
     SAMPLE_WINDOWS,
     DetectorSettings,
     apply_project,
+    find_source_epub,
     render_preview_document,
     render_window,
     scan_project,
@@ -58,6 +59,7 @@ from gemini_translator.utils.system_windows import (
 )
 
 UI_STATE_KEY = "system_windows_ui"
+_ORIGIN_LABELS = {"brackets": "скобки", "quotes": "кавычки", "pairs": "пары", "source": "исходник"}
 _COLOR_COLUMNS = (("border", "Рамка"), ("background", "Фон"), ("text", "Текст"), ("accent", "Заголовок"))
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _PREVIEW_FILE = "translatorfork_system_windows_preview.html"
@@ -218,6 +220,25 @@ class SystemWindowsPage(ShellPage):
         self.scan_button.clicked.connect(self.scan)
         project_row.addWidget(self.scan_button)
         layout.addLayout(project_row)
+
+        source_row = QHBoxLayout()
+        source_row.setSpacing(_ROW_GAP)
+        self.source_check = QCheckBox("Сверять с исходником")
+        self.source_check.setChecked(True)
+        self.source_check.setToolTip(
+            "Строки перевода напротив скобок оригинала считаются системными,\n"
+            "даже если модель убрала скобки при переводе."
+        )
+        source_row.addWidget(self.source_check)
+        self.source_edit = QLineEdit()
+        self.source_edit.setPlaceholderText("Исходный EPUB (ищется в папке проекта)")
+        self.source_edit.setClearButtonEnabled(True)
+        source_row.addWidget(self.source_edit, 1)
+        source_browse = QPushButton("Обзор")
+        source_browse.setObjectName("compactActionButton")
+        source_browse.clicked.connect(self._choose_source)
+        source_row.addWidget(source_browse)
+        layout.addLayout(source_row)
         self._set_status("Проект не выбран")
         return self.header_card
 
@@ -329,8 +350,8 @@ class SystemWindowsPage(ShellPage):
         self.table_stack = QStackedWidget()
         self.empty_state = self._build_empty_state()
         self.table_stack.addWidget(self.empty_state)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["", "Глава", "Тип", "Строк", "Текст"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["", "Глава", "Тип", "Строк", "Текст", "Как найдено"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -342,6 +363,7 @@ class SystemWindowsPage(ShellPage):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setColumnWidth(1, 220)
         self.table.setColumnWidth(2, 170)
         self.table.setColumnWidth(3, 64)
@@ -449,6 +471,22 @@ class SystemWindowsPage(ShellPage):
     def _on_project_changed(self, text: str) -> None:
         if not self._scans:
             self._set_status("Проект выбран" if text.strip() else "Проект не выбран")
+        folder = text.strip()
+        if folder and os.path.isdir(folder):
+            found = find_source_epub(folder)
+            self.source_edit.setText(found or "")
+
+    def _choose_source(self):
+        start = self.source_edit.text().strip() or self.project_edit.text().strip()
+        path, _filter = QFileDialog.getOpenFileName(self, "Исходный EPUB", start, "EPUB (*.epub)")
+        if path:
+            self.source_edit.setText(path)
+
+    def _source_epub(self):
+        if not self.source_check.isChecked():
+            return None
+        path = self.source_edit.text().strip()
+        return path if path and os.path.isfile(path) else None
 
     # --- настройки ----------------------------------------------------------
 
@@ -506,6 +544,8 @@ class SystemWindowsPage(ShellPage):
                     self.colors_table.item(row, column).setText(value)
         self.settings_disclosure.set_open(bool(state.get("settings_open", False)))
         self.colors_disclosure.set_open(bool(state.get("colors_open", False)))
+        if "use_source" in state:
+            self.source_check.setChecked(bool(state["use_source"]))
 
     def _save_ui_state(self):
         manager = self._settings_manager()
@@ -523,6 +563,7 @@ class SystemWindowsPage(ShellPage):
             "colors": colors,
             "settings_open": self.settings_disclosure.is_open(),
             "colors_open": self.colors_disclosure.is_open(),
+            "use_source": self.source_check.isChecked(),
         }
         try:
             manager.save_ui_state({UI_STATE_KEY: state})
@@ -583,6 +624,12 @@ class SystemWindowsPage(ShellPage):
                 text_item = QTableWidgetItem(preview_text)
                 text_item.setToolTip("\n".join(candidate.lines))
                 self.table.setItem(row, 4, text_item)
+                origin_item = QTableWidgetItem(_ORIGIN_LABELS.get(candidate.origin, candidate.origin))
+                origin_item.setToolTip(
+                    "скобки: строки в скобках или с тире перед скобкой; кавычки: сообщение в «кавычках»;\n"
+                    "пары: карточка «ключ: значение»; исходник: в оригинале строка в скобках, перевод их потерял."
+                )
+                self.table.setItem(row, 5, origin_item)
 
     def _row_candidate(self, row):
         item = self.table.item(row, 0)
@@ -806,9 +853,10 @@ class SystemWindowsPage(ShellPage):
             QMessageBox.warning(self, "Регулярное выражение", f"Не удалось разобрать исключение: {exc}")
             return
         self._save_ui_state()
-        self._log("Ищу системные окна…")
+        source_epub = self._source_epub()
+        self._log("Ищу системные окна…" + (" Сверяю с исходником." if source_epub else ""))
         self._start(
-            scan_project, folder, settings,
+            scan_project, folder, settings, source_epub=source_epub,
             on_done=self.set_scan_results, busy_label="Ищу окна…", busy_button=self.scan_button,
         )
 

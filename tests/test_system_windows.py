@@ -824,3 +824,107 @@ def test_numeric_values_after_an_unknown_key_are_data():
     )
 
     assert [(window.kind, len(window.lines)) for window in find_windows(html)] == [("status", 2)]
+
+
+# --- сверка с исходником -------------------------------------------------------
+
+from gemini_translator.utils.system_windows import (  # noqa: E402
+    source_paragraphs,
+    source_marked_indices,
+)
+
+
+def _source(*paragraphs):
+    body = "".join(f"<p>{text}</p>" for text in paragraphs)
+    return f'<html><body><h1>第1章</h1>{body}</body></html>'
+
+
+def test_source_paragraphs_from_p_tags_and_from_br_separated_text():
+    assert source_paragraphs(_source("一", "【二】", "三")) == ["一", "【二】", "三"]
+    body = "<html><body><h1>第1章</h1> 一行。<br /><br /> 【标记】！ <br /><br /> 三行。</body></html>"
+    assert source_paragraphs(body) == ["一行。", "【标记】！", "三行。"]
+
+
+def test_source_marked_quoted_line_becomes_a_window():
+    source = _source("翌日，太阳升起。", "【标记】！", "他愣住了。")
+    html = _chapter("На следующий день взошло солнце.", "«Метка»!", "Он замер.")
+
+    windows = find_windows(html, source_html=source)
+    block = render_window(windows[0].lines, windows[0].kind)
+
+    assert [window.lines for window in windows] == [["«Метка»!"]]
+    assert windows[0].origin == "source"
+    assert "Метка!" in block and "«" not in block.split(">", 1)[1]
+
+
+def test_source_marks_skip_dialogue_lines_and_garbage():
+    source = _source("他大喊。", "【福音！】", "【就这？】", "他笑了。")
+    html = _chapter("Он закричал.", "— Евангелие!", "***", "Он засмеялся.")
+
+    assert find_windows(html, source_html=source) == []
+
+
+def test_source_marks_survive_a_merged_paragraph():
+    source = _source("第一段很长很长很长很长很长很长。", "第二段也很长很长很长很长很长很长。", "第三段还是很长很长很长很长很长。", "【『追猎』判定中……『追猎』成功！】", "结束。")
+    html = _chapter(
+        "Первый абзац длинный, очень длинный, и второй абзац с ним слился в один длинный абзац перевода.",
+        "Третий абзац тоже довольно длинный, как и полагается абзацу прозы.",
+        "«Проверка „Преследования“… Успех!»",
+        "Конец.",
+    )
+
+    windows = find_windows(html, source_html=source)
+
+    assert [window.lines for window in windows] == [["«Проверка „Преследования“… Успех!»"]]
+
+
+def test_source_marks_do_not_hide_bracket_detection_and_join_runs():
+    source = _source("【血量：90%】", "【锻炼中……臂力+1】", "他点头。")
+    html = _chapter("[Здоровье: 90%]", "«Тренировка… сила рук +1»", "Он кивнул.")
+
+    windows = find_windows(html, source_html=source)
+
+    assert [window.lines for window in windows] == [["[Здоровье: 90%]", "«Тренировка… сила рук +1»"]]
+    assert windows[0].origin == "brackets"
+
+
+def test_source_marked_indices_reports_positions():
+    source = _source("一", "【二】", "三")
+    html = _chapter("Один.", "«Два».", "Три.")
+
+    assert source_marked_indices(html, source) == {1}
+
+
+def test_scan_project_reads_the_source_epub(tmp_path):
+    import zipfile
+
+    project = _windows_project(tmp_path)
+    (project / "OEBPS/chapter2_translated_gemini.html").write_text(
+        _chapter("Утро.", "«Метка»!", "Он замер."), encoding="utf-8",
+    )
+    epub = tmp_path / "book.epub"
+    with zipfile.ZipFile(epub, "w") as archive:
+        archive.writestr("OEBPS/chapter1.xhtml", _source("早上。", "他说。", "他走了。", "他笑。"))
+        archive.writestr("OEBPS/chapter2.xhtml", _source("早上。", "【标记】！", "他愣住了。"))
+
+    scans = scan_project(project, source_epub=str(epub))
+
+    assert [len(scan.candidates) for scan in scans] == [2, 1]
+    assert scans[1].candidates[0].origin == "source"
+
+
+def test_find_source_epub_picks_the_archive_that_holds_the_chapters(tmp_path):
+    import zipfile
+
+    from gemini_translator.utils.system_windows import find_source_epub
+
+    project = _windows_project(tmp_path)
+    with zipfile.ZipFile(project / "Книга (RU).epub", "w") as archive:
+        archive.writestr("OEBPS/chapter1_translated.xhtml", "<p>перевод</p>")
+    with zipfile.ZipFile(project / "Книга.epub", "w") as archive:
+        archive.writestr("OEBPS/chapter1.xhtml", _source("一"))
+        archive.writestr("OEBPS/chapter2.xhtml", _source("二"))
+    (project / "Тест.epub").write_bytes(b"not a zip")
+
+    assert find_source_epub(project) == str(project / "Книга.epub")
+    assert find_source_epub(tmp_path) is None
