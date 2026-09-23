@@ -495,8 +495,10 @@ from gemini_translator.utils.system_windows import (  # noqa: E402
 
 
 def test_samples_cover_every_kind_and_render_with_titles():
-    assert set(SAMPLE_WINDOWS) == {"status", "skill", "notice", "levelup", "achievement"}
+    assert set(SAMPLE_WINDOWS) == {"status", "skill", "notice", "levelup", "achievement", "chat"}
     for kind, lines in SAMPLE_WINDOWS.items():
+        if kind == "chat":
+            continue
         block = render_window(lines, kind)
         assert "letter-spacing" in block, kind
 
@@ -1601,3 +1603,99 @@ def test_signed_numbers_luck_and_set_bonuses_are_card_data():
     assert rows[-1].startswith("4 вещи: Урон") and rows[-1].endswith("скорость атаки повышена на 5%.")
     assert is_key_value("Скорость: -10%")
     assert not is_key_value("Он сказал: -Нет.")
+
+
+
+# --- переписка: окна «Чат» (Ace in the Hole, «Бизнес с карточками») -----------
+
+from gemini_translator.utils import system_windows as sw  # noqa: E402
+
+ACE_CHAT = [
+    "Сообщение от: Макото Ниидзима.",
+    "[Макото Ниидзима]: Кен, я просто… хотела узнать, как ты.",
+    "[Макото Ниидзима]: Я видела, что при ребятах ты держался молодцом, но…",
+    "[Кен Амада]: Спасибо, что беспокоишься обо мне.",
+    "[Кен]: Я… в порядке.",
+    "[Макото Ниидзима]: Ох!",
+]
+
+
+def test_chat_line_reads_every_chat_format():
+    assert sw.chat_line("[Кен Амада]: Я буду у тебя завтра в 9:30") == sw.ChatLine("Кен Амада", "Я буду у тебя завтра в 9:30", "bracket")
+    assert sw.chat_line("Менеджер Сюй: «Секунду».") == sw.ChatLine("Менеджер Сюй", "Секунду.", "quoted")
+    assert sw.chat_line("«Хаоюгэн: Ха-ха-ха! Ну и позорище.»") == sw.ChatLine("Хаоюгэн", "Ха-ха-ха! Ну и позорище.", "forum")
+    assert sw.chat_line("Сье: Ты тут? Чем занята?").style == "bare"
+    assert sw.chat_line("Сообщение от: Макото Ниидзима.") is None
+    assert sw.is_chat_header("Групповой чат: Бывшие SEES (Минако Санада, +7)")
+    assert not sw.is_chat_header("Чат мгновенно затих.")
+    assert not sw.is_chat_header("Сообщение от Бэй Жу напомнило ему о главном.")
+
+
+def test_chat_needs_a_header_or_a_repeated_speaker():
+    assert sw.is_chat(ACE_CHAT)
+    assert sw.is_chat(["[Неизвестная]: Кен Амада, верно?", "[Неизвестная]: Скажи мне, кто ты?"])
+    assert sw.is_chat(["Юй Фан: «Что делать, Ци-цзы?»", "Юй Фан: «Отец меня убьёт».", "Цзян Ци: «Не преувеличивай»."])
+    # Описания навыков в той же форме, что и чат, — системный текст.
+    assert not sw.is_chat(["[Пожирание Тени]: Вы можете черпать очки тени.", "[Теневое Око]: Ваши глаза изменились."])
+    assert not sw.is_chat(["[Скоростное производство]: создание огненных шаров.", "[Зловонный залп]: залп сзади."])
+    assert not sw.is_chat(["Вопрос: как им помочь?", "Ответ: дать работу.", "Вопрос: зачем?", "Ответ: чтобы жили."])
+    assert not sw.is_chat(["«Эффект первый: телосложение +5.»", "«Эффект второй: ловкость +5.»"])
+    assert not sw.is_chat(["«Кто скажет: „Нет одежд?“»", "«Кто скажет: „Нет одежд?“»"])
+    # Два собеседника по одной реплике — только если они уже известны по книге.
+    pair = ["[Кен]: Кто это?", "[Неизвестная]: Хех… не притворяйся дурачком."]
+    assert not sw.is_chat(pair)
+    assert sw.is_chat(pair, participants=frozenset({"Кен Амада", "Неизвестная"}))
+
+
+def test_find_windows_marks_chat_and_keeps_system_cards_apart():
+    html = _chapter(
+        "Телефон завибрировал.",
+        *ACE_CHAT,
+        "[Статус: Кен Амада]",
+        "[Уровень: 30]",
+        "Он убрал телефон.",
+    )
+
+    windows = find_windows(html)
+
+    assert [(window.kind, window.origin) for window in windows] == [("chat", "chat"), ("status", "brackets")]
+    assert windows[0].lines == ACE_CHAT
+
+
+def test_scan_chapters_accepts_short_chat_of_known_participants():
+    first = _chapter("Он открыл чат.", "[Кен]: Где вы?", "[Рен]: Уже едем.", "[Кен]: Жду.")
+    second = _chapter("Позже пришло сообщение.", "[Рен]: Мы на месте.", "[Кен]: Иду.", "Он вышел.")
+
+    scans = sw.scan_chapters([("a.html", "a.html", first, None), ("b.html", "b.html", second, None)])
+
+    assert [window.kind for window in scans[1].candidates] == ["chat"]
+
+
+def test_chat_renders_bubbles_left_and_right_and_strips_back():
+    templates = {kind: dict(template) for kind, template in DEFAULT_TEMPLATES.items()}
+    templates["chat"]["readers"] = "Кен"
+    html = _chapter("Телефон завибрировал.", *ACE_CHAT, "Он улыбнулся.")
+    windows = find_windows(html)
+
+    result, count = sw.apply_windows(html, windows, templates=templates)
+    block = sw._BLOCK_RE.search(result).group(0)
+
+    assert count == 1
+    assert block.count("float:left") == 3 and block.count("float:right") == 2
+    # Имя — над первой репликой серии и только у собеседников.
+    assert block.count(">Макото Ниидзима</b>") == 2 and "Кен Амада</b>" not in block
+    assert ">Сообщение от: Макото Ниидзима.</span>" in block
+    assert "<div" not in block[5:]
+    assert sw.strip_windows(result) == (html, 1)
+
+
+def test_chat_reader_is_who_takes_part_in_most_chats():
+    chats = [
+        ["[Кен]: Привет.", "[Анн]: Привет!", "[Анн]: Как ты?"],
+        ["[Кен Амада]: Спасибо.", "[Макото]: Ох!", "[Макото]: Ну и славно."],
+        ["[Рюдзи]: ЧЁРТ.", "[Рюдзи]: Опять?"],
+    ]
+
+    assert sw.chat_reader(chats) == "Кен"
+    assert sw.chat_reader(chats[2:]) == ""
+    assert sw.is_reader("Кен Амада", ["Кен"]) and not sw.is_reader("Дядя Ван", ["Дядя Ли"])

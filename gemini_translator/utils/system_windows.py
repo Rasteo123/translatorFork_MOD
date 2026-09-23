@@ -12,7 +12,7 @@ from __future__ import annotations
 import html as html_module
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
@@ -79,6 +79,9 @@ class DetectorSettings:
     single_bracketed: bool = True
     #: Свои исключения пользователя сверх встроенных ``DEFAULT_EXCLUDE``.
     exclude_pattern: str = ""
+    #: Собеседники, уже узнанные в переписке этой книги (см. :func:`scan_chapters`):
+    #: с ними чатом считается и серия без шапки и без повторов.
+    chat_participants: frozenset = frozenset()
 
 
 @dataclass
@@ -834,11 +837,198 @@ def _origin(shape, marked: bool, text: str) -> str:
     return "pairs"
 
 
+# --- переписка ----------------------------------------------------------------
+
+# Реплика чата в переводе: «[Кен]: текст» (Ace in the Hole), «Дядя Ли: «текст»»
+# («Бизнес с карточками», «Полоска здоровья»), ««Хаоюгэн: текст»» (форум
+# «Возрождения»), «Сье: текст» (LOL).
+_CHAT_NAME = r"[^\W\d_][\w'’ -]{0,29}?"
+_CHAT_BRACKET_RE = re.compile(rf"^[\[【]({_CHAT_NAME})[\]】]\s*[:：]\s*(\S.*)$")
+_CHAT_FORUM_RE = re.compile(rf"^«({_CHAT_NAME})\s*[:：]\s*(.+?)»([.!?…]*)$")
+_CHAT_QUOTED_RE = re.compile(rf"^({_CHAT_NAME})\s*[:：]\s*«(.+)»([.!?…]*)$")
+_CHAT_BARE_RE = re.compile(rf"^({_CHAT_NAME})\s*[:：]\s*([^\s«\[【—–\-(].*)$")
+# Шапка переписки: «Групповой чат: Бывшие SEES», «Сообщение от: Макото.».
+# Проза вроде «Чат мгновенно затих» или «Сообщение от Бэй Жу напомнило…» — не шапка.
+_CHAT_HEADER_RE = re.compile(
+    r"^[\[【]?(?:групповой чат|общий чат|чат|переписка|(?:личное |новое |входящее )?сообщение"
+    r"(?:\s+(?:от|для|отправлено|получено))?)\s*(?:[:：]|«)",
+    re.I,
+)
+_CHAT_HEADER_MAX = 100
+_CHAT_NAME_WORDS_MAX = 3
+# Живая речь: вопрос, восклицание, «я/ты/вы», «привет», «спасибо». Описание
+# навыка в «[Метание]: Бросает камни…» так не звучит.
+_CONVERSATIONAL_RE = re.compile(
+    r"[?!]|(?<![\w-])(?:я|ты|вы|мы|мне|меня|тебя|тебе|вас|вам|нас|нам|мой|моя|моё|мое|мои|твой|твоя|твоё|"
+    r"твои|ваш|ваша|наш|наша|привет|спасибо|ладно|окей|хорошо|да|нет|ну)(?![\w-])",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class ChatLine:
+    speaker: str
+    message: str
+    #: bracket — «[Кен]: …», quoted — «Кен: «…»», forum — ««Кен: …»», bare — «Кен: …».
+    style: str
+
+
+def is_chat_header(text: str) -> bool:
+    text = text.strip()
+    return bool(text) and len(text) <= _CHAT_HEADER_MAX and _CHAT_HEADER_RE.match(text) is not None
+
+
+def chat_line(text: str) -> ChatLine | None:
+    """Реплика переписки ``Имя + сообщение`` или ``None``."""
+    stripped = " ".join(text.split())
+    if not stripped or is_chat_header(stripped):
+        return None
+    for style, pattern in (
+        ("bracket", _CHAT_BRACKET_RE),
+        ("forum", _CHAT_FORUM_RE),
+        ("quoted", _CHAT_QUOTED_RE),
+        ("bare", _CHAT_BARE_RE),
+    ):
+        match = pattern.match(stripped)
+        if match is None:
+            continue
+        speaker = match.group(1).strip()
+        message = match.group(2).strip()
+        if style in ("forum", "quoted"):
+            message += match.group(3)
+        if not message or len(speaker.split()) > _CHAT_NAME_WORDS_MAX:
+            return None
+        return ChatLine(speaker, message, style)
+    return None
+
+
+# Не имена собеседников: «Вопрос: … / Ответ: …», «Например: … / Или: …».
+_NOT_SPEAKERS = frozenset(
+    "вопрос ответ например или новое примечание внимание итог итоги совет подсказка цель задача причина "
+    "следствие плюс минус первое второе третье шаг вывод результат замечание пример важно кстати "
+    "кто что где когда как почему зачем куда откуда чей".split()
+)
+
+
+def _looks_like_name(name: str, *, nickname: bool = False) -> bool:
+    """Имя собеседника: одно-три слова с заглавной, не характеристика и не «Система».
+
+    Ник на форуме («учительница Ли», «Любитель яичницы») может начинаться со
+    строчной буквы и продолжаться строчными словами.
+    """
+    words = name.split()
+    if not 1 <= len(words) <= _CHAT_NAME_WORDS_MAX:
+        return False
+    if not nickname and any(not word[0].isupper() for word in words):
+        return False
+    lowered = name.lower()
+    if lowered in _NOT_SPEAKERS or words[0].lower() in _NOT_SPEAKERS:
+        return False
+    return not (_is_stat_key(name) or _has_meta_word(name) or any(key in lowered for key in _TITLE_KEYS))
+
+
+def _chat_messages(lines):
+    """(число шапок, реплики) или ``None``, если в серии есть не реплика."""
+    headers = 0
+    messages: list[ChatLine] = []
+    for line in lines:
+        if is_chat_header(line):
+            headers += 1
+            continue
+        parsed = chat_line(line)
+        if parsed is None:
+            return None
+        messages.append(parsed)
+    return headers, messages
+
+
+def chat_verdict(lines, participants=frozenset()) -> str | None:
+    """``"chat"``, ``"weak"`` (похоже на чат, но собеседники ещё не узнаны) или ``None``.
+
+    Форма «[Кен]: …» совпадает с системным «[Термин]: значение», а ««Ник: …»» —
+    с перечнем предметов в кавычках. Поэтому чатом серия считается при шапке
+    («Групповой чат: …») или когда кто-то пишет в ней дважды. Серию без повтора
+    («[Кен]: Кто это?» / «[Неизвестная]: Хех…») примут, если все её собеседники
+    уже переписывались в других местах книги.
+    """
+    parsed = _chat_messages(lines)
+    if parsed is None:
+        return None
+    headers, messages = parsed
+    if not messages:
+        return None
+    if any(not _looks_like_name(item.speaker, nickname=item.style == "forum") for item in messages):
+        return None
+    speakers = [item.speaker for item in messages]
+    # Без кавычек вокруг текста и с ником в кавычках так же пишут перечни
+    # («Например: … / Или: …», ««Универсальная Сверхтехника: …»»): нужна живая речь.
+    if {item.style for item in messages} & {"bare", "forum"}:
+        talkative = sum(1 for item in messages if _CONVERSATIONAL_RE.search(item.message))
+        if talkative * 3 < len(messages):
+            return None
+    if headers:
+        return "chat"
+    counts: dict[str, int] = {}
+    for speaker in speakers:
+        counts[speaker] = counts.get(speaker, 0) + 1
+    if len(messages) >= 2 and max(counts.values()) >= 2:
+        return "chat"
+    if (
+        len(messages) >= 2
+        and participants
+        and all(any(_names_match(speaker, known) for known in participants) for speaker in speakers)
+    ):
+        return "chat"
+    return "weak" if len(messages) >= 2 else None
+
+
+def is_chat(lines, participants=frozenset()) -> bool:
+    return chat_verdict(lines, participants) == "chat"
+
+
+def _names_match(speaker: str, reader: str) -> bool:
+    """«Кен» и «Кен Амада» — один человек; «Дядя Ли» и «Дядя Ван» — нет."""
+    name, reader = speaker.casefold(), " ".join(reader.split()).casefold()
+    return bool(reader) and (name == reader or name.startswith(reader + " ") or reader.startswith(name + " "))
+
+
+def chat_reader(windows_lines) -> str:
+    """Кто читает чат: собеседник, который есть в большинстве переписок книги.
+
+    «Кен» и «Кен Амада» считаются одним человеком. Нужны хотя бы две переписки
+    с его участием, иначе справа никого нет.
+    """
+    presence: dict[str, int] = {}
+    lines_count: dict[str, int] = {}
+    for lines in windows_lines:
+        speakers = {parsed.speaker for parsed in map(chat_line, lines) if parsed is not None}
+        for speaker in speakers:
+            presence[speaker] = presence.get(speaker, 0) + 1
+        for parsed in map(chat_line, lines):
+            if parsed is not None:
+                lines_count[parsed.speaker] = lines_count.get(parsed.speaker, 0) + 1
+    best, best_score = "", (0, 0)
+    for name in sorted(presence, key=len):
+        related = [other for other in presence if _names_match(other, name)]
+        score = (sum(presence[other] for other in related), sum(lines_count.get(other, 0) for other in related))
+        if score > best_score:
+            best, best_score = name, score
+    return best if best_score[0] >= 2 else ""
+
+
+def chat_participants(windows_lines) -> frozenset:
+    """Собеседники узнанных переписок: все, кто в них пишет."""
+    return frozenset(
+        parsed.speaker for lines in windows_lines for parsed in map(chat_line, lines) if parsed is not None
+    )
+
+
 def find_windows(
     html: str,
     settings: DetectorSettings | None = None,
     source_html: str | None = None,
     source_marks: set[int] | None = None,
+    weak_chats: list | None = None,
 ) -> list[WindowCandidate]:
     """Найти серии системных строк в HTML главы, в порядке документа.
 
@@ -916,6 +1106,29 @@ def find_windows(
             )
         )
 
+    chat_ends: dict[int, int | None] = {}
+
+    def chat_run_end(position: int) -> int | None:
+        """Конец переписки, которая начинается с ``position``, или ``None``."""
+        if position in chat_ends:
+            return chat_ends[position]
+        stop = position
+        while stop < len(paragraphs) and (stop == position or paragraphs[stop].adjacent):
+            paragraph = paragraphs[stop]
+            if excluded(paragraph) or (chat_line(paragraph.text) is None and not is_chat_header(paragraph.text)):
+                break
+            stop += 1
+        # Шапка без реплик после неё — не переписка.
+        while stop > position and is_chat_header(paragraphs[stop - 1].text):
+            stop -= 1
+        lines = [paragraph.text for paragraph in paragraphs[position:stop]]
+        verdict = chat_verdict(lines, settings.chat_participants) if stop > position else None
+        if verdict == "weak" and weak_chats is not None and (position == 0 or not paragraphs[position].adjacent
+                                                               or chat_line(paragraphs[position - 1].text) is None):
+            weak_chats.append(lines)
+        chat_ends[position] = stop if verdict == "chat" else None
+        return chat_ends[position]
+
     def data_follows(position: int) -> bool:
         following = position + 1
         if following >= len(paragraphs) or not paragraphs[following].adjacent or excluded(paragraphs[following]):
@@ -953,6 +1166,22 @@ def find_windows(
         text = first.text
         if excluded(first):
             index += 1
+            continue
+
+        chat_stop = chat_run_end(index)
+        if chat_stop is not None:
+            chosen = paragraphs[index:chat_stop]
+            windows.append(
+                WindowCandidate(
+                    start=chosen[0].start,
+                    end=chosen[-1].end,
+                    kind="chat",
+                    lines=[paragraph.text for paragraph in chosen],
+                    paragraph_html=[html[paragraph.start:paragraph.end] for paragraph in chosen],
+                    origin="chat",
+                )
+            )
+            index = chat_stop
             continue
 
         shape = bracket_shape(text)
@@ -993,6 +1222,8 @@ def find_windows(
         ):
             following = paragraphs[stop].text
             after = paragraphs[stop + 1].text if stop + 1 < len(paragraphs) and paragraphs[stop + 1].adjacent else ""
+            if chat_run_end(stop) is not None:
+                break
             if not (continues(stop) or (in_list and _is_list_item(following, paragraphs[stop - 1].text, after))):
                 break
             in_list = in_list or _opens_list(following)
@@ -1046,8 +1277,14 @@ DEFAULT_TEMPLATES = {
         "label": "Достижение", "border": "#ffd740", "background": "#1a1206", "text": "#fff3cc",
         "accent": "#ffd740", "icon": "★", "upper": True, "columns": 1,
     },
+    # Переписка: реплики собеседников слева, того, кто читает чат, — справа.
+    # Кто читает, передаётся в шаблоне ключом ``readers`` (строка через запятую или список).
+    "chat": {
+        "label": "Чат", "border": "#4db6ac", "background": "#0e1716", "text": "#e6f2f0",
+        "accent": "#80cbc4", "icon": "", "upper": False, "columns": 1,
+    },
 }
-KIND_ORDER = ("status", "skill", "notice", "levelup", "achievement")
+KIND_ORDER = ("status", "skill", "notice", "levelup", "achievement", "chat")
 
 _TITLE_KEYS = (
     "навык", "способност", "умени", "заклинани", "достижени", "статус",
@@ -1290,6 +1527,95 @@ def _card_pieces(text: str) -> list[tuple[str, bool]]:
     return ([(head, True)] if head else []) + [(piece, False) for piece in pieces]
 
 
+# --- переписка: пузыри --------------------------------------------------------
+
+# Пузыри — плавающие ``span``: вложенный ``div`` сломал бы разбор блока до
+# первого ``</div>``, а ``display`` Rulate вырезает. ``float`` и ``clear``
+# очистка HTML на сайте пропускает.
+_CHAT_CLEAR = '<br style="clear:both;" />'
+_CHAT_SIDE_MARGIN = "22%"
+
+
+def _mix(first: str, second: str, share: float) -> str:
+    """Цвет между двумя #rrggbb: доля ``share`` второго."""
+    try:
+        a = [int(first[i:i + 2], 16) for i in (1, 3, 5)]
+        b = [int(second[i:i + 2], 16) for i in (1, 3, 5)]
+    except (TypeError, ValueError):
+        return first
+    return "#" + "".join(f"{round(x + (y - x) * share):02x}" for x, y in zip(a, b))
+
+
+def chat_bubble_colors(template) -> tuple[str, str]:
+    """Фон пузырей: (собеседники, тот, кто читает) — из цветов шаблона чата."""
+    return (
+        _mix(template["background"], template["text"], 0.12),
+        _mix(template["background"], template["accent"], 0.32),
+    )
+
+
+def chat_readers(template) -> list[str]:
+    value = (template or {}).get("readers") or []
+    if isinstance(value, str):
+        value = value.split(",")
+    return [" ".join(str(item).split()) for item in value if str(item).strip()]
+
+
+def is_reader(speaker: str, readers) -> bool:
+    return any(_names_match(speaker, reader) for reader in readers)
+
+
+def _original_attr(source_html) -> str:
+    if not source_html:
+        return ""
+    if not isinstance(source_html, str):
+        source_html = "".join(source_html)
+    # Переносы строк исходника прячем в сущности: блок обязан остаться одной
+    # строкой, а html.unescape вернёт их при снятии оформления.
+    original = html_module.escape(source_html, quote=True).replace("\r", "&#13;").replace("\n", "&#10;")
+    return f' {BLOCK_ATTR}-orig="{original}"'
+
+
+def _render_chat(texts, template, source_html) -> str:
+    accent, text_color = template["accent"], template["text"]
+    background, border = template["background"], template["border"]
+    other_background, own_background = chat_bubble_colors(template)
+    readers = chat_readers(template)
+    pieces: list[str] = []
+    previous = None
+    floating = False
+    for text in texts:
+        parsed = chat_line(text)
+        if parsed is None:
+            if floating:
+                pieces.append(_CHAT_CLEAR)
+                floating = False
+            caption = strip_brackets(text) if bracket_shape(text) in ("full", "keyed") else text
+            pieces.append(f'<span style="color:{accent};font-size:0.9em;">{_escape(caption)}</span>{_CHAT_CLEAR}')
+            previous = None
+            continue
+        own = is_reader(parsed.speaker, readers)
+        name = ""
+        if not own and parsed.speaker != previous:
+            name = f'<b style="color:{accent};font-size:0.85em;">{_escape(parsed.speaker)}</b><br />'
+        margin = f"3px 0 3px {_CHAT_SIDE_MARGIN}" if own else f"3px {_CHAT_SIDE_MARGIN} 3px 0"
+        style = (
+            f"float:{'right' if own else 'left'};clear:both;margin:{margin};padding:5px 10px;"
+            f"background:{own_background if own else other_background};border-radius:10px;text-align:left;"
+        )
+        pieces.append(f'<span style="{style}">{name}{_escape(parsed.message)}</span>')
+        previous = parsed.speaker
+        floating = True
+    if floating:
+        pieces.append(_CHAT_CLEAR)
+    style = (
+        f"margin:16px 0;padding:10px 12px;border:2px solid {border};border-left:8px solid {border};"
+        f"background:{background};color:{text_color};text-align:center;line-height:1.45;"
+    )
+    block = f'<div {BLOCK_ATTR}="chat"{_original_attr(source_html)} style="{style}">' + "".join(pieces) + "</div>"
+    return re.sub(r"\s*\n\s*", " ", block)
+
+
 def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     """Собрать одну строку HTML с рамкой для серии системных строк.
 
@@ -1302,6 +1628,8 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     accent = template["accent"]
 
     texts = [" ".join(str(line).split()) for line in lines]
+    if kind == "chat":
+        return _render_chat([text for text in texts if text], template, source_html)
     items = [item for text in texts if text for item in _card_pieces(text)]
     texts = [text for text, _ in items]
     heads = [head for _, head in items]
@@ -1336,15 +1664,7 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
         f"border-left:8px solid {template['border']};background:{template['background']};"
         f"color:{template['text']};text-align:center;line-height:1.6;"
     )
-    original_attr = ""
-    if source_html:
-        if not isinstance(source_html, str):
-            source_html = "".join(source_html)
-        # Переносы строк исходника прячем в сущности: блок обязан остаться одной
-        # строкой, а html.unescape вернёт их при снятии оформления.
-        original = html_module.escape(source_html, quote=True).replace("\r", "&#13;").replace("\n", "&#10;")
-        original_attr = f' {BLOCK_ATTR}-orig="{original}"'
-    block = f'<div {BLOCK_ATTR}="{kind}"{original_attr} style="{style}">' + "<br />".join(pieces) + "</div>"
+    block = f'<div {BLOCK_ATTR}="{kind}"{_original_attr(source_html)} style="{style}">' + "<br />".join(pieces) + "</div>"
     return re.sub(r"\s*\n\s*", " ", block)
 
 
@@ -1576,16 +1896,37 @@ def scan_chapters(entries, settings: DetectorSettings | None = None, progress=No
             progress(index, steps, original)
     trusted = trusted_source_families({family: tuple(pair) for family, pair in kept_counts.items()})
     result = []
+    # Главы, где есть похожие на чат серии без шапки и без повторов: их
+    # пересмотрим, когда станут известны собеседники из переписок всей книги.
+    pending_chats = []
     for index, ((original, path, html, _source_html), marks) in enumerate(zip(entries, marks_by_chapter), start=1):
         source_marks = set().union(*(indices for family, indices in marks.items() if family in trusted)) if marks else set()
+        weak_chats: list = []
+        candidates = find_windows(html, settings, source_marks=source_marks if marks else None, weak_chats=weak_chats)
+        if weak_chats:
+            pending_chats.append((len(result), html, source_marks if marks else None))
         result.append(ChapterScan(
             original=original,
             path=path,
             title=_chapter_title(html, original),
-            candidates=find_windows(html, settings, source_marks=source_marks if marks else None),
+            candidates=candidates,
         ))
         if progress is not None:
             progress((total if has_source else 0) + index, steps, original)
+    participants = chat_participants(
+        candidate.lines for scan in result for candidate in scan.candidates if candidate.kind == "chat"
+    )
+    if participants and pending_chats:
+        base = settings or DetectorSettings()
+        chat_settings = replace(base, chat_participants=frozenset(base.chat_participants) | participants)
+        for position, html, source_marks in pending_chats:
+            scan = result[position]
+            result[position] = ChapterScan(
+                original=scan.original,
+                path=scan.path,
+                title=scan.title,
+                candidates=find_windows(html, chat_settings, source_marks=source_marks),
+            )
     return result
 
 
@@ -1672,7 +2013,22 @@ SAMPLE_WINDOWS = {
     "notice": ["[Навык активирован]", "[Условия выполнены, опыт повышается!]"],
     "levelup": ["[Повышение уровня]", "[Уровень повышен +2]"],
     "achievement": ["[Достижение: новый титул]", "[Титул: «Ты что, садист??»]"],
+    "chat": [
+        "Групповой чат: Отряд", "[Анн]: Кто сегодня идёт в Мементос?", "[Рюдзи]: Я!",
+        "[Рюдзи]: Только после уроков.", "[Кен]: Буду к шести.", "[Анн]: Отлично, ждём.",
+    ],
 }
+# Кто читает чат в образце, если в шаблоне никто не указан.
+SAMPLE_CHAT_READER = "Кен"
+
+
+def with_sample_reader(templates):
+    """Шаблоны для образцов: без указанного читателя чат образца читает «Кен»."""
+    templates = {kind: dict(template) for kind, template in (templates or DEFAULT_TEMPLATES).items()}
+    chat = templates.setdefault("chat", dict(DEFAULT_TEMPLATES["chat"]))
+    if not chat_readers(chat):
+        chat["readers"] = [SAMPLE_CHAT_READER]
+    return templates
 
 
 def render_preview_document(templates=None, extra=None) -> str:
@@ -1682,7 +2038,8 @@ def render_preview_document(templates=None, extra=None) -> str:
     типов. Блоки те же, что уйдут в главы, но без ``data-sys-orig``.
     """
     blocks = [render_window(lines, kind, templates=templates) for lines, kind in (extra or [])]
-    blocks.extend(render_window(lines, kind, templates=templates) for kind, lines in SAMPLE_WINDOWS.items())
+    samples = with_sample_reader(templates)
+    blocks.extend(render_window(lines, kind, templates=samples) for kind, lines in SAMPLE_WINDOWS.items())
     body = "\n".join(f"<p>{block}</p>" for block in blocks)
     return (
         "<!DOCTYPE html>\n<html lang=\"ru\"><head><meta charset=\"utf-8\">"
