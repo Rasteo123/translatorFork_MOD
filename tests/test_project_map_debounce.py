@@ -25,6 +25,10 @@ class ProjectMapDebounceTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.pm = TranslationProjectManager(self._tmp.name)
+        # Раннер CI может замереть на полторы секунды, и таймер дебаунса запишет
+        # карту посреди теста — поверх «чужой» записи. Тест самого таймера
+        # ставит себе короткую задержку.
+        self.pm.FLUSH_DEBOUNCE_SECONDS = 3600
         self.addCleanup(self.pm.flush)
 
     def _read_map_file(self):
