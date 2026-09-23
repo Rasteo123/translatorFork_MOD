@@ -658,10 +658,12 @@ class SystemWindowsPage(ShellPage):
     # --- таблица ------------------------------------------------------------
 
     def set_scan_results(self, scans):
+        # Старые строки убрать до замены списка: пока они удаляются, Qt уводит фокус
+        # из их комбобоксов и меняет выделение, а индексы строк смотрят в self._scans.
+        self.table.setRowCount(0)
         self._scans = list(scans)
         chats = [candidate.lines for scan in self._scans for candidate in scan.candidates if candidate.kind == "chat"]
         self._auto_reader = chat_reader(chats)
-        self.table.setRowCount(0)
         self.table.blockSignals(True)
         with deferred_column_autosize(self.table):
             self._fill_rows()

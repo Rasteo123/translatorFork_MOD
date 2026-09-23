@@ -3,12 +3,13 @@
 
 import json
 import os
+import sys
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtTest, QtWidgets
 
 from gemini_translator.ui.pages.system_windows_page import SystemWindowsPage
 from gemini_translator.ui.shell import ShellPage
@@ -489,6 +490,29 @@ class ChatAccountColumnTests(ChatReaderFieldTests):
         self.assertEqual(candidate.readers, ())
         page.table.selectRow(0)
         self.assertNotIn('align="right"', page.preview.toHtml())
+
+    def test_apply_right_after_a_reader_choice_clears_the_table_cleanly(self):
+        # Комбобокс «Справа» забирает фокус кликом, кнопка «Применить» на macOS — нет.
+        # Очищая таблицу, Qt прячет его и уводит фокус Tab-переходом в следующую
+        # строку: выделение меняется, пока старые строки ещё на месте.
+        page = self._page()
+        page.project_edit.setText(str(self.project))
+        page.set_scan_results(scan_project(self.project))
+        page.show()
+        page.activateWindow()
+        self.assertTrue(QtTest.QTest.qWaitForWindowActive(page))
+        combo = page.table.cellWidget(0, 6)
+        combo.setFocus()
+        self.assertIs(QtWidgets.QApplication.focusWidget(), combo)
+        errors = []
+        with patch.object(sys, "excepthook", lambda *exc_info: errors.append(exc_info[1])), \
+                patch("gemini_translator.ui.pages.system_windows_page.QMessageBox.information"):
+            page.apply_selected()
+            self.assertTrue(page.worker.wait(10_000))
+            QtWidgets.QApplication.processEvents()
+        self.assertEqual(errors, [])
+        self.assertEqual(page.table.rowCount(), 0)
+        self.assertEqual(page.preview_label.text(), "Образцы всех типов")
 
 
 
