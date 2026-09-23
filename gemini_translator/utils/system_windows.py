@@ -283,8 +283,12 @@ _STAT_KEYS = frozenset(
     "имя раса титул уровень здоровье мана сила ловкость телосложение интеллект мудрость харизма "
     "выносливость скорость магия класс опыт награда ранг навык навыки способность способности талант "
     "статус очки мировоззрение возраст пол прочность защита атака урон звание профессия оружие броня "
-    "снаряжение питомец задание квест условие эффект описание тип стоимость длительность hp mp sp exp".split()
+    "снаряжение питомец задание квест условие эффект описание тип стоимость длительность hp mp sp exp "
+    "дух кольца кольцо культивация культивации техника техники атрибут атрибуты стихия свойство свойства".split()
+    + ["боевой дух", "духовная сила", "духовные кольца", "духовное кольцо", "ранг духа", "боевая мощь", "очки системы"]
 )
+_STAT_VALUE_MAX = 300
+_VALUE_MAX = 120
 _QUOTED_KEY_RE = re.compile(r"^«[^»]{1,40}»\s*[:：]")
 _KEY_QUOTES = "«»\"“”"
 # Шапка книги и заголовки глав: «Автор: …», «Глава 9: Нина.» — не карточка статуса.
@@ -309,14 +313,17 @@ def is_key_value(text: str) -> bool:
     ключ из известных характеристик или значение с заглавной буквы либо цифры.
     """
     inner = strip_brackets(text)
-    if not inner or _is_dialogue(inner) or len(inner) > 200 or inner[0] == "(":
+    if not inner or _is_dialogue(inner) or len(inner) > 400 or inner[0] == "(":
         return False
     if inner[0] in _QUOTE_CHARS and _QUOTED_KEY_RE.match(inner) is None:
         return False
     stripped = inner.rstrip()
-    if stripped.endswith(("!", "?", "…", ":")):
+    if stripped.endswith(("!", "?", ":")):
         return False
+    # Точка или многоточие в конце: у карточек статуса это обычное дело,
+    # у прозы с двоеточием («Он сказал: привет.») — нет.
     ends_with_period = stripped.endswith(".")
+    ends_with_ellipsis = stripped.endswith("…")
     unbracketed = bracket_shape(text) is None
     parts = [part.strip() for part in inner.split("|")] if "|" in inner else [inner]
     for part in parts:
@@ -325,14 +332,21 @@ def is_key_value(text: str) -> bool:
         key, value = re.split(r"[:：]", part, maxsplit=1)
         key = key.strip().strip(_KEY_QUOTES)
         value = value.strip()
-        if not value or len(key.split()) > 4 or value[0] in _VALUE_BAD_START or len(value) > 120:
+        stat_key = _is_stat_key(key)
+        if not value or len(key.split()) > 4 or value[0] in _VALUE_BAD_START:
+            continue
+        if len(value) > (_STAT_VALUE_MAX if stat_key else _VALUE_MAX):
             continue
         if unbracketed and key.lower().split()[0] in _META_KEYS:
             continue
         if not _mostly_alphanumeric(value):
             continue
-        if ends_with_period and not _is_stat_key(key) and not (value[0].isupper() or value[0].isdigit()):
-            continue
+        if (ends_with_period or ends_with_ellipsis) and not stat_key:
+            numeric = any(char.isdigit() for char in value)
+            if ends_with_ellipsis or not (value[0].isupper() or value[0].isdigit()):
+                continue
+            if len(value) > 40 and not numeric:
+                continue
         return True
     return False
 

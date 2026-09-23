@@ -774,3 +774,53 @@ def test_book_info_page_is_not_a_status_card():
     )
 
     assert find_windows(html) == []
+
+
+def test_stat_line_ending_with_ellipsis_stays_in_the_card():
+    html = _chapter(
+        "Описание было кратким:",
+        "Возраст: неизвестен.",
+        "Сила: Предельный Доуло.",
+        "Статус: глава Культа Священной Магии Смерти, блюститель государства, государственный наставник…",
+        "Помимо этого, выделялись броские слова.",
+    )
+
+    windows = find_windows(html)
+
+    assert [len(window.lines) for window in windows] == [3]
+    assert windows[0].lines[-1].startswith("Статус: глава")
+
+
+def test_prose_with_colon_and_long_capitalised_value_is_not_key_value():
+    html = _chapter(
+        "Было очевидно: Ди Тянь обращался не к мертвецам перед собой, а к тому, кто управлял ими.",
+        "Он доверял лишь себе: Никто не мог помочь.",
+    )
+
+    assert find_windows(html) == []
+    assert not is_key_value("Итог: он проиграл…")
+
+
+def test_martial_soul_card_with_long_values_is_a_status():
+    html = _chapter(
+        "Вечером он вкратце подвёл итог своим силам.",
+        "Боевой дух: Духовные Глаза, золотое вторичное пробуждение, обладает способностью пожирания, духовная сила – выше двадцатого уровня.",
+        "Боевой дух: Сфера Божественного Сознания, без духовных колец, на текущем этапе крайне слаба, но потенциал безграничен.",
+        "Телосложение: под питанием Тысячелетних Сердец Ивы и усилением от возвращения Духовных Глаз прочность тела поднялась "
+        "до уровня среднего генерала. Сила удара кулаком превысила шестнадцать тысяч килограммов, а скорость достигла ста тридцати метров в секунду.",
+        "Он остался доволен.",
+    )
+
+    windows = find_windows(html)
+
+    assert [(window.kind, len(window.lines)) for window in windows] == [("status", 3)]
+
+
+def test_numeric_values_after_an_unknown_key_are_data():
+    html = _chapter(
+        "Миньон ближнего боя: 445 здоровья, 12 силы атаки, броня 2, сопротивление магии 0.",
+        "Миньон дальнего боя: 280 здоровья, 23 силы атаки, броня 0.",
+        "Он всё запомнил.",
+    )
+
+    assert [(window.kind, len(window.lines)) for window in find_windows(html)] == [("status", 2)]
