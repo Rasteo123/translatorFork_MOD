@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from gemini_translator.ui.pages.system_windows_page import SystemWindowsPage
 from gemini_translator.ui.shell import ShellPage
@@ -139,3 +139,97 @@ class SystemWindowsPageTests(unittest.TestCase):
         page.worker = _FakeThread()
         with patch("gemini_translator.ui.pages.system_windows_page.QMessageBox.warning"):
             self.assertFalse(page.can_leave())
+
+
+class SystemWindowsPreviewAndPaletteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project = _project(Path(self._tmp.name))
+
+    def _page(self):
+        page = SystemWindowsPage()
+        self.addCleanup(page.close)
+        return page
+
+    def _color_row(self, page, label):
+        return page.colors_table.findItems(label, QtCore.Qt.MatchFlag.MatchExactly)[0].row()
+
+    def test_preview_shows_samples_of_every_kind_without_selection(self):
+        page = self._page()
+        text = page.preview.toPlainText()
+        for fragment in ("СТАТУС ПЕРСОНАЖА", "Благословение", "активирован", "ПОВЫШЕНИЕ УРОВНЯ", "НОВЫЙ ТИТУЛ"):
+            self.assertIn(fragment, text)
+
+    def test_preview_follows_color_edits(self):
+        page = self._page()
+        row = self._color_row(page, "Статус")
+        page.colors_table.item(row, 2).setText("#abcdef")
+        self.assertIn("#abcdef", page.preview.toHtml())
+
+    def test_preview_returns_to_samples_when_table_is_cleared(self):
+        page = self._page()
+        page.set_scan_results(scan_project(self.project))
+        page.table.selectRow(1)
+        self.assertIn("Хозяин", page.preview.toPlainText())
+        page.set_scan_results([])
+        self.assertIn("СТАТУС ПЕРСОНАЖА", page.preview.toPlainText())
+
+    def test_color_cell_double_click_opens_palette(self):
+        page = self._page()
+        row = self._color_row(page, "Достижение")
+        with patch(
+            "gemini_translator.ui.pages.system_windows_page.QColorDialog.getColor",
+            return_value=QtGui.QColor("#123456"),
+        ) as dialog:
+            page._pick_color(row, 1)
+        dialog.assert_called_once()
+        self.assertEqual(page.colors_table.item(row, 1).text(), "#123456")
+        self.assertEqual(page.templates()["achievement"]["border"], "#123456")
+
+    def test_cancelled_palette_keeps_the_old_color(self):
+        page = self._page()
+        row = self._color_row(page, "Достижение")
+        with patch(
+            "gemini_translator.ui.pages.system_windows_page.QColorDialog.getColor",
+            return_value=QtGui.QColor(),
+        ):
+            page._pick_color(row, 1)
+        self.assertEqual(page.colors_table.item(row, 1).text(), "#ffd740")
+
+    def test_type_cell_double_click_does_not_open_palette(self):
+        page = self._page()
+        with patch("gemini_translator.ui.pages.system_windows_page.QColorDialog.getColor") as dialog:
+            page._pick_color(0, 0)
+        dialog.assert_not_called()
+
+    def test_color_cells_show_swatches_that_follow_the_text(self):
+        page = self._page()
+        item = page.colors_table.item(self._color_row(page, "Навык"), 1)
+        self.assertFalse(item.icon().isNull())
+        item.setText("#ff0000")
+        image = item.icon().pixmap(8, 8).toImage()
+        self.assertEqual(image.pixelColor(4, 4).name(), "#ff0000")
+
+    def test_open_preview_in_browser_writes_exact_html(self):
+        page = self._page()
+        page.set_scan_results(scan_project(self.project))
+        page.table.selectRow(1)
+        with patch(
+            "gemini_translator.ui.pages.system_windows_page.QDesktopServices.openUrl",
+            return_value=True,
+        ) as opened:
+            path = page.open_preview_in_browser()
+        opened.assert_called_once()
+        with open(path, encoding="utf-8") as handle:
+            html = handle.read()
+        self.assertIn("Хозяин", html)
+        self.assertIn('data-sys="achievement"', html)
+        self.assertNotIn("data-sys-orig", html)

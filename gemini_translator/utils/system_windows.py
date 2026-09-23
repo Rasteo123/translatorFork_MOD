@@ -588,3 +588,40 @@ def strip_project(project_folder, progress=None) -> tuple[int, int]:
         if progress is not None:
             progress(index, len(files), original)
     return chapters, windows
+
+
+# --- образцы и предпросмотр -------------------------------------------------
+
+SAMPLE_WINDOWS = {
+    "status": [
+        "[Статус персонажа]", "[Имя: Ёдыре]", "[Раса: Человек]", "[Уровень: 14]",
+        "[Очки здоровья: 100/100]", "[Очки маны: 0/0]", "[Очки характеристик: 140+28]",
+    ],
+    "skill": [
+        "[Навык: «Благословение Рюнара»]", "[Тип: Пассивный]", "[SP: 8]",
+        "[Эксклюзивный навык иномирца. Опыт растёт пропорционально усилиям, дарует иммунитет к проклятиям.]",
+    ],
+    "notice": ["[Навык активирован]", "[Условия выполнены, опыт повышается!]"],
+    "levelup": ["[Повышение уровня]", "[Уровень повышен +2]"],
+    "achievement": ["[Достижение: новый титул]", "[Титул: «Ты что, садист??»]"],
+}
+
+
+def render_preview_document(templates=None, extra=None) -> str:
+    """Самостоятельная HTML-страница с рамками для точного просмотра в браузере.
+
+    ``extra`` — список ``(строки, тип)``, показывается перед образцами всех
+    типов. Блоки те же, что уйдут в главы, но без ``data-sys-orig``.
+    """
+    blocks = [render_window(lines, kind, templates=templates) for lines, kind in (extra or [])]
+    blocks.extend(render_window(lines, kind, templates=templates) for kind, lines in SAMPLE_WINDOWS.items())
+    body = "\n".join(f"<p>{block}</p>" for block in blocks)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"ru\"><head><meta charset=\"utf-8\">"
+        "<title>Системные окна: предпросмотр</title>"
+        "<style>body{max-width:900px;margin:32px auto;padding:0 16px;font-family:Arial,sans-serif;"
+        "font-size:16px;color:#333;background:#fff;} p{margin:0;}</style></head>\n"
+        "<body>\n<p style=\"margin-bottom:16px;\">Так рамки выглядят в браузере. На Rulate шрифт и ширина "
+        "колонки свои, цвета и отступы те же.</p>\n"
+        f"{body}\n</body></html>\n"
+    )
