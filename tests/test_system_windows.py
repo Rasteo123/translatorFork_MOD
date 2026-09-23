@@ -964,10 +964,44 @@ def test_find_source_epub_prefers_an_archive_without_translation_marks(tmp_path)
 
     from gemini_translator.utils.system_windows import find_source_epub
 
+    import os
+
     project = _windows_project(tmp_path)
     for name in ("Книга (RU).epub", "Книга (перевод).epub", "Книга.epub"):
         with zipfile.ZipFile(project / name, "w") as archive:
             archive.writestr("OEBPS/chapter1.xhtml", _source("一"))
             archive.writestr("OEBPS/chapter2.xhtml", _source("二"))
+        os.utime(project / name, (1_700_000_000, 1_700_000_000))
 
     assert find_source_epub(project) == str(project / "Книга.epub")
+
+
+def test_find_source_epub_takes_the_earliest_foreign_archive_by_date(tmp_path):
+    import os
+    import time
+    import zipfile
+
+    from gemini_translator.utils.system_windows import find_source_epub
+
+    project = _windows_project(tmp_path)
+    now = time.time()
+    russian = _chapter("Перевод главы, целиком по-русски, длинный абзац текста для проверки.", "И ещё один абзац перевода.")
+    for name, age_days, text in (
+        ("Книга (RU).epub", 1, _source("一二三四五六七八九十", "二")),
+        ("Книга.epub", 30, _source("第一章很长的一段文字", "第二段文字")),
+        ("Книга 2.epub", 10, _source("一二三四五六七八九十", "二")),
+        ("Старый перевод.epub", 60, russian),
+    ):
+        with zipfile.ZipFile(project / name, "w") as archive:
+            archive.writestr("OEBPS/chapter1.xhtml", text)
+            archive.writestr("OEBPS/chapter2.xhtml", text)
+        stamp = now - age_days * 86400
+        os.utime(project / name, (stamp, stamp))
+
+    assert find_source_epub(project) == str(project / "Книга.epub")
+
+
+def test_default_exclusion_skips_end_of_book_and_reader_thanks():
+    html = _chapter("[Благодарность за поддержку читателей]", "Текст.", "【Конец книги】", "Текст.", "[Динь! Награда]")
+
+    assert [window.lines for window in find_windows(html)] == [["[Динь! Награда]"]]

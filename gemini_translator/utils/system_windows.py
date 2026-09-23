@@ -47,7 +47,8 @@ _MAX_SPAN_PARAGRAPHS = 20
 # вроде «[Конец главы]» — не системные окна.
 DEFAULT_EXCLUDE = (
     r"прим(\.|ечани\w*)\s*(автора|авт\.|пер\.|переводчика)|^[\[【(]?\s*P\.?\s?S\.?\b"
-    r"|^[\[【]?\s*(конец главы|продолжение следует)|благодар\w*\s+за\s+(донат|пожертв|поддержк|лунн|подар)"
+    r"|^[\[【]?\s*(конец главы|конец книги|продолжение следует)"
+    r"|благодар\w*\s+(за\s+(донат|пожертв|поддержк|лунн|подар)|читател)"
 )
 _CLOSING_P_RE = re.compile(r"</p\s*>", re.I)
 _OPENING_P_RE = re.compile(r"<p[\s>/]", re.I)
@@ -889,11 +890,29 @@ def _chapter_title(html: str, original: str) -> str:
     return title or os.path.basename(original)
 
 
-def find_source_epub(project_folder) -> str | None:
-    """Исходный EPUB в папке проекта: архив, в котором лежат главы из карты перевода.
+def _archive_text_is_russian(archive, names, originals) -> bool:
+    """Первая же глава архива в основном кириллицей — это перевод, не исходник."""
+    for name in originals:
+        if name not in names:
+            continue
+        try:
+            text = archive.read(name).decode("utf-8", "ignore")
+        except (OSError, KeyError):
+            continue
+        letters = [char for char in re.sub(r"<[^>]+>", " ", text) if char.isalpha()]
+        if len(letters) < 40:
+            continue
+        cyrillic = sum(1 for char in letters if "\u0400" <= char <= "\u04ff")
+        return cyrillic * 2 > len(letters)
+    return False
 
-    В папке обычно несколько EPUB (перевод, редакции, пробы); исходник узнаётся
-    по содержимому: он должен содержать не меньше половины оригиналов карты.
+
+def find_source_epub(project_folder) -> str | None:
+    """Исходный EPUB в папке проекта.
+
+    В папке обычно несколько EPUB: исходник, переводы, редакции, пробы.
+    Исходник содержит главы из карты перевода, написан не по-русски и самый
+    ранний по дате файла.
     """
     import json
     import zipfile
@@ -902,30 +921,33 @@ def find_source_epub(project_folder) -> str | None:
     try:
         names = sorted(os.listdir(folder))
         with open(os.path.join(folder, "translation_map.json"), encoding="utf-8") as handle:
-            originals = {str(key).replace("\\", "/") for key in json.load(handle)}
+            originals = sorted(str(key).replace("\\", "/") for key in json.load(handle))
     except (OSError, ValueError):
         return None
     if not originals:
         return None
-    best_path, best_key = None, None
+    wanted = set(originals)
+    candidates = []
     for name in names:
         if not name.lower().endswith(".epub"):
             continue
         path = os.path.join(folder, name)
         try:
             with zipfile.ZipFile(path) as archive:
-                score = len(originals.intersection(archive.namelist()))
+                present = wanted.intersection(archive.namelist())
+                if len(present) * 2 < len(wanted):
+                    continue
+                if _archive_text_is_russian(archive, present, originals):
+                    continue
+            lowered = name.lower()
+            translated_name = any(mark in lowered for mark in ("(ru)", "перевод", "translated", "тест"))
+            # Самый ранний по дате; при равных датах — имя без пометок перевода.
+            candidates.append((os.path.getmtime(path), translated_name, name, path))
         except (OSError, zipfile.BadZipFile):
             continue
-        if score * 2 < len(originals):
-            continue
-        lowered = name.lower()
-        translated = any(mark in lowered for mark in ("(ru)", "перевод", "translated", "тест"))
-        # Сначала архив без пометок перевода, среди них — с наибольшим покрытием.
-        key = (not translated, score)
-        if best_key is None or key > best_key:
-            best_path, best_key = path, key
-    return best_path
+    if not candidates:
+        return None
+    return min(candidates)[3]
 
 
 def scan_chapters(entries, settings: DetectorSettings | None = None, progress=None) -> list[ChapterScan]:
