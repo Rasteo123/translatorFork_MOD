@@ -42,12 +42,12 @@ DEFAULT_KIND = "notice"
 
 _KV_RE = re.compile(r"^[^:：]{1,40}[:：]\s*\S")
 _TRAILING_PUNCT = ".!?…"
-_MAX_SPAN_PARAGRAPHS = 12
+_MAX_SPAN_PARAGRAPHS = 20
 # Авторские и переводческие примечания в скобках и служебные пометки
 # вроде «[Конец главы]» — не системные окна.
 DEFAULT_EXCLUDE = (
-    r"прим(\.|ечани\w*)\s*(автора|пер\.|переводчика)|^[\[【]?\s*P\.?\s?S\.?\b"
-    r"|^[\[【]?\s*(конец главы|продолжение следует)"
+    r"прим(\.|ечани\w*)\s*(автора|авт\.|пер\.|переводчика)|^[\[【(]?\s*P\.?\s?S\.?\b"
+    r"|^[\[【]?\s*(конец главы|продолжение следует)|благодар\w*\s+за\s+(донат|пожертв|поддержк|лунн|подар)"
 )
 _CLOSING_P_RE = re.compile(r"</p\s*>", re.I)
 _OPENING_P_RE = re.compile(r"<p[\s>/]", re.I)
@@ -135,6 +135,43 @@ _ATTRIBUTION_RE = re.compile(
     r"пробормот|заяв|подтверд|уточн|польстил|взвил|отрезал|напомнил|голос)",
     re.I,
 )
+# Системное сообщение в «кавычках» и репликой «— [...]»: узнаётся по началу.
+_QUOTED_RE = re.compile(r"^«([^«»]{12,})»([.!?…]*)$")
+_DASHED_RE = re.compile(r"^[—–-]\s*([\[【]\S.*[\]】])([.!?…]*)$", re.S)
+_SYSTEM_START_RE = re.compile(
+    r"^(динь|дзынь|дин-дон|поздравля|вниман|обнаружен|система[:：]|уведомлени|вы получ|"
+    r"задание[:：]|новое задание|награда[:：]|награда за|уровень повыш|активирован|оповещени|"
+    r"предупреждени|подтвердите|желаете)",
+    re.I,
+)
+_VOCATIVE_RE = re.compile(r"^система\s*[,?!…]", re.I)
+_SOUND_WORDS = frozenset("динь дзынь дин дон лянь клац бам бум дзинь тук".split())
+
+
+def _has_real_words(inner: str) -> bool:
+    """Не одно звукоподражание вроде «Динь-дон! Динь-дон!»."""
+    words = [word.lower() for word in re.findall(r"[^\W\d_]+", inner)]
+    return sum(1 for word in words if word not in _SOUND_WORDS) >= 3
+
+
+def _outer_group_spans_all(text: str) -> bool:
+    """Первая скобка закрывается только в самом конце (вложенные группы допустимы)."""
+    opening = text[0]
+    closing = _BRACKET_PAIRS.get(opening)
+    body = text.rstrip(_TRAILING_PUNCT)
+    if closing is None or not body.endswith(closing):
+        return False
+    depth = 0
+    for index, char in enumerate(body):
+        if char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0 and index != len(body) - 1:
+                return False
+            if depth < 0:
+                return False
+    return depth == 0
 
 
 def bracket_shape(text: str):
@@ -149,10 +186,27 @@ def bracket_shape(text: str):
     if len(text) < 2:
         return None
     opening = text[0]
+    if opening == "«":
+        quoted = _QUOTED_RE.match(text)
+        if quoted:
+            inner = quoted.group(1)
+            if _SYSTEM_START_RE.match(inner) and _VOCATIVE_RE.match(inner) is None and _has_real_words(inner):
+                return "quoted"
+        return None
+    if opening in "—–-":
+        dashed = _DASHED_RE.match(text)
+        if dashed and _outer_group_spans_all(dashed.group(1)):
+            inner = dashed.group(1)[1:-1].strip()
+            if _SYSTEM_START_RE.match(inner) or "систем" in inner.lower():
+                return "dashed"
+            exclamatory = inner.endswith("!") or "!" in dashed.group(2)
+            data_like = ":" in inner or any(char.isdigit() for char in inner) or len(inner) >= 40
+            if len(inner) >= 20 and not exclamatory and data_like:
+                return "dashed"
+        return None
     if opening in _BRACKET_PAIRS:
         closing = _BRACKET_PAIRS[opening]
-        match = _FULL_RE.match(text)
-        if match and match.group(3) == closing and opening not in match.group(2) and closing not in match.group(2):
+        if _outer_group_spans_all(text):
             return "full"
         keyed = _KEYED_RE.match(text)
         if keyed:
@@ -160,12 +214,9 @@ def bracket_shape(text: str):
             if _GROUP_LIST_RE.match(rest) and rest.strip(" .!?…,;"):
                 return "list"
             rest = rest.lstrip()
-            if (
-                rest
-                and not any(char in group for char in "!?")
-                and not rest.startswith((",", ";"))
-                and _ATTRIBUTION_RE.match(rest) is None
-            ):
+            group_is_term = not any(char in group for char in "!?") or not any(char.isalpha() for char in group)
+            separator_ok = not rest.startswith((",", ";")) or (rest.startswith(";") and ":" in rest)
+            if rest and group_is_term and separator_ok and _ATTRIBUTION_RE.match(rest) is None:
                 return "keyed"
             return None
         if closing not in text:
@@ -188,6 +239,12 @@ def strip_brackets(text: str) -> str:
     if shape == "full":
         match = _FULL_RE.match(text)
         return match.group(2).strip() + match.group(4)
+    if shape == "quoted":
+        match = _QUOTED_RE.match(text)
+        return match.group(1).strip() + match.group(2)
+    if shape == "dashed":
+        match = _DASHED_RE.match(text)
+        return match.group(1)[1:-1].strip() + match.group(2)
     if shape == "list":
         return " ".join(re.sub(r"[\[\]【】〖〗]", "", text).split())
     if shape == "open":
@@ -222,32 +279,60 @@ def _mostly_alphanumeric(value: str) -> bool:
     return alphanumeric > 0 and alphanumeric * 2 >= len(compact)
 
 
+_STAT_KEYS = frozenset(
+    "имя раса титул уровень здоровье мана сила ловкость телосложение интеллект мудрость харизма "
+    "выносливость скорость магия класс опыт награда ранг навык навыки способность способности талант "
+    "статус очки мировоззрение возраст пол прочность защита атака урон звание профессия оружие броня "
+    "снаряжение питомец задание квест условие эффект описание тип стоимость длительность hp mp sp exp".split()
+)
+_QUOTED_KEY_RE = re.compile(r"^«[^»]{1,40}»\s*[:：]")
+_KEY_QUOTES = "«»\"“”"
+# Шапка книги и заголовки глав: «Автор: …», «Глава 9: Нина.» — не карточка статуса.
+_META_KEYS = frozenset(
+    "автор название переводчик перевод источник издательство аннотация оригинал жанр "
+    "глава часть том пролог эпилог".split()
+)
+
+
+def _is_stat_key(key: str) -> bool:
+    words = key.lower().split()
+    return bool(words) and (key.lower() in _STAT_KEYS or words[0] in _STAT_KEYS)
+
+
 def is_key_value(text: str) -> bool:
     """Строка вида ``Ключ: значение`` (или несколько таких через ``|``).
 
     Чат-реплики ``«Ник: текст»`` и сценарные реплики ``Имя: «…»`` / ``Имя: — …``
     сюда не попадают: они начинаются с кавычки или их значение начинается с
-    кавычки либо тире.
+    кавычки либо тире. Точка в конце допустима для карточек статуса:
+    ключ из известных характеристик или значение с заглавной буквы либо цифры.
     """
     inner = strip_brackets(text)
-    if not inner or _is_dialogue(inner) or len(inner) > 200:
+    if not inner or _is_dialogue(inner) or len(inner) > 200 or inner[0] == "(":
         return False
-    if inner[0] in _QUOTE_CHARS or inner.rstrip().endswith((".", "!", "?", "…", ":")):
+    if inner[0] in _QUOTE_CHARS and _QUOTED_KEY_RE.match(inner) is None:
         return False
+    stripped = inner.rstrip()
+    if stripped.endswith(("!", "?", "…", ":")):
+        return False
+    ends_with_period = stripped.endswith(".")
+    unbracketed = bracket_shape(text) is None
     parts = [part.strip() for part in inner.split("|")] if "|" in inner else [inner]
     for part in parts:
         if _KV_RE.match(part) is None:
             continue
         key, value = re.split(r"[:：]", part, maxsplit=1)
+        key = key.strip().strip(_KEY_QUOTES)
         value = value.strip()
-        if (
-            len(key.split()) <= 4
-            and value
-            and value[0] not in _VALUE_BAD_START
-            and len(value) <= 120
-            and _mostly_alphanumeric(value)
-        ):
-            return True
+        if not value or len(key.split()) > 4 or value[0] in _VALUE_BAD_START or len(value) > 120:
+            continue
+        if unbracketed and key.lower().split()[0] in _META_KEYS:
+            continue
+        if not _mostly_alphanumeric(value):
+            continue
+        if ends_with_period and not _is_stat_key(key) and not (value[0].isupper() or value[0].isdigit()):
+            continue
+        return True
     return False
 
 
@@ -257,7 +342,7 @@ def _has_trigger(text: str, triggers) -> bool:
 
 
 def _is_header(text: str, settings: DetectorSettings) -> bool:
-    if is_bracketed(text):
+    if bracket_shape(text) in ("full", "quoted", "dashed"):
         return True
     if len(text) > 80 or _is_dialogue(text) or text[0] in _QUOTE_CHARS:
         return False
@@ -270,17 +355,26 @@ def _is_header(text: str, settings: DetectorSettings) -> bool:
     return _has_trigger(text, settings.triggers)
 
 
+_DATA_SHAPES = ("full", "keyed", "list", "quoted", "dashed")
+_SINGLE_SHAPES = ("full", "quoted", "dashed")
+
+
 def _is_data_line(text: str) -> bool:
-    return bracket_shape(text) in ("full", "keyed", "list") or is_key_value(text) or _is_decorated(text)
+    return bracket_shape(text) in _DATA_SHAPES or is_key_value(text) or _is_decorated(text)
 
 
 def classify_kind(lines: list[str]) -> str:
+    """Тип рамки: повышение уровня, затем карточка с двумя и более парами
+    ``Ключ: значение`` (статус даже при слове «титул» внутри), затем по словам."""
     texts = [strip_brackets(line) for line in lines]
     joined = " ".join(texts)
     key_value_count = sum(1 for text in texts if is_key_value(text))
-    for kind, pattern in _KIND_RULES:
-        if kind == "status" and key_value_count >= 2:
-            return kind
+    rules = dict(_KIND_RULES)
+    if rules["levelup"].search(joined):
+        return "levelup"
+    if key_value_count >= 2:
+        return "status"
+    for kind, pattern in _KIND_RULES[1:]:
         if pattern.search(joined):
             return kind
     return DEFAULT_KIND
@@ -328,7 +422,7 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
                 index += 1
                 continue
             stop = span_end + 1
-        elif not (shape in ("full", "keyed") or _is_header(text, settings) or is_key_value(text)):
+        elif not (shape in _DATA_SHAPES or _is_header(text, settings) or is_key_value(text)):
             index += 1
             continue
 
@@ -341,7 +435,7 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
             stop += 1
 
         length = stop - index
-        accepted = length >= 2 or (shape == "full" and settings.single_bracketed)
+        accepted = length >= 2 or (shape in _SINGLE_SHAPES and settings.single_bracketed)
         if not accepted:
             index += 1
             continue
@@ -415,7 +509,8 @@ def _looks_like_title(text: str) -> bool:
 
 def _render_key_value_part(part: str, accent: str) -> str:
     key, value = re.split(r"[:：]", part, maxsplit=1)
-    return f'<b style="color:{accent};">{_escape(key.strip())}:</b> {_escape(value.strip())}'
+    key = key.strip().strip(_KEY_QUOTES)
+    return f'<b style="color:{accent};">{_escape(key)}:</b> {_escape(value.strip())}'
 
 
 def _render_keyed(text: str, accent: str) -> str:
