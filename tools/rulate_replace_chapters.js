@@ -16,7 +16,8 @@
  *      по заголовкам « # [Название :|: Порядок :|: Платность :|: Том]».
  *   2. «Проверить» только читает сайт: сопоставляет главы файла с главами
  *      книги по названию, открывает каждую и сверяет текст по буквам и цифрам.
- *      Глава, где на сайте правили сам текст, по умолчанию не трогается.
+ *      Глава, текст которой на сайте отличается от файла (правили на сайте или
+ *      загрузчик MD потерял строку), по умолчанию не трогается.
  *   3. «Заменить» идёт по одной главе с паузами: старый текст кладёт
  *      в резервную копию этого браузера (IndexedDB), сохраняет новый и
  *      проверяет ответ сайта (рамки на месте, буквы совпадают). На первой
@@ -133,6 +134,14 @@
   }
 
   /**
+   * Конвертер защищает текст от Markdown загрузчика: «\\[Метка]: 80» и «&lt;».
+   * Поле перевода Markdown не знает, поэтому пометки снимаются.
+   */
+  function unprotect(line) {
+    return line.replace(/^\\(?=\[)/, '').replace(/&lt;/g, '<');
+  }
+
+  /**
    * Текст главы в том виде, в каком его принимает поле перевода при
    * выключенном редакторе: строка на строку, рамка одной строкой без
    * атрибута с оригиналом, разделитель «***» — линией, как делал загрузчик
@@ -145,7 +154,7 @@
       if (!line) continue;
       if (isFrameLine(line)) out.push(line.replace(SOURCE_ATTR_RE, ''));
       else if (BREAK_RE.test(line)) out.push('<hr>');
-      else out.push(escapeHtml(line));
+      else out.push(escapeHtml(unprotect(line)));
     }
     return out.join('\n');
   }
@@ -516,8 +525,8 @@
         <label class="check"><input type="checkbox" data-el="frames" checked>
           <span>Только главы с рамками</span></label>
         <label class="check"><input type="checkbox" data-el="force">
-          <span>Заменять и главы, где текст на сайте правили после загрузки<br>
-          <span class="muted">Правки на сайте пропадут.</span></span></label>
+          <span>Заменять и главы, где текст на сайте отличается от файла<br>
+          <span class="muted">Правки, сделанные прямо на сайте, пропадут.</span></span></label>
         <div class="row">
           <button class="btn primary" data-act="check" disabled>Проверить</button>
           <button class="btn" data-act="stop" hidden>Стоп</button>
@@ -543,7 +552,7 @@
     replace: 'заменить',
     done: 'уже с рамками',
     same: 'без изменений',
-    differs: 'текст на сайте правили',
+    differs: 'текст на сайте отличается',
     missing: 'нет на сайте',
     problem: 'не подходит',
     skip: 'в файле нет рамок',
@@ -753,7 +762,9 @@
       if (this.plan.stopped) notes.push('Проверены не все главы.');
       if (this.plan.outOfOrder) notes.push(`Порядок глав на сайте и в файле расходится в ${this.plan.outOfOrder} местах; главы сопоставлены по названию.`);
       if (this.plan.editorOn) notes.push('<span class="bad">На сайте включён визуальный редактор. Откройте любую главу, нажмите «Редактировать перевод» → «отключить редактор» и проверьте снова.</span>');
-      this.el.summary.innerHTML = `Глав на сайте ${this.plan.siteCount}. ${parts.join(' · ') || 'Подходящих глав нет.'}`
+      const countsText = parts.join(' · ');
+      const capitalized = countsText ? countsText[0].toUpperCase() + countsText.slice(1) : 'Подходящих глав нет.';
+      this.el.summary.innerHTML = `Глав на сайте: ${this.plan.siteCount}. ${capitalized}`
         + (notes.length ? `<br>${notes.join('<br>')}` : '');
       this.el.summary.hidden = false;
       this.buttons.run.textContent = `Заменить все (${this.toReplace().length})`;

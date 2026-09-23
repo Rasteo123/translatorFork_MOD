@@ -52,6 +52,24 @@ from ...utils.epub_tools import (
 SYSTEM_BLOCK_RE = re.compile(r'<div\b[^>]*\bdata-sys="[^"]*"[^>]*>.*?</div>', re.IGNORECASE | re.DOTALL)
 SYSTEM_BLOCK_ORIG_RE = re.compile(r"""\s*\bdata-sys-orig=(?:"[^"]*"|'[^']*')""", re.IGNORECASE)
 _SYSTEM_BLOCK_PLACEHOLDER = "\x00SYSBLOCK{index}\x00"
+# Загрузчик Rulate прогоняет файл через Markdown. Строка «[Метка]: 80 (обожание)»
+# для него — определение ссылки: она пропадает со страницы. Обратная косая черта
+# перед скобкой делает её обычным текстом.
+_REFERENCE_DEFINITION_RE = re.compile(
+    r"""^\[[^\]\n]+\]:[ \t]*<?\S+?>?(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*$"""
+)
+
+
+def _protect_from_markdown(line: str) -> str:
+    """Строка текста главы, которую Markdown сайта покажет как есть.
+
+    ``<`` уходит сущностью, чтобы «<Shadow>» не приняли за тег, а строки вида
+    определения ссылки получают ``\\`` перед скобкой.
+    """
+    line = line.replace("<", "&lt;")
+    if _REFERENCE_DEFINITION_RE.match(line):
+        line = "\\" + line
+    return line
 
 
 class SimpleEpubReader:
@@ -279,7 +297,8 @@ class EPUBConverterThread(QThread):
         for line in text.split("\n"):
             stripped = line.strip()
             if stripped:
-                lines.append(stripped)
+                is_block = stripped.startswith("\x00SYSBLOCK")
+                lines.append(stripped if is_block else _protect_from_markdown(stripped))
 
         result = "\n".join(lines)
         for index, block in enumerate(system_blocks):

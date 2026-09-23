@@ -180,3 +180,9 @@ test('frameStyles tells frames apart by their colours, not by spacing or case', 
   assert.notDeepEqual(api.frameStyles(site), api.frameStyles('<div style="border-left:8px solid #4fc3f7;color:#efe6ff">a</div>'));
   assert.equal(api.compareChapter(api.bodyAsHtml(api.buildBody(FILE_BODY)), FILE_BODY).sameFrames, true);
 });
+
+test('buildBody undoes the Markdown escapes of the converter', () => {
+  const body = api.buildBody('\\[Текущая благосклонность]: 80 (обожание)\nНик &lt;Shadow> вошёл.');
+
+  assert.equal(body, '[Текущая благосклонность]: 80 (обожание)\nНик &lt;Shadow&gt; вошёл.');
+});

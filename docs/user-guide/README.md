@@ -21,7 +21,7 @@
 - [07-gemini-reader.md](./07-gemini-reader.md) — озвучивание EPUB и сборка MP3.
 - [08-ranobelib-uploader.md](./08-ranobelib-uploader.md) — загрузка глав на RanobeLib и работа с Rulate.
 - [13-prompt-benchmark.md](./13-prompt-benchmark.md) — сравнение промптов и моделей на одинаковых тестовых фрагментах.
-- [14-system-windows.md](./14-system-windows.md) — рамки для системных окон LitRPG в переведённых главах.
+- [14-system-windows.md](./14-system-windows.md) — рамки для системных окон LitRPG в переведённых главах и замена уже выложенных глав на Rulate.
 
 ## Общие темы
 

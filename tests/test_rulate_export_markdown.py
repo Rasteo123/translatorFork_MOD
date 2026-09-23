@@ -91,3 +91,31 @@ def test_two_system_window_blocks_keep_their_order():
 
     assert [line[:5] if line.startswith("<div") else line for line in text.split("\n")] == ["<div ", "Между.", "<div "]
     assert text.index("Первый") < text.index("Между.") < text.index("Второй")
+
+
+def test_reference_definition_shaped_lines_survive_the_rulate_markdown():
+    # Загрузчик Rulate прогоняет md через Markdown: «[Метка]: 80 (обожание)» для
+    # него — определение ссылки, и строка пропадала со страницы главы.
+    converter = EPUBConverterThread("book.epub")
+    html = (
+        "<body><p>[Текущая благосклонность]: 80 (обожание)</p>"
+        "<p>[Уровень]: 5</p>"
+        "<p>[Начальный Горн]: Модификация ядовитой железы.</p><p>Текст.</p></body>"
+    )
+
+    lines = converter._html_to_plain_text(html).split("\n")
+
+    assert lines == [
+        "\\[Текущая благосклонность]: 80 (обожание)",
+        "\\[Уровень]: 5",
+        "[Начальный Горн]: Модификация ядовитой железы.",
+        "Текст.",
+    ]
+
+
+def test_angle_brackets_in_text_are_not_taken_for_tags():
+    converter = EPUBConverterThread("book.epub")
+
+    text = converter._html_to_plain_text("<body><p>Ник &lt;Shadow&gt; вошёл в игру.</p></body>")
+
+    assert text == "Ник &lt;Shadow> вошёл в игру."
