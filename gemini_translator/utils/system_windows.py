@@ -314,9 +314,12 @@ def is_key_value(text: str) -> bool:
     if inner[0] in _QUOTE_CHARS and _QUOTED_KEY_RE.match(inner) is None:
         return False
     stripped = inner.rstrip()
-    if stripped.endswith(("!", "?", "…", ":")):
+    if stripped.endswith(("!", "?", ":")):
         return False
+    # Точка или многоточие в конце: у карточек статуса это обычное дело,
+    # у прозы с двоеточием («Он сказал: привет.») — нет.
     ends_with_period = stripped.endswith(".")
+    ends_with_ellipsis = stripped.endswith("…")
     unbracketed = bracket_shape(text) is None
     parts = [part.strip() for part in inner.split("|")] if "|" in inner else [inner]
     for part in parts:
@@ -331,8 +334,9 @@ def is_key_value(text: str) -> bool:
             continue
         if not _mostly_alphanumeric(value):
             continue
-        if ends_with_period and not _is_stat_key(key) and not (value[0].isupper() or value[0].isdigit()):
-            continue
+        if (ends_with_period or ends_with_ellipsis) and not _is_stat_key(key):
+            if ends_with_ellipsis or len(value) > 40 or not (value[0].isupper() or value[0].isdigit()):
+                continue
         return True
     return False
 

@@ -774,3 +774,28 @@ def test_book_info_page_is_not_a_status_card():
     )
 
     assert find_windows(html) == []
+
+
+def test_stat_line_ending_with_ellipsis_stays_in_the_card():
+    html = _chapter(
+        "Описание было кратким:",
+        "Возраст: неизвестен.",
+        "Сила: Предельный Доуло.",
+        "Статус: глава Культа Священной Магии Смерти, блюститель государства, государственный наставник…",
+        "Помимо этого, выделялись броские слова.",
+    )
+
+    windows = find_windows(html)
+
+    assert [len(window.lines) for window in windows] == [3]
+    assert windows[0].lines[-1].startswith("Статус: глава")
+
+
+def test_prose_with_colon_and_long_capitalised_value_is_not_key_value():
+    html = _chapter(
+        "Было очевидно: Ди Тянь обращался не к мертвецам перед собой, а к тому, кто управлял ими.",
+        "Он доверял лишь себе: Никто не мог помочь.",
+    )
+
+    assert find_windows(html) == []
+    assert not is_key_value("Итог: он проиграл…")
