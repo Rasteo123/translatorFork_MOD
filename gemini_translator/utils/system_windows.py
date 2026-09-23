@@ -48,8 +48,9 @@ _MAX_SPAN_PARAGRAPHS = 20
 # действуют всегда; поле страницы только добавляет к ним свои.
 DEFAULT_EXCLUDE = (
     r"прим(\.|ечани\w*)\s*(автора|авт\.|пер\.|переводчика)|^[\[【(]?\s*P\.?\s?S\.?\b"
-    r"|^\W*(конец главы|конец книги|продолжение следует)"
+    r"|^\W*(конец главы|конец книги|конец арки|следующая арка|продолжение следует)"
     r"|благодар\w*\s+(за\s+(донат|пожертв|поддержк|лунн|подар)|читател)"
+    r"|^\[/?(spoiler|b|i|u|s|quote|indent|center|size|color|url|img)(=[^\]]*)?\]$"
 )
 _BUILTIN_EXCLUDE_RE = re.compile(DEFAULT_EXCLUDE, re.I)
 # Прежние значения поля «Не трогать строки» по умолчанию. Сохранённое такое
@@ -82,6 +83,12 @@ class DetectorSettings:
     #: Собеседники, уже узнанные в переписке этой книги (см. :func:`scan_chapters`):
     #: с ними чатом считается и серия без шапки и без повторов.
     chat_participants: frozenset = frozenset()
+    #: Главы книги открываются скобками-заголовками сцены («[Эми Даллон 03]»,
+    #: «[Мемориальный парк, Броктон-Бэй]»): такие строки в начале главы — не окна.
+    chapter_headers: bool = False
+    #: Скобками в книге записана речь (мысленная, телепатия): строка в скобках
+    #: без системных слов — не окно.
+    speech_brackets: bool = False
 
 
 @dataclass
@@ -343,6 +350,7 @@ _KEY_QUOTES = "«»\"“”"
 # Шапка книги и заголовки глав: «Автор: …», «Глава 9: Нина.» — не карточка статуса.
 _META_KEYS = frozenset(
     "автор название переводчик перевод источник издательство аннотация оригинал жанр "
+    "опубликовано завершено обновлено слов "
     "глава часть том пролог эпилог количество объем объём id просмотры просмотров просмотр "
     "год рейтинг лайков".split()
 )
@@ -922,7 +930,8 @@ def chat_line(text: str) -> ChatLine | None:
 _NOT_SPEAKERS = frozenset(
     "вопрос ответ например или новое примечание внимание итог итоги совет подсказка цель задача причина "
     "следствие плюс минус первое второе третье шаг вывод результат замечание пример важно кстати "
-    "кто что где когда как почему зачем куда откуда чей".split()
+    "кто что где когда как почему зачем куда откуда чей далее затем потом итак сначала наконец "
+    "следующая следующий следующее следующие предыдущая предыдущий улика".split()
 )
 
 
@@ -1194,6 +1203,116 @@ def _balanced_span(raw: str, start: int, end: int) -> tuple[int, int] | None:
     return None
 
 
+
+# --- соглашения книги о скобках ----------------------------------------------------
+
+# Слова системы: по ним строку в скобках оставляют окном и в книгах, где скобки
+# означают речь или заголовки сцен.
+_SYSTEM_WORD_RE = re.compile(
+    r"динь|дзынь|систем|навык|уровень|уровня|статус|задани|квест|наград|очк[иоа]|опыт|получен|поздравля|"
+    r"тревог|вниман|обнаружен|предупрежд|ошибк|данные|характеристик|способност|умени|титул|достижени|"
+    r"\bhp\b|\bmp\b|\bexp\b",
+    re.I,
+)
+_FIRST_PERSON_BRACKET_RE = re.compile(
+    r"(?<![\w-])(?:я|мне|меня|мной|мой|моя|моё|мое|мои|моей|моего|моим|мы|нас|нам|нами|наш|наша|наше|наши)(?![\w-])",
+    re.I,
+)
+_REMARK_AFTER_BRACKET_RE = re.compile(r"[\]】]\s*[–—-]\s*\S")
+_RAW_PARAGRAPH_RE = re.compile(r"<p\b[^>]*>(.*?)</p\s*>", re.I | re.S)
+_CHAPTER_HEADERS_SHARE = 0.3
+_SPEECH_BRACKETS_SHARE = 0.4
+_BOOK_MIN_BRACKET_LINES = 20
+_BOOK_MIN_CHAPTERS = 5
+_HEADER_LINES_MAX = 4
+
+
+def _raw_paragraph_texts(html: str) -> list[str]:
+    """Быстрый текст абзацев для статистики книги (без разбора bs4)."""
+    return [" ".join(html_module.unescape(_TAG_RE.sub(" ", body)).split()) for body in _RAW_PARAGRAPH_RE.findall(html)]
+
+
+def _bracketed(text: str) -> bool:
+    """Строка в скобках, но не реплика чата «[Кен]: …» — у той свои правила."""
+    if not text.lstrip("—–- ").startswith(("[", "【", "〖")):
+        return False
+    parsed = chat_line(text)
+    return parsed is None or parsed.style != "bracket"
+
+
+def book_bracket_conventions(chapters_html) -> dict:
+    """Что значат квадратные скобки в книге.
+
+    ``chapter_headers``: треть глав и больше открывается строкой в скобках —
+    заголовки сцен (The Shard Shrouded). ``speech_brackets``: в скобках чаще
+    пишут от первого лица, чем бывает у системы, — мысленная речь (The Limits
+    of Power). Системных книг ни то, ни другое не касается: там от первого
+    лица меньше десятой части скобочных строк, а главы скобкой открываются редко.
+    """
+    chapters = opened = lines = first_person = system = 0
+    for html in chapters_html:
+        texts = [text for text in _raw_paragraph_texts(html) if text]
+        if not texts:
+            continue
+        chapters += 1
+        opened += _bracketed(texts[0]) and not _SYSTEM_WORD_RE.search(texts[0])
+        for text in texts:
+            if not _bracketed(text):
+                continue
+            lines += 1
+            first_person += bool(_FIRST_PERSON_BRACKET_RE.search(text) or _REMARK_AFTER_BRACKET_RE.search(text))
+            system += bool(_SYSTEM_WORD_RE.search(text))
+    return {
+        "chapter_headers": chapters >= _BOOK_MIN_CHAPTERS and opened >= _CHAPTER_HEADERS_SHARE * chapters,
+        "speech_brackets": (
+            lines >= _BOOK_MIN_BRACKET_LINES
+            and first_person >= _SPEECH_BRACKETS_SHARE * lines
+            and system < first_person
+        ),
+    }
+
+
+# Разрыв сцены: пустой абзац или одни разделители («— ​», «***», «■»).
+_SCENE_BREAK_RE = re.compile(r"^[\s\u200b\u00a0—–\-*•·■□◆◇~=_#]*$")
+_HEADER_MAX = 200
+
+
+def _convention_skips(paragraphs, settings) -> set[int]:
+    """Номера абзацев, которые соглашения книги о скобках исключают из окон."""
+    skipped: set[int] = set()
+    if settings.chapter_headers:
+        # Заголовок сцены: в начале главы или сразу после разрыва сцены
+        # («[Эми Даллон 03]», «[Странное измерение, на пляже?]»). Сообщение системы
+        # там же узнаётся по системному слову с «:» или «!» («[Тревога! Сеть атакована!]»);
+        # строка посреди сцены («[Он видит вас. Немедленно отступайте!]») — окно, как и было.
+        starting = True
+        for number, paragraph in enumerate(paragraphs):
+            text = paragraph.text
+            if _SCENE_BREAK_RE.match(text):
+                starting = True
+                continue
+            if (
+                starting
+                and _bracketed(text)
+                and len(text) <= _HEADER_MAX
+                and not (_SYSTEM_WORD_RE.search(text) and re.search(r"[:!]", text))
+            ):
+                skipped.add(number)
+                continue
+            starting = False
+    if settings.speech_brackets:
+        # Мысленная речь в скобках: от первого лица, с ремаркой или без слов системы.
+        skipped.update(
+            number for number, paragraph in enumerate(paragraphs)
+            if _bracketed(paragraph.text) and (
+                not _SYSTEM_WORD_RE.search(paragraph.text)
+                or _FIRST_PERSON_BRACKET_RE.search(paragraph.text)
+                or _REMARK_AFTER_BRACKET_RE.search(paragraph.text)
+            )
+        )
+    return skipped
+
+
 def find_windows(
     html: str,
     settings: DetectorSettings | None = None,
@@ -1331,6 +1450,7 @@ def find_windows(
         return _QUOTED_TERM_RE.match(text) is not None and _QUOTED_TERM_RE.match(previous) is not None
 
     windows: list[WindowCandidate] = []
+    convention_skips = _convention_skips(paragraphs, settings)
     forum_at: dict[int, tuple[int, WindowCandidate]] = {}
     texts = [paragraph.text for paragraph in paragraphs]
     if any(forum_role(text) in ("welcome", "topic", "pm") for text in texts):
@@ -1363,7 +1483,7 @@ def find_windows(
             index, forum_window = forum_at[index]
             windows.append(forum_window)
             continue
-        if excluded(first):
+        if excluded(first) or index in convention_skips:
             index += 1
             continue
 
@@ -1424,7 +1544,7 @@ def find_windows(
         ):
             following = paragraphs[stop].text
             after = paragraphs[stop + 1].text if stop + 1 < len(paragraphs) and paragraphs[stop + 1].adjacent else ""
-            if chat_run_end(stop) is not None or stop in forum_at:
+            if chat_run_end(stop) is not None or stop in forum_at or stop in convention_skips:
                 break
             if not (continues(stop) or (in_list and _is_list_item(following, paragraphs[stop - 1].text, after))):
                 break
@@ -2450,6 +2570,9 @@ def scan_chapters(entries, settings: DetectorSettings | None = None, progress=No
     """
     entries = list(entries)
     total = len(entries)
+    conventions = book_bracket_conventions(entry[2] for entry in entries)
+    if any(conventions.values()):
+        settings = replace(settings or DetectorSettings(), **conventions)
     has_source = any(entry[3] for entry in entries)
     steps = 2 * total if has_source else total
     marks_by_chapter: list[dict[str, set[int]]] = []
