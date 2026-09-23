@@ -1896,3 +1896,67 @@ def test_list_line_with_two_ranks_keeps_the_list_going():
     html = _chapter("[Классификация уровней миров]", *dou, "Хо Юйхао долго смотрел на эти строки. Потом закрыл глаза.")
 
     assert [window.lines for window in find_windows(html)] == [["[Классификация уровней миров]", *dou]]
+
+
+# --- что значат скобки в книге: заголовки сцен и мысленная речь ------------------
+
+
+def test_book_conventions_tell_scene_headers_and_speech_from_system():
+    headers = [_chapter(f"[Магнус Берк {n:02d}]", "[Мастерская Арканиста, Доки, Броктон-Бэй]", "Текст главы.") for n in range(10)]
+    speech = [_chapter("[Мне нужно знать, где ты.]", "[Я здесь, – ответила она.]", "Текст.") for _ in range(10)]
+    system = [_chapter("[Динь! Навык получен]", "[Уровень: 3]", "Текст.") for _ in range(10)]
+
+    assert sw.book_bracket_conventions(headers) == {"chapter_headers": True, "speech_brackets": False}
+    assert sw.book_bracket_conventions(speech)["speech_brackets"] is True
+    assert sw.book_bracket_conventions(system) == {"chapter_headers": False, "speech_brackets": False}
+
+
+def test_scene_headers_are_not_windows_but_alerts_are():
+    settings = sw.DetectorSettings(chapter_headers=True)
+    html = _chapter(
+        "[Интерлюдия 02]",
+        "[Тэмми Херрен]",
+        "Руна шла за Ренессансом.",
+        "[Он видит вас. Немедленно отступайте!]",
+        "И путь появился.",
+        "— ​",
+        "[Мисси Бирон, героиня Виста]",
+        "Это был патруль.",
+        "— ​",
+        "[Тревога! Тактическая сеть атакована!]",
+        "Он вскочил.",
+    )
+
+    lines = [window.lines for window in find_windows(html, settings)]
+
+    assert lines == [["[Он видит вас. Немедленно отступайте!]"], ["[Тревога! Тактическая сеть атакована!]"]]
+
+
+def test_speech_in_brackets_is_not_a_window_but_chat_and_system_are():
+    settings = sw.DetectorSettings(speech_brackets=True)
+    html = _chapter(
+        "[Есть. Тебе… Не больно ли тебе отвечать на вопросы?]",
+        "— [Я чувствую твою усталость. Ты уверена?]",
+        "Текст.",
+        "[Данные повреждены]",
+        "Текст.",
+        "[Кен]: Ты где?",
+        "[Кен]: Отзовись.",
+        "[Анн]: Уже иду.",
+    )
+
+    windows = find_windows(html, settings)
+
+    assert [window.kind for window in windows] == ["notice", "chat"]
+    assert windows[0].lines == ["[Данные повреждены]"]
+
+
+def test_bbcode_tags_arc_markers_and_story_metadata_are_not_windows():
+    html = _chapter(
+        "[/spoiler]", "Текст.",
+        "Конец арки 01: Осколок, окутанный тенями", "Следующая арка 02: Избранный Бога Войны.", "Текст.",
+        "Опубликовано: 2025–12–30.", "Завершено: 2026–05–12.", "Слов: 319,462.", "Текст.",
+        "Следующая Улика: клочок бумаги с номером?", "Далее: досье СКП!", "Далее: пазл, ну и что?",
+    )
+
+    assert find_windows(html) == []
