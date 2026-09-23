@@ -65,7 +65,7 @@ The symbol `─` (U+2500) is the sole separator between states [SOUND] and [SILE
 
 If speech cuts off mid-word or on a pause:
 *   Mark interrupted phrases, sudden cut-offs, or trailing offs with an ellipsis `…`.
-*   If a character's speech is broken into multiple paragraphs, each paragraph (except the first) requires starting with `─ … [text]`.
+*   If a phrase broken off with `…` continues in the next paragraph, that paragraph starts with `─ … [text]`. If the same character simply goes on speaking in a new paragraph after a finished sentence (`.`, `!`, `?`), the paragraph starts with plain `─`, without an ellipsis.
 *   **Speech Cut-off:** Marked by an ellipsis `…`; continuation of the interrupted phrase after a pause/remark/`</p>` always starts with `─ …`.
     *   *Example:* `<p>─ Я не… ─ он запнулся. ─ …не знаю.</p>`
 
