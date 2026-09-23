@@ -205,7 +205,9 @@ class HomePage(ShellPage):
         self._refresh_proxy_status()
         import os
         if os.environ.get("QT_QPA_PLATFORM") != "offscreen":
-            QtCore.QTimer.singleShot(1000, lambda: self.check_for_updates(silent=True))
+            # Три секунды, а не сразу: если эту копию запустил хелпер
+            # обновления, он успевает дописать журнал попытки и выйти.
+            QtCore.QTimer.singleShot(3000, self._run_startup_update_tasks)
 
     def _build_ui(self) -> None:
         outer = QtWidgets.QVBoxLayout(self)
@@ -301,6 +303,50 @@ class HomePage(ShellPage):
         self.btn_check_update.setEnabled(idle)
         if idle:
             self.btn_check_update.setText("Проверить обновления")
+
+    def _run_startup_update_tasks(self):
+        try:
+            if self._report_pending_update():
+                return  # установка ещё идёт: то же обновление не предлагаем
+        except Exception as e:  # noqa: BLE001 — метка переживает рестарт,
+            # и сбой её разбора встречал бы окном ошибки на каждом старте
+            from gemini_translator.utils.update_installer import log_update_event
+            log_update_event(f"pending update report failed: {e}")
+        self.check_for_updates(silent=True)
+
+    def _report_pending_update(self) -> bool:
+        """Сообщает, чем кончилась прошлая установка. True — она ещё идёт.
+
+        Хелпер доделывает установку без окон, когда программы уже нет, так
+        что о сбое пользователь узнаёт только здесь, при следующем запуске.
+        """
+        from gemini_translator.utils import update_installer as inst
+        from gemini_translator.version import __version__
+        identity = upd.read_build_identity()
+        url = upd.releases_page(identity.repository) if identity is not None else ""
+        report = inst.assess_pending_update(__version__, download_url=url)
+        if report is None:
+            return False
+        if report.state == "installing":
+            self._show_update_report(QtWidgets.QMessageBox.Icon.Information, report)
+            return True
+        inst.clear_pending_update()
+        if report.state == "failed":
+            self._show_update_report(QtWidgets.QMessageBox.Icon.Warning, report)
+        return False
+
+    def _show_update_report(self, icon, report) -> None:
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(report.title)
+        box.setText(report.text)
+        box.setInformativeText(report.informative)
+        if report.details:
+            box.setDetailedText(report.details)
+        # Сам QMessageBox добавляет «OK» только при показе, а оверлей
+        # копирует кнопки раньше: без явной кнопки карточку нечем закрыть.
+        box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def check_for_updates(self, silent=False):
         if self._update_state is not upd.UpdateState.IDLE:
@@ -460,12 +506,39 @@ class HomePage(ShellPage):
 
     # -- подготовка установки --
 
-    def _install_context(self, version_label):
+    def _install_context(self, version_label, expected_version=""):
         from gemini_translator.utils import update_installer as inst
         return inst.InstallContext(
             app_pid=os.getpid(),
             real_executable=inst.get_real_executable(),
-            version_label=version_label)
+            version_label=version_label,
+            expected_version=expected_version)
+
+    def _confirm_install_restart(self, version) -> bool:
+        """Предупреждает, что программа закроется на время установки.
+
+        Установщик работает без окон, и без этого предупреждения закрытие
+        программы выглядит как сбой: пользователь открывает её заново и
+        мешает установке.
+        """
+        what = f"версию {version}" if version else "обновление"
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Information)
+        box.setWindowTitle("Установка обновления")
+        box.setText(f"Программа закроется, установит {what} и откроется снова.")
+        box.setInformativeText(
+            "Установка идёт без окон и может занять пару минут. Не запускайте "
+            "программу сами: новая версия откроется, когда всё будет готово.")
+        install = box.addButton("Установить", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Отмена", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(install)
+        box.exec()
+        return box.clickedButton() == install
+
+    def _postpone_install(self):
+        from gemini_translator.utils.update_installer import log_update_event
+        log_update_event("install postponed by user before the helper started")
+        self._set_update_state(upd.UpdateState.IDLE)
 
     def _prepare_release_install(self, info, staged_path):
         from gemini_translator.utils import update_installer as inst
@@ -475,9 +548,12 @@ class HomePage(ShellPage):
                 "detached install helper started (unsaved changes or a "
                 "running worker)")
             return
+        if not self._confirm_install_restart(info.title_version):
+            self._postpone_install()
+            return
         self._set_update_state(upd.UpdateState.PREPARING)
         channel = upd.detect_update_channel()
-        ctx = self._install_context(f"v{info.title_version}")
+        ctx = self._install_context(f"v{info.title_version}", info.title_version)
 
         def job():
             if channel is upd.UpdateChannel.WINDOWS_INSTALLED:
@@ -500,6 +576,9 @@ class HomePage(ShellPage):
                 "install aborted: current page vetoed close before the "
                 "detached install helper started (unsaved changes or a "
                 "running worker)")
+            return
+        if not self._confirm_install_restart(None):
+            self._postpone_install()
             return
         self._set_update_state(upd.UpdateState.PREPARING)
         ctx = self._install_context(info.commit[:12])

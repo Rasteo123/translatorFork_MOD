@@ -6,11 +6,13 @@
 """
 import json
 import os
+import shutil
 import sys
 import time
 import subprocess
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,6 +59,15 @@ def test_write_startup_acknowledgement_noop_and_never_raises(tmp_path):
     blocker.write_text("x")
     # путь «внутри файла» — запись невозможна, но исключения быть не должно
     inst.write_startup_acknowledgement(env={inst.ACK_ENV: str(blocker / "ack.json")})
+
+
+def test_write_startup_acknowledgement_never_exposes_partial_file(tmp_path, monkeypatch):
+    # Хелпер читает версию из ack, как только увидит файл: сбой посреди
+    # записи не должен оставить недописанный JSON под итоговым именем.
+    monkeypatch.setattr(inst, "__version__", object())  # JSON падает на середине
+    ack = tmp_path / "ack.json"
+    inst.write_startup_acknowledgement(env={inst.ACK_ENV: str(ack)})
+    assert list(tmp_path.iterdir()) == []  # ни ack, ни временного файла
 
 
 # --- чистка staging -------------------------------------------------------
@@ -159,7 +170,7 @@ def test_sh_quote():
 _TRICKY_EXE = r"C:\Program Files\it's\translatorFork_MOD.exe"
 
 
-def _installed_script():
+def _installed_script(setup_log_path=r"C:\stage\setup-v10.5.22.log"):
     return inst.render_windows_installed_script(
         app_pid=4242,
         setup_path=r"C:\stage\GeminiTranslator-Setup.exe",
@@ -168,6 +179,9 @@ def _installed_script():
         real_exe=_TRICKY_EXE,
         ack_path=r"C:\stage\ack-v10.5.22.json",
         log_path=r"C:\stage\updater.log",
+        attempt_log_path=r"C:\stage\attempt-v10.5.22.log",
+        setup_log_path=setup_log_path,
+        expected_version="10.5.22",
     )
 
 
@@ -178,6 +192,7 @@ def _portable_script():
         real_exe=_TRICKY_EXE,
         ack_path=r"C:\stage\ack-v10.5.22.json",
         log_path=r"C:\stage\updater.log",
+        attempt_log_path=r"C:\stage\attempt-v10.5.22.log",
     )
 
 
@@ -205,6 +220,56 @@ def test_windows_installed_script_specifics():
     assert "setup failed" in content
 
 
+@pytest.mark.skipif(shutil.which("powershell") is None,
+                    reason="парсер есть только в Windows PowerShell")
+@pytest.mark.parametrize("render", [_installed_script, _portable_script])
+def test_windows_scripts_parse_in_powershell(render, tmp_path):
+    # Остальные тесты хелперов сверяют текст; синтаксис PowerShell проверяет
+    # только его собственный парсер (в CI на windows-latest).
+    script = tmp_path / "helper.ps1"
+    script.write_text(render(), encoding="utf-8-sig")
+    check = (
+        "$errors = $null; "
+        "[System.Management.Automation.Language.Parser]::ParseFile("
+        f"{inst.ps_quote(script)}, [ref]$null, [ref]$errors) | Out-Null; "
+        "if ($errors) { $errors | ForEach-Object { $_.Message }; exit 1 }"
+    )
+    proc = subprocess.run(["powershell", "-NoProfile", "-Command", check],
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("render", [_installed_script, _portable_script])
+def test_windows_scripts_copy_lines_to_attempt_log(render):
+    # Следующий запуск программы объясняет итог по строкам этой попытки.
+    log_fn = next(line for line in render().splitlines() if line.startswith("function Log"))
+    assert "'C:\\stage\\updater.log'" in log_fn
+    assert "'C:\\stage\\attempt-v10.5.22.log'" in log_fn
+
+
+def test_windows_installed_script_keeps_setup_log():
+    content = _installed_script(setup_log_path=r"C:\Users\O'Neil Smith\stage\setup-v10.5.22.log")
+    setup_call = next(line for line in content.splitlines()
+                      if line.startswith("$setup = Start-Process"))
+    # Start-Process склеивает аргументы через пробел: кавычки внутри элемента
+    # держат путь с пробелом целым, апостроф удваивает ps_quote.
+    assert "'/LOG=\"C:\\Users\\O''Neil Smith\\stage\\setup-v10.5.22.log\"'" in setup_call
+    failure = next(line for line in content.splitlines() if "setup failed with exit code" in line)
+    assert "setup-v10.5.22.log" in failure  # из журнала видно, где искать подробности
+
+
+def test_windows_installed_script_rejects_ack_from_other_version():
+    content = _installed_script()
+    health = content[content.index("while ((Get-Date) -lt $deadline)"):]
+    # версия из ack сверяется до того, как помощник объявит успех
+    assert health.index("ConvertFrom-Json") < health.index("health ack received")
+    assert "-ne '10.5.22'" in health
+    mismatch = health[health.index("VERSION-MISMATCH"):]
+    mismatch = mismatch[:mismatch.index("exit")]
+    # запущена чужая копия: бэкап и установщик нужны для разбора и ручной установки
+    assert "Remove-Item" not in mismatch
+
+
 def test_windows_portable_script_specifics():
     content = _portable_script()
     assert "'.bak'" in content
@@ -212,12 +277,13 @@ def test_windows_portable_script_specifics():
     assert ".rejected" in content
 
 
-def _ctx(tmp_path, exe_name="translatorFork_MOD.exe"):
+def _ctx(tmp_path, exe_name="translatorFork_MOD.exe", expected_version="10.5.22"):
     exe = tmp_path / "app" / exe_name
     exe.parent.mkdir(parents=True, exist_ok=True)
     exe.write_bytes(b"MZ")
     return inst.InstallContext(app_pid=os.getpid(), real_executable=str(exe),
-                               version_label="v10.5.22")
+                               version_label="v10.5.22",
+                               expected_version=expected_version)
 
 
 def test_prepare_windows_installed_free_space_guard(tmp_path, monkeypatch):
@@ -249,7 +315,25 @@ def test_prepare_windows_installed_launches_powershell(tmp_path, monkeypatch):
     assert argv[:4] == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
     assert argv[4] == "-File"
     script = Path(argv[5])
-    assert script.exists() and "Wait-Process" in script.read_text(encoding="utf-8")
+    content = script.read_text(encoding="utf-8")
+    assert script.exists() and "Wait-Process" in content
+    assert str(tmp_path / "staging" / "setup-v10.5.22.log") in content
+    assert "-ne '10.5.22'" in content
+
+
+def test_prepare_windows_installed_requires_expected_version(tmp_path, monkeypatch):
+    # Без ожидаемой версии хелпер снова принял бы любое подтверждение.
+    ctx = _ctx(tmp_path, expected_version="")
+    staged = tmp_path / "GeminiTranslator-Setup.exe"
+    staged.write_bytes(b"MZ")
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path / "staging")
+    monkeypatch.setattr(inst, "directory_size", lambda p: 1)
+    launched = []
+    monkeypatch.setattr(inst, "launch_detached_helper",
+                        lambda argv, *, cwd: launched.append(argv))
+    with pytest.raises(inst.UpdateInstallError):
+        inst.prepare_windows_installed(staged, ctx)
+    assert launched == []
 
 
 def test_prepare_windows_portable_launches_powershell(tmp_path, monkeypatch):
@@ -275,6 +359,7 @@ def _macos_script(bundle="/Apps/x y/GeminiTranslator.app", is_dmg=False):
         binary_name="GeminiTranslator",
         ack="/stage/ack.json",
         log="/stage/updater.log",
+        attempt="/stage/attempt-v10.5.22.log",
         is_dmg=is_dmg,
     )
 
@@ -333,6 +418,8 @@ def macos_fixture(tmp_path):
         shim.write_text(f'#!/bin/bash\necho "{tool} $@" >> "{shim_log}"\nexit 0\n')
         shim.chmod(0o755)
 
+    attempt = tmp_path / "attempt.log"
+
     def run_helper(staged):
         ack = tmp_path / "ack.json"
         log = tmp_path / "updater.log"
@@ -345,7 +432,7 @@ def macos_fixture(tmp_path):
         script = inst.render_macos_script(
             app_pid=pid, staged=str(staged), bundle=str(live),
             binary_name="GeminiTranslator", ack=str(ack), log=str(log),
-            is_dmg=False)
+            attempt=str(attempt), is_dmg=False)
         script_path = tmp_path / "helper.sh"
         script_path.write_text(script)
         env = dict(os.environ)
@@ -356,7 +443,7 @@ def macos_fixture(tmp_path):
     return {
         "live": live, "result": result, "shim_log": shim_log,
         "make_new_binary": make_new_binary, "run_helper": run_helper,
-        "tmp": tmp_path,
+        "tmp": tmp_path, "attempt": attempt,
     }
 
 
@@ -378,6 +465,9 @@ def test_macos_helper_happy_path_swaps_and_cleans(macos_fixture):
     # верификация шла по staged-копии, карантин снимался с живого бандла
     assert codesign_lines and str(f["live"]) not in codesign_lines[0]
     assert xattr_lines and str(f["live"]) in xattr_lines[0]
+    # строки попытки дублируются в отдельный журнал для следующего запуска
+    assert "health ack received" in f["attempt"].read_text()
+    assert "health ack received" in log.read_text()
 
 
 def test_macos_helper_rolls_back_without_ack(macos_fixture):
@@ -390,6 +480,7 @@ def test_macos_helper_rolls_back_without_ack(macos_fixture):
     assert (f["tmp"] / "GeminiTranslator.app.rejected").exists()
     assert staged.exists()  # staged сохранён для ручного разбора
     assert not ack.exists()
+    assert "exited without ack" in f["attempt"].read_text()
 
 
 def test_prepare_macos_requires_bundle(tmp_path, monkeypatch):
@@ -666,6 +757,210 @@ def test_prepare_source_archive_launches_helper(tmp_path, monkeypatch):
     assert captured["argv"][0] == sys.executable
     content = Path(captured["argv"][1]).read_text(encoding="utf-8")
     assert "HEALTH-TIMEOUT" in content
+
+
+# --- итог прошлой установки ------------------------------------------------
+
+def test_prepare_windows_installed_records_pending_update(tmp_path, monkeypatch):
+    ctx = _ctx(tmp_path)
+    staged = tmp_path / "GeminiTranslator-Setup.exe"
+    staged.write_bytes(b"MZ")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: staging)
+    monkeypatch.setattr(inst, "directory_size", lambda p: 1)
+    stale = staging / "attempt-v10.5.22.log"
+    stale.write_text("строка прошлой попытки\n", encoding="utf-8")
+    monkeypatch.setattr(inst, "launch_detached_helper",
+                        lambda argv, *, cwd: SimpleNamespace(pid=4321))
+    inst.prepare_windows_installed(staged, ctx)
+    pending = inst.read_pending_update()
+    assert pending["version"] == "10.5.22"
+    assert pending["label"] == "v10.5.22"
+    assert pending["helper_pid"] == 4321
+    assert pending["executable"] == ctx.real_executable
+    assert not stale.exists()  # строки прошлой попытки не смешиваются с новыми
+
+
+@pytest.mark.parametrize("channel", ["portable", "macos"])
+def test_other_release_helpers_record_pending_update(tmp_path, monkeypatch, channel):
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path / "staging")
+    monkeypatch.setattr(inst, "launch_detached_helper",
+                        lambda argv, *, cwd: SimpleNamespace(pid=77))
+    if channel == "portable":
+        ctx = _ctx(tmp_path, exe_name="GeminiTranslator-Portable.exe")
+        inst.prepare_windows_portable(tmp_path / "staged.exe", ctx)
+    else:
+        exe = tmp_path / "GeminiTranslator.app" / "Contents" / "MacOS" / "GeminiTranslator"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("bin")
+        ctx = inst.InstallContext(app_pid=1, real_executable=str(exe),
+                                  version_label="v10.5.22", expected_version="10.5.22")
+        inst.prepare_macos(tmp_path / "u.dmg", ctx)
+    assert inst.read_pending_update()["helper_pid"] == 77
+
+
+def test_pending_update_needs_expected_version(tmp_path, monkeypatch):
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path)
+    ctx = inst.InstallContext(app_pid=1, real_executable="x", version_label="v1")
+    inst.record_pending_update(ctx, SimpleNamespace(pid=5))
+    assert inst.read_pending_update() is None
+
+
+_STARTED = 1_800_000_000.0
+_APP_EXE = r"C:\Programs\GT\translatorFork_MOD.exe"
+_OTHER_EXE = r"D:\old\translatorFork_MOD.exe"
+
+
+def _record(tmp_path, monkeypatch, attempt_lines=None):
+    """Метка установки 10.5.30 из хелпера с PID 999 и его строки попытки."""
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path / "staging")
+    ctx = inst.InstallContext(app_pid=1, real_executable=_APP_EXE,
+                              version_label="v10.5.30", expected_version="10.5.30")
+    inst.record_pending_update(ctx, SimpleNamespace(pid=999), now=_STARTED)
+    if attempt_lines is not None:
+        # так пишет Add-Content -Encoding UTF8 из PowerShell: BOM и CRLF
+        inst.attempt_log_path("v10.5.30").write_bytes("".join(
+            f"[2026-09-23T10:00:00.0000000+03:00] [UPD] {line}\r\n"
+            for line in attempt_lines).encode("utf-8-sig"))
+
+
+def _assess(current="10.5.29", *, after=600, alive=False, **kw):
+    return inst.assess_pending_update(
+        current, current_executable=_OTHER_EXE, now=_STARTED + after,
+        alive=lambda pid: alive and pid == 999, **kw)
+
+
+def test_assess_pending_update_without_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path)
+    assert _assess() is None
+
+
+def test_assess_pending_update_new_version_started(tmp_path, monkeypatch):
+    _record(tmp_path, monkeypatch, ["health ack received; cleaning up"])
+    assert _assess("10.5.30").state == "installed"
+
+
+def test_assess_pending_update_while_helper_works(tmp_path, monkeypatch):
+    # Программу открыли заново посреди установки: это не сбой.
+    _record(tmp_path, monkeypatch, ["waiting for app pid 1", "running setup"])
+    report = _assess(after=60, alive=True)
+    assert report.state == "installing"
+    assert "10.5.30" in report.text
+    assert "Закройте программу" in report.informative
+
+
+def test_assess_pending_update_distrusts_old_helper_pid(tmp_path, monkeypatch):
+    # PID давно завершившегося хелпера мог достаться чужому процессу.
+    _record(tmp_path, monkeypatch, ["running setup"])
+    assert _assess(after=3 * 3600, alive=True).state == "failed"
+
+
+@pytest.mark.parametrize("lines, reason", [
+    (None, "не запустился"),
+    (["running setup",
+      "setup failed with exit code 5; setup log C:\\u\\setup-v10.5.30.log",
+      "restoring backup"], "код 5"),
+    (["new process exited without ack; rolling back", "restoring backup"],
+     "закрылась сразу после запуска"),
+    (["waiting for app pid 1", "app still running; aborting untouched"],
+     "не закрылась"),
+    (["creating snapshot backup", "snapshot failed; aborting untouched"],
+     "не начиналась"),
+    (["running setup"], "прервалась"),
+])
+def test_assess_pending_update_explains_failure(tmp_path, monkeypatch, lines, reason):
+    _record(tmp_path, monkeypatch, lines)
+    report = _assess()
+    assert report.state == "failed"
+    assert "10.5.30" in report.text and "10.5.29" in report.text
+    assert reason in report.informative
+    assert str(inst.update_log_path()) in report.informative
+    if lines:
+        assert lines[-1] in report.details  # строки помощника — в подробностях
+        assert "[UPD]" not in report.details and "\ufeff" not in report.details
+
+
+def test_assess_pending_update_points_to_setup_log(tmp_path, monkeypatch):
+    _record(tmp_path, monkeypatch,
+            ["setup failed with exit code 5; setup log C:\\u\\setup-v10.5.30.log"])
+    assert str(inst.setup_log_path("v10.5.30")) in _assess().informative
+
+
+def test_assess_pending_update_version_mismatch(tmp_path, monkeypatch):
+    # Установщик поставил новую версию не туда, откуда запущена программа.
+    _record(tmp_path, monkeypatch, [
+        "VERSION-MISMATCH: started copy reports 10.5.29, expected 10.5.30; "
+        "keeping backup and staged installer"])
+    report = _assess(download_url="https://github.com/owner/repo/releases/latest")
+    assert report.state == "failed"
+    assert r"C:\Programs\GT" in report.informative
+    assert "«Пуск»" in report.informative
+    # повтор поставил бы версию в ту же чужую папку — не советуем его
+    assert "ещё раз" not in report.informative
+
+
+def test_assess_pending_update_other_copy_running(tmp_path, monkeypatch):
+    # Новая версия подтвердила запуск, а пользователь открыл старую копию.
+    _record(tmp_path, monkeypatch, ["health ack received; cleaning up"])
+    report = _assess()
+    assert report.state == "failed"
+    assert _APP_EXE in report.informative and _OTHER_EXE in report.informative
+    assert "Запускайте" in report.informative  # что делать дальше
+
+
+def test_assess_pending_update_offers_manual_download(tmp_path, monkeypatch):
+    _record(tmp_path, monkeypatch, ["app still running; aborting untouched"])
+    url = "https://github.com/owner/repo/releases/latest"
+    assert url in _assess(download_url=url).informative
+
+
+def test_clear_pending_update(tmp_path, monkeypatch):
+    _record(tmp_path, monkeypatch)
+    inst.clear_pending_update()
+    assert inst.read_pending_update() is None
+    inst.clear_pending_update()  # повторная очистка — тихий no-op
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-ветка")
+def test_pid_alive_posix():
+    assert inst.pid_alive(os.getpid())
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert not inst.pid_alive(child.pid)
+    assert not inst.pid_alive(None)
+    assert not inst.pid_alive(0)
+
+
+class _FakeKernel32:
+    """OpenProcess/GetExitCodeProcess/CloseHandle без настоящего Windows."""
+
+    def __init__(self, exit_code, handle=1234):
+        self.exit_code = exit_code
+        self.handle = handle
+        self.closed = []
+
+    def OpenProcess(self, access, inherit, pid):
+        return self.handle
+
+    def GetExitCodeProcess(self, handle, code):
+        code.value = self.exit_code
+        return 1
+
+    def CloseHandle(self, handle):
+        self.closed.append(handle)
+        return 1
+
+
+def test_windows_pid_alive_reads_exit_code_and_closes_handle():
+    # На Windows os.kill(pid, 0) не проверяет процесс, а убивает его.
+    running = _FakeKernel32(exit_code=259)  # STILL_ACTIVE
+    assert inst._windows_pid_alive(42, kernel32=running)
+    assert running.closed == [1234]
+    finished = _FakeKernel32(exit_code=0)
+    assert not inst._windows_pid_alive(42, kernel32=finished)
+    assert finished.closed == [1234]
+    assert not inst._windows_pid_alive(42, kernel32=_FakeKernel32(259, handle=0))
 
 
 # --- лог ------------------------------------------------------------------
