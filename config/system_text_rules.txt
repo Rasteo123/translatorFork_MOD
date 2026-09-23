@@ -3,7 +3,8 @@ This book has a game system. Text that the system or interface displays (notific
 - Keep it in square brackets. Source 【…】, 〖…〗 and […] around such text become […]. Never turn these brackets into quotation marks and never drop them. Quotation marks inside such text follow the usual rules: 『…』, 「…」 and “…” become «…». This includes a bare skill, item or spell name on its own line and an empty slot: 【】 becomes [ ].
 - Keep status and card fields as separate `Key: value` entries, one per line or paragraph exactly as in the source. Never merge fields into a sentence. Keep numbers, ranks and increments as written: `I40 → I50`.
 - Keep list markers of skill and item effects: each effect starts with `·`.
-Speech, thoughts, spell chants, spell names shouted in battle, chat messages, news and slogans are not interface text even when the source puts them in 【…】: translate them by the dialogue and quotation rules above.
+Speech, thoughts, spell chants, spell names shouted in battle, news and slogans are not interface text even when the source puts them in 【…】: translate them by the dialogue and quotation rules above.
+Chat, messenger and forum messages are not interface text either. Write each message as its own paragraph `Name: «text»` with the sender's name or nickname before the colon, and never put a message in square brackets. A message whose sender the source does not name becomes «text».
 
 System text examples:
 Src: <p>【叮！恭喜宿主获得技能：火球术】</p>
@@ -18,6 +19,10 @@ Tgt: <p>Навыки:</p><p>[Фехтование]</p><p>Магия: [ ]</p>
 
 Src: <p>【技能：火球术】</p><p>·造成火焰伤害。</p><p>·冷却时间：10秒。</p>
 Tgt: <p>[Навык: Огненный шар]</p><p>· Наносит урон огнём.</p><p>· Перезарядка: 10 секунд.</p>
+
+Src: <p>王胖子：【晚上开黑吗？】</p><p>林凡：【来！】</p><p>【人齐了。】</p>
+Tgt: <p>Толстяк Ван: «Вечером играем?»</p><p>Линь Фань: «Давай!»</p><p>«Все в сборе».</p>
+*(Context: a chat log, not interface text.)*
 
 Src: <p>“【冰柱】！”他大喊。</p>
 Tgt: <p>─ «Ледяной столб»! ─ крикнул он.</p>
