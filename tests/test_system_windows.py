@@ -1699,3 +1699,63 @@ def test_chat_reader_is_who_takes_part_in_most_chats():
     assert sw.chat_reader(chats) == "Кен"
     assert sw.chat_reader(chats[2:]) == ""
     assert sw.is_reader("Кен Амада", ["Кен"]) and not sw.is_reader("Дядя Ван", ["Дядя Ли"])
+
+
+# --- чей аккаунт в переписке ---------------------------------------------------
+
+
+def test_chat_owner_is_whose_phone_it_is_not_who_holds_it():
+    rena = ["[Кен]: Нам нужно встретиться.", "[Анн]: Срочно?", "[Кен]: Да."]
+    assert sw.chat_account_owner(["Вдруг телефон Рена завибрировал, и он принялся читать."], rena) == "Рена"
+    assert sw.chat_account_owner(
+        ["Рен достал телефон, чтобы написать Кену."],
+        ["Сообщение отправлено: Кен.", "[Рен]: Можно к тебе?", "[Кен]: Серьёзно, Рен?"],
+    ) == "Рен"
+    assert sw.chat_account_owner(
+        ["Вторник, 11 октября."],
+        ["Сообщение от: Кен Амада.", "[Кен Амада]: Мицуру-сан, есть новости.", "[Мицуру Киридзё]: Поняла, Амада."],
+    ) == "Мицуру Киридзё"
+    assert sw.chat_account_owner(["Пришло сообщение от Анн.", "Рен замер."], ["[Анн]: Ты занят?", "[Рен]: Расскажешь?"]) == "Рен"
+    assert sw.chat_account_owner(["Он шёл по улице."], ["[Анн]: Привет.", "[Рен]: Привет."]) == ""
+
+
+def test_owner_goes_right_even_when_the_book_reader_is_someone_else():
+    templates = {kind: dict(template) for kind, template in DEFAULT_TEMPLATES.items()}
+    templates["chat"]["readers"] = ["Кен"]
+    html = _chapter(
+        "Макото достала телефон, чтобы написать Кену.",
+        "[Кен]: Ой, прости, Макото.",
+        "[Макото]: Ничего страшного.",
+        "[Макото]: Надеюсь, ты не скучаешь.",
+        "Она улыбнулась.",
+    )
+    windows = find_windows(html)
+    assert windows[0].chat_owner == "Макото"
+
+    block = sw._BLOCK_RE.search(sw.apply_windows(html, windows, templates=templates)[0]).group(0)
+
+    assert block.count("float:right") == 2 and ">Кен</b>" in block
+    # Выбор на странице главнее владельца: «никто» — все слева.
+    windows[0].readers = ()
+    block = sw._BLOCK_RE.search(sw.apply_windows(html, windows, templates=templates)[0]).group(0)
+    assert "float:right" not in block
+
+
+def test_next_chats_of_a_chapter_keep_the_owner_while_he_writes():
+    html = _chapter(
+        "Пришло сообщение от Анн.",
+        "[Анн]: Ты занят?",
+        "[Анн]: Ответь.",
+        "[Рен]: Нет.",
+        "Рен задумался.",
+        "[Рен]: Расскажешь, что случилось?",
+        "[Рен]: Я волнуюсь.",
+        "[Анн]: Потом.",
+        "Позже написала Макото.",
+        "[Макото]: Встретимся?",
+        "[Макото]: В шесть.",
+    )
+
+    owners = [window.chat_owner for window in find_windows(html)]
+
+    assert owners == ["Рен", "Рен", ""]
