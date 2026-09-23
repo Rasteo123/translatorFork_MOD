@@ -17,6 +17,56 @@ class _UnexpectedApiHandler:
         raise AssertionError("synthesis should have been skipped")
 
 
+class _SavedKeysSettingsManager:
+    def __init__(self, session=None):
+        self._session = dict(session or {})
+
+    def load_key_statuses(self):
+        return [
+            {"provider": "gemini", "key": "gemini-1"},
+            {"provider": "deepseek", "key": "deepseek-1"},
+            {"provider": "deepseek", "key": "deepseek-2"},
+        ]
+
+    def load_full_session_settings(self):
+        return dict(self._session)
+
+
+class ProviderKeySelectionTests(unittest.TestCase):
+    """Ключ второго провайдера берётся только из ключей, сохранённых под ним."""
+
+    def _worker(self, active_keys_by_provider=None, session=None):
+        return SimpleNamespace(
+            api_provider_name="gemini",
+            api_key="gemini-1",
+            active_keys_by_provider=active_keys_by_provider or {},
+            settings_manager=_SavedKeysSettingsManager(session),
+        )
+
+    def test_foreign_active_keys_fall_back_to_saved_provider_keys(self):
+        worker = self._worker({"deepseek": ["gemini-1", "deleted-key"]})
+
+        self.assertEqual(orchestrator._api_key_for_provider(worker, "deepseek"), "deepseek-1")
+        self.assertEqual(
+            orchestrator._api_key_for_provider(worker, "deepseek", attempt_index=1),
+            "deepseek-2",
+        )
+
+    def test_saved_session_set_keeps_only_own_keys(self):
+        worker = self._worker(
+            session={"active_keys_by_provider": {"deepseek": ["gemini-1", "deepseek-2"]}}
+        )
+
+        for attempt_index in range(3):
+            with self.subTest(attempt_index=attempt_index):
+                self.assertEqual(
+                    orchestrator._api_key_for_provider(
+                        worker, "deepseek", attempt_index=attempt_index
+                    ),
+                    "deepseek-2",
+                )
+
+
 class ProviderOrchestratorTests(unittest.IsolatedAsyncioTestCase):
     def test_should_orchestrate_epub_batch_translation_context(self):
         worker = SimpleNamespace(

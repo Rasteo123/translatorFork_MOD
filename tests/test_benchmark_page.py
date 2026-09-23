@@ -62,6 +62,47 @@ class PromptBenchmarkPageContractTests(unittest.TestCase):
         PromptBenchmarkPage.on_leave(_Stub())
         self.assertEqual(calls, [True])
 
+    def test_collect_saved_keys_ignores_active_keys_of_other_providers(self):
+        # Настройки после старой ошибки окна ключей: в наборе deepseek лежат
+        # ключи Gemini, в наборе openrouter — ключи NVIDIA.
+        from gemini_translator.api import config as api_config
+
+        placeholder = api_config.provider_placeholder_api_key("local")
+
+        class _SettingsManager:
+            def load_key_statuses(self):
+                return [
+                    {"provider": "gemini", "key": "gemini-1"},
+                    {"provider": "gemini", "key": "gemini-2"},
+                    {"provider": "deepseek", "key": "deepseek-1"},
+                    {"provider": "nvidia", "key": "nvapi-1"},
+                ]
+
+            def load_full_session_settings(self):
+                return {
+                    "active_keys_by_provider": {
+                        "gemini": ["gemini-2"],
+                        "deepseek": ["gemini-1", "gemini-2", "deleted-key"],
+                        "openrouter": ["nvapi-1"],
+                        "local": [placeholder],
+                    }
+                }
+
+        class _Stub:
+            settings_manager = _SettingsManager()
+
+        keys = PromptBenchmarkPage._collect_saved_keys(_Stub())
+
+        self.assertEqual(
+            keys,
+            {
+                "gemini": ["gemini-2"],
+                "deepseek": ["deepseek-1"],
+                "nvidia": ["nvapi-1"],
+                "local": [placeholder],
+            },
+        )
+
     def test_compare_models_scenario_selects_one_prompt_and_all_models(self):
         class _Stub:
             _saved_run_focus = {}

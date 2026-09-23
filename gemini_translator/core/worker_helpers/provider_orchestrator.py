@@ -23,6 +23,7 @@ from gemini_translator.api.errors import (
 )
 from gemini_translator.api.factory import get_api_handler_class
 from gemini_translator.core.handler_cleanup import cleanup_provider_handler
+from gemini_translator.utils.active_keys import owned_active_keys, saved_keys_by_provider
 from gemini_translator.utils.helpers import estimate_gemini_tokens, safe_int
 from gemini_translator.utils.text import split_csv
 
@@ -251,6 +252,14 @@ def _active_keys_by_provider(worker) -> dict[str, list[str]]:
     return normalized
 
 
+def _saved_provider_keys(worker, provider_id: str) -> list[str]:
+    try:
+        statuses = worker.settings_manager.load_key_statuses()
+    except Exception:
+        statuses = []
+    return saved_keys_by_provider(statuses).get(provider_id, [])
+
+
 def _api_key_for_provider(worker, provider_id: str, explicit_key: Any = None, attempt_index: int = 0) -> str:
     explicit = str(explicit_key or "").strip()
     if explicit:
@@ -265,7 +274,10 @@ def _api_key_for_provider(worker, provider_id: str, explicit_key: Any = None, at
             return current_key
 
     keys_by_provider = _active_keys_by_provider(worker)
-    keys = keys_by_provider.get(provider_id) or []
+    # В наборе могут лежать ключи другого провайдера: берём только сохранённые
+    # под этим, а если таких нет — все его сохранённые ключи.
+    saved_keys = _saved_provider_keys(worker, provider_id)
+    keys = owned_active_keys(keys_by_provider.get(provider_id), saved_keys) or saved_keys
     if keys:
         return keys[attempt_index % len(keys)]
 

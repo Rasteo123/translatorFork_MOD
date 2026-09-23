@@ -50,6 +50,7 @@ from ...core.translation_engine import TranslationEngine
 from ...core.task_manager import ChapterQueueManager, TaskDBWorker, tuple_deserializer
 from ._shared import session_and_tasks
 from ...utils.settings import SettingsManager
+from ...utils.active_keys import sanitize_active_keys_by_provider
 from ...utils.epub_tools import (
     _extract_first_epub_heading_text_regex,
     extract_number_from_path,
@@ -142,6 +143,22 @@ def _strip_secret_key_settings(settings: dict) -> dict:
     for key in _SECRET_UI_SETTINGS_KEYS:
         sanitized.pop(key, None)
     return sanitized
+
+
+def _owned_active_keys_by_provider(settings_manager, active_keys_by_provider: dict) -> dict:
+    """Наборы активных ключей без ключей, сохранённых под другими провайдерами.
+
+    Окно ключей раньше записывало в набор нового провайдера ключи прежнего,
+    такие наборы лежат в settings.json и чистятся при загрузке и сохранении.
+    Если сохранённые ключи прочитать не удалось, наборы возвращаются как есть:
+    стирать выбор пользователя из-за сбоя чтения нельзя.
+    """
+    try:
+        key_statuses = settings_manager.load_key_statuses()
+    except Exception as exc:
+        print(f"[WARN] Активные ключи не сверены с сохранёнными: {exc}")
+        return active_keys_by_provider
+    return sanitize_active_keys_by_provider(active_keys_by_provider, key_statuses)
 
 
 def load_bool_setting(settings_manager, key: str, default: bool) -> bool:
@@ -3346,7 +3363,10 @@ class InitialSetupPage(ShellPage):
 
         settings['active_keys_by_provider'] = {
             provider_id: sorted(list(keys))
-            for provider_id, keys in self.key_management_widget.current_active_keys_by_provider.items()
+            for provider_id, keys in _owned_active_keys_by_provider(
+                self.settings_manager,
+                self.key_management_widget.current_active_keys_by_provider,
+            ).items()
             if keys
         }
         settings[QUEUE_AUTOSAVE_SETTING_KEY] = self._is_queue_autosave_enabled()
@@ -3423,6 +3443,9 @@ class InitialSetupPage(ShellPage):
 
             active_keys_by_provider = settings.get('active_keys_by_provider')
             if isinstance(active_keys_by_provider, dict):
+                active_keys_by_provider = _owned_active_keys_by_provider(
+                    self.settings_manager, active_keys_by_provider
+                )
                 for provider_id, active_keys in active_keys_by_provider.items():
                     if not provider_id:
                         continue
@@ -6629,7 +6652,10 @@ class InitialSetupPage(ShellPage):
             'num_instances': self.instances_spin.value(),
             'active_keys_by_provider': {
                 provider_id: sorted(list(keys))
-                for provider_id, keys in self.key_management_widget.current_active_keys_by_provider.items()
+                for provider_id, keys in _owned_active_keys_by_provider(
+                    self.settings_manager,
+                    self.key_management_widget.current_active_keys_by_provider,
+                ).items()
                 if keys
             },
         }
