@@ -209,10 +209,22 @@ def test_render_key_value_rows_get_bold_labels():
     assert re.search(r"<b [^>]*>Уровень:</b> Нет", block)
 
 
-def test_render_status_joins_short_key_values_into_columns():
+def test_render_status_puts_short_key_values_one_per_row():
+    # Колонки через «|» по центру рамки выглядели криво («Щит небосвода»).
     block = render_window(
         ["◆ СТАТУС ◆", "Имя: Ёдыре", "Раса: Человек", "Уровень: 14", "Очки здоровья: 100/100"],
         "status",
+    )
+
+    assert "\u00a0|\u00a0" not in block
+    assert block.count("<br />") == 4
+
+
+def test_render_columns_still_follow_the_template_setting():
+    block = render_window(
+        ["◆ СТАТУС ◆", "Имя: Ёдыре", "Раса: Человек", "Уровень: 14", "Очки здоровья: 100/100"],
+        "status",
+        templates={"status": {"columns": 3}},
     )
 
     assert "Ёдыре\u00a0|\u00a0<b" in block
@@ -1444,10 +1456,11 @@ def test_window_never_ends_on_an_ellipsis_line():
     assert [window.lines for window in find_windows(html)] == [["[Динь! Первое]", "[Динь! Второе]"]]
 
 
-def test_rank_values_render_one_per_row_but_ordinary_stats_keep_columns():
-    ranks = render_window(["«Мудрец» (имя изменено), lv1.", "Сила: F358.", "Выносливость: S999.", "Ловкость: G297."], "status")
-    slashes = render_window(["Фильвис Шалия, уровень 1.", "Сила: I 0 / Выносливость: I 0 / Магия: I 0."], "status")
-    ordinary = render_window(["◆ СТАТУС ◆", "Имя: Ёдыре", "Раса: Человек", "Уровень: 14"], "status")
+def test_rank_values_render_one_per_row_even_with_columns_template():
+    columns = {"status": {"columns": 3}}
+    ranks = render_window(["«Мудрец» (имя изменено), lv1.", "Сила: F358.", "Выносливость: S999.", "Ловкость: G297."], "status", templates=columns)
+    slashes = render_window(["Фильвис Шалия, уровень 1.", "Сила: I 0 / Выносливость: I 0 / Магия: I 0."], "status", templates=columns)
+    ordinary = render_window(["◆ СТАТУС ◆", "Имя: Ёдыре", "Раса: Человек", "Уровень: 14"], "status", templates=columns)
 
     assert len(ranks.split("<br />")) == 4
     assert len(slashes.split("<br />")) == 4
@@ -1518,3 +1531,73 @@ def test_list_mode_takes_short_enumerations_but_not_prose_with_commas():
     )
 
     assert [window.lines for window in find_windows(html)] == [skill, stages]
+
+
+# --- карточки снаряжения и монстров одним абзацем («Щит небосвода») --------------
+
+
+def _rows(block: str) -> list[str]:
+    inner = re.sub(r"^<div[^>]*>|</div>$", "", block)
+    return [re.sub(r"<[^>]+>", "", row) for row in inner.split("<br />")]
+
+
+def test_item_card_in_one_paragraph_renders_one_field_per_row():
+    card = (
+        "[Хрустальный Свет Роэльсы]: Уровень: 38, Качество: Легендарное. Одноручный меч, Атака: 180~220. "
+        "Защита: +800 единиц. Сила +60. Телосложение +70. Удача +3. Особое свойство: атаки наделены силой "
+        "адского пламени, наносят 500 единиц урона огнем, игнорирующего защиту."
+    )
+
+    rows = _rows(render_window([card], "skill"))
+
+    assert rows[0] == "◆ Хрустальный Свет Роэльсы ◆"
+    assert rows[1:9] == [
+        "Уровень: 38", "Качество: Легендарное", "Одноручный меч", "Атака: 180~220",
+        "Защита: +800 единиц", "Сила +60", "Телосложение +70", "Удача +3",
+    ]
+    assert rows[9].startswith("Особое свойство: атаки наделены")
+
+
+def test_several_cards_in_one_window_get_equal_name_rows():
+    cards = [
+        "[Стена Демонической Розы]: Уровень: 38, Качество: Легендарное. Щит, Защита: 3600. Блокирование: 125.",
+        "[Демон Черного Пламени]: Уровень: 38, Качество: Легендарное. Посох, Атака: 200~250. Интеллект +70.",
+    ]
+
+    block = render_window(cards, "skill")
+    rows = _rows(block)
+
+    assert "◆" not in block
+    assert rows[0] == "Стена Демонической Розы" and "Демон Черного Пламени" in rows
+    assert rows.index("Демон Черного Пламени") == 6
+
+
+def test_notice_in_prose_stays_one_row():
+    notice = (
+        "[Система: Группа игрока Цзо Сансары приняла задание «Возрождение Семени Жизни: Пробуждение друидов. "
+        "Часть 3». Мать-Земля Эленмья просит Цзо Сансару отправиться к Престолу Элементов. Опыт за задание: 200 000.]"
+    )
+
+    assert len(_rows(render_window([notice], "notice"))) == 1
+
+
+def test_signed_numbers_luck_and_set_bonuses_are_card_data():
+    html = _chapter(
+        "[Наручи Стража Гнева]: Класс: воин-защитник, Уровень: 40, Качество: легендарное. Броня: 1200.",
+        "Сила: +90.",
+        "Удача: +2.",
+        "Особое свойство: повышает шанс блокирования щитом на 3%.",
+        "2 вещи: Повышает уровень угрозы от всех соответствующих навыков на 5%. Добавляет 400 единиц чистого урона, игнорирующего броню.",
+        "4 вещи: Урон по демоническим существам повышен на 5%. Облик медведя: генерация угрозы повышена на 5%. Облик кошки: скорость атаки повышена на 5%.",
+        "Глубокий фиолетовый навсегда останется самым желанным цветом для игроков, ведь он означает Легенду.",
+    )
+
+    windows = find_windows(html)
+
+    assert len(windows) == 1
+    assert windows[0].lines[-1].startswith("4 вещи:")
+    # Бонус комплекта остаётся одной строкой, как и соседний «2 вещи».
+    rows = _rows(render_window(windows[0].lines, windows[0].kind))
+    assert rows[-1].startswith("4 вещи: Урон") and rows[-1].endswith("скорость атаки повышена на 5%.")
+    assert is_key_value("Скорость: -10%")
+    assert not is_key_value("Он сказал: -Нет.")
