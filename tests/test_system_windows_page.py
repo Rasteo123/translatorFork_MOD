@@ -400,3 +400,74 @@ class SystemWindowsSourceTests(unittest.TestCase):
         header = page.table.horizontalHeaderItem(5).text()
         self.assertEqual(header, "Как найдено")
         self.assertEqual(page.table.item(0, 5).text(), "скобки")
+
+
+class ChatReaderFieldTests(unittest.TestCase):
+    """Окна «Чат»: кто читает переписку и где его реплики."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.project = root / "ace"
+        (self.project / "OEBPS").mkdir(parents=True)
+        (self.project / "OEBPS/c1_translated_gemini.html").write_text(
+            _chapter("Телефон завибрировал.", "[Макото]: Кен, ты как?", "[Макото]: Отзовись.", "[Кен]: Всё хорошо.", "Он убрал телефон."),
+            encoding="utf-8",
+        )
+        (self.project / "OEBPS/c2_translated_gemini.html").write_text(
+            _chapter("Позже.", "[Рюдзи]: Кен, где ты?", "[Рюдзи]: Мы ждём!", "[Кен Амада]: Иду!", "Он вышел."),
+            encoding="utf-8",
+        )
+        translation_map = {
+            "OEBPS/c1.xhtml": {"_translated_gemini.html": "OEBPS/c1_translated_gemini.html"},
+            "OEBPS/c2.xhtml": {"_translated_gemini.html": "OEBPS/c2_translated_gemini.html"},
+        }
+        (self.project / "translation_map.json").write_text(json.dumps(translation_map), encoding="utf-8")
+        self.other = root / "other"
+        self.other.mkdir()
+
+    def _page(self):
+        page = SystemWindowsPage()
+        self.addCleanup(page.close)
+        return page
+
+    def test_chat_windows_get_origin_kind_and_the_auto_reader(self):
+        page = self._page()
+        page.project_edit.setText(str(self.project))
+        page.set_scan_results(scan_project(self.project))
+
+        self.assertEqual(page.table.rowCount(), 2)
+        self.assertEqual(page.table.item(0, 5).text(), "чат")
+        self.assertEqual(page.table.cellWidget(0, 2).currentData(), "chat")
+        self.assertIn("Кен", page.reader_edit.placeholderText())
+        self.assertEqual(page.templates()["chat"]["readers"], ["Кен"])
+
+    def test_reader_field_is_remembered_per_project(self):
+        page = self._page()
+        page.project_edit.setText(str(self.project))
+        page.reader_edit.setText("Макото")
+        page._on_reader_edited()
+
+        page.project_edit.setText(str(self.other))
+        self.assertEqual(page.reader_edit.text(), "")
+        page.project_edit.setText(str(self.project))
+        self.assertEqual(page.reader_edit.text(), "Макото")
+        self.assertEqual(page.templates()["chat"]["readers"], ["Макото"])
+
+    def test_chat_preview_puts_the_reader_on_the_right(self):
+        page = self._page()
+        template = dict(page.templates()["chat"], readers=["Кен"])
+
+        preview = page._approximate_chat(["[Макото]: Кен, ты как?", "[Кен Амада]: Всё хорошо."], template)
+
+        self.assertLess(preview.index('align="left"'), preview.index('align="right"'))
+        self.assertIn(">Макото</b>", preview)
+        self.assertNotIn(">Кен Амада</b>", preview)

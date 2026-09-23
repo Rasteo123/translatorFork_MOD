@@ -7,6 +7,7 @@
 панель фильтров, таблица кандидатов с предпросмотром и футер с действиями.
 """
 
+import html as html_module
 import os
 import re
 import tempfile
@@ -50,16 +51,24 @@ from gemini_translator.utils.system_windows import (
     SAMPLE_WINDOWS,
     DetectorSettings,
     apply_project,
+    chat_bubble_colors,
+    chat_line,
+    chat_reader,
+    chat_readers,
     find_source_epub,
+    is_chat_header,
+    is_reader,
     render_preview_document,
     render_window,
     scan_project,
     strip_project,
     user_exclude_pattern,
+    with_sample_reader,
 )
 
 UI_STATE_KEY = "system_windows_ui"
-_ORIGIN_LABELS = {"brackets": "скобки", "quotes": "кавычки", "pairs": "пары", "source": "исходник"}
+_ORIGIN_LABELS = {"brackets": "скобки", "quotes": "кавычки", "pairs": "пары", "source": "исходник", "chat": "чат"}
+_READER_PLACEHOLDER = "по умолчанию тот, кто есть в большинстве переписок книги"
 _COLOR_COLUMNS = (("border", "Рамка"), ("background", "Фон"), ("text", "Текст"), ("accent", "Заголовок"))
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _PREVIEW_FILE = "translatorfork_system_windows_preview.html"
@@ -141,6 +150,8 @@ class SystemWindowsPage(ShellPage):
         super().__init__(parent)
         self.worker = None
         self._scans = []
+        self._auto_reader = ""
+        self._readers_by_project: dict[str, str] = {}
         self._build_ui()
         self._restore_ui_state()
         self._update_counter()
@@ -279,6 +290,23 @@ class SystemWindowsPage(ShellPage):
         )
         options_row.addWidget(self.exclude_edit, 1)
         layout.addLayout(options_row)
+
+        reader_row = QHBoxLayout()
+        reader_row.setSpacing(_ROW_GAP)
+        reader_label = QLabel("Кто читает чат")
+        reader_label.setObjectName("helperLabel")
+        reader_row.addWidget(reader_label)
+        self.reader_edit = QLineEdit("")
+        self.reader_edit.setPlaceholderText(_READER_PLACEHOLDER)
+        self.reader_edit.setToolTip(
+            "В окнах «Чат» реплики этого собеседника идут справа, остальных — слева, как в мессенджере.\n"
+            "Несколько имён через запятую. «Кен» подходит и для «Кен Амада».\n"
+            "Пустое поле: после поиска читающим считается тот, кто есть в большинстве переписок книги.\n"
+            "Запоминается для каждой книги отдельно."
+        )
+        self.reader_edit.editingFinished.connect(self._on_reader_edited)
+        reader_row.addWidget(self.reader_edit, 1)
+        layout.addLayout(reader_row)
 
         self.settings_disclosure = _Disclosure("Настройки поиска", body)
         return self.settings_disclosure
@@ -474,6 +502,9 @@ class SystemWindowsPage(ShellPage):
     def _on_project_changed(self, text: str) -> None:
         if not self._scans:
             self._set_status("Проект выбран" if text.strip() else "Проект не выбран")
+        self._auto_reader = ""
+        self.reader_edit.setPlaceholderText(_READER_PLACEHOLDER)
+        self.reader_edit.setText(self._readers_by_project.get(self._project_key(text), ""))
         folder = text.strip()
         if folder and os.path.isdir(folder):
             found = find_source_epub(folder)
@@ -490,6 +521,31 @@ class SystemWindowsPage(ShellPage):
             return None
         path = self.source_edit.text().strip()
         return path if path and os.path.isfile(path) else None
+
+    # --- кто читает чат ------------------------------------------------------
+
+    @staticmethod
+    def _project_key(text: str) -> str:
+        return os.path.normpath(text.strip()) if text.strip() else ""
+
+    def _on_reader_edited(self) -> None:
+        key = self._project_key(self.project_edit.text())
+        if not key:
+            return
+        value = self.reader_edit.text().strip()
+        if value:
+            self._readers_by_project[key] = value
+        else:
+            self._readers_by_project.pop(key, None)
+        self._save_ui_state()
+        self._refresh_preview()
+
+    def chat_reader_names(self) -> list[str]:
+        """Имена из поля, а без них — определённый после поиска читающий."""
+        names = chat_readers({"readers": self.reader_edit.text()})
+        if names:
+            return names
+        return [self._auto_reader] if self._auto_reader else []
 
     # --- настройки ----------------------------------------------------------
 
@@ -512,6 +568,8 @@ class SystemWindowsPage(ShellPage):
                 if _HEX_RE.match(value):
                     template[key] = value
             result[kind] = template
+        if "chat" in result:
+            result["chat"]["readers"] = self.chat_reader_names()
         return result
 
     @staticmethod
@@ -530,6 +588,9 @@ class SystemWindowsPage(ShellPage):
             state = (manager.load_settings() or {}).get(UI_STATE_KEY, {}) or {}
         except Exception:
             return
+        readers = state.get("chat_readers")
+        if isinstance(readers, dict):
+            self._readers_by_project = {str(key): str(value) for key, value in readers.items() if str(value).strip()}
         if state.get("project"):
             self.project_edit.setText(str(state["project"]))
         if state.get("triggers"):
@@ -569,6 +630,7 @@ class SystemWindowsPage(ShellPage):
             "settings_open": self.settings_disclosure.is_open(),
             "colors_open": self.colors_disclosure.is_open(),
             "use_source": self.source_check.isChecked(),
+            "chat_readers": dict(self._readers_by_project),
         }
         try:
             manager.save_ui_state({UI_STATE_KEY: state})
@@ -586,10 +648,18 @@ class SystemWindowsPage(ShellPage):
         self.table.blockSignals(False)
         chapters_with_windows = sum(1 for scan in self._scans if scan.candidates)
         total = self.table.rowCount()
+        chats = [candidate.lines for scan in self._scans for candidate in scan.candidates if candidate.kind == "chat"]
+        self._auto_reader = chat_reader(chats)
+        self.reader_edit.setPlaceholderText(
+            f"определено: {self._auto_reader}" if self._auto_reader else _READER_PLACEHOLDER
+        )
         self._log(
             f"Глав просмотрено: {len(self._scans)}, с окнами: {chapters_with_windows}, "
             f"окон найдено: {total}."
         )
+        if chats:
+            shown = ", ".join(self.chat_reader_names()) or "никто, все реплики слева"
+            self._log(f"Переписок: {len(chats)}. Справа в чате: {shown}.")
         if total:
             self._set_status(f"Найдено окон: {total} в главах: {chapters_with_windows}", "success")
             self.table_stack.setCurrentWidget(self.table)
@@ -753,6 +823,40 @@ class SystemWindowsPage(ShellPage):
         return candidate, kind
 
     @staticmethod
+    def _approximate_chat(lines, template):
+        """Чат средствами rich text Qt: пузыри — вложенные таблицы слева и справа."""
+        other, own = chat_bubble_colors(template)
+        readers = chat_readers(template)
+        rows = []
+        previous = None
+        for line in lines:
+            parsed = chat_line(line)
+            if parsed is None:
+                text = html_module.escape(line)
+                rows.append(f'<tr><td align="center" style="color:{template["accent"]};">{text}</td></tr>')
+                previous = None
+                continue
+            mine = is_reader(parsed.speaker, readers)
+            name = ""
+            if not mine and parsed.speaker != previous:
+                name = f'<b style="color:{template["accent"]};">{html_module.escape(parsed.speaker)}</b><br>'
+            rows.append(
+                f'<tr><td align="{"right" if mine else "left"}">'
+                f'<table cellpadding="6" cellspacing="0" bgcolor="{own if mine else other}"><tr>'
+                f'<td style="color:{template["text"]};">{name}{html_module.escape(parsed.message)}</td>'
+                "</tr></table></td></tr>"
+            )
+            previous = parsed.speaker
+        border = template["border"]
+        return (
+            '<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:6px;">'
+            f'<tr><td width="8" bgcolor="{border}"></td>'
+            f'<td bgcolor="{template["background"]}" style="border:2px solid {border};">'
+            f'<table width="100%" cellpadding="4">{"".join(rows)}</table>'
+            "</td></tr></table><p>&nbsp;</p>"
+        )
+
+    @staticmethod
     def _approximate_block(block, template):
         """Рамка средствами rich text Qt: таблица с цветной полосой слева."""
         inner = block[block.index(">") + 1:block.rfind("</div>")]
@@ -773,10 +877,14 @@ class SystemWindowsPage(ShellPage):
             self.preview_label.setText("Выбранное окно")
         else:
             shown = [(lines, sample_kind) for sample_kind, lines in SAMPLE_WINDOWS.items()]
+            templates = with_sample_reader(templates)
             self.preview_label.setText("Образцы всех типов")
         parts = []
         for lines, block_kind in shown:
             template = templates.get(block_kind, DEFAULT_TEMPLATES[block_kind])
+            if block_kind == "chat":
+                parts.append(self._approximate_chat(lines, template))
+                continue
             parts.append(self._approximate_block(render_window(lines, block_kind, templates=templates), template))
         self.preview.setHtml(
             "".join(parts)
