@@ -738,6 +738,49 @@ def test_archive_helper_refuses_traversal(tmp_path):
     assert not (tmp_path / "evil.txt").exists()
 
 
+def _archive_helper_namespace(tmp_path):
+    """Функции сгенерированного хелпера без запуска main()."""
+    script = inst.render_archive_helper(
+        app_pid=4242, zip_path=tmp_path / "u.zip", root=tmp_path / "src",
+        journal_dir=tmp_path / "journal", ack_path=tmp_path / "ack.json",
+        log_path=tmp_path / "updater.log", commit_sha=_NEW,
+        repository="example/project",
+        python_argv=[sys.executable, "-c", "pass"],
+        pip_argv=[sys.executable, "-c", "pass"])
+    namespace = {"__name__": "archive_helper_under_test"}
+    exec(compile(script, "helper-archive.py", "exec"), namespace)
+    return namespace
+
+
+def test_archive_helper_pid_alive_avoids_os_kill_on_windows(tmp_path, monkeypatch):
+    # На Windows сигнал 0 — это CTRL_C_EVENT: у хелпера без консоли
+    # GenerateConsoleCtrlEvent не срабатывает, и CPython проваливается
+    # в TerminateProcess — закрывающаяся программа убита, хелпер падает
+    # с SystemError.
+    helper = _archive_helper_namespace(tmp_path)
+
+    def forbidden_kill(pid, sig):
+        raise AssertionError("os.kill на Windows завершает процесс")
+
+    probed = []
+    helper["windows_pid_alive"] = lambda pid: probed.append(pid) or True
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "kill", forbidden_kill)
+    assert helper["pid_alive"](4242) is True
+    assert probed == [4242]
+
+
+def test_archive_helper_windows_pid_alive_reads_exit_code(tmp_path):
+    windows_pid_alive = _archive_helper_namespace(tmp_path)["windows_pid_alive"]
+    running = _FakeKernel32(exit_code=259)  # STILL_ACTIVE
+    assert windows_pid_alive(42, kernel32=running)
+    assert running.closed == [1234]
+    finished = _FakeKernel32(exit_code=0)
+    assert not windows_pid_alive(42, kernel32=finished)
+    assert finished.closed == [1234]
+    assert not windows_pid_alive(42, kernel32=_FakeKernel32(259, handle=0))
+
+
 def test_prepare_source_archive_launches_helper(tmp_path, monkeypatch):
     monkeypatch.setattr(inst, "staging_root", lambda **kw: tmp_path / "staging")
     captured = {}

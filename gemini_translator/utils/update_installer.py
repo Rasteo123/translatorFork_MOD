@@ -734,7 +734,34 @@ def log(message):
         pass
 
 
+def windows_pid_alive(pid, kernel32=None):
+    import ctypes
+    from ctypes import wintypes
+
+    if kernel32 is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, code):
+            return False
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def pid_alive(pid):
+    # На Windows сигнал 0 — это CTRL_C_EVENT: без консоли os.kill
+    # проваливается в TerminateProcess и убивает закрывающееся приложение.
+    if sys.platform == "win32":
+        return windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except OSError:
