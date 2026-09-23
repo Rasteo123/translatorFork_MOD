@@ -433,35 +433,60 @@ def _plausible_counterpart(target: str, source_text: str) -> bool:
     return 0.2 * source_length <= target_length <= 6 * source_length + 20
 
 
-def source_marked_indices(html: str, source_html: str) -> set[int]:
-    """Номера абзацев перевода, напротив которых в исходнике строки в скобках.
+def source_marked_indices(html: str, source_html: str) -> dict[str, set[int]]:
+    """Номера абзацев перевода напротив строк исходника в скобках, по семействам скобок.
 
-    Абзацы выравниваются по длинам, как в проверке качества; скобки исходника
-    отмечают системные строки, которые перевод мог передать «кавычками» или
-    голым текстом.
+    Абзацы выравниваются по длинам, как в проверке качества. Семейство
+    (``[``, ``【`` или ``〖``) важно: в одной книге 【】 — это система, в другой —
+    мысленная речь, и решать, каким верить, надо по всей книге.
     """
     from ..qa.source_pairing import _align_by_length, _visible_length
 
     source = source_paragraphs(source_html)
     targets = [(index, paragraph.text) for index, paragraph in enumerate(_paragraphs(html)) if paragraph.text]
     if not source or not targets:
-        return set()
+        return {}
     spans = _align_by_length(
         [_visible_length(text) for text in source],
         [_visible_length(text) for _index, text in targets],
     )
-    marked: set[int] = set()
+    marked: dict[str, set[int]] = {}
     for source_start, source_end, target_start, target_end in spans:
         if source_start == source_end or target_start == target_end:
             continue
         source_lines = source[source_start:source_end]
         if not all(_is_source_system_line(line) for line in source_lines):
             continue
+        family = source_lines[0][0]
         source_text = " ".join(source_lines)
         for index, text in targets[target_start:target_end]:
             if _plausible_counterpart(text, source_text):
-                marked.add(index)
+                marked.setdefault(family, set()).add(index)
     return marked
+
+
+_TRUST_KEPT_MIN = 0.25
+_TRUST_KEPT_MAX = 0.7
+
+
+def trusted_source_families(kept_counts) -> set[str]:
+    """Семейства скобок исходника, по которым стоит отмечать строки без скобок.
+
+    ``kept_counts``: семейство → (сколько отмеченных абзацев перевода сами в
+    скобках, сколько отмечено всего). Если перевод никогда не оставляет эти
+    скобки, в исходнике они значат не систему, а, скажем, мысленную речь. Если
+    оставляет почти всегда, немногие строки без скобок переводчик счёл речью в
+    тех же скобках. Сверка помогает посередине: переводчик был непоследователен,
+    и исходник знает лучше. Семейство без потерь доверенное: добавлять нечего.
+    """
+    trusted = set()
+    for family, (kept, total) in kept_counts.items():
+        if total <= 0:
+            continue
+        share = kept / total
+        if kept == total or _TRUST_KEPT_MIN <= share <= _TRUST_KEPT_MAX:
+            trusted.add(family)
+    return trusted
 
 
 def _span_end(paragraphs, start: int, excluded) -> int | None:
@@ -492,16 +517,23 @@ def find_windows(
     html: str,
     settings: DetectorSettings | None = None,
     source_html: str | None = None,
+    source_marks: set[int] | None = None,
 ) -> list[WindowCandidate]:
     """Найти серии системных строк в HTML главы, в порядке документа.
 
-    С ``source_html`` строки, напротив которых в исходнике стоят скобки,
-    считаются системными и без скобок в переводе.
+    С ``source_html`` строки, напротив которых в исходнике стоят скобки любого
+    семейства, считаются системными и без скобок в переводе; ``source_marks``
+    передаёт уже отобранные номера абзацев (см. :func:`scan_chapters`).
     """
     settings = settings or DetectorSettings()
     exclude = re.compile(settings.exclude_pattern, re.I) if settings.exclude_pattern else None
     paragraphs = _paragraphs(html)
-    marked = source_marked_indices(html, source_html) if source_html else set()
+    if source_marks is not None:
+        marked = set(source_marks)
+    elif source_html:
+        marked = set().union(*source_marked_indices(html, source_html).values())
+    else:
+        marked = set()
 
     def excluded(paragraph: _Paragraph) -> bool:
         return not paragraph.text or (exclude is not None and exclude.search(paragraph.text) is not None)
@@ -896,6 +928,47 @@ def find_source_epub(project_folder) -> str | None:
     return best_path
 
 
+def scan_chapters(entries, settings: DetectorSettings | None = None, progress=None) -> list[ChapterScan]:
+    """Найти окна в главах ``(original, path, html, source_html | None)``.
+
+    Сверка с исходником идёт в два прохода: сначала по всей книге считается,
+    какие семейства скобок исходника перевод сохраняет, потом по доверенным
+    семействам отмечаются строки без скобок.
+    """
+    entries = list(entries)
+    total = len(entries)
+    has_source = any(entry[3] for entry in entries)
+    steps = 2 * total if has_source else total
+    marks_by_chapter: list[dict[str, set[int]]] = []
+    kept_counts: dict[str, list[int]] = {}
+    for index, (original, _path, html, source_html) in enumerate(entries, start=1):
+        marks = source_marked_indices(html, source_html) if source_html else {}
+        marks_by_chapter.append(marks)
+        if marks:
+            texts = {position: paragraph.text for position, paragraph in enumerate(_paragraphs(html))}
+            for family, indices in marks.items():
+                counter = kept_counts.setdefault(family, [0, 0])
+                for position in indices:
+                    counter[1] += 1
+                    if texts.get(position, "")[:1] in "[【〖":
+                        counter[0] += 1
+        if progress is not None and has_source:
+            progress(index, steps, original)
+    trusted = trusted_source_families({family: tuple(pair) for family, pair in kept_counts.items()})
+    result = []
+    for index, ((original, path, html, _source_html), marks) in enumerate(zip(entries, marks_by_chapter), start=1):
+        source_marks = set().union(*(indices for family, indices in marks.items() if family in trusted)) if marks else set()
+        result.append(ChapterScan(
+            original=original,
+            path=path,
+            title=_chapter_title(html, original),
+            candidates=find_windows(html, settings, source_marks=source_marks if marks else None),
+        ))
+        if progress is not None:
+            progress((total if has_source else 0) + index, steps, original)
+    return result
+
+
 def scan_project(
     project_folder,
     settings: DetectorSettings | None = None,
@@ -905,7 +978,7 @@ def scan_project(
     """Найти системные окна во всех главах проекта (и главы без окон тоже).
 
     С ``source_epub`` главы сверяются с исходником: строки, стоящие напротив
-    скобок оригинала, тоже считаются системными.
+    скобок оригинала, тоже считаются системными (см. :func:`scan_chapters`).
     """
     import zipfile
 
@@ -918,25 +991,18 @@ def scan_project(
             names = set(archive.namelist())
         except (OSError, zipfile.BadZipFile):
             archive = None
-    result = []
+    entries = []
     try:
-        for index, (original, path) in enumerate(chapters, start=1):
+        for original, path in chapters:
             html = Path(path).read_bytes().decode("utf-8")
             source_html = None
             if archive is not None and original in names:
                 source_html = archive.read(original).decode("utf-8", "ignore")
-            result.append(ChapterScan(
-                original=original,
-                path=path,
-                title=_chapter_title(html, original),
-                candidates=find_windows(html, settings, source_html=source_html),
-            ))
-            if progress is not None:
-                progress(index, len(chapters), original)
+            entries.append((original, path, html, source_html))
     finally:
         if archive is not None:
             archive.close()
-    return result
+    return scan_chapters(entries, settings, progress)
 
 
 def apply_project(selections, templates=None, progress=None) -> tuple[int, int]:

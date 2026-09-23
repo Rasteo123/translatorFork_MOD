@@ -888,11 +888,37 @@ def test_source_marks_do_not_hide_bracket_detection_and_join_runs():
     assert windows[0].origin == "brackets"
 
 
-def test_source_marked_indices_reports_positions():
-    source = _source("一", "【二】", "三")
-    html = _chapter("Один.", "«Два».", "Три.")
+def test_source_marked_indices_reports_positions_by_bracket_family():
+    source = _source("一", "【二】", "三", "[四]")
+    html = _chapter("Один.", "«Два».", "Три.", "«Четыре».")
 
-    assert source_marked_indices(html, source) == {1}
+    assert source_marked_indices(html, source) == {"【": {1}, "[": {3}}
+
+
+def test_scan_project_ignores_a_source_family_the_translation_never_keeps(tmp_path):
+    import zipfile
+
+    from gemini_translator.utils.system_windows import trusted_source_families
+
+    project = _windows_project(tmp_path)
+    (project / "OEBPS/chapter1_translated_gemini.html").write_text(
+        _chapter("Утро.", "[Здоровье: 90%]", "«Дорогой, чего застыл?»", "Он замер."), encoding="utf-8",
+    )
+    (project / "OEBPS/chapter2_translated_gemini.html").write_text(
+        _chapter("Вечер.", "[Очки тени: 3]", "«Хм! Вот укушу!»", "Она засмеялась."), encoding="utf-8",
+    )
+    epub = tmp_path / "book.epub"
+    with zipfile.ZipFile(epub, "w") as archive:
+        archive.writestr("OEBPS/chapter1.xhtml", _source("早上。", "[血量：90%]", "【亲爱的，愣着干嘛？】", "他愣住了。"))
+        archive.writestr("OEBPS/chapter2.xhtml", _source("晚上。", "[影点：3]", "【哼！咬你哦！】", "她笑了。"))
+
+    scans = scan_project(project, source_epub=str(epub))
+
+    assert [[window.lines for window in scan.candidates] for scan in scans] == [[["[Здоровье: 90%]"]], [["[Очки тени: 3]"]]]
+    assert trusted_source_families({"[": (2, 2), "【": (0, 2)}) == {"["}
+    assert trusted_source_families({"【": (1, 4)}) == {"【"}
+    assert trusted_source_families({"【": (0, 1)}) == set()
+    assert trusted_source_families({"【": (9, 10)}) == set()
 
 
 def test_scan_project_reads_the_source_epub(tmp_path):
@@ -904,7 +930,7 @@ def test_scan_project_reads_the_source_epub(tmp_path):
     )
     epub = tmp_path / "book.epub"
     with zipfile.ZipFile(epub, "w") as archive:
-        archive.writestr("OEBPS/chapter1.xhtml", _source("早上。", "他说。", "他走了。", "他笑。"))
+        archive.writestr("OEBPS/chapter1.xhtml", _source("文字。", "【叮！一】", "还有文字。", "【叮！二】"))
         archive.writestr("OEBPS/chapter2.xhtml", _source("早上。", "【标记】！", "他愣住了。"))
 
     scans = scan_project(project, source_epub=str(epub))
