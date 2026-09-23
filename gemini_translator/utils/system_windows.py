@@ -94,6 +94,11 @@ class WindowCandidate:
     #: Как найдена серия: brackets, quotes, pairs (ключ: значение) или source
     #: (по скобкам в исходнике, когда перевод их потерял).
     origin: str = "brackets"
+    #: Чей аккаунт открыт в переписке, по тексту перед ней («телефон Рена»,
+    #: «Макото достала телефон», «Сообщение отправлено: Кен»); пусто — не ясно.
+    chat_owner: str = ""
+    #: Выбор на странице: чьи реплики справа. ``None`` — владелец или читающий книги.
+    readers: tuple | None = None
 
 
 @dataclass
@@ -850,7 +855,7 @@ _CHAT_BARE_RE = re.compile(rf"^({_CHAT_NAME})\s*[:：]\s*([^\s«\[【—–\-(].
 # Шапка переписки: «Групповой чат: Бывшие SEES», «Сообщение от: Макото.».
 # Проза вроде «Чат мгновенно затих» или «Сообщение от Бэй Жу напомнило…» — не шапка.
 _CHAT_HEADER_RE = re.compile(
-    r"^[\[【]?(?:групповой чат|общий чат|чат|переписка|(?:личное |новое |входящее )?сообщение"
+    r"^[\[【]?(?:групповой чат|общий чат|группа|чат|переписка|(?:личное |новое |входящее )?сообщение"
     r"(?:\s+(?:от|для|отправлено|получено))?)\s*(?:[:：]|«)",
     re.I,
 )
@@ -1023,6 +1028,89 @@ def chat_participants(windows_lines) -> frozenset:
     )
 
 
+
+# --- чей аккаунт в переписке ---------------------------------------------------
+
+_PHONE = r"(?:телефон|мобильник|смартфон|мобильный)"
+# «телефон Рена завибрировал», «на экране телефона Макото».
+_PHONE_OF_RE = re.compile(rf"{_PHONE}\w*\s+([А-ЯЁA-Z][\w-]+)")
+# «Макото достала телефон», «Кен вытащил свой телефон из сумки».
+_OWN_PHONE_RE = re.compile(
+    rf"([А-ЯЁA-Z][\w-]+)\s+(?:[а-яё]+\s+)?(?:достал|достала|вытащил|вытащила|разблокировал|разблокировала)\s+"
+    rf"(?:свой\s+|свою\s+)?{_PHONE}"
+)
+# Кто пишет не из этого аккаунта: «сообщение от Анн», «написать Кену».
+_SENDER_RE = re.compile(r"сообщени\w*\s+от\s+([А-ЯЁA-Z][\w-]+)", re.I)
+_ADDRESSEE_RE = re.compile(r"(?:написать|написал|написала|ответить|ответил|ответила)\s+([А-ЯЁA-Z][\w-]+)")
+_HEADER_FROM_RE = re.compile(r"^[\[【]?сообщени\w*\s+от\s*[:：]\s*(.+?)[.\]】]*$", re.I)
+_HEADER_TO_RE = re.compile(r"^[\[【]?сообщени\w*\s+(?:для|отправлено)\s*[:：]\s*(.+?)[.\]】]*$", re.I)
+_CHAT_CONTEXT_PARAGRAPHS = 3
+
+
+def _name_form_of(word: str, name: str) -> bool:
+    """«Рена», «Кену» — формы имени «Рен», «Кен»; по первому слову имени."""
+    first = name.split()[0].lower() if name.split() else ""
+    word = word.lower().strip(".,!?;:…»«\"'")
+    if not first or not word:
+        return False
+    if word == first:
+        return True
+    base = first[:max(3, len(first) - 1)]
+    return len(first) >= 3 and word.startswith(base) and 0 <= len(word) - len(first) <= 3
+
+
+def _participant_named(word: str, speakers) -> str:
+    return next((speaker for speaker in speakers if _name_form_of(word, speaker)), "")
+
+
+def chat_account_owner(context, lines) -> str:
+    """Чей аккаунт открыт в переписке: имя собеседника, чужое имя или пусто.
+
+    Справа в чате стоят сообщения владельца телефона: того, под чьим
+    аккаунтом читается переписка, а не того, кто держит телефон. Признаки —
+    в последних абзацах перед чатом и в его шапке.
+    """
+    speakers: list[str] = []
+    for parsed in map(chat_line, lines):
+        if parsed is not None and parsed.speaker not in speakers:
+            speakers.append(parsed.speaker)
+    context = [text for text in context if text][-_CHAT_CONTEXT_PARAGRAPHS:]
+    for text in reversed(context):
+        for pattern in (_PHONE_OF_RE, _OWN_PHONE_RE):
+            for match in pattern.finditer(text):
+                word = match.group(1)
+                named = _participant_named(word, speakers)
+                if named:
+                    return named
+                if pattern is _PHONE_OF_RE:
+                    # Телефон того, кто в переписке не пишет: справа никого.
+                    return word
+    # Не владелец: отправитель входящего и адресат исходящего сообщения.
+    others: list[str] = []
+    for line in lines:
+        for pattern in (_HEADER_FROM_RE, _HEADER_TO_RE):
+            match = pattern.match(line.strip())
+            if match:
+                others.append(match.group(1).split()[0])
+    for text in context:
+        others += [match.group(1) for match in _SENDER_RE.finditer(text)]
+        others += [match.group(1) for match in _ADDRESSEE_RE.finditer(text)]
+    if others:
+        rest = [speaker for speaker in speakers if not any(_name_form_of(word, speaker) for word in others)]
+        if len(rest) == 1 and len(speakers) >= 2:
+            return rest[0]
+    return ""
+
+
+def window_readers(candidate, template) -> list[str]:
+    """Чьи реплики окна чата справа: выбор на странице, владелец или читающий книги."""
+    if candidate.readers is not None:
+        return list(candidate.readers)
+    if candidate.chat_owner:
+        return [candidate.chat_owner]
+    return chat_readers(template)
+
+
 def find_windows(
     html: str,
     settings: DetectorSettings | None = None,
@@ -1171,14 +1259,17 @@ def find_windows(
         chat_stop = chat_run_end(index)
         if chat_stop is not None:
             chosen = paragraphs[index:chat_stop]
+            lines = [paragraph.text for paragraph in chosen]
+            context = [paragraph.text for paragraph in paragraphs[max(0, index - _CHAT_CONTEXT_PARAGRAPHS):index]]
             windows.append(
                 WindowCandidate(
                     start=chosen[0].start,
                     end=chosen[-1].end,
                     kind="chat",
-                    lines=[paragraph.text for paragraph in chosen],
+                    lines=lines,
                     paragraph_html=[html[paragraph.start:paragraph.end] for paragraph in chosen],
                     origin="chat",
+                    chat_owner=chat_account_owner(context, lines),
                 )
             )
             index = chat_stop
@@ -1251,7 +1342,27 @@ def find_windows(
             )
         )
         index = stop
+    _carry_chat_owners(windows)
     return windows
+
+
+def _carry_chat_owners(windows) -> None:
+    """Следующие чаты главы — из того же аккаунта, если его владелец в них пишет.
+
+    Перед вторым и третьим чатом сцены о телефоне обычно уже не говорят.
+    """
+    owner = ""
+    for window in windows:
+        if window.kind != "chat":
+            continue
+        if window.chat_owner:
+            owner = window.chat_owner
+            continue
+        if owner:
+            speakers = [parsed.speaker for parsed in map(chat_line, window.lines) if parsed is not None]
+            same = next((speaker for speaker in speakers if _names_match(speaker, owner) or _name_form_of(owner, speaker)), "")
+            if same:
+                window.chat_owner = same
 
 
 # --- оформление -------------------------------------------------------------
@@ -1692,6 +1803,16 @@ def _candidate_matches(html: str, candidate: WindowCandidate) -> bool:
     return True
 
 
+def window_templates(templates, candidate):
+    """Шаблоны с читающим этого окна чата (см. :func:`window_readers`)."""
+    if candidate.kind != "chat":
+        return templates
+    base = templates or DEFAULT_TEMPLATES
+    chat = dict(base.get("chat", DEFAULT_TEMPLATES["chat"]))
+    chat["readers"] = window_readers(candidate, chat)
+    return {**base, "chat": chat}
+
+
 def apply_windows(html: str, candidates, *, templates=None) -> tuple[str, int]:
     """Заменить выбранные серии абзацев блоками с рамкой.
 
@@ -1707,7 +1828,7 @@ def apply_windows(html: str, candidates, *, templates=None) -> tuple[str, int]:
         block = render_window(
             candidate.lines,
             candidate.kind,
-            templates=templates,
+            templates=window_templates(templates, candidate),
             source_html=html[candidate.start:candidate.end],
         )
         result = result[:candidate.start] + block + result[candidate.end:]
@@ -2031,13 +2152,13 @@ def with_sample_reader(templates):
     return templates
 
 
-def render_preview_document(templates=None, extra=None) -> str:
+def render_preview_document(templates=None, extra=None, extra_templates=None) -> str:
     """Самостоятельная HTML-страница с рамками для точного просмотра в браузере.
 
     ``extra`` — список ``(строки, тип)``, показывается перед образцами всех
     типов. Блоки те же, что уйдут в главы, но без ``data-sys-orig``.
     """
-    blocks = [render_window(lines, kind, templates=templates) for lines, kind in (extra or [])]
+    blocks = [render_window(lines, kind, templates=extra_templates or templates) for lines, kind in (extra or [])]
     samples = with_sample_reader(templates)
     blocks.extend(render_window(lines, kind, templates=samples) for kind, lines in SAMPLE_WINDOWS.items())
     body = "\n".join(f"<p>{block}</p>" for block in blocks)

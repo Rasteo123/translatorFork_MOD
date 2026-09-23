@@ -471,3 +471,21 @@ class ChatReaderFieldTests(unittest.TestCase):
         self.assertLess(preview.index('align="left"'), preview.index('align="right"'))
         self.assertIn(">Макото</b>", preview)
         self.assertNotIn(">Кен Амада</b>", preview)
+
+
+class ChatAccountColumnTests(ChatReaderFieldTests):
+    """Столбец «Справа»: чей аккаунт в каждой переписке."""
+
+    def test_reader_column_defaults_and_manual_choice(self):
+        page = self._page()
+        page.project_edit.setText(str(self.project))
+        page.set_scan_results(scan_project(self.project))
+
+        combo = page.table.cellWidget(0, 6)
+        self.assertEqual(page.table.horizontalHeaderItem(6).text(), "Справа")
+        self.assertEqual(combo.currentData(), "Кен")
+        combo.setCurrentIndex(combo.findData(""))
+        _scan, candidate = page._row_candidate(0)
+        self.assertEqual(candidate.readers, ())
+        page.table.selectRow(0)
+        self.assertNotIn('align="right"', page.preview.toHtml())

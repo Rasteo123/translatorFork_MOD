@@ -63,6 +63,8 @@ from gemini_translator.utils.system_windows import (
     scan_project,
     strip_project,
     user_exclude_pattern,
+    window_readers,
+    window_templates,
     with_sample_reader,
 )
 
@@ -76,6 +78,13 @@ _SWATCH_SIZE = 16
 _PAGE_MARGIN = 16
 _BLOCK_GAP = 12
 _ROW_GAP = 8
+
+
+def _with_kind(candidate, kind):
+    """Копия кандидата с типом из таблицы (тип меняют, не применяя)."""
+    from dataclasses import replace
+
+    return replace(candidate, kind=kind)
 
 
 class _Worker(QThread):
@@ -293,16 +302,18 @@ class SystemWindowsPage(ShellPage):
 
         reader_row = QHBoxLayout()
         reader_row.setSpacing(_ROW_GAP)
-        reader_label = QLabel("Кто читает чат")
+        reader_label = QLabel("Чей аккаунт в чате")
         reader_label.setObjectName("helperLabel")
         reader_row.addWidget(reader_label)
         self.reader_edit = QLineEdit("")
         self.reader_edit.setPlaceholderText(_READER_PLACEHOLDER)
         self.reader_edit.setToolTip(
-            "В окнах «Чат» реплики этого собеседника идут справа, остальных — слева, как в мессенджере.\n"
-            "Несколько имён через запятую. «Кен» подходит и для «Кен Амада».\n"
-            "Пустое поле: после поиска читающим считается тот, кто есть в большинстве переписок книги.\n"
-            "Запоминается для каждой книги отдельно."
+            "Справа в окнах «Чат» — сообщения того, чей это телефон и под чьим аккаунтом читается\n"
+            "переписка; остальные — слева, как в мессенджере. Несколько имён через запятую,\n"
+            "«Кен» подходит и для «Кен Амада». Пустое поле: тот, кто есть в большинстве переписок книги.\n"
+            "Если по тексту перед чатом видно, чей это телефон («телефон Рена завибрировал»,\n"
+            "«Сообщение отправлено: Кен»), окно берёт владельца оттуда; выбор в столбце «Справа»\n"
+            "главнее всего. Поле запоминается для каждой книги отдельно."
         )
         self.reader_edit.editingFinished.connect(self._on_reader_edited)
         reader_row.addWidget(self.reader_edit, 1)
@@ -381,8 +392,8 @@ class SystemWindowsPage(ShellPage):
         self.table_stack = QStackedWidget()
         self.empty_state = self._build_empty_state()
         self.table_stack.addWidget(self.empty_state)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["", "Глава", "Тип", "Строк", "Текст", "Как найдено"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["", "Глава", "Тип", "Строк", "Текст", "Как найдено", "Справа"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -395,6 +406,8 @@ class SystemWindowsPage(ShellPage):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(6, 150)
         self.table.setColumnWidth(1, 180)
         self.table.setColumnWidth(2, 150)
         self.table.setColumnWidth(3, 56)
@@ -538,6 +551,8 @@ class SystemWindowsPage(ShellPage):
         else:
             self._readers_by_project.pop(key, None)
         self._save_ui_state()
+        for row in range(self.table.rowCount()):
+            self._sync_reader_combo(row)
         self._refresh_preview()
 
     def chat_reader_names(self) -> list[str]:
@@ -641,6 +656,8 @@ class SystemWindowsPage(ShellPage):
 
     def set_scan_results(self, scans):
         self._scans = list(scans)
+        chats = [candidate.lines for scan in self._scans for candidate in scan.candidates if candidate.kind == "chat"]
+        self._auto_reader = chat_reader(chats)
         self.table.setRowCount(0)
         self.table.blockSignals(True)
         with deferred_column_autosize(self.table):
@@ -648,8 +665,6 @@ class SystemWindowsPage(ShellPage):
         self.table.blockSignals(False)
         chapters_with_windows = sum(1 for scan in self._scans if scan.candidates)
         total = self.table.rowCount()
-        chats = [candidate.lines for scan in self._scans for candidate in scan.candidates if candidate.kind == "chat"]
-        self._auto_reader = chat_reader(chats)
         self.reader_edit.setPlaceholderText(
             f"определено: {self._auto_reader}" if self._auto_reader else _READER_PLACEHOLDER
         )
@@ -658,8 +673,15 @@ class SystemWindowsPage(ShellPage):
             f"окон найдено: {total}."
         )
         if chats:
-            shown = ", ".join(self.chat_reader_names()) or "никто, все реплики слева"
-            self._log(f"Переписок: {len(chats)}. Справа в чате: {shown}.")
+            shown = ", ".join(self.chat_reader_names()) or "не определён, все реплики слева"
+            owned = sum(
+                1 for scan in self._scans for candidate in scan.candidates
+                if candidate.kind == "chat" and candidate.chat_owner
+            )
+            self._log(
+                f"Переписок: {len(chats)}. Аккаунт по книге: {shown}; "
+                f"владелец по тексту перед чатом найден в {owned}."
+            )
         if total:
             self._set_status(f"Найдено окон: {total} в главах: {chapters_with_windows}", "success")
             self.table_stack.setCurrentWidget(self.table)
@@ -705,6 +727,7 @@ class SystemWindowsPage(ShellPage):
                     "пары: карточка «ключ: значение»; исходник: в оригинале строка в скобках, перевод их потерял."
                 )
                 self.table.setItem(row, 5, origin_item)
+                self._install_reader_combo(row)
 
     def _row_candidate(self, row):
         item = self.table.item(row, 0)
@@ -719,7 +742,56 @@ class SystemWindowsPage(ShellPage):
         combo = self.table.cellWidget(row, 2)
         if candidate is not None and combo is not None:
             candidate.kind = combo.currentData()
+        self._install_reader_combo(row)
         self._apply_filter()
+        self._refresh_preview()
+
+    # --- кто справа в окне чата ----------------------------------------------
+
+    def _install_reader_combo(self, row):
+        """Столбец «Справа»: чьи реплики этого чата идут справа."""
+        _scan, candidate = self._row_candidate(row)
+        if candidate is None or candidate.kind != "chat":
+            self.table.removeCellWidget(row, 6)
+            return
+        speakers = []
+        for parsed in map(chat_line, candidate.lines):
+            if parsed is not None and parsed.speaker not in speakers:
+                speakers.append(parsed.speaker)
+        combo = NoScrollComboBox()
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        for speaker in speakers:
+            combo.addItem(speaker, speaker)
+        combo.addItem("никто", "")
+        combo.setToolTip(
+            "Чей аккаунт открыт в этой переписке: его сообщения справа.\n"
+            "По умолчанию — владелец телефона по тексту перед чатом или поле «Чей аккаунт в чате»."
+        )
+        self.table.setCellWidget(row, 6, combo)
+        self._sync_reader_combo(row)
+        combo.currentIndexChanged.connect(lambda _index, r=row: self._on_reader_choice(r))
+
+    def _sync_reader_combo(self, row):
+        _scan, candidate = self._row_candidate(row)
+        combo = self.table.cellWidget(row, 6)
+        if candidate is None or combo is None:
+            return
+        readers = window_readers(candidate, {"readers": self.chat_reader_names()})
+        index = next(
+            (i for i in range(combo.count()) if combo.itemData(i) and is_reader(combo.itemData(i), readers)),
+            combo.findData(""),
+        )
+        combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _on_reader_choice(self, row):
+        _scan, candidate = self._row_candidate(row)
+        combo = self.table.cellWidget(row, 6)
+        if candidate is None or combo is None:
+            return
+        choice = combo.currentData()
+        candidate.readers = (choice,) if choice else ()
         self._refresh_preview()
 
     def _on_table_item_changed(self, item):
@@ -879,6 +951,8 @@ class SystemWindowsPage(ShellPage):
             shown = [(lines, sample_kind) for sample_kind, lines in SAMPLE_WINDOWS.items()]
             templates = with_sample_reader(templates)
             self.preview_label.setText("Образцы всех типов")
+        if candidate is not None:
+            templates = window_templates(templates, candidate if kind == candidate.kind else _with_kind(candidate, kind))
         parts = []
         for lines, block_kind in shown:
             template = templates.get(block_kind, DEFAULT_TEMPLATES[block_kind])
@@ -896,7 +970,9 @@ class SystemWindowsPage(ShellPage):
         """Записать страницу с рамками во временный файл и открыть её в браузере."""
         candidate, kind = self._selected_candidate()
         extra = [(candidate.lines, kind)] if candidate is not None else None
-        document = render_preview_document(self.templates(), extra=extra)
+        templates = self.templates()
+        extra_templates = window_templates(templates, _with_kind(candidate, kind)) if candidate is not None else None
+        document = render_preview_document(templates, extra=extra, extra_templates=extra_templates)
         path = os.path.join(tempfile.gettempdir(), _PREVIEW_FILE)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(document)
