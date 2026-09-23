@@ -1111,6 +1111,78 @@ def window_readers(candidate, template) -> list[str]:
     return chat_readers(template)
 
 
+
+# --- целые элементы вокруг ветки форума -------------------------------------------
+
+_TAG_TOKEN_RE = re.compile(r"<(/?)([a-zA-Z][\w:-]*)\b[^>]*?(/?)>")
+_VOID_TAGS = frozenset("br hr img meta link input col wbr area base source track embed param".split())
+
+
+def _unbalanced(raw: str, start: int, end: int):
+    """Теги, закрытые в [start, end) без открытия, и открытые без закрытия."""
+    stack: list[tuple[str, int]] = []
+    closers: list[str] = []
+    for tag in _TAG_TOKEN_RE.finditer(raw, start, end):
+        name = tag.group(2).lower()
+        if tag.group(3) or name in _VOID_TAGS:
+            continue
+        if tag.group(1):
+            if stack and stack[-1][0] == name:
+                stack.pop()
+            else:
+                closers.append(name)
+        else:
+            stack.append((name, tag.start()))
+    return closers, stack
+
+
+def _opening_before(raw: str, position: int, name: str) -> int | None:
+    depth = 0
+    tags = [tag for tag in _TAG_TOKEN_RE.finditer(raw, 0, position) if tag.group(2).lower() == name and not tag.group(3)]
+    for tag in reversed(tags):
+        if tag.group(1):
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            return tag.start()
+    return None
+
+
+def _closing_after(raw: str, position: int, name: str) -> int | None:
+    depth = 0
+    for tag in _TAG_TOKEN_RE.finditer(raw, position):
+        if tag.group(2).lower() != name or tag.group(3):
+            continue
+        if not tag.group(1):
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            return tag.end()
+    return None
+
+
+def _balanced_span(raw: str, start: int, end: int) -> tuple[int, int] | None:
+    """Расширить [start, end) до целых элементов: абзацы ветки в разных
+    обёртках ``div`` (calibre) иначе оставили бы после замены висячие теги."""
+    for _attempt in range(20):
+        closers, openers = _unbalanced(raw, start, end)
+        if not closers and not openers:
+            return start, end
+        for name in closers:
+            found = _opening_before(raw, start, name)
+            if found is None or name in ("body", "html"):
+                return None
+            start = found
+        for name, _position in reversed(openers):
+            found = _closing_after(raw, end, name)
+            if found is None or name in ("body", "html"):
+                return None
+            end = found
+    return None
+
+
 def find_windows(
     html: str,
     settings: DetectorSettings | None = None,
@@ -1248,10 +1320,38 @@ def find_windows(
         return _QUOTED_TERM_RE.match(text) is not None and _QUOTED_TERM_RE.match(previous) is not None
 
     windows: list[WindowCandidate] = []
+    forum_at: dict[int, tuple[int, WindowCandidate]] = {}
+    texts = [paragraph.text for paragraph in paragraphs]
+    if any(forum_role(text) in ("welcome", "topic", "pm") for text in texts):
+        position = 0
+        while position < len(paragraphs):
+            # Пустые абзацы и «P.S.» внутри поста — часть ветки, их не исключаем.
+            stop = forum_run_end(texts, position) if paragraphs[position].text else None
+            span = _balanced_span(html, paragraphs[position].start, paragraphs[stop - 1].end) if stop else None
+            if span is None:
+                position += 1
+                continue
+            covered = [number for number, paragraph in enumerate(paragraphs) if span[0] <= paragraph.start < span[1]]
+            forum_at[covered[0]] = (
+                covered[-1] + 1,
+                WindowCandidate(
+                    start=span[0],
+                    end=span[1],
+                    kind="forum",
+                    lines=[paragraphs[number].text for number in covered],
+                    paragraph_html=[html[span[0]:span[1]]],
+                    origin="forum",
+                ),
+            )
+            position = covered[-1] + 1
     index = 0
     while index < len(paragraphs):
         first = paragraphs[index]
         text = first.text
+        if index in forum_at:
+            index, forum_window = forum_at[index]
+            windows.append(forum_window)
+            continue
         if excluded(first):
             index += 1
             continue
@@ -1313,7 +1413,7 @@ def find_windows(
         ):
             following = paragraphs[stop].text
             after = paragraphs[stop + 1].text if stop + 1 < len(paragraphs) and paragraphs[stop + 1].adjacent else ""
-            if chat_run_end(stop) is not None:
+            if chat_run_end(stop) is not None or stop in forum_at:
                 break
             if not (continues(stop) or (in_list and _is_list_item(following, paragraphs[stop - 1].text, after))):
                 break
@@ -1394,8 +1494,13 @@ DEFAULT_TEMPLATES = {
         "label": "Чат", "border": "#4db6ac", "background": "#0e1716", "text": "#e6f2f0",
         "accent": "#80cbc4", "icon": "", "upper": False, "columns": 1,
     },
+    # Ветка форума (ПЛО в «Черве»): тема, посты карточками, страницы.
+    "forum": {
+        "label": "Форум", "border": "#5c6bc0", "background": "#10131c", "text": "#e3e7f1",
+        "accent": "#9fa8da", "icon": "", "upper": False, "columns": 1,
+    },
 }
-KIND_ORDER = ("status", "skill", "notice", "levelup", "achievement", "chat")
+KIND_ORDER = ("status", "skill", "notice", "levelup", "achievement", "chat", "forum")
 
 _TITLE_KEYS = (
     "навык", "способност", "умени", "заклинани", "достижени", "статус",
@@ -1727,6 +1832,302 @@ def _render_chat(texts, template, source_html) -> str:
     return re.sub(r"\s*\n\s*", " ", block)
 
 
+
+# --- форум: ПЛО в фанфиках по «Червю» -----------------------------------------
+
+# Остатки BB-кода из исходника («Mama Snek»): «[b]Баграт [/b]», «[indent]».
+_BBCODE_RE = re.compile(
+    r"\[/?(?:b|i|u|s|indent|center|right|left|quote|url|img|color|size|spoiler|sub|sup|font)(?:=[^\]]*)?\]",
+    re.I,
+)
+_ZERO_WIDTH_RE = re.compile("[​‌‍﻿]")
+_FORUM_WELCOME_RE = re.compile(
+    r"^(?:добро пожаловать на (?:форум|доск)|вы\s+(?:сейчас\s+)?(?:вошли|авторизован\w*|залогинен\w*)|вы просматриваете"
+    r"|welcome to the parahumans|you are currently logged in|you are viewing)",
+    re.I,
+)
+# Шапка «Вы просматриваете:» — с маркерами «•» или без них, как в «Калико».
+_FORUM_INFO_RE = re.compile(
+    r"^(?:[•·]\s*\S|(?:(?:и|или|and|or)\s+)?(?:темы\b|личные сообщения|отображается|десять\s+(?:постов|сообщений)"
+    r"|последние\s+десять|threads\b|private messages|thread op|ten posts|last ten)"
+    r"|у вас \d+ (?:нарушени|предупреждени)|you have \d+ (?:infraction|warning))",
+    re.I,
+)
+_FORUM_DECOR_RE = re.compile(r"^(?:■|□|\[\s*[–—-]\s*\]|…|\.{3})$")
+_FORUM_TOPIC_RE = re.compile(r"^[♦◆]?\s*(?:тема|topic)\s*[:：]\s*(\S.*)$", re.I)
+_FORUM_LIST_RE = re.compile(r"^(новости|фанфики|объявлени\w*|news|fanfiction)\s*[:：]\s*(\S.*)$", re.I)
+_FORUM_BOARD_RE = re.compile(r"^(?:в разделе|раздел|в|in)\s*[:：]\s*(\S.*)$", re.I)
+_FORUM_TIME_RE = re.compile(r"^(?:опубликова\w*|ответил\w*|ответ от|отправлено|posted|replied)\b", re.I)
+_FORUM_PAGE_RE = re.compile(r"^\(?\s*(?:показ\w*\s+страниц\w*|showing page)\b", re.I)
+_FORUM_END_RE = re.compile(r"^(?:конец страницы|end of page)\b", re.I)
+# Шапка личного сообщения: «♦ Личное сообщение от …», «Новое сообщение для …»; фраза
+# «Новых сообщений так и не появилось» — проза.
+_FORUM_PM_RE = re.compile(
+    r"^(?:[♦◆]\s*(?:(?:личн\w+|нов\w+)\s+сообщени\w*|private message)"
+    r"|(?:(?:личн\w+|нов\w+)\s+сообщени[ея]|private message)\s+(?:от|для|from|to)\b)",
+    re.I,
+)
+# Конец поста и начало повествования: реплика с тире или разрыв сцены.
+_FORUM_STOP_RE = re.compile(r"^(?:[—–]\s|\*\s*\*\s*\*|\*{3,}|[—–]\s*\+|~{3,})")
+_FORUM_AUTHOR_RE = re.compile(
+    r"^(?:[…☐□■►▶◆♦•·]\s*)*(?P<name>[^\s()\[\]►▶…☐□■◆♦•·][^()\[\]]{0,40}?)\s*"
+    r"(?P<tags>(?:[(\[][^()\[\]]{1,40}[)\]]\s*)*)\.?$"
+)
+_FORUM_AUTHOR_MAX = 90
+# Сколько строк тела допустимо между заголовками постов и после последнего.
+_FORUM_GAP_AFTER = {"time": 25, "end": 2}
+_FORUM_GAP_DEFAULT = 6
+_FORUM_TAIL = 8
+# Глава-интерлюдия целиком из форума: ветка начинается в первых абзацах.
+_FORUM_INTERLUDE_START = 3
+# Столько пустых абзацев подряд — конец раздела (дальше послесловие автора).
+_FORUM_EMPTY_RUN = 3
+
+
+def forum_clean(text: str) -> str:
+    return " ".join(_ZERO_WIDTH_RE.sub("", _BBCODE_RE.sub("", text)).split())
+
+
+def forum_role(text: str, following: str = "") -> str:
+    """Роль строки ветки форума: topic, board, author, time, page, end, pm, list,
+    welcome, info, decor или body."""
+    line = forum_clean(text)
+    if not line:
+        return "empty"
+    if _FORUM_WELCOME_RE.match(line):
+        return "welcome"
+    if _FORUM_TOPIC_RE.match(line):
+        return "topic"
+    if _FORUM_PM_RE.match(line) and len(line) <= 120:
+        return "pm"
+    if _FORUM_LIST_RE.match(line):
+        return "list"
+    if _FORUM_BOARD_RE.match(line) and len(line) <= 140:
+        return "board"
+    if _FORUM_TIME_RE.match(line) and len(line) <= 80:
+        return "time"
+    if _FORUM_PAGE_RE.match(line) and len(line) <= 60:
+        return "page"
+    if _FORUM_END_RE.match(line) and len(line) <= 200:
+        return "end"
+    if _FORUM_DECOR_RE.match(line):
+        return "decor"
+    if _FORUM_INFO_RE.match(line) and len(line) <= 140:
+        return "info"
+    if (
+        following
+        and _FORUM_TIME_RE.match(forum_clean(following))
+        and len(line) <= _FORUM_AUTHOR_MAX
+        and _FORUM_AUTHOR_RE.match(line)
+    ):
+        return "author"
+    return "body"
+
+
+def _forum_roles(texts) -> list[str]:
+    return [forum_role(text, texts[index + 1] if index + 1 < len(texts) else "") for index, text in enumerate(texts)]
+
+
+def forum_run_end(texts, index: int) -> int | None:
+    """Конец ветки форума, которая начинается со строки ``index``, или ``None``.
+
+    Ветка начинается шапкой («Добро пожаловать на форумы…»), темой или личным
+    сообщением. Тело поста тянется до следующего заголовка поста, но не дальше
+    25 строк; после «Конец страницы» ветку продолжает только следующая страница
+    сразу за ней. Без «Конца страницы» у последнего поста берутся до 8 строк
+    тела (в главе-интерлюдии — до конца главы), и реплика с тире или разрыв
+    сцены его обрывают.
+    """
+    window = texts[index:]
+    roles = _forum_roles(window)
+    if not roles or roles[0] not in ("welcome", "topic", "pm"):
+        return None
+    last, posts, lists, messages = 0, 0, 0, 0
+    empties = 0
+    # Роль, по которой меряется допустимый разрыв: разделитель «■» после
+    # «Конца страницы» ветку не продолжает, а после поста — не обрывает.
+    anchor_role = roles[0]
+    position = 1
+    while position < len(roles):
+        role = roles[position]
+        empties = empties + 1 if role == "empty" else 0
+        if empties >= _FORUM_EMPTY_RUN:
+            break
+        if role in ("body", "empty"):
+            if _FORUM_STOP_RE.match(forum_clean(window[position])):
+                break
+            if position - last > _FORUM_GAP_AFTER.get(anchor_role, _FORUM_GAP_DEFAULT):
+                break
+            position += 1
+            continue
+        if anchor_role == "end" and position - last > _FORUM_GAP_AFTER["end"]:
+            break
+        if role == "time":
+            posts += 1
+        elif role in ("list", "topic"):
+            lists += 1
+        elif role == "pm":
+            messages += 1
+        last = position
+        if role != "decor":
+            anchor_role = role
+        position += 1
+    if not posts and lists < 2 and not messages and roles[0] != "pm":
+        return None
+    stop = last + 1
+    if anchor_role != "end":
+        tail_limit = len(roles) if index < _FORUM_INTERLUDE_START else _FORUM_TAIL
+        blank = 0
+        while (
+            stop < len(roles)
+            and stop - last <= tail_limit
+            and roles[stop] in ("body", "empty", "decor")
+            and not _FORUM_STOP_RE.match(forum_clean(window[stop]))
+        ):
+            blank = blank + 1 if roles[stop] == "empty" else 0
+            if blank >= 2:
+                stop -= 1
+                break
+            stop += 1
+        # Пустые абзацы в конце ветки оставляем тексту главы.
+        while stop > last + 1 and roles[stop - 1] == "empty":
+            stop -= 1
+    return index + stop
+
+
+def forum_structure(lines):
+    """Ветка по частям: [("welcome", [строки]), ("topic", тема, раздел),
+    ("post", ник, [метки], время, [строки тела]), ("pm", заголовок, [тело]),
+    ("list", метка, текст), ("page", текст), ("decor", текст)]."""
+    texts = [forum_clean(line) for line in lines]
+    roles = _forum_roles(texts)
+    parts: list[tuple] = []
+    current = None
+    for text, role in zip(texts, roles):
+        if not text:
+            continue
+        if role in ("welcome", "info"):
+            if parts and parts[-1][0] == "welcome":
+                parts[-1][1].append(text)
+            else:
+                parts.append(("welcome", [text]))
+            current = None
+        elif role == "topic":
+            parts.append(("topic", _FORUM_TOPIC_RE.match(text).group(1).strip(), ""))
+            current = None
+        elif role == "board":
+            board = _FORUM_BOARD_RE.match(text).group(1).strip()
+            if parts and parts[-1][0] == "topic" and not parts[-1][2]:
+                parts[-1] = ("topic", parts[-1][1], board)
+            else:
+                parts.append(("page", text))
+            current = None
+        elif role == "pm":
+            current = ["pm", text.lstrip("♦◆ ").rstrip(":："), []]
+            parts.append(current)
+        elif role == "list":
+            match = _FORUM_LIST_RE.match(text)
+            parts.append(("list", match.group(1), match.group(2)))
+            current = None
+        elif role == "author":
+            match = _FORUM_AUTHOR_RE.match(text)
+            tags = [tag.strip("()[] ") for tag in re.findall(r"[(\[][^()\[\]]+[)\]]", match.group("tags"))]
+            current = ["post", match.group("name").strip().rstrip("."), tags, "", []]
+            parts.append(current)
+        elif role == "time":
+            if current is not None and current[0] == "post" and not current[3]:
+                current[3] = text
+            else:
+                current = ["post", "", [], text, []]
+                parts.append(current)
+        elif role in ("page", "end"):
+            parts.append(("page", text))
+            current = None
+        elif role == "decor":
+            if text not in ("■", "□"):
+                parts.append(("decor", text))
+        else:
+            if current is not None:
+                current[-1].append(text)
+            elif parts and parts[-1][0] == "body":
+                parts[-1][1].append(text)
+            else:
+                parts.append(("body", [text]))
+    result = [tuple(part) for part in parts]
+    # Страница-список тем: «Тема: …» без раздела и постов под ней — строка перечня.
+    for position, part in enumerate(result):
+        following = result[position + 1][0] if position + 1 < len(result) else ""
+        if part[0] == "topic" and not part[2] and following in ("topic", "list"):
+            result[position] = ("list", "Тема", part[1])
+    return result
+
+
+def _forum_colors(template) -> dict:
+    background, text, accent = template["background"], template["text"], template["accent"]
+    return {
+        "header": _mix(background, accent, 0.16),
+        "line": _mix(background, text, 0.18),
+        "muted": _mix(text, background, 0.42),
+    }
+
+
+_FORUM_STRONG_TAGS = re.compile(r"модератор|проверенн|подтвержд|verified|moderator|агент скп|pr скп", re.I)
+
+
+def _render_forum(texts, template, source_html) -> str:
+    colors = _forum_colors(template)
+    accent, line, muted = template["accent"], colors["line"], colors["muted"]
+    row = f"padding:7px 12px;border-top:1px solid {line};"
+    pieces: list[str] = []
+    for part in forum_structure(texts):
+        kind = part[0]
+        if kind == "welcome":
+            body = "<br />".join(_escape(text) for text in part[1])
+            pieces.append(f'<div style="padding:6px 12px;font-size:0.8em;color:{muted};">{body}</div>')
+        elif kind == "topic":
+            board = f'<br /><span style="font-size:0.85em;color:{muted};">{_escape(part[2])}</span>' if part[2] else ""
+            pieces.append(
+                f'<div style="padding:8px 12px;background:{colors["header"]};border-top:1px solid {line};">'
+                f'<b style="color:{accent};">♦ {_escape(part[1])}</b>{board}</div>'
+            )
+        elif kind == "pm":
+            body = "<br />".join(_escape(text) for text in part[2])
+            pieces.append(
+                f'<div style="padding:8px 12px;background:{colors["header"]};border-top:1px solid {line};">'
+                f'<b style="color:{accent};">✉ {_escape(part[1])}</b></div>'
+                + (f'<div style="{row}">{body}</div>' if body else "")
+            )
+        elif kind == "post":
+            _kind, name, tags, time, body = part
+            badges = "".join(
+                f'<span style="font-size:0.75em;color:{accent if _FORUM_STRONG_TAGS.search(tag) else muted};'
+                f'border:1px solid {line};padding:0 5px;margin-left:5px;">{_escape(tag)}</span>'
+                for tag in tags
+            )
+            head = f'<b style="color:{accent};">{_escape(name)}</b>{badges}' if name else ""
+            stamp = f'<span style="font-size:0.8em;color:{muted};">{_escape(time)}</span>' if time else ""
+            header = "<br />".join(piece for piece in (head, stamp) if piece)
+            text = "<br />".join(_escape(item) for item in body)
+            content = header + (f'<div style="margin-top:4px;">{text}</div>' if text else "")
+            pieces.append(f'<div style="{row}">{content}</div>')
+        elif kind == "list":
+            pieces.append(
+                f'<div style="{row}"><span style="color:{muted};">{_escape(part[1])}:</span> {_escape(part[2])}</div>'
+            )
+        elif kind == "page":
+            pieces.append(f'<div style="{row}text-align:center;font-size:0.85em;color:{muted};">{_escape(part[1])}</div>')
+        elif kind == "decor":
+            pieces.append(f'<div style="{row}text-align:center;color:{muted};">{_escape(part[1])}</div>')
+        elif kind == "body":
+            pieces.append(f'<div style="{row}">' + "<br />".join(_escape(text) for text in part[1]) + "</div>")
+    style = (
+        f"margin:16px 0;border:2px solid {template['border']};border-left:8px solid {template['border']};"
+        f"background:{template['background']};color:{template['text']};text-align:left;line-height:1.5;"
+    )
+    block = f'<div {BLOCK_ATTR}="forum"{_original_attr(source_html)} style="{style}">' + "".join(pieces) + "</div>"
+    return re.sub(r"\s*\n\s*", " ", block)
+
+
 def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     """Собрать одну строку HTML с рамкой для серии системных строк.
 
@@ -1741,6 +2142,8 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     texts = [" ".join(str(line).split()) for line in lines]
     if kind == "chat":
         return _render_chat([text for text in texts if text], template, source_html)
+    if kind == "forum":
+        return _render_forum([text for text in texts if text], template, source_html)
     items = [item for text in texts if text for item in _card_pieces(text)]
     texts = [text for text, _ in items]
     heads = [head for _, head in items]
@@ -1843,6 +2246,45 @@ def _fallback_paragraphs(block: str) -> str:
     return "\n\n".join(f"<p>{line}</p>" for line in lines if line)
 
 
+_BLOCK_OPEN_RE = re.compile(rf'<div\b[^>]*\b{BLOCK_ATTR}="[^"]*"[^>]*>', re.I)
+_DIV_TAG_RE = re.compile(r"<(/?)div\b[^>]*?(/?)>", re.I)
+
+
+def iter_block_spans(html: str):
+    """(начало, конец) блоков оформления, с учётом вложенных ``div`` (карточки форума).
+
+    Оригинал в ``data-sys-orig`` экранирован, поэтому его теги счёту не мешают.
+    """
+    position = 0
+    while True:
+        opening = _BLOCK_OPEN_RE.search(html, position)
+        if opening is None:
+            return
+        depth, end = 0, None
+        for tag in _DIV_TAG_RE.finditer(html, opening.start()):
+            if tag.group(2):
+                continue
+            depth += -1 if tag.group(1) else 1
+            if depth == 0:
+                end = tag.end()
+                break
+        if end is None:
+            return
+        yield opening.start(), end
+        position = end
+
+
+def replace_blocks(html: str, replace) -> str:
+    """Заменить каждый блок оформления на ``replace(блок)``."""
+    pieces, last = [], 0
+    for start, end in iter_block_spans(html):
+        pieces.append(html[last:start])
+        pieces.append(replace(html[start:end]))
+        last = end
+    pieces.append(html[last:])
+    return "".join(pieces)
+
+
 def strip_windows(html: str) -> tuple[str, int]:
     """Снять оформление: вернуть исходные абзацы из ``data-sys-orig``.
 
@@ -1850,9 +2292,8 @@ def strip_windows(html: str) -> tuple[str, int]:
     """
     count = 0
 
-    def restore(match):
+    def restore(block):
         nonlocal count
-        block = match.group(0)
         original = _ORIG_RE.search(block)
         count += 1
         if original is None:
@@ -1860,7 +2301,7 @@ def strip_windows(html: str) -> tuple[str, int]:
         value = original.group(1) if original.group(1) is not None else original.group(2)
         return html_module.unescape(value)
 
-    return _BLOCK_RE.sub(restore, html), count
+    return replace_blocks(html, restore), count
 
 
 # --- файлы и проект ---------------------------------------------------------
@@ -2137,6 +2578,15 @@ SAMPLE_WINDOWS = {
     "chat": [
         "Групповой чат: Отряд", "[Анн]: Кто сегодня идёт в Мементос?", "[Рюдзи]: Я!",
         "[Рюдзи]: Только после уроков.", "[Кен]: Буду к шести.", "[Анн]: Отлично, ждём.",
+    ],
+    "forum": [
+        "♦ Тема: Новый кейп в Броктон-Бей", "В: Форумы ► Места ► Америка ► Броктон-Бей",
+        "Баграт (Автор темы) (Ветеран форума)", "Опубликовано 16 февраля 2011:",
+        "Вчера у Набережной видели нового кейпа. Кто-нибудь знает, кто это?",
+        "(Показана страница 1 из 3)",
+        "► Рив (Подтверждённый кейп)", "Ответил 16 февраля 2011:",
+        "СКП не комментирует.",
+        "Конец страницы. 1, 2, 3",
     ],
 }
 # Кто читает чат в образце, если в шаблоне никто не указан.

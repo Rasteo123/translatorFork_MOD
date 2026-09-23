@@ -56,6 +56,7 @@ from gemini_translator.utils.system_windows import (
     chat_reader,
     chat_readers,
     find_source_epub,
+    forum_structure,
     is_chat_header,
     is_reader,
     render_preview_document,
@@ -69,7 +70,9 @@ from gemini_translator.utils.system_windows import (
 )
 
 UI_STATE_KEY = "system_windows_ui"
-_ORIGIN_LABELS = {"brackets": "скобки", "quotes": "кавычки", "pairs": "пары", "source": "исходник", "chat": "чат"}
+_ORIGIN_LABELS = {
+    "brackets": "скобки", "quotes": "кавычки", "pairs": "пары", "source": "исходник", "chat": "чат", "forum": "форум",
+}
 _READER_PLACEHOLDER = "по умолчанию тот, кто есть в большинстве переписок книги"
 _COLOR_COLUMNS = (("border", "Рамка"), ("background", "Фон"), ("text", "Текст"), ("accent", "Заголовок"))
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -724,7 +727,8 @@ class SystemWindowsPage(ShellPage):
                 origin_item = QTableWidgetItem(_ORIGIN_LABELS.get(candidate.origin, candidate.origin))
                 origin_item.setToolTip(
                     "скобки: строки в скобках или с тире перед скобкой; кавычки: сообщение в «кавычках»;\n"
-                    "пары: карточка «ключ: значение»; исходник: в оригинале строка в скобках, перевод их потерял."
+                    "пары: карточка «ключ: значение»; исходник: в оригинале строка в скобках, перевод их потерял;\n"
+                    "чат: переписка; форум: ветка ПЛО — тема, посты, страницы."
                 )
                 self.table.setItem(row, 5, origin_item)
                 self._install_reader_combo(row)
@@ -929,6 +933,48 @@ class SystemWindowsPage(ShellPage):
         )
 
     @staticmethod
+    def _approximate_forum(lines, template):
+        """Ветка форума средствами rich text Qt: полоса темы и посты строками таблицы."""
+        muted = template["text"]
+        rows = []
+        for part in forum_structure(lines):
+            kind = part[0]
+            if kind == "welcome":
+                text = "<br>".join(html_module.escape(item) for item in part[1])
+                rows.append(f'<tr><td style="color:{muted};font-size:small;">{text}</td></tr>')
+            elif kind == "topic":
+                board = f"<br><small>{html_module.escape(part[2])}</small>" if part[2] else ""
+                rows.append(
+                    f'<tr><td bgcolor="{template["border"]}"><b>♦ {html_module.escape(part[1])}</b>{board}</td></tr>'
+                )
+            elif kind == "pm":
+                body = "<br>".join(html_module.escape(item) for item in part[2])
+                rows.append(f'<tr><td bgcolor="{template["border"]}"><b>✉ {html_module.escape(part[1])}</b></td></tr>')
+                if body:
+                    rows.append(f"<tr><td>{body}</td></tr>")
+            elif kind == "post":
+                _kind, name, tags, time, body = part
+                badges = "".join(f" <small>[{html_module.escape(tag)}]</small>" for tag in tags)
+                head = f'<b style="color:{template["accent"]};">{html_module.escape(name)}</b>{badges}' if name else ""
+                stamp = f"<br><small>{html_module.escape(time)}</small>" if time else ""
+                text = "<br>".join(html_module.escape(item) for item in body)
+                rows.append(f"<tr><td>{head}{stamp}{'<br>' + text if text else ''}</td></tr>")
+            elif kind == "list":
+                rows.append(f"<tr><td><small>{html_module.escape(part[1])}:</small> {html_module.escape(part[2])}</td></tr>")
+            elif kind in ("page", "decor"):
+                rows.append(f'<tr><td align="center"><small>{html_module.escape(part[1])}</small></td></tr>')
+            elif kind == "body":
+                rows.append("<tr><td>" + "<br>".join(html_module.escape(item) for item in part[1]) + "</td></tr>")
+        border = template["border"]
+        return (
+            '<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:6px;">'
+            f'<tr><td width="8" bgcolor="{border}"></td>'
+            f'<td bgcolor="{template["background"]}" style="border:2px solid {border};color:{template["text"]};">'
+            f'<table width="100%" cellpadding="6" cellspacing="1">{"".join(rows)}</table>'
+            "</td></tr></table><p>&nbsp;</p>"
+        )
+
+    @staticmethod
     def _approximate_block(block, template):
         """Рамка средствами rich text Qt: таблица с цветной полосой слева."""
         inner = block[block.index(">") + 1:block.rfind("</div>")]
@@ -958,6 +1004,9 @@ class SystemWindowsPage(ShellPage):
             template = templates.get(block_kind, DEFAULT_TEMPLATES[block_kind])
             if block_kind == "chat":
                 parts.append(self._approximate_chat(lines, template))
+                continue
+            if block_kind == "forum":
+                parts.append(self._approximate_forum(lines, template))
                 continue
             parts.append(self._approximate_block(render_window(lines, block_kind, templates=templates), template))
         self.preview.setHtml(
