@@ -297,8 +297,18 @@ _STAT_KEYS = frozenset(
 _STAT_VALUE_MAX = 300
 _VALUE_MAX = 120
 _QUOTED_KEY_RE = re.compile(r"^«[^»]{1,40}»\s*[:：]")
-# Значение из одних скобок, в том числе пустых: «Магия: 【 】» — пустая ячейка.
-_BRACKETS_ONLY_RE = re.compile(r"^(?:[\[【〖][^\]】〗]*[\]】〗]\s*)+\.?$")
+# Значение из скобок и имён в кавычках, в том числе пустых ячеек:
+# «Магия: 【 】», «Магия: «Эйнсел», [ ], [ ].».
+_NAMES_OR_CELLS_RE = re.compile(r"^(?:(?:«[^«»]*[^\W\d_][^«»]*»|[\[【〖][^\]】〗]*[\]】〗])[\s,;]*)+\.?$")
+# Прирост: «I40 → I50», «lv2→lv3», «5 → 6».
+_INCREMENT_RE = re.compile(r"[\w)]\s*(?:→|->|=>)\s*[\w(]")
+# Рост уровня: «Lv7 → lv8!», «Ур. 1 → Ур. 2», «Повышение уровня: 5 → 6!».
+_LEVEL_INCREMENT_RE = re.compile(
+    r"(?:ур\.?|уровень|уровня|lv\.?|lvl\.?|level)\s*[:：]?\s*\d+\s*(?:→|->|=>)\s*"
+    r"(?:ур\.?\s*|lv\.?\s*|lvl\.?\s*|level\s*)?\d",
+    re.I,
+)
+_INCREMENT_LINE_MAX = 80
 _KEY_QUOTES = "«»\"“”"
 # Шапка книги и заголовки глав: «Автор: …», «Глава 9: Нина.» — не карточка статуса.
 _META_KEYS = frozenset(
@@ -324,8 +334,17 @@ _STAT_LINE_RE = re.compile(r"^([^:：]{1,40})[:：]\s*(\S.*)$")
 _STAT_LINE_VALUE_MAX = 60
 
 
+def _has_meta_word(key: str) -> bool:
+    words = re.findall(r"[^\W\d_]+", key.lower())
+    return any(
+        word == meta or (len(meta) >= 5 and word.startswith(meta))
+        for word in words
+        for meta in _META_KEYS
+    )
+
+
 def is_single_stat_line(text: str) -> bool:
-    """Одинокая строка показателя с числом: ``Очки: 100.``, ``Здоровье: 22%``.
+    """Одинокая строка показателя: ``Очки: 100.``, ``Здоровье: 22%``, ``Магия: «Бис».``.
 
     Такая строка сама по себе окно: интерфейс системы в прозе описывают по
     одной строке. Нужны известный ключ и короткое значение с цифрой, иначе это
@@ -338,8 +357,14 @@ def is_single_stat_line(text: str) -> bool:
         return False
     key = match.group(1).strip().strip(_KEY_QUOTES)
     value = match.group(2).strip()
-    if not _is_stat_key(key):
+    if not _is_stat_key(key) or len(value) > _VALUE_MAX:
         return False
+    # Название главы и шапка книги: «Глава 302. Основное задание: …», «Имя автора: …».
+    if _has_meta_word(key):
+        return False
+    # Короткое число или список имён в кавычках и ячеек: «Магия: «Потерянный Котенок».».
+    if _NAMES_OR_CELLS_RE.match(value):
+        return True
     return len(value) <= _STAT_LINE_VALUE_MAX and any(char.isdigit() for char in value)
 
 
@@ -349,13 +374,25 @@ _LEVEL_HEADER_MAX = 60
 _LEVEL_NAME_WORDS_MAX = 3
 
 
+def is_increment_line(text: str) -> bool:
+    """Строка роста уровня: ``Lv7 → lv8!``, ``Повышение уровня: 5 → 6!``, ``Шарль: lv2→lv3.``.
+
+    Сама по себе окно, как одинокая строка показателя. Цепочка рангов
+    «S → A → B → … I0.» без уровня и чисел по обе стороны стрелки — нет.
+    """
+    if not text or len(text) > _INCREMENT_LINE_MAX or text[0] in _QUOTE_CHARS + "—–-([【〖":
+        return False
+    return _LEVEL_INCREMENT_RE.search(text) is not None
+
+
 def is_level_header(text: str) -> bool:
     """Шапка карточки с уровнем: ``Шарль, Ур. 1.``, ``Зард, уровень 8.``.
 
     Сама по себе окна не делает: окно получится, если за ней идут строки
     карточки. Выкрик «Ур. 1 → Ур. 2 → Ур. 3!» шапкой не считается.
     """
-    if not text or len(text) > _LEVEL_HEADER_MAX or text[0] in _QUOTE_CHARS + "—–-([【〖":
+    # Имя в кавычках допустимо: «Мудрец» (имя изменено), lv1.
+    if not text or len(text) > _LEVEL_HEADER_MAX or text[0] in "\"“„'—–-([【〖":
         return False
     match = _LEVEL_END_RE.search(text)
     if match is None:
@@ -367,7 +404,9 @@ def is_level_header(text: str) -> bool:
 
 _LABEL_RE = re.compile(r"^([^:：«»\"“”]{1,40})[:：]$")
 _QUOTED_LABEL_RE = re.compile(r"^«([^«»:：.!?…]{1,40})[.:：]?»[.:：]?$")
-_TERM_LABEL_RE = re.compile(r"^«([^«»]{1,60})»\s*[:：]$")
+_TERM_LABEL_RE = re.compile(r"^«([^«»]{1,60})»(?:\s*\([^()]{1,80}\))?\s*[:：]$")
+# Одно слово раздела репликой: «— Характеристики…».
+_DASHED_LABEL_RE = re.compile(r"^[—–-]\s*([^\W\d_]{3,24})\s*(?:…|\.\.\.|[:：.])?$")
 _LABEL_WORDS_MAX = 2
 
 
@@ -377,10 +416,10 @@ def is_section_label(text: str) -> bool:
     Ключ без кавычек должен быть характеристикой (``Шарль моргнул:`` — проза),
     имя в кавычках с двоеточием — это навык, за которым идут его пункты.
     """
-    text = text.strip()
+    text = _BULLET_MARK_RE.sub("", text.strip(), count=1)
     if _TERM_LABEL_RE.match(text):
         return True
-    match = _LABEL_RE.match(text) or _QUOTED_LABEL_RE.match(text)
+    match = _LABEL_RE.match(text) or _QUOTED_LABEL_RE.match(text) or _DASHED_LABEL_RE.match(text)
     if match is None:
         return False
     key = match.group(1).strip()
@@ -388,8 +427,9 @@ def is_section_label(text: str) -> bool:
     return len(key.split()) <= _LABEL_WORDS_MAX and _is_stat_key(key)
 
 
-# За маркером — слово, а не ещё маркеры: «······» — разделитель.
-_BULLET_RE = re.compile(r"^[·•●▪◦‣∙]\s*[\w«\"(\[【]")
+# За маркером — слово, а не ещё маркеры: «······» и «* * *» — разделители.
+_BULLET_RE = re.compile(r"^(?:[·•●▪◦‣∙]\s*|\*\s+)[\w«\"“„(\[【+−±-]")
+_BULLET_MARK_RE = re.compile(r"^(?:[·•●▪◦‣∙]|\*(?=\s))\s*")
 _BULLET_MAX = 400
 
 
@@ -401,11 +441,30 @@ def is_bullet_line(text: str) -> bool:
     return len(text) <= _BULLET_MAX and _BULLET_RE.match(text) is not None
 
 
-# Имя навыка отдельной строкой: «Тепло.», «Аура Вампиризма.» — часть окна,
-# только если под ним пункты описания.
-_QUOTED_TERM_RE = re.compile(r"^«[^«»,;:!?…]{1,60}»\.?$")
+# Имя навыка отдельной строкой: «Тепло.», «Наследие Пегаса» (Реликвия Пегаса),
+# «Крути до победного!» — часть окна, только если под ним пункты описания.
+_QUOTED_TERM_RE = re.compile(r"^«[^«»]{1,60}»(?:\s*\([^()]{1,80}\))?[.!]?$")
+# Шапка списка пунктов: «Нагрудник [«Скрытность» (2)]», «Руна 7 Таль + руна 5 Эт.».
+_HEADING_MAX = 60
 _VALUE_LINE_MAX = 80
+_WIDE_LABEL_WORDS = 3
+# Разделитель частей карточки: «…», «… …», «...».
+_ELLIPSIS_LINE_RE = re.compile(r"^(?:…|\.\.\.)(?:\s*(?:…|\.\.\.))*$")
 _NEXT_SENTENCE_RE = re.compile(r"[.!?…]\s+[A-ZА-ЯЁ]")
+
+
+def _is_heading_line(text: str) -> bool:
+    """Короткая строка над списком пунктов, не вводная фраза с двоеточием."""
+    return (
+        bool(text)
+        and len(text) <= _HEADING_MAX
+        and text not in _GARBAGE_LINES
+        and not _is_dialogue(text)
+        and not text.startswith("(")
+        and not text.rstrip().endswith((":", "："))
+        and any(char.isalpha() for char in text)
+        and not is_bullet_line(text)
+    )
 
 
 def _is_value_line(text: str) -> bool:
@@ -437,7 +496,7 @@ def is_key_value(text: str) -> bool:
     if inner[0] in _QUOTE_CHARS and _QUOTED_KEY_RE.match(inner) is None:
         return False
     stripped = inner.rstrip()
-    if stripped.endswith(("!", "?", ":")):
+    if stripped.endswith(("!", "?", ":")) and _INCREMENT_RE.search(inner) is None:
         return False
     # Точка или многоточие в конце: у карточек статуса это обычное дело,
     # у прозы с двоеточием («Он сказал: привет.») — нет.
@@ -462,9 +521,10 @@ def is_key_value(text: str) -> bool:
             continue
         if unbracketed and key.lower().split()[0] in _META_KEYS:
             continue
-        if not (_mostly_alphanumeric(value) or _BRACKETS_ONLY_RE.match(value)):
+        if not (_mostly_alphanumeric(value) or _NAMES_OR_CELLS_RE.match(value)):
             continue
-        if (ends_with_period or ends_with_ellipsis) and not stat_key:
+        # Прирост со стрелкой — данные при любом ключе: «Шарль: lv2→lv3.».
+        if (ends_with_period or ends_with_ellipsis) and not stat_key and _INCREMENT_RE.search(value) is None:
             numeric = any(char.isdigit() for char in value)
             if ends_with_ellipsis or not (value[0].isupper() or value[0].isdigit()):
                 continue
@@ -504,6 +564,7 @@ def _is_data_line(text: str) -> bool:
         or is_single_stat_line(text)
         or _is_decorated(text)
         or is_level_header(text)
+        or is_increment_line(text)
         or is_section_label(text)
         or is_bullet_line(text)
     )
@@ -516,9 +577,9 @@ def classify_kind(lines: list[str]) -> str:
     joined = " ".join(texts)
     key_value_count = sum(1 for text in texts if is_key_value(text) or is_single_stat_line(text))
     rules = dict(_KIND_RULES)
-    if rules["levelup"].search(joined):
+    if rules["levelup"].search(joined) or _LEVEL_INCREMENT_RE.search(joined):
         return "levelup"
-    if key_value_count >= 2 or (texts and key_value_count == len(texts)):
+    if key_value_count >= 2 or (texts and key_value_count == len(texts)) or any(map(is_level_header, texts)):
         return "status"
     for kind, pattern in _KIND_RULES[1:]:
         if pattern.search(joined):
@@ -708,20 +769,84 @@ def find_windows(
     def confirmed(position: int) -> bool:
         return position in marked and _source_confirms(paragraphs[position].text)
 
-    def term_with_bullets(position: int) -> bool:
-        following = position + 1
+    def bullet_at(position: int) -> bool:
         return (
-            _QUOTED_TERM_RE.match(paragraphs[position].text) is not None
+            position < len(paragraphs)
+            and paragraphs[position].adjacent
+            and is_bullet_line(paragraphs[position].text)
+        )
+
+    def term_with_bullets(position: int) -> bool:
+        return _QUOTED_TERM_RE.match(paragraphs[position].text) is not None and bullet_at(position + 1)
+
+    def bullet_run(position: int) -> bool:
+        """Два пункта подряд — список эффектов: окно и без шапки."""
+        return is_bullet_line(paragraphs[position].text) and bullet_at(position + 1)
+
+    def heads_bullets(position: int, depth: int = 0) -> bool:
+        """Одна-две короткие строки прямо над списком пунктов — его шапка."""
+        following = position + 1
+        if not _is_heading_line(paragraphs[position].text) or following >= len(paragraphs):
+            return False
+        if not paragraphs[following].adjacent:
+            return False
+        if bullet_run(following):
+            return True
+        # Вторая строка шапки — не данные: со строки карточки окно начнётся и так,
+        # а фраза прозы над ней («Он вытянул несколько способностей.») в окно не нужна.
+        if depth or _is_data_line(paragraphs[following].text):
+            return False
+        return heads_bullets(following, depth=1)
+
+    def wide_label(position: int) -> bool:
+        """«Способности Пищевой Цепи:» — три слова, но под ним список имён или пунктов."""
+        match = _LABEL_RE.match(paragraphs[position].text.strip())
+        if match is None:
+            return False
+        key = match.group(1).strip()
+        words = key.lower().split()
+        following = position + 1
+        # Характеристика — первое слово: «Зажглась аномальная способность:» — проза.
+        return (
+            len(words) <= _WIDE_LABEL_WORDS
+            and words[0] in _STAT_KEYS
             and following < len(paragraphs)
             and paragraphs[following].adjacent
-            and is_bullet_line(paragraphs[following].text)
+            and (
+                _QUOTED_TERM_RE.match(paragraphs[following].text) is not None
+                or is_bullet_line(paragraphs[following].text)
+            )
+        )
+
+    def data_follows(position: int) -> bool:
+        following = position + 1
+        if following >= len(paragraphs) or not paragraphs[following].adjacent or excluded(paragraphs[following]):
+            return False
+        return (
+            _is_data_line(paragraphs[following].text)
+            or wide_label(following)
+            or term_with_bullets(following)
+            or heads_bullets(following)
         )
 
     def continues(position: int) -> bool:
         text = paragraphs[position].text
-        if confirmed(position) or _is_data_line(text) or term_with_bullets(position):
+        previous = paragraphs[position - 1].text
+        if (
+            confirmed(position)
+            or _is_data_line(text)
+            or term_with_bullets(position)
+            or heads_bullets(position)
+            or wide_label(position)
+        ):
             return True
-        return is_section_label(paragraphs[position - 1].text) and _is_value_line(text)
+        # «…» внутри карточки: окно идёт дальше, если за разделителем снова данные.
+        if _ELLIPSIS_LINE_RE.match(text):
+            return data_follows(position)
+        if (is_section_label(previous) or wide_label(position - 1)) and _is_value_line(text):
+            return True
+        # Имена навыков столбиком под заголовком: «Казан Души Клинка.», «Аура Шипов.».
+        return _QUOTED_TERM_RE.match(text) is not None and _QUOTED_TERM_RE.match(previous) is not None
 
     windows: list[WindowCandidate] = []
     index = 0
@@ -751,8 +876,12 @@ def find_windows(
             or _is_header(text, settings)
             or is_key_value(text)
             or is_level_header(text)
+            or is_increment_line(text)
             or is_section_label(text)
             or term_with_bullets(index)
+            or bullet_run(index)
+            or heads_bullets(index)
+            or wide_label(index)
         ):
             index += 1
             continue
@@ -765,7 +894,10 @@ def find_windows(
         ):
             stop += 1
 
+        while stop - 1 > index and _ELLIPSIS_LINE_RE.match(paragraphs[stop - 1].text):
+            stop -= 1
         length = stop - index
+        single_stat = single_stat or is_increment_line(text)
         accepted = length >= 2 or single_stat or ((shape in _SINGLE_SHAPES or is_marked) and settings.single_bracketed)
         if not accepted:
             index += 1
@@ -863,27 +995,55 @@ def _strip_outer_quotes(text: str) -> str:
 
 
 def _render_row(text: str, accent: str, italic_allowed: bool):
-    """Вернуть (html строки, короткая ли это пара ключ-значение для колонок)."""
+    """Строки окна: [(html, короткая ли это пара ключ-значение для колонок)]."""
     if bracket_shape(text) == "keyed":
-        return _render_keyed(text, accent), False
+        return [(_render_keyed(text, accent), False)]
     if is_section_label(text):
-        label = _strip_outer_quotes(text.rstrip(":：").strip()).rstrip(".").strip()
-        return f'<b style="color:{accent};">{_escape(label)}:</b>', False
+        label = _BULLET_MARK_RE.sub("", text.strip(), count=1)
+        label = re.sub(r"^[—–-]\s*", "", label).rstrip(":：…").strip()
+        # «Пламенная Душа» (пассивный навык) → Пламенная Душа (пассивный навык)
+        label = re.sub(r"^«([^«»]+)»", r"\1", label).rstrip(".").strip()
+        return [(f'<b style="color:{accent};">{_escape(label)}:</b>', False)]
     text = _strip_outer_quotes(strip_brackets(text))
     if is_key_value(text):
-        parts = [part.strip() for part in text.split("|")] if "|" in text else [text]
+        parts = _stat_parts(text)
+        # Приросты и ранги пишут столбиком, как статусы в DanMachi: по одному в строке.
+        if len(parts) > 1 and all(_KV_RE.match(part) and _is_column_value(part) for part in parts):
+            return [(_render_key_value_part(part, accent), False) for part in parts]
         rendered = []
         for part in parts:
             if _KV_RE.match(part):
                 rendered.append(_render_key_value_part(part, accent))
             else:
                 rendered.append(_escape(part))
-        short = len(parts) == 1 and len(re.split(r"[:：]", text, maxsplit=1)[1].strip()) <= _SHORT_VALUE
-        return _SEPARATOR.join(rendered), short
+        value = re.split(r"[:：]", text, maxsplit=1)[1].strip()
+        short = len(parts) == 1 and len(value) <= _SHORT_VALUE and not _is_column_value(text)
+        return [(_SEPARATOR.join(rendered), short)]
     escaped = _escape(text)
     if italic_allowed and len(text) >= _ITALIC_FROM:
-        return f"<i>{escaped}</i>", False
-    return escaped, False
+        return [(f"<i>{escaped}</i>", False)]
+    return [(escaped, False)]
+
+
+# Ранг и число, как в статусах DanMachi: «F358», «I 0», «SSS 2101», «EX 7774».
+# Кириллические А, В, Е, Н, С — двойники латинских: переводчик мог набрать их.
+_RANK_VALUE_RE = re.compile(r"^(?:[A-ZАВЕНС]{1,3}|EX|MAX)\s?\d{1,5}\.?$")
+
+
+def _is_column_value(part: str) -> bool:
+    """Показатель, который пишут столбиком: прирост со стрелкой или ранг с числом."""
+    value = re.split(r"[:：]", part, maxsplit=1)[1].strip() if _KV_RE.match(part) else part
+    return _INCREMENT_RE.search(value) is not None or _RANK_VALUE_RE.match(value) is not None
+
+
+def _stat_parts(text: str) -> list[str]:
+    """Пары одной строки: через ``|`` или через `` / ``, если каждая часть — пара."""
+    if "|" in text:
+        return [part.strip() for part in text.split("|")]
+    pieces = [part.strip() for part in re.split(r"\s+/\s+", text)]
+    if len(pieces) > 1 and all(_KV_RE.match(piece) for piece in pieces):
+        return pieces
+    return [text]
 
 
 def _group_columns(rows, columns: int) -> list[str]:
@@ -924,7 +1084,7 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     if len(texts) >= 2 and _looks_like_title(texts[0]):
         title, texts = _strip_outer_quotes(texts[0].rstrip(":：").strip()), texts[1:]
 
-    rows = [_render_row(text, accent, italic_allowed=title is not None) for text in texts]
+    rows = [row for text in texts for row in _render_row(text, accent, italic_allowed=title is not None)]
     body_rows = _group_columns(rows, int(template.get("columns") or 1))
 
     pieces = []
