@@ -243,6 +243,62 @@ def test_resolve_api_keys_reports_when_every_selected_key_is_limited(tmp_path):
     assert secret not in str(exc_info.value.payload)
 
 
+def test_resolve_api_keys_falls_back_to_provider_keys_when_active_set_is_foreign(tmp_path):
+    # Окно ключей раньше записывало в набор провайдера ключи другого:
+    # такой ключ этому провайдеру отправлять нельзя.
+    statuses = [
+        {"key": "fake-key", "provider": "fake", "status_by_model": {}},
+        {"key": "other-key", "provider": "other", "status_by_model": {}},
+    ]
+    manager = _KeyStatusSettingsManager(statuses, set())
+
+    keys = _resolve_api_keys(
+        _FakeApiConfig(),
+        manager,
+        "fake",
+        "known-model-id",
+        {"active_keys_by_provider": {"fake": ["other-key", "deleted-key"]}},
+        _session_args(tmp_path),
+    )
+
+    assert keys == ["fake-key"]
+
+
+def test_resolve_api_keys_keeps_only_own_keys_of_a_mixed_active_set(tmp_path):
+    statuses = [
+        {"key": "fake-key-1", "provider": "fake", "status_by_model": {}},
+        {"key": "fake-key-2", "provider": "fake", "status_by_model": {}},
+        {"key": "other-key", "provider": "other", "status_by_model": {}},
+    ]
+    manager = _KeyStatusSettingsManager(statuses, set())
+
+    keys = _resolve_api_keys(
+        _FakeApiConfig(),
+        manager,
+        "fake",
+        "known-model-id",
+        {"active_keys_by_provider": {"fake": ["other-key", "fake-key-2"]}},
+        _session_args(tmp_path),
+    )
+
+    assert keys == ["fake-key-2"]
+
+
+def test_resolve_api_keys_still_accepts_explicit_keys_that_are_not_saved(tmp_path):
+    manager = _KeyStatusSettingsManager([], set())
+
+    keys = _resolve_api_keys(
+        _FakeApiConfig(),
+        manager,
+        "fake",
+        "known-model-id",
+        {},
+        _session_args(tmp_path, api_key=["cli-key"]),
+    )
+
+    assert keys == ["cli-key"]
+
+
 def test_build_session_settings_can_skip_api_key_resolution(monkeypatch, tmp_path):
     from gemini_translator import cli
 

@@ -9,6 +9,7 @@ from typing import Any
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ...api import config as api_config
+from ...utils.active_keys import sanitize_active_keys_by_provider
 from ...utils.document_importer import DOCUMENT_INPUT_FILTER, extract_document_chapters, set_all_checked
 from ...utils.helpers import as_list
 from gemini_translator.ui.shell import ShellPage
@@ -1621,11 +1622,9 @@ class PromptBenchmarkPage(ShellPage):
         except Exception:
             active = None
         if isinstance(active, dict):
-            for provider, keys in active.items():
-                provider_id = str(provider or "").strip()
-                if not provider_id:
-                    continue
-                active_keys = [str(key).strip() for key in (keys or []) if str(key).strip()]
+            # Чужие ключи из набора отбрасываются; если своих не осталось,
+            # у провайдера остаются все его сохранённые ключи.
+            for provider_id, active_keys in sanitize_active_keys_by_provider(active, statuses).items():
                 if active_keys:
                     keys_by_provider[provider_id] = active_keys
         return keys_by_provider

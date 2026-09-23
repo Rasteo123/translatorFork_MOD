@@ -403,11 +403,15 @@ def _resolve_api_keys(
     keys.extend(_read_api_key_file(getattr(args, "api_key_file", None)))
     keys = [str(key).strip() for key in keys if str(key).strip()]
     if not keys:
+        from .utils.active_keys import owned_active_keys
+
         active_by_provider = saved_settings.get("active_keys_by_provider")
         if isinstance(active_by_provider, dict):
             active = active_by_provider.get(provider_id)
             if isinstance(active, (list, tuple, set)):
-                keys = [str(key).strip() for key in active if str(key).strip()]
+                # В наборе могут лежать ключи другого провайдера: берём только
+                # сохранённые под этим, иначе ниже подставятся все его ключи.
+                keys = owned_active_keys(active, provider_statuses)
 
     if getattr(args, "all_keys", False) or not keys:
         keys = _configured_provider_keys(key_statuses, provider_id)
