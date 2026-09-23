@@ -356,8 +356,11 @@ def test_process_chapter_file_apply_then_strip_round_trips_on_disk(tmp_path):
 
 def test_process_chapter_file_apply_takes_selected_candidates(tmp_path):
     path = tmp_path / "chapter1_translated_gemini.html"
-    path.write_text(_chapter("[Динь! Одна]", "Текст.", "[Динь! Две]"), encoding="utf-8")
-    candidates = find_windows(path.read_text(encoding="utf-8"))
+    # Переводы строк как на Windows. Кандидатов ищем в тех же байтах, что читают
+    # scan_project и process_chapter_file: read_text сменил бы \r\n на \n, и
+    # смещения кандидатов разошлись бы с файлом.
+    path.write_text(_chapter("[Динь! Одна]", "Текст.", "[Динь! Две]"), encoding="utf-8", newline="\r\n")
+    candidates = find_windows(path.read_bytes().decode("utf-8"))
 
     count = process_chapter_file(path, mode="apply", candidates=[candidates[0]])
 
