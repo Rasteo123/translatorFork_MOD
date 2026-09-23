@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ...utils.system_windows import replace_blocks as replace_system_blocks
 from ...utils.epub_tools import (
     extract_first_epub_heading_text,
     find_opf_path,
@@ -279,13 +280,14 @@ class EPUBConverterThread(QThread):
         text = html_content
         system_blocks = []
 
-        def keep_system_block(match):
-            block = SYSTEM_BLOCK_ORIG_RE.sub("", match.group(0))
+        def keep_system_block(block):
+            block = SYSTEM_BLOCK_ORIG_RE.sub("", block)
             block = re.sub(r"\s*\n\s*", " ", block).strip()
             system_blocks.append(block)
             return "\n\n" + _SYSTEM_BLOCK_PLACEHOLDER.format(index=len(system_blocks) - 1) + "\n\n"
 
-        text = SYSTEM_BLOCK_RE.sub(keep_system_block, text)
+        # Блок с вложенными div (карточки постов форума) — целиком, до парного </div>.
+        text = replace_system_blocks(text, keep_system_block)
         text = re.sub(r"<(script|style|head)[^>]*>.*?</\1>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"</(p|div|h[1-6]|li|blockquote)>", "\n\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)

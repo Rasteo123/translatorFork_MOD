@@ -489,3 +489,36 @@ class ChatAccountColumnTests(ChatReaderFieldTests):
         self.assertEqual(candidate.readers, ())
         page.table.selectRow(0)
         self.assertNotIn('align="right"', page.preview.toHtml())
+
+
+
+class ForumPageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_forum_rows_and_preview(self):
+        import tempfile
+        from pathlib import Path
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        project = Path(tmp.name) / "worm"
+        (project / "OEBPS").mkdir(parents=True)
+        thread = [
+            "♦Тема: Стражи СКП ЕНЕ", "Раздел: Форумы.", "XxVoid_CowboyxX (Автор темы)", "Опубликовано 6 марта 2011 г.:",
+            "Кто теперь будет гонять Барыг?", "► Мистер Фабу", "Ответил 6 марта 2011 г.:", "Никто.", "Конец страницы. 1 , 2",
+        ]
+        (project / "OEBPS/c1_translated_gemini.html").write_text(_chapter("Я открыла ПЛО.", *thread, "Полдень."), encoding="utf-8")
+        (project / "translation_map.json").write_text(
+            json.dumps({"OEBPS/c1.xhtml": {"_translated_gemini.html": "OEBPS/c1_translated_gemini.html"}}), encoding="utf-8"
+        )
+        page = SystemWindowsPage()
+        self.addCleanup(page.close)
+        page.set_scan_results(scan_project(project))
+
+        self.assertEqual(page.table.rowCount(), 1)
+        self.assertEqual(page.table.item(0, 5).text(), "форум")
+        self.assertEqual(page.table.cellWidget(0, 2).currentData(), "forum")
+        page.table.selectRow(0)
+        self.assertIn("Мистер Фабу", page.preview.toPlainText())

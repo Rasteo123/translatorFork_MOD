@@ -495,9 +495,9 @@ from gemini_translator.utils.system_windows import (  # noqa: E402
 
 
 def test_samples_cover_every_kind_and_render_with_titles():
-    assert set(SAMPLE_WINDOWS) == {"status", "skill", "notice", "levelup", "achievement", "chat"}
+    assert set(SAMPLE_WINDOWS) == {"status", "skill", "notice", "levelup", "achievement", "chat", "forum"}
     for kind, lines in SAMPLE_WINDOWS.items():
-        if kind == "chat":
+        if kind in ("chat", "forum"):
             continue
         block = render_window(lines, kind)
         assert "letter-spacing" in block, kind
@@ -1759,3 +1759,124 @@ def test_next_chats_of_a_chapter_keep_the_owner_while_he_writes():
     owners = [window.chat_owner for window in find_windows(html)]
 
     assert owners == ["Рен", "Рен", ""]
+
+
+
+# --- форум: ПЛО в фанфиках по «Червю» -------------------------------------------
+
+PHO_THREAD = [
+    "Добро пожаловать на форумы «Паралюди Онлайн»",
+    "Вы вошли в систему как CatsPaw_8",
+    "Вы просматриваете:",
+    "• Темы, в которых вы отвечали.",
+    "Десять постов на странице.",
+    "■",
+    "♦Тема: Стражи СКП ЕНЕ",
+    "Раздел: Форумы.",
+    "XxVoid_CowboyxX (Автор темы)",
+    "Опубликовано 6 марта 2011 г.:",
+    "Призрачного Сталкера переводят? Но кто теперь будет гонять Барыг?",
+    "(Показана страница 2 из 2)",
+    "► Мистер Фабу",
+    "Ответил 6 марта 2011 г.:",
+    "Не то чтобы по ней кто-то сильно скучал.",
+    "… ► Баграт (Ветеран форума) (Посвященный)",
+    "Ответил 7 марта 2011 г.:",
+    "А кто-нибудь допускал мысль, что её могут _никуда_ не переводить?",
+    "Конец страницы. 1 , 2",
+]
+
+
+def test_forum_thread_is_found_from_header_to_end_of_page():
+    html = _chapter("Просмотр ПЛО ничем не помог.", *PHO_THREAD, "Полдень, а новостей всё нет.", "— Ты идёшь? — спросила мама.")
+
+    windows = find_windows(html)
+
+    assert [(window.kind, window.origin) for window in windows] == [("forum", "forum")]
+    assert windows[0].lines == PHO_THREAD
+
+
+def test_forum_structure_reads_topic_posts_tags_and_pages():
+    parts = sw.forum_structure(PHO_THREAD)
+
+    assert parts[0][0] == "welcome" and len(parts[0][1]) == 5
+    assert parts[1] == ("topic", "Стражи СКП ЕНЕ", "Форумы.")
+    assert parts[2] == ("post", "XxVoid_CowboyxX", ["Автор темы"], "Опубликовано 6 марта 2011 г.:",
+                        ["Призрачного Сталкера переводят? Но кто теперь будет гонять Барыг?"])
+    assert parts[3] == ("page", "(Показана страница 2 из 2)")
+    assert parts[5][1:3] == ("Баграт", ["Ветеран форума", "Посвященный"])
+    assert parts[-1] == ("page", "Конец страницы. 1 , 2")
+
+
+def test_bbcode_leftovers_and_reply_from_form():
+    lines = [
+        "[b] Тема: Официальный тред Медузы[/b]",
+        "[b]Раздел: Форумы ► США ► Броктон-Бей[/b]",
+        "[b]Баграт [/b] (Автор темы) (Ветеран форума)",
+        "Опубликовано 6 апреля 2011 г.:",
+        "Всем привет!",
+        "[/indent] [b](Показана страница 45 из 53)[/b] [indent]",
+        "[b]►Smoothmoves [/b]",
+        "Ответ от 12 апреля 2011 г.:",
+        "Короче, работаю я дома.",
+        "[/indent] [b]Конец страницы. [u]1[/u], [u]2[/u][/b]",
+        "[CENTER]■[/CENTER]",
+    ]
+    html = _chapter(*lines, "Верити уставилась в телефон.", "Приходилось признать: выглядела она круто.")
+
+    windows = find_windows(html)
+    parts = sw.forum_structure(windows[0].lines)
+
+    assert windows[0].lines == lines
+    assert parts[0] == ("topic", "Официальный тред Медузы", "Форумы ► США ► Броктон-Бей")
+    assert [part[1] for part in parts if part[0] == "post"] == ["Баграт", "Smoothmoves"]
+    assert "[b]" not in sw.render_window(lines, "forum")
+
+
+def test_last_post_body_stops_at_dialogue_and_without_posts_there_is_no_forum():
+    html = _chapter("♦Тема: Сибирь", "От: PathToVictory", "— Ну вот и предсказатель, — сказала Верити.")
+    assert all(window.kind != "forum" for window in find_windows(html))
+
+    thread = ["♦Тема: Новые Боги.", "В: Форумы ► Религия.", "MignonMan (Автор темы)", "Опубликовано 2 мая 2011 года:", "Обсуждаем."]
+    html = _chapter(*thread, "— Алло? — ответила я.", "Спустя двадцать минут меня провели в спальню.")
+    assert find_windows(html)[0].lines == thread
+
+
+def test_forum_in_calibre_wrappers_is_cut_by_whole_elements_and_strips_back():
+    html = (
+        "<html><body>\n<p>Текст до.</p>\n"
+        "<p>♦Тема: Тема нового Кейпа.</p>\n<p>В: Доски.</p>\n"
+        "<p>Sunlit_Worship (Автор темы)</p>\n<p>Опубликовано 16 февраля 2011:</p>\n<p>Новый кейп!</p>\n"
+        '<div class="calibre1">\n<p>► ManualOverdrive.</p>\n</div>\n'
+        '<div class="calibre1">\n<p>Ответил 16 февраля 2011:</p>\n</div>\n'
+        '<div class="calibre1">\n<p>Да ладно.</p>\n</div>\n'
+        "<p>Конец страницы. 1, 2</p>\n<p>Текст после.</p>\n</body></html>\n"
+    )
+
+    windows = find_windows(html)
+    result, count = sw.apply_windows(html, windows)
+
+    assert count == 1 and windows[0].kind == "forum"
+    assert result.count("<div") == result.count("</div>")
+    assert "Текст до." in result and "Текст после." in result
+    assert sw.strip_windows(result) == (html, 1)
+
+
+def test_nested_forum_blocks_are_found_whole():
+    block = sw.render_window(PHO_THREAD, "forum", source_html="<p>x</p>")
+    html = f"<p>До.</p>\n{block}\n<p>После.</p>"
+
+    spans = list(sw.iter_block_spans(html))
+
+    assert len(spans) == 1 and html[spans[0][0]:spans[0][1]] == block
+    assert block.count("<div") > 1
+    assert sw.strip_windows(html) == ("<p>До.</p>\n<p>x</p>\n<p>После.</p>", 1)
+
+
+
+def test_prose_about_messages_is_not_a_private_message_header():
+    assert sw.forum_role("Новых сообщений так и не появилось.") == "body"
+    assert sw.forum_role("♦ Личное сообщение от ПСтранница2011 (Подтверждённый кейп):") == "pm"
+    assert sw.forum_role("Личное сообщение для Баграт:") == "pm"
+    html = _chapter("Новых сообщений так и не появилось.", "К счастью, как раз в этот момент Колин зашевелился.")
+    assert find_windows(html) == []
