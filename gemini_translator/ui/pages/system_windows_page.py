@@ -41,6 +41,7 @@ from gemini_translator.ui import theme_manager
 from gemini_translator.ui.shell import ShellPage
 from gemini_translator.utils.qt_utils import deferred_column_autosize
 from gemini_translator.utils.system_windows import (
+    DEFAULT_EXCLUDE,
     DEFAULT_TEMPLATES,
     DEFAULT_TRIGGERS,
     KIND_ORDER,
@@ -135,8 +136,8 @@ class SystemWindowsPage(ShellPage):
         self.single_check.setChecked(True)
         options_row.addWidget(self.single_check)
         options_row.addWidget(QLabel("Не трогать строки (регулярное выражение):"))
-        self.exclude_edit = QLineEdit()
-        self.exclude_edit.setPlaceholderText(r"например прим\.\s*пер")
+        self.exclude_edit = QLineEdit(DEFAULT_EXCLUDE)
+        self.exclude_edit.setToolTip("Строки, подходящие под это выражение, никогда не оформляются. Пусто = без исключений.")
         options_row.addWidget(self.exclude_edit, 1)
         settings_layout.addLayout(options_row)
         main_layout.addWidget(settings_group)
@@ -283,7 +284,7 @@ class SystemWindowsPage(ShellPage):
             self.triggers_edit.setText(str(state["triggers"]))
         if "single_bracketed" in state:
             self.single_check.setChecked(bool(state["single_bracketed"]))
-        if state.get("exclude_pattern"):
+        if "exclude_pattern" in state:
             self.exclude_edit.setText(str(state["exclude_pattern"]))
         colors = state.get("colors") or {}
         for row in range(self.colors_table.rowCount()):
