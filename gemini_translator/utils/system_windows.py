@@ -41,7 +41,7 @@ _KIND_RULES = (
 DEFAULT_KIND = "notice"
 
 _KV_RE = re.compile(r"^[^:：]{1,40}[:：]\s*\S")
-_TRAILING_PUNCT = ".!?…"
+_TRAILING_PUNCT = ".!?…。！？"
 _MAX_SPAN_PARAGRAPHS = 20
 # Авторские и переводческие примечания в скобках и служебные пометки
 # вроде «[Конец главы]» — не системные окна.
@@ -67,6 +67,9 @@ class WindowCandidate:
     kind: str
     lines: list[str]
     paragraph_html: list[str]
+    #: Как найдена серия: brackets, quotes, pairs (ключ: значение) или source
+    #: (по скобкам в исходнике, когда перевод их потерял).
+    origin: str = "brackets"
 
 
 @dataclass
@@ -397,6 +400,95 @@ def classify_kind(lines: list[str]) -> str:
 
 # --- поиск серий ------------------------------------------------------------
 
+def source_paragraphs(html: str) -> list[str]:
+    """Абзацы исходной главы: ``<p>``, а без них — текст между ``<br>``."""
+    soup = BeautifulSoup(html, "html.parser")
+    body = soup.find("body") or soup
+    for heading in body.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+        heading.decompose()
+    tags = body.find_all("p")
+    if tags:
+        texts = [" ".join(tag.get_text(" ", strip=True).split()) for tag in tags]
+        return [text for text in texts if text]
+    for br in body.find_all("br"):
+        br.replace_with("\n")
+    return [" ".join(line.split()) for line in body.get_text("\n").split("\n") if line.strip()]
+
+
+def _is_source_system_line(text: str) -> bool:
+    return bool(text) and text[0] in "【[〖" and _outer_group_spans_all(text)
+
+
+_GARBAGE_LINES = frozenset({"***", "…", "...", "* * *"})
+
+
+def _plausible_counterpart(target: str, source_text: str) -> bool:
+    """Абзац перевода мог быть переводом этих строк исходника."""
+    if target.startswith(("—", "–", "- ")) or target in _GARBAGE_LINES:
+        return False
+    if sum(1 for char in target if char.isalpha()) < 2:
+        return False
+    source_length = max(1, len("".join(source_text.split())))
+    target_length = len("".join(target.split()))
+    return 0.2 * source_length <= target_length <= 6 * source_length + 20
+
+
+def source_marked_indices(html: str, source_html: str) -> dict[str, set[int]]:
+    """Номера абзацев перевода напротив строк исходника в скобках, по семействам скобок.
+
+    Абзацы выравниваются по длинам, как в проверке качества. Семейство
+    (``[``, ``【`` или ``〖``) важно: в одной книге 【】 — это система, в другой —
+    мысленная речь, и решать, каким верить, надо по всей книге.
+    """
+    from ..qa.source_pairing import _align_by_length, _visible_length
+
+    source = source_paragraphs(source_html)
+    targets = [(index, paragraph.text) for index, paragraph in enumerate(_paragraphs(html)) if paragraph.text]
+    if not source or not targets:
+        return {}
+    spans = _align_by_length(
+        [_visible_length(text) for text in source],
+        [_visible_length(text) for _index, text in targets],
+    )
+    marked: dict[str, set[int]] = {}
+    for source_start, source_end, target_start, target_end in spans:
+        if source_start == source_end or target_start == target_end:
+            continue
+        source_lines = source[source_start:source_end]
+        if not all(_is_source_system_line(line) for line in source_lines):
+            continue
+        family = source_lines[0][0]
+        source_text = " ".join(source_lines)
+        for index, text in targets[target_start:target_end]:
+            if _plausible_counterpart(text, source_text):
+                marked.setdefault(family, set()).add(index)
+    return marked
+
+
+_TRUST_KEPT_MIN = 0.25
+_TRUST_KEPT_MAX = 0.7
+
+
+def trusted_source_families(kept_counts) -> set[str]:
+    """Семейства скобок исходника, по которым стоит отмечать строки без скобок.
+
+    ``kept_counts``: семейство → (сколько отмеченных абзацев перевода сами в
+    скобках, сколько отмечено всего). Если перевод никогда не оставляет эти
+    скобки, в исходнике они значат не систему, а, скажем, мысленную речь. Если
+    оставляет почти всегда, немногие строки без скобок переводчик счёл речью в
+    тех же скобках. Сверка помогает посередине: переводчик был непоследователен,
+    и исходник знает лучше. Семейство без потерь доверенное: добавлять нечего.
+    """
+    trusted = set()
+    for family, (kept, total) in kept_counts.items():
+        if total <= 0:
+            continue
+        share = kept / total
+        if kept == total or _TRUST_KEPT_MIN <= share <= _TRUST_KEPT_MAX:
+            trusted.add(family)
+    return trusted
+
+
 def _span_end(paragraphs, start: int, excluded) -> int | None:
     """Индекс абзаца, закрывающего скобку, открытую в ``start``; None, если его нет."""
     for index in range(start + 1, min(start + _MAX_SPAN_PARAGRAPHS + 1, len(paragraphs))):
@@ -411,11 +503,37 @@ def _span_end(paragraphs, start: int, excluded) -> int | None:
     return None
 
 
-def find_windows(html: str, settings: DetectorSettings | None = None) -> list[WindowCandidate]:
-    """Найти серии системных строк в HTML главы, в порядке документа."""
+def _origin(shape, marked: bool, text: str) -> str:
+    if shape in ("full", "keyed", "list", "open", "dashed"):
+        return "brackets"
+    if shape == "quoted":
+        return "quotes"
+    if marked:
+        return "source"
+    return "pairs"
+
+
+def find_windows(
+    html: str,
+    settings: DetectorSettings | None = None,
+    source_html: str | None = None,
+    source_marks: set[int] | None = None,
+) -> list[WindowCandidate]:
+    """Найти серии системных строк в HTML главы, в порядке документа.
+
+    С ``source_html`` строки, напротив которых в исходнике стоят скобки любого
+    семейства, считаются системными и без скобок в переводе; ``source_marks``
+    передаёт уже отобранные номера абзацев (см. :func:`scan_chapters`).
+    """
     settings = settings or DetectorSettings()
     exclude = re.compile(settings.exclude_pattern, re.I) if settings.exclude_pattern else None
     paragraphs = _paragraphs(html)
+    if source_marks is not None:
+        marked = set(source_marks)
+    elif source_html:
+        marked = set().union(*source_marked_indices(html, source_html).values())
+    else:
+        marked = set()
 
     def excluded(paragraph: _Paragraph) -> bool:
         return not paragraph.text or (exclude is not None and exclude.search(paragraph.text) is not None)
@@ -430,6 +548,7 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
             continue
 
         shape = bracket_shape(text)
+        is_marked = index in marked
         stop = index + 1
         if shape == "open":
             span_end = _span_end(paragraphs, index, excluded)
@@ -437,7 +556,7 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
                 index += 1
                 continue
             stop = span_end + 1
-        elif not (shape in _DATA_SHAPES or _is_header(text, settings) or is_key_value(text)):
+        elif not (shape in _DATA_SHAPES or is_marked or _is_header(text, settings) or is_key_value(text)):
             index += 1
             continue
 
@@ -445,12 +564,12 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
             stop < len(paragraphs)
             and paragraphs[stop].adjacent
             and not excluded(paragraphs[stop])
-            and _is_data_line(paragraphs[stop].text)
+            and (stop in marked or _is_data_line(paragraphs[stop].text))
         ):
             stop += 1
 
         length = stop - index
-        accepted = length >= 2 or (shape in _SINGLE_SHAPES and settings.single_bracketed)
+        accepted = length >= 2 or ((shape in _SINGLE_SHAPES or is_marked) and settings.single_bracketed)
         if not accepted:
             index += 1
             continue
@@ -464,6 +583,7 @@ def find_windows(html: str, settings: DetectorSettings | None = None) -> list[Wi
                 kind=classify_kind(lines),
                 lines=lines,
                 paragraph_html=[html[paragraph.start:paragraph.end] for paragraph in chosen],
+                origin=_origin(shape, is_marked, text),
             )
         )
         index = stop
@@ -536,11 +656,20 @@ def _render_keyed(text: str, accent: str) -> str:
     return f'<b style="color:{accent};">{_escape(term)}</b> {_escape(rest)}'
 
 
+_OUTER_QUOTES_RE = re.compile(r"^«([^«»]+)»([.!?…]*)$")
+
+
+def _strip_outer_quotes(text: str) -> str:
+    """«Метка»! → Метка!: строка целиком в кавычках внутри окна — сообщение."""
+    match = _OUTER_QUOTES_RE.match(text)
+    return match.group(1).strip() + match.group(2) if match else text
+
+
 def _render_row(text: str, accent: str, italic_allowed: bool):
     """Вернуть (html строки, короткая ли это пара ключ-значение для колонок)."""
     if bracket_shape(text) == "keyed":
         return _render_keyed(text, accent), False
-    text = strip_brackets(text)
+    text = _strip_outer_quotes(strip_brackets(text))
     if is_key_value(text):
         parts = [part.strip() for part in text.split("|")] if "|" in text else [text]
         rendered = []
@@ -590,7 +719,7 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     texts = [" ".join(str(line).split()) for line in lines]
     texts = [text for text in texts if text]
     if texts and bracket_shape(texts[0]) not in ("keyed", "list"):
-        texts[0] = strip_brackets(texts[0])
+        texts[0] = _strip_outer_quotes(strip_brackets(texts[0]))
     title = None
     if len(texts) >= 2 and _looks_like_title(texts[0]):
         title, texts = texts[0].rstrip(":：").strip(), texts[1:]
@@ -760,21 +889,120 @@ def _chapter_title(html: str, original: str) -> str:
     return title or os.path.basename(original)
 
 
-def scan_project(project_folder, settings: DetectorSettings | None = None, progress=None) -> list[ChapterScan]:
-    """Найти системные окна во всех главах проекта (и главы без окон тоже)."""
-    chapters = project_chapter_files(project_folder)
+def find_source_epub(project_folder) -> str | None:
+    """Исходный EPUB в папке проекта: архив, в котором лежат главы из карты перевода.
+
+    В папке обычно несколько EPUB (перевод, редакции, пробы); исходник узнаётся
+    по содержимому: он должен содержать не меньше половины оригиналов карты.
+    """
+    import json
+    import zipfile
+
+    folder = str(project_folder)
+    try:
+        names = sorted(os.listdir(folder))
+        with open(os.path.join(folder, "translation_map.json"), encoding="utf-8") as handle:
+            originals = {str(key).replace("\\", "/") for key in json.load(handle)}
+    except (OSError, ValueError):
+        return None
+    if not originals:
+        return None
+    best_path, best_key = None, None
+    for name in names:
+        if not name.lower().endswith(".epub"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            with zipfile.ZipFile(path) as archive:
+                score = len(originals.intersection(archive.namelist()))
+        except (OSError, zipfile.BadZipFile):
+            continue
+        if score * 2 < len(originals):
+            continue
+        lowered = name.lower()
+        translated = any(mark in lowered for mark in ("(ru)", "перевод", "translated", "тест"))
+        # Сначала архив без пометок перевода, среди них — с наибольшим покрытием.
+        key = (not translated, score)
+        if best_key is None or key > best_key:
+            best_path, best_key = path, key
+    return best_path
+
+
+def scan_chapters(entries, settings: DetectorSettings | None = None, progress=None) -> list[ChapterScan]:
+    """Найти окна в главах ``(original, path, html, source_html | None)``.
+
+    Сверка с исходником идёт в два прохода: сначала по всей книге считается,
+    какие семейства скобок исходника перевод сохраняет, потом по доверенным
+    семействам отмечаются строки без скобок.
+    """
+    entries = list(entries)
+    total = len(entries)
+    has_source = any(entry[3] for entry in entries)
+    steps = 2 * total if has_source else total
+    marks_by_chapter: list[dict[str, set[int]]] = []
+    kept_counts: dict[str, list[int]] = {}
+    for index, (original, _path, html, source_html) in enumerate(entries, start=1):
+        marks = source_marked_indices(html, source_html) if source_html else {}
+        marks_by_chapter.append(marks)
+        if marks:
+            texts = {position: paragraph.text for position, paragraph in enumerate(_paragraphs(html))}
+            for family, indices in marks.items():
+                counter = kept_counts.setdefault(family, [0, 0])
+                for position in indices:
+                    counter[1] += 1
+                    if texts.get(position, "")[:1] in "[【〖":
+                        counter[0] += 1
+        if progress is not None and has_source:
+            progress(index, steps, original)
+    trusted = trusted_source_families({family: tuple(pair) for family, pair in kept_counts.items()})
     result = []
-    for index, (original, path) in enumerate(chapters, start=1):
-        html = Path(path).read_bytes().decode("utf-8")
+    for index, ((original, path, html, _source_html), marks) in enumerate(zip(entries, marks_by_chapter), start=1):
+        source_marks = set().union(*(indices for family, indices in marks.items() if family in trusted)) if marks else set()
         result.append(ChapterScan(
             original=original,
             path=path,
             title=_chapter_title(html, original),
-            candidates=find_windows(html, settings),
+            candidates=find_windows(html, settings, source_marks=source_marks if marks else None),
         ))
         if progress is not None:
-            progress(index, len(chapters), original)
+            progress((total if has_source else 0) + index, steps, original)
     return result
+
+
+def scan_project(
+    project_folder,
+    settings: DetectorSettings | None = None,
+    progress=None,
+    source_epub: str | None = None,
+) -> list[ChapterScan]:
+    """Найти системные окна во всех главах проекта (и главы без окон тоже).
+
+    С ``source_epub`` главы сверяются с исходником: строки, стоящие напротив
+    скобок оригинала, тоже считаются системными (см. :func:`scan_chapters`).
+    """
+    import zipfile
+
+    chapters = project_chapter_files(project_folder)
+    archive = None
+    names: set[str] = set()
+    if source_epub and os.path.isfile(source_epub):
+        try:
+            archive = zipfile.ZipFile(source_epub)
+            names = set(archive.namelist())
+        except (OSError, zipfile.BadZipFile):
+            archive = None
+    entries = []
+    try:
+        for original, path in chapters:
+            html = Path(path).read_bytes().decode("utf-8")
+            source_html = None
+            if archive is not None and original in names:
+                source_html = archive.read(original).decode("utf-8", "ignore")
+            entries.append((original, path, html, source_html))
+    finally:
+        if archive is not None:
+            archive.close()
+    return scan_chapters(entries, settings, progress)
 
 
 def apply_project(selections, templates=None, progress=None) -> tuple[int, int]:

@@ -330,3 +330,57 @@ class SystemWindowsLayoutTests(unittest.TestCase):
             page.project_edit.setText(str(self.project))
             page.project_edit.returnPressed.emit()
         scan.assert_called_once()
+
+
+class SystemWindowsSourceTests(unittest.TestCase):
+    """Сверка с исходным EPUB: поле, флажок и колонка «Как найдено»."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        import zipfile
+
+        self.project = _project(Path(self._tmp.name))
+        with zipfile.ZipFile(self.project / "Книга.epub", "w") as archive:
+            archive.writestr("OEBPS/chapter1.xhtml", "<html><body><p>一</p></body></html>")
+            archive.writestr("OEBPS/chapter2.xhtml", "<html><body><p>二</p></body></html>")
+
+    def _page(self):
+        page = SystemWindowsPage()
+        self.addCleanup(page.close)
+        return page
+
+    def test_source_widgets_exist_and_autodetect_the_epub(self):
+        page = self._page()
+        self.assertTrue(hasattr(page, "source_edit") and hasattr(page, "source_check"))
+        page.project_edit.setText(str(self.project))
+        self.assertEqual(page.source_edit.text(), str(self.project / "Книга.epub"))
+        self.assertTrue(page.source_check.isChecked())
+
+    def test_scan_passes_the_source_epub_only_when_checked(self):
+        page = self._page()
+        page.project_edit.setText(str(self.project))
+        with patch("gemini_translator.ui.pages.system_windows_page.scan_project", return_value=[]) as scan:
+            page.scan()
+            self.assertTrue(page.worker.wait(10_000))
+            QtWidgets.QApplication.processEvents()
+            self.assertEqual(scan.call_args.kwargs.get("source_epub"), str(self.project / "Книга.epub"))
+            page.source_check.setChecked(False)
+            page.scan()
+            self.assertTrue(page.worker.wait(10_000))
+            QtWidgets.QApplication.processEvents()
+            self.assertIsNone(scan.call_args.kwargs.get("source_epub"))
+
+    def test_origin_column_shows_how_a_window_was_found(self):
+        page = self._page()
+        page.set_scan_results(scan_project(self.project))
+        header = page.table.horizontalHeaderItem(5).text()
+        self.assertEqual(header, "Как найдено")
+        self.assertEqual(page.table.item(0, 5).text(), "скобки")
