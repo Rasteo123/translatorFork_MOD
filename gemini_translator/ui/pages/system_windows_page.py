@@ -8,14 +8,16 @@
 
 import os
 import re
+import tempfile
 import traceback
-from html import escape
 
 from PyQt6 import QtGui, QtWidgets
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -42,8 +44,10 @@ from gemini_translator.utils.system_windows import (
     DEFAULT_TEMPLATES,
     DEFAULT_TRIGGERS,
     KIND_ORDER,
+    SAMPLE_WINDOWS,
     DetectorSettings,
     apply_project,
+    render_preview_document,
     render_window,
     scan_project,
     strip_project,
@@ -52,6 +56,8 @@ from gemini_translator.utils.system_windows import (
 UI_STATE_KEY = "system_windows_ui"
 _COLOR_COLUMNS = (("border", "Рамка"), ("background", "Фон"), ("text", "Текст"), ("accent", "Заголовок"))
 _HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_PREVIEW_FILE = "translatorfork_system_windows_preview.html"
+_SWATCH_SIZE = 16
 
 
 class _Worker(QThread):
@@ -148,9 +154,13 @@ class SystemWindowsPage(ShellPage):
             label_item.setData(Qt.ItemDataRole.UserRole, kind)
             self.colors_table.setItem(row, 0, label_item)
             for column, (key, _title) in enumerate(_COLOR_COLUMNS, start=1):
-                self.colors_table.setItem(row, column, QTableWidgetItem(template[key]))
+                item = QTableWidgetItem(template[key])
+                item.setToolTip("Двойной щелчок открывает палитру, можно вписать и #hex вручную.")
+                self._update_swatch(item)
+                self.colors_table.setItem(row, column, item)
         self.colors_table.setMaximumHeight(self.colors_table.rowHeight(0) * (len(KIND_ORDER) + 1) + 12)
-        self.colors_table.itemChanged.connect(lambda _item: self._refresh_preview())
+        self.colors_table.itemChanged.connect(self._on_color_item_changed)
+        self.colors_table.cellDoubleClicked.connect(self._pick_color)
         colors_layout.addWidget(self.colors_table)
         main_layout.addWidget(colors_group)
 
@@ -185,10 +195,19 @@ class SystemWindowsPage(ShellPage):
         table_layout.addLayout(check_row)
         splitter.addWidget(table_widget)
 
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout(preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        self.preview_label = QLabel("Образцы всех типов")
+        preview_layout.addWidget(self.preview_label)
         self.preview = QTextBrowser()
         self.preview.setOpenExternalLinks(False)
-        self.preview.setPlaceholderText("Выберите строку таблицы, чтобы увидеть рамку.")
-        splitter.addWidget(self.preview)
+        preview_layout.addWidget(self.preview, 1)
+        self.browser_button = QPushButton("🌐 Открыть в браузере")
+        self.browser_button.setToolTip("Точный вид рамок в настоящем браузере: выбранное окно и образцы.")
+        self.browser_button.clicked.connect(self.open_preview_in_browser)
+        preview_layout.addWidget(self.browser_button)
+        splitter.addWidget(preview_widget)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         main_layout.addWidget(splitter, 1)
@@ -217,6 +236,7 @@ class SystemWindowsPage(ShellPage):
         self.log_output.setFont(QtGui.QFont("Courier New", 10))
         self.log_output.setMaximumHeight(120)
         main_layout.addWidget(self.log_output)
+        self._refresh_preview()
 
     # --- настройки ----------------------------------------------------------
 
@@ -307,7 +327,7 @@ class SystemWindowsPage(ShellPage):
             f"Глав просмотрено: {len(self._scans)}, с окнами: {chapters_with_windows}, "
             f"окон найдено: {self.table.rowCount()}."
         )
-        self.preview.clear()
+        self._refresh_preview()
 
     def _fill_rows(self):
         for scan_index, scan in enumerate(self._scans):
@@ -368,25 +388,95 @@ class SystemWindowsPage(ShellPage):
             grouped.setdefault(scan.path, []).append(candidate)
         return list(grouped.items())
 
-    def _refresh_preview(self):
+    # --- цвета и предпросмотр -------------------------------------------------
+
+    def _update_swatch(self, item):
+        value = item.text().strip()
+        if not _HEX_RE.match(value):
+            item.setIcon(QtGui.QIcon())
+            return
+        pixmap = QtGui.QPixmap(_SWATCH_SIZE, _SWATCH_SIZE)
+        pixmap.fill(QtGui.QColor(value))
+        item.setIcon(QtGui.QIcon(pixmap))
+
+    def _on_color_item_changed(self, item):
+        if item.column() == 0:
+            return
+        self.colors_table.blockSignals(True)
+        try:
+            self._update_swatch(item)
+        finally:
+            self.colors_table.blockSignals(False)
+        self._refresh_preview()
+
+    def _pick_color(self, row, column):
+        """Палитра для ячейки цвета; столбец типа палитру не открывает."""
+        if column == 0:
+            return
+        item = self.colors_table.item(row, column)
+        if item is None:
+            return
+        initial = QtGui.QColor(item.text().strip())
+        if not initial.isValid():
+            initial = QtGui.QColor("#ffffff")
+        color = QColorDialog.getColor(initial, self, "Цвет рамки")
+        if color is not None and color.isValid():
+            item.setText(color.name())
+
+    def _selected_candidate(self):
         rows = {index.row() for index in self.table.selectedIndexes()}
         if not rows:
-            return
-        _scan, candidate = self._row_candidate(min(rows))
+            return None, None
+        row = min(rows)
+        _scan, candidate = self._row_candidate(row)
         if candidate is None:
-            return
-        combo = self.table.cellWidget(min(rows), 2)
+            return None, None
+        combo = self.table.cellWidget(row, 2)
         kind = combo.currentData() if combo is not None else candidate.kind
-        templates = self.templates()
-        block = render_window(candidate.lines, kind, templates=templates)
+        return candidate, kind
+
+    @staticmethod
+    def _approximate_block(block, template):
+        """Рамка средствами rich text Qt: таблица с цветной полосой слева."""
         inner = block[block.index(">") + 1:block.rfind("</div>")]
-        template = templates.get(kind, DEFAULT_TEMPLATES[kind])
-        self.preview.setHtml(
-            f'<table width="100%" cellpadding="14" bgcolor="{template["background"]}">'
-            f'<tr><td align="center" style="color:{template["text"]};">{inner}</td></tr></table>'
-            f'<p style="color:{theme_manager.color("text_muted")};font-size:11px;">'
-            f"Примерный вид. На сайте рамка {escape(template['border'])} по левому краю.</p>"
+        border = template["border"]
+        return (
+            '<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:6px;">'
+            f'<tr><td width="8" bgcolor="{border}"></td>'
+            f'<td bgcolor="{template["background"]}" style="border:2px solid {border};">'
+            f'<table width="100%" cellpadding="12"><tr><td align="center" style="color:{template["text"]};">'
+            f"{inner}</td></tr></table></td></tr></table><p>&nbsp;</p>"
         )
+
+    def _refresh_preview(self):
+        templates = self.templates()
+        candidate, kind = self._selected_candidate()
+        if candidate is not None:
+            shown = [(candidate.lines, kind)]
+            self.preview_label.setText("Выбранное окно")
+        else:
+            shown = [(lines, sample_kind) for sample_kind, lines in SAMPLE_WINDOWS.items()]
+            self.preview_label.setText("Образцы всех типов")
+        parts = []
+        for lines, block_kind in shown:
+            template = templates.get(block_kind, DEFAULT_TEMPLATES[block_kind])
+            parts.append(self._approximate_block(render_window(lines, block_kind, templates=templates), template))
+        self.preview.setHtml(
+            "".join(parts)
+            + f'<p style="color:{theme_manager.color("text_muted")};font-size:11px;">'
+            "Примерный вид. Точный вид даёт кнопка «Открыть в браузере».</p>"
+        )
+
+    def open_preview_in_browser(self):
+        """Записать страницу с рамками во временный файл и открыть её в браузере."""
+        candidate, kind = self._selected_candidate()
+        extra = [(candidate.lines, kind)] if candidate is not None else None
+        document = render_preview_document(self.templates(), extra=extra)
+        path = os.path.join(tempfile.gettempdir(), _PREVIEW_FILE)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(document)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        return path
 
     # --- действия -----------------------------------------------------------
 
@@ -456,7 +546,7 @@ class SystemWindowsPage(ShellPage):
         chapters, windows = result
         self._log(f"Оформлено окон: {windows} в главах: {chapters}.")
         self.table.setRowCount(0)
-        self.preview.clear()
+        self._refresh_preview()
         QMessageBox.information(
             self, "Готово",
             f"Оформлено окон: {windows} в главах: {chapters}.\n"
@@ -479,7 +569,7 @@ class SystemWindowsPage(ShellPage):
         chapters, windows = result
         self._log(f"Снято оформление: окон {windows} в главах: {chapters}.")
         self.table.setRowCount(0)
-        self.preview.clear()
+        self._refresh_preview()
         QMessageBox.information(self, "Готово", f"Снято оформление: окон {windows} в главах: {chapters}.")
 
     def _log(self, message):

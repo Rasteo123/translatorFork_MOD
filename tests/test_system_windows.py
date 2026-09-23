@@ -449,3 +449,27 @@ def test_strip_project_restores_every_chapter(tmp_path):
 
     assert (chapters, windows) == (1, 2)
     assert (project / "OEBPS/chapter1_translated_gemini.html").read_text(encoding="utf-8") == original
+
+
+# --- образцы и страница предпросмотра ----------------------------------------
+
+from gemini_translator.utils.system_windows import (  # noqa: E402
+    SAMPLE_WINDOWS,
+    render_preview_document,
+)
+
+
+def test_samples_cover_every_kind_and_render_with_titles():
+    assert set(SAMPLE_WINDOWS) == {"status", "skill", "notice", "levelup", "achievement"}
+    for kind, lines in SAMPLE_WINDOWS.items():
+        block = render_window(lines, kind)
+        assert "letter-spacing" in block, kind
+
+
+def test_preview_document_lists_extra_blocks_before_samples():
+    document = render_preview_document(DEFAULT_TEMPLATES, extra=[(["[Динь! Хозяин найден]"], "notice")])
+
+    assert document.startswith("<!DOCTYPE html>")
+    assert document.index("Хозяин найден") < document.index('data-sys="status"')
+    assert document.count("<div data-sys=") == 1 + len(SAMPLE_WINDOWS)
+    assert "data-sys-orig" not in document
