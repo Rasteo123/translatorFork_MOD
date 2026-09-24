@@ -1449,6 +1449,75 @@ def chat_participants(windows_lines) -> frozenset:
 
 
 
+# --- голос приложения в диалоге -------------------------------------------------
+
+# «The Game Begins»: Мета-Навигатор отвечает репликой с ремаркой —
+# «Совпадений не найдено», – отозвался Мета-Навигатор. Говорящий — приложение или
+# механический голос; человек («ответил навигатор», «ответил Ниа») так не узнаётся.
+_DEVICE = (
+    r"(?:мета-?навигатор\w*|навигационн\w+\s+приложени\w*|приложени\w*|автоответчик\w*"
+    r"|(?:механическ|электронн|синтезированн|роботизированн)\w*\s+голос\w*|голосов\w+\s+помощник\w*)"
+)
+_DEVICE_SPEAKER = rf"(?:голос\w*\s+)?{_DEVICE}"
+_DEVICE_VERB = (
+    r"(?:отозвал|ответил|сообщил|произн[её]с|объявил|проговорил|оповестил|пискнул|выдал|сказал"
+    r"|прозвучал|раздал|отчеканил)\w*"
+)
+_DEVICE_AFTER_RE = re.compile(
+    rf"^(?P<first>«[^«»]+»)[,.!?…]*\s*[–—-]\s*(?P<remark>{_DEVICE_VERB}\s+{_DEVICE_SPEAKER})\s*[.!]?"
+    r"(?:\s+(?P<more>«[^«»]+»)[.!?…]*)?$",
+    re.I,
+)
+_DEVICE_DASH_RE = re.compile(
+    rf"^[—–]\s*(?P<first>[^—–«»]+?)[,.!?…]*\s+[—–]\s*(?P<remark>{_DEVICE_VERB}\s+{_DEVICE_SPEAKER})\s*\.?$",
+    re.I,
+)
+_DEVICE_LEAD_RE = re.compile(
+    rf"^(?P<remark>{_DEVICE_SPEAKER}\b[^«»]{{0,80}}?[:：])\s*(?P<first>«[^«»]+»)[.!?…]*$", re.I
+)
+# Короткий ответ приложения без ремарки сразу после его реплики: «Ключевое слово принято».
+_DEVICE_ANSWER_RE = re.compile(r"^«[^«»?]{3,80}»[.!…]*$")
+_DEVICE_ANSWER_GAP = 6
+
+
+def _unquote(text: str) -> str:
+    return text.strip().strip("«»").strip()
+
+
+def _device_voice(text: str):
+    """Голос приложения: (ремарка перед, сообщения, ремарка после) или ``None``.
+
+    Персонаж, который говорит механическим голосом, — не приложение: короткое
+    «— Нет, — произнес механический голос.» и речь о себе («Я доблестный
+    кавалерист…») окном не становятся.
+    """
+    text = " ".join(text.split())
+    voice = None
+    match = _DEVICE_AFTER_RE.match(text)
+    if match:
+        more = [_unquote(match.group("more"))] if match.group("more") else []
+        voice = "", [_unquote(match.group("first")), *more], "– " + match.group("remark")
+    elif (match := _DEVICE_DASH_RE.match(text)) is not None:
+        voice = "", [match.group("first").strip()], "— " + match.group("remark")
+    elif (match := _DEVICE_LEAD_RE.match(text)) is not None:
+        voice = match.group("remark"), [_unquote(match.group("first"))], ""
+    if voice is None:
+        return None
+    said = " ".join(voice[1])
+    if len(_WORD_RE.findall(said)) < 2 or _FIRST_PERSON_BRACKET_RE.search(said):
+        return None
+    return voice
+
+
+def _is_device_answer(text: str) -> bool:
+    """«Неверное место назначения».: коротко, без «я/мы/ты» и вопроса."""
+    return (
+        _DEVICE_ANSWER_RE.match(text) is not None
+        and _FIRST_PERSON_BRACKET_RE.search(text) is None
+        and _INFORMAL_YOU_RE.search(text) is None
+    )
+
+
 # --- чей аккаунт в переписке ---------------------------------------------------
 
 # «Телефон Ниа издал сигнал» — в начале предложения слово с заглавной.
@@ -2156,6 +2225,7 @@ def find_windows(
     windows: list[WindowCandidate] = []
     convention_skips = _convention_skips(paragraphs, settings) | _author_note_zone([paragraph.text for paragraph in paragraphs])
     forum_at: dict[int, tuple[int, WindowCandidate]] = {}
+    last_device: int | None = None
     texts = [paragraph.text for paragraph in paragraphs]
     if any(forum_role(text) in ("welcome", "topic", "pm") for text in texts):
         position = 0
@@ -2210,6 +2280,25 @@ def find_windows(
                     )
                 )
             index = chat_stop
+            continue
+
+        # Голос приложения («…», – отозвался Мета-Навигатор) и его короткие ответы
+        # сразу после — по окну на реплику, как всплывающие уведомления.
+        answer = last_device is not None and index - last_device <= _DEVICE_ANSWER_GAP and _is_device_answer(text)
+        if answer or _device_voice(text) is not None:
+            for first, end, span_start, span_end in _window_pieces(html, paragraphs, index, index + 1):
+                windows.append(
+                    WindowCandidate(
+                        start=span_start,
+                        end=span_end,
+                        kind="notice",
+                        lines=[text],
+                        paragraph_html=_span_pieces(html, paragraphs[first:end], span_start, span_end),
+                        origin="quotes",
+                    )
+                )
+            last_device = index
+            index += 1
             continue
 
         # «[…]» и реплика героя в скобках окно не начинают (продолжить могут).
@@ -2478,6 +2567,14 @@ def _render_row(text: str, accent: str, italic_allowed: bool, card: bool = False
     ``card`` — в окне несколько пар «ключ: значение»: ключ выделяется и у
     строки с длинным значением, иначе одни дни симулятора жирные, другие нет.
     """
+    # Голос приложения: сообщение крупно, ремарка («– отозвался Мета-Навигатор») мелко.
+    voice = _device_voice(text)
+    if voice is not None:
+        lead, messages, tail = voice
+        caption = f'<span style="color:{accent};font-size:0.85em;">{{}}</span>'
+        rows = [(caption.format(_escape(lead)), False)] if lead else []
+        rows += [(_escape(message), False) for message in messages]
+        return rows + ([(caption.format(_escape(tail)), False)] if tail else [])
     shape = bracket_shape(text)
     if shape == "keyed":
         return [(_render_keyed(text, accent), False)]
