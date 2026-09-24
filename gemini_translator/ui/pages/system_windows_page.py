@@ -41,7 +41,9 @@ from PyQt6.QtWidgets import (
 )
 
 from gemini_translator.ui import theme_manager
+from gemini_translator.ui.item_background import CellWidgetDelegate
 from gemini_translator.ui.shell import ShellPage
+from gemini_translator.ui.themes import ITEM_MARGIN_Y
 from gemini_translator.ui.widgets.common_widgets import NoScrollComboBox
 from gemini_translator.utils.qt_utils import deferred_column_autosize
 from gemini_translator.utils.system_windows import (
@@ -414,6 +416,9 @@ class SystemWindowsPage(ShellPage):
         self.table.setColumnWidth(1, 180)
         self.table.setColumnWidth(2, 150)
         self.table.setColumnWidth(3, 56)
+        combo_cells = CellWidgetDelegate(self.table)
+        self.table.setItemDelegateForColumn(2, combo_cells)
+        self.table.setItemDelegateForColumn(6, combo_cells)
         self.table.itemSelectionChanged.connect(self._refresh_preview)
         self.table.itemChanged.connect(self._on_table_item_changed)
         self.table_stack.addWidget(self.table)
@@ -667,6 +672,7 @@ class SystemWindowsPage(ShellPage):
         self.table.blockSignals(True)
         with deferred_column_autosize(self.table):
             self._fill_rows()
+        self._fit_rows_to_combos()
         self.table.blockSignals(False)
         chapters_with_windows = sum(1 for scan in self._scans if scan.candidates)
         total = self.table.rowCount()
@@ -711,7 +717,7 @@ class SystemWindowsPage(ShellPage):
                 title_item.setToolTip(scan.title)
                 self.table.setItem(row, 1, title_item)
                 combo = NoScrollComboBox()
-                combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+                combo.setObjectName("cellCombo")
                 for kind in KIND_ORDER:
                     combo.addItem(DEFAULT_TEMPLATES[kind]["label"], kind)
                 combo.setCurrentIndex(max(combo.findData(candidate.kind), 0))
@@ -734,6 +740,16 @@ class SystemWindowsPage(ShellPage):
                 )
                 self.table.setItem(row, 5, origin_item)
                 self._install_reader_combo(row)
+
+    def _fit_rows_to_combos(self):
+        # Комбо стоит на плашке строки (CellWidgetDelegate). Строка ниже комбо
+        # с полями плашки сжала бы его и обрезала текст.
+        combo = self.table.cellWidget(0, 2)
+        if combo is None:
+            return
+        rows = self.table.verticalHeader()
+        height = combo.sizeHint().height() + 2 * ITEM_MARGIN_Y + int(self.table.showGrid())
+        rows.setDefaultSectionSize(max(rows.defaultSectionSize(), height))
 
     def _row_candidate(self, row):
         item = self.table.item(row, 0)
@@ -765,7 +781,7 @@ class SystemWindowsPage(ShellPage):
             if parsed is not None and parsed.speaker not in speakers:
                 speakers.append(parsed.speaker)
         combo = NoScrollComboBox()
-        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        combo.setObjectName("cellCombo")
         for speaker in speakers:
             combo.addItem(speaker, speaker)
         combo.addItem("никто", "")

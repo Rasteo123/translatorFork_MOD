@@ -54,3 +54,18 @@ class ItemBackgroundDelegate(QStyledItemDelegate):
         widget = opt.widget
         style = widget.style() if widget is not None else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+
+
+class CellWidgetDelegate(ItemBackgroundDelegate):
+    """Ставит виджет ячейки (``setCellWidget``) на плашку элемента.
+
+    QStyledItemDelegate кладёт его в поле текста, а правило темы ``::item``
+    сужает это поле полями, рамкой и отступами: под темой macOS комбобокс в
+    строке 30 px сдвигался на 13 px вбок, на 5 px вниз и получал 19 px высоты.
+    Строка должна вмещать виджет вместе с полями плашки, это задаёт таблица.
+    """
+
+    def updateEditorGeometry(self, editor, option, index):
+        editor.setGeometry(
+            option.rect.adjusted(ITEM_MARGIN_X, ITEM_MARGIN_Y, -ITEM_MARGIN_X, -ITEM_MARGIN_Y)
+        )

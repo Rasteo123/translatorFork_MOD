@@ -13,6 +13,8 @@ from PyQt6 import QtCore, QtGui, QtTest, QtWidgets
 
 from gemini_translator.ui.pages.system_windows_page import SystemWindowsPage
 from gemini_translator.ui.shell import ShellPage
+from gemini_translator.ui.theme_manager import set_app_stylesheet
+from gemini_translator.ui.themes import ITEM_MARGIN_X, ITEM_MARGIN_Y, build_dark_stylesheet
 from gemini_translator.utils.system_windows import scan_project
 
 
@@ -31,6 +33,25 @@ def _project(root):
     translation_map = {
         "OEBPS/chapter1.xhtml": {"_translated_gemini.html": "OEBPS/chapter1_translated_gemini.html"},
         "OEBPS/chapter2.xhtml": {"_translated_gemini.html": "OEBPS/chapter2_translated_gemini.html"},
+    }
+    (project / "translation_map.json").write_text(json.dumps(translation_map), encoding="utf-8")
+    return project
+
+
+def _chat_project(root):
+    project = root / "ace"
+    (project / "OEBPS").mkdir(parents=True)
+    (project / "OEBPS/c1_translated_gemini.html").write_text(
+        _chapter("Телефон завибрировал.", "[Макото]: Кен, ты как?", "[Макото]: Отзовись.", "[Кен]: Всё хорошо.", "Он убрал телефон."),
+        encoding="utf-8",
+    )
+    (project / "OEBPS/c2_translated_gemini.html").write_text(
+        _chapter("Позже.", "[Рюдзи]: Кен, где ты?", "[Рюдзи]: Мы ждём!", "[Кен Амада]: Иду!", "Он вышел."),
+        encoding="utf-8",
+    )
+    translation_map = {
+        "OEBPS/c1.xhtml": {"_translated_gemini.html": "OEBPS/c1_translated_gemini.html"},
+        "OEBPS/c2.xhtml": {"_translated_gemini.html": "OEBPS/c2_translated_gemini.html"},
     }
     (project / "translation_map.json").write_text(json.dumps(translation_map), encoding="utf-8")
     return project
@@ -417,21 +438,7 @@ class ChatReaderFieldTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name)
-        self.project = root / "ace"
-        (self.project / "OEBPS").mkdir(parents=True)
-        (self.project / "OEBPS/c1_translated_gemini.html").write_text(
-            _chapter("Телефон завибрировал.", "[Макото]: Кен, ты как?", "[Макото]: Отзовись.", "[Кен]: Всё хорошо.", "Он убрал телефон."),
-            encoding="utf-8",
-        )
-        (self.project / "OEBPS/c2_translated_gemini.html").write_text(
-            _chapter("Позже.", "[Рюдзи]: Кен, где ты?", "[Рюдзи]: Мы ждём!", "[Кен Амада]: Иду!", "Он вышел."),
-            encoding="utf-8",
-        )
-        translation_map = {
-            "OEBPS/c1.xhtml": {"_translated_gemini.html": "OEBPS/c1_translated_gemini.html"},
-            "OEBPS/c2.xhtml": {"_translated_gemini.html": "OEBPS/c2_translated_gemini.html"},
-        }
-        (self.project / "translation_map.json").write_text(json.dumps(translation_map), encoding="utf-8")
+        self.project = _chat_project(root)
         self.other = root / "other"
         self.other.mkdir()
 
@@ -513,6 +520,95 @@ class ChatAccountColumnTests(ChatReaderFieldTests):
         self.assertEqual(errors, [])
         self.assertEqual(page.table.rowCount(), 0)
         self.assertEqual(page.preview_label.text(), "Образцы всех типов")
+
+
+class CellComboGeometryTests(unittest.TestCase):
+    """Комбо «Тип» и «Справа» под настоящей темой стоят на плашке своей ячейки."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.project = _chat_project(Path(self._tmp.name))
+        self.addCleanup(set_app_stylesheet, self.app, "")
+
+    def test_combos_fill_the_row_plate_of_their_cell(self):
+        # Таблица стилей у macOS и остальных систем разная (themes.py).
+        for variant in ("darwin", "win32"):
+            with self.subTest(variant=variant):
+                with patch.object(sys, "platform", variant):
+                    stylesheet = build_dark_stylesheet()
+                set_app_stylesheet(self.app, stylesheet)
+                page = SystemWindowsPage()
+                try:
+                    page.resize(1400, 900)
+                    page.show()
+                    self.assertTrue(QtTest.QTest.qWaitForWindowExposed(page))
+                    page.set_scan_results(scan_project(self.project))
+                    # Комбо с AdjustToContents подгонял себя под текст через 20 мс.
+                    QtTest.QTest.qWait(100)
+                    self._assert_combos_on_plates(page)
+                    page.table.horizontalHeader().resizeSection(6, 200)
+                    QtTest.QTest.qWait(50)
+                    self._assert_combos_on_plates(page)
+                finally:
+                    page.close()
+
+    def _assert_combos_on_plates(self, page):
+        table = page.table
+        placed = 0
+        for row in range(table.rowCount()):
+            for column in (2, 6):
+                combo = table.cellWidget(row, column)
+                if combo is None:
+                    continue
+                where = f"строка {row}, столбец {column}"
+                cell = table.visualRect(table.model().index(row, column))
+                plate = cell.adjusted(ITEM_MARGIN_X, ITEM_MARGIN_Y, -ITEM_MARGIN_X, -ITEM_MARGIN_Y)
+                self.assertEqual(combo.geometry(), plate, where)
+                self.assertGreaterEqual(combo.height(), combo.sizeHint().height(), where)
+                placed += 1
+        self.assertEqual(placed, 4)
+
+    def test_selection_does_not_show_in_combo_corners(self):
+        # Плашку выделения рисует сама таблица (PE_PanelItemViewRow), а углы
+        # комбо были круглее плашки: из-под них выглядывали цветные уголки.
+        set_app_stylesheet(self.app, build_dark_stylesheet())
+        page = SystemWindowsPage()
+        self.addCleanup(page.close)
+        page.resize(1400, 900)
+        page.show()
+        self.assertTrue(QtTest.QTest.qWaitForWindowExposed(page))
+        page.set_scan_results(scan_project(self.project))
+        QtTest.QTest.qWait(50)
+        table = page.table
+        plain = table.viewport().grab().toImage()
+        table.selectRow(0)
+        selected = table.viewport().grab().toImage()
+
+        def change(point):
+            a, b = plain.pixelColor(point), selected.pixelColor(point)
+            return max(abs(a.red() - b.red()), abs(a.green() - b.green()), abs(a.blue() - b.blue()))
+
+        title = table.visualRect(table.model().index(0, 1))
+        full = change(QtCore.QPoint(title.left() + ITEM_MARGIN_X + 3, title.center().y()))
+        self.assertGreater(full, 20)
+        for column in (2, 6):
+            combo = table.cellWidget(0, column).geometry()
+            corners = [
+                QtCore.QPoint(x + sx * dx, y + sy * dy)
+                for x, sx in ((combo.left(), 1), (combo.right(), -1))
+                for y, sy in ((combo.top(), 1), (combo.bottom(), -1))
+                for dx in range(5)
+                for dy in range(5)
+            ]
+            self.assertLess(max(map(change, corners)), full / 2, f"столбец {column}")
 
 
 

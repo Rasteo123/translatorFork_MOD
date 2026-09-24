@@ -601,6 +601,17 @@ QComboBox::down-arrow {
     margin-right: 9px;
 }
 
+/* Комбо на плашке ячейки (CellWidgetDelegate): углы как у плашки, иначе из-под
+   них выглядывает выделение строки. */
+QComboBox#cellCombo {
+    border-radius: __ITEM_RADIUS__px;
+}
+
+QComboBox#cellCombo::drop-down {
+    border-top-right-radius: __ITEM_INNER_RADIUS__px;
+    border-bottom-right-radius: __ITEM_INNER_RADIUS__px;
+}
+
 QSpinBox,
 QDoubleSpinBox {
     padding-right: 30px;
@@ -1130,6 +1141,7 @@ def build_dark_stylesheet(theme_colors: Any = None) -> str:
     for key, value in palette.items():
         stylesheet = stylesheet.replace(f"__{key.upper()}__", value)
     stylesheet = stylesheet.replace("__ITEM_RADIUS__", str(ITEM_RADIUS))
+    stylesheet = stylesheet.replace("__ITEM_INNER_RADIUS__", str(ITEM_RADIUS - 1))
     stylesheet = stylesheet.replace("__ITEM_MARGIN_X__", str(ITEM_MARGIN_X))
     stylesheet = stylesheet.replace("__ITEM_MARGIN_Y__", str(ITEM_MARGIN_Y))
     stylesheet = stylesheet.replace("__CHEVRON_DOWN_ICON__", _CHEVRON_DOWN_ICON)
