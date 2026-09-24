@@ -23,6 +23,9 @@ from .translation_versions import select_target_translation_version
 BLOCK_ATTR = "data-sys"
 
 _BRACKET_PAIRS = {"[": "]", "【": "】", "〖": "〗"}
+# Угловые скобки бывают только вокруг строки целиком («< Навык получен>»).
+_ANGLE_PAIRS = {"<": ">", "＜": "＞"}
+_WORD_RE = re.compile(r"[^\W\d_]{2,}")
 _DECOR_CHARS = "◆◇★☆✦✧▲△■□●○※◈❖"
 
 DEFAULT_TRIGGERS = (
@@ -48,8 +51,16 @@ _MAX_SPAN_PARAGRAPHS = 20
 # действуют всегда; поле страницы только добавляет к ним свои.
 DEFAULT_EXCLUDE = (
     r"прим(\.|ечани\w*)\s*(автора|авт\.|пер\.|переводчика)|^[\[【(]?\s*P\.?\s?S\.?\b"
-    r"|^\W*(конец главы|конец книги|конец арки|следующая арка|продолжение следует)"
-    r"|благодар\w*\s+(за\s+(донат|пожертв|поддержк|лунн|подар)|читател)"
+    r"|^\W*(конец главы|конец книги|конец романа|конец тома|конец арки|следующая арка|продолжение следует"
+    r"|короткий бонус|бонусная глава)"
+    r"|благодар\w*(\s+[^.!?]{0,120}?)?\s+(за\s+(донат|пожертв|поддержк|лунн|подар)|читател)"
+    r"|^\W*(изображение|картинка|фото|фотография|иллюстрация|рисунок)\W*$"
+    r"|^[\[【〖(]?\s*(фото|фотография|изображение|картинка|видео|скриншот|гифка)\s*[:：]"
+    r"|^[\[【〖]\s*глава\s+[^:：\]】〗]{1,30}[:：.]"
+    r"|добав\w*\s+(в\s+)?закладк|^\W*читайте\s+(на|далее)\b"
+    r"|^\W*(от автора|авторское примечание|омаке|a/n)\b|^\W*прим\.\s*\d"
+    r"|предупреждени\w*\s*[:：]\s*сцен"
+    r"|(спасибо|благодар\w*)\s+(\w+\s+){0,2}за\s+(поддержк|чтение|отзыв|комментари|терпени|внимание)"
     r"|^\[/?(spoiler|b|i|u|s|quote|indent|center|size|color|url|img)(=[^\]]*)?\]$"
 )
 _BUILTIN_EXCLUDE_RE = re.compile(DEFAULT_EXCLUDE, re.I)
@@ -114,6 +125,8 @@ class _Paragraph:
     end: int
     text: str
     adjacent: bool
+    #: Сосед предыдущего абзаца только через обёртки (``</div><div>``), не брат.
+    wrapped: bool = False
 
 
 # --- разбор абзацев ---------------------------------------------------------
@@ -144,6 +157,35 @@ def _paragraph_end(raw: str, start: int) -> int | None:
     return closing.end()
 
 
+# BB-код из исходника фанфика внутри строки: «[b]Имя:[/b] Вельф», «[spoiler]».
+# Однобуквенные теги — только парой: «[B]», «[S]» бывают рангами.
+_BBCODE_PAIR_RE = re.compile(r"\[(b|i|u|s)\](.*?)\[/\1\]", re.I | re.S)
+_BBCODE_TAG_RE = re.compile(
+    r"\[/?(?:indent|center|right|left|quote|url|img|color|size|spoiler|sub|sup|font)(?:=[^\]]*)?\]", re.I
+)
+
+
+def _strip_bbcode(text: str) -> str:
+    for _depth in range(3):  # вложенные пары: «[b]Конец страницы. [u]1[/u][/b]»
+        text, count = _BBCODE_PAIR_RE.subn(r"\2", text)
+        if not count:
+            break
+    return _BBCODE_TAG_RE.sub(" ", text)
+
+
+_WRAP_TAGS = frozenset({"div", "span", "section", "article"})
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def _wrap_gap(gap: str) -> bool:
+    """Между абзацами одни обёртки (``</div></div><div><div>``) без текста."""
+    gap = _COMMENT_RE.sub("", gap)
+    if _TAG_RE.sub("", gap).strip():
+        return False
+    names = [match.group(2).lower() for match in _TAG_TOKEN_RE.finditer(gap)]
+    return bool(names) and all(name in _WRAP_TAGS for name in names)
+
+
 def _paragraphs(raw: str) -> list[_Paragraph]:
     soup = BeautifulSoup(raw, "html.parser")
     offsets = _line_offsets(raw)
@@ -157,21 +199,26 @@ def _paragraphs(raw: str) -> list[_Paragraph]:
         if end is None:
             previous_tag = None
             continue
-        text = " ".join(tag.get_text(" ", strip=True).split())
-        adjacent = previous_tag is not None and _next_element(previous_tag) is tag
-        result.append(_Paragraph(start=start, end=end, text=text, adjacent=adjacent))
+        text = " ".join(_strip_bbcode(tag.get_text(" ", strip=True)).split())
+        sibling = previous_tag is not None and _next_element(previous_tag) is tag
+        # Страницы веб-новелл кладут каждый абзац в свои div: такие абзацы
+        # идут подряд, хотя и не братья (см. :func:`_window_pieces`).
+        wrapped = not sibling and previous_tag is not None and _wrap_gap(raw[result[-1].end:start])
+        result.append(_Paragraph(start=start, end=end, text=text, adjacent=sibling or wrapped, wrapped=wrapped))
         previous_tag = tag
     return result
 
 
 # --- классификация строк ----------------------------------------------------
 
-_FULL_RE = re.compile(r"^([\[【〖])(.*)([\]】〗])([.!?…]*)$", re.S)
+_FULL_RE = re.compile(r"^([\[【〖<＜])(.*)([\]】〗>＞])([.!?…]*)$", re.S)
 _KEYED_RE = re.compile(r"^[\[【〖]([^\]】〗]{1,60})[\]】〗](.*)$", re.S)
 _GROUP_LIST_RE = re.compile(r"^(\s*[,;]?\s*[\[【〖][^\[\]【】〖〗]{1,60}[\]】〗])*\s*[.!?…]*$")
 _ATTRIBUTION_RE = re.compile(
     r"^[–—-]\s*(?:\w+\s+){0,3}(?:сказал|ответил|добавил|произн|спросил|воскликн|отозвал|проговор|"
-    r"пробормот|заяв|подтверд|уточн|польстил|взвил|отрезал|напомнил|голос)",
+    r"пробормот|заяв|подтверд|уточн|польстил|взвил|отрезал|напомнил|голос|заверил|пискнул|фыркнул|хмыкнул|"
+    r"буркнул|прошептал|шепнул|крикнул|закричал|усмехнул|рассмеял|вставил|перебил|продолжил|объяснил|"
+    r"заметил|сообщил|предупредил|возразил|протянул|откликнул|отреагировал)",
     re.I,
 )
 # Системное сообщение в «кавычках» и репликой «— [...]»: узнаётся по началу.
@@ -184,6 +231,23 @@ _SYSTEM_START_RE = re.compile(
     re.I,
 )
 _VOCATIVE_RE = re.compile(r"^система\s*[,?!…]", re.I)
+_CONGRATS_RE = re.compile(r"^поздравля", re.I)
+_CONGRATS_SYSTEM_RE = re.compile(
+    r"^поздравля\w*\b.*(?:носител|хозяин|хост|игрок|пользовател|участник|\bвы\b|\bвас\b|\bвам\b|получ|задани|уровен"
+    r"|навык|наград|достижени|титул|испытани|этап|предмет|успешно)",
+    re.I | re.S,
+)
+
+
+def _system_start(inner: str) -> bool:
+    """Начало системного сообщения: «Динь!», «Внимание:», «Вы получили…».
+
+    «Поздравляю!» — речь героя, «Поздравляем „Фронтир“ с…» — газета;
+    системное поздравление обращается к носителю или называет награду.
+    """
+    if _SYSTEM_START_RE.match(inner) is None:
+        return False
+    return _CONGRATS_RE.match(inner) is None or _CONGRATS_SYSTEM_RE.match(inner) is not None
 _SOUND_WORDS = frozenset("динь дзынь дин дон лянь клац бам бум дзинь тук".split())
 
 
@@ -213,6 +277,14 @@ def _outer_group_spans_all(text: str) -> bool:
     return depth == 0
 
 
+_LEADING_DOTS_RE = re.compile(r"^(?:…|\.\.\.)\s*(?=[\[【〖<＜])")
+
+
+def _bracket_text(text: str) -> str:
+    """«…[ОШИБКА]» → «[ОШИБКА]»: многоточие перед скобкой — пауза, не часть строки."""
+    return _LEADING_DOTS_RE.sub("", text) if text[:1] in "…." else text
+
+
 def bracket_shape(text: str):
     """Форма строки со скобками.
 
@@ -222,6 +294,7 @@ def bracket_shape(text: str):
     ``open`` — скобка открыта и не закрыта (окно тянется по абзацам),
     ``close`` — закрывающая скобка без открывающей, ``None`` — обычный текст.
     """
+    text = _bracket_text(text)
     if len(text) < 2:
         return None
     opening = text[0]
@@ -229,7 +302,9 @@ def bracket_shape(text: str):
         quoted = _QUOTED_RE.match(text)
         if quoted:
             inner = quoted.group(1)
-            if _SYSTEM_START_RE.match(inner) and _VOCATIVE_RE.match(inner) is None and _has_real_words(inner):
+            if _system_start(inner) and _VOCATIVE_RE.match(inner) is None and _has_real_words(inner):
+                return "quoted"
+            if _quoted_field(inner):
                 return "quoted"
         return None
     if opening in "—–-":
@@ -243,6 +318,15 @@ def bracket_shape(text: str):
             if len(inner) >= 20 and not exclamatory and data_like:
                 return "dashed"
         return None
+    if opening in _ANGLE_PAIRS:
+        # «< Навык [Память] достиг уровня 2>»: уведомление целиком в угловых
+        # скобках. Одно слово («<Хр-р-р>») — звук, смайлик без букв — не окно.
+        closing = _ANGLE_PAIRS[opening]
+        body = text.rstrip(_TRAILING_PUNCT)
+        inner = body[1:-1] if body.endswith(closing) else ""
+        if inner and opening not in inner and closing not in inner and len(_WORD_RE.findall(inner)) >= 2:
+            return "full"
+        return None
     if opening in _BRACKET_PAIRS:
         closing = _BRACKET_PAIRS[opening]
         if _outer_group_spans_all(text):
@@ -253,6 +337,9 @@ def bracket_shape(text: str):
             if _GROUP_LIST_RE.match(rest) and rest.strip(" .!?…,;"):
                 return "list"
             rest = rest.lstrip()
+            # «[Ну, ладно,] – пискнула Сяоянь»: реплика с ремаркой, а не термин.
+            if group.rstrip()[-1:] in ",.…!?" and rest[:1] in "–—-":
+                return None
             group_is_term = not any(char in group for char in "!?") or not any(char.isalpha() for char in group)
             separator_ok = not rest.startswith((",", ";")) or (rest.startswith(";") and ":" in rest)
             if rest and group_is_term and separator_ok and _ATTRIBUTION_RE.match(rest) is None:
@@ -268,12 +355,28 @@ def bracket_shape(text: str):
     return None
 
 
+def _quoted_field(inner: str) -> bool:
+    """«Токсичность крови: 43%», «Эффект: очистка организма…»: поле карточки в кавычках.
+
+    Нужны данные — число, имя в кавычках или ключ-характеристика; иначе это
+    реплика с двоеточием («Слушай: я не пойду») или комментарий «Ник: текст».
+    """
+    match = _STAT_LINE_RE.match(inner.strip())
+    if match is None or not is_key_value(inner) or _FIRST_PERSON_RE.search(inner) is not None:
+        return False
+    key, value = match.group(1).strip(), match.group(2)
+    if _phrase_key(re.findall(r"[^\W\d_]+", key.lower())):
+        return False
+    return _is_stat_key(key) or any(char.isdigit() for char in value) or any(char in value for char in "«„“\"")
+
+
 def is_bracketed(text: str) -> bool:
     return bracket_shape(text) == "full"
 
 
 def strip_brackets(text: str) -> str:
     """Текст для показа: без скобок вокруг, знак после скобки остаётся внутри."""
+    text = _bracket_text(text)
     shape = bracket_shape(text)
     if shape == "full":
         match = _FULL_RE.match(text)
@@ -328,7 +431,7 @@ _STAT_KEYS = frozenset(
     "дух кольца кольцо культивация культивации техника техники атрибут атрибуты стихия свойство свойства "
     "характеристика характеристики богатство богатства баллы баллов репутация известность "
     "проворство заклинание заклинания удача качество слот блокирование уклонение сопротивление "
-    "меткость точность".split()
+    "меткость точность прозвище псевдоним".split()
     + ["боевой дух", "духовная сила", "духовные кольца", "духовное кольцо", "ранг духа", "боевая мощь", "очки системы"]
 )
 _STAT_VALUE_MAX = 300
@@ -337,6 +440,8 @@ _QUOTED_KEY_RE = re.compile(r"^«[^»]{1,40}»\s*[:：]")
 # Значение из скобок и имён в кавычках, в том числе пустых ячеек:
 # «Магия: 【 】», «Магия: «Эйнсел», [ ], [ ].».
 _NAMES_OR_CELLS_RE = re.compile(r"^(?:(?:«[^«»]*[^\W\d_][^«»]*»|[\[【〖][^\]】〗]*[\]】〗])[\s,;]*)+\.?$")
+# Рейтинг звёздами: «Звездность: ★★», «Ранг: ☆☆☆».
+_STARS_RE = re.compile(r"^[★☆✦✧⭐]{1,10}\s*[.!]?$")
 # Прирост: «I40 → I50», «lv2→lv3», «5 → 6».
 _INCREMENT_RE = re.compile(r"[\w)]\s*(?:→|->|=>)\s*[\w(]")
 # Рост уровня: «Lv7 → lv8!», «Ур. 1 → Ур. 2», «Повышение уровня: 5 → 6!».
@@ -362,6 +467,24 @@ _SET_BONUS_KEY_RE = re.compile(r"^\d+\s+(?:вещ|предмет|част|эле
 _SIGNED_NUMBER_RE = re.compile(r"^[+＋\-−–]\s?\d")
 
 
+# Во фразе перед двоеточием есть служебное слово или глагол: «Как гласит мудрость:»,
+# «Дух Сяи изумился:» — это речь, а не поле карточки.
+_KEY_STOP_WORDS = frozenset(
+    "как что когда если чтобы где это так вот же ли гласит говорит сказал сказала подумал подумала "
+    "ответил ответила спросил спросила".split()
+)
+
+
+# «Я из будущего:», «Он подумал:» — фраза. «Вы получили способность:», «Ты знаешь:» —
+# так говорит и система, их не трогаем.
+_PRONOUN_KEY_RE = re.compile(r"(?<![\w-])(?:я|он|она|оно|они|мы)(?![\w-])", re.I)
+
+
+def _phrase_key(words) -> bool:
+    # Глагол: возвратный («изумился») или в первом лице («Принимаю ставки:»).
+    return any(word in _KEY_STOP_WORDS or (len(word) > 4 and word.endswith(("ся", "сь", "ю"))) for word in words)
+
+
 def _is_stat_key(key: str) -> bool:
     """Ключ-характеристика: не длиннее трёх слов, одно из них из списка.
 
@@ -371,7 +494,7 @@ def _is_stat_key(key: str) -> bool:
     if _SET_BONUS_KEY_RE.match(key.strip()):
         return True
     words = re.findall(r"[^\W\d_]+", key.lower())
-    if not words or len(words) > 3:
+    if not words or len(words) > 3 or _phrase_key(words):
         return False
     return key.lower() in _STAT_KEYS or any(word in _STAT_KEYS for word in words)
 
@@ -415,7 +538,9 @@ def is_single_stat_line(text: str) -> bool:
 
 
 # Шапка карточки кончается уровнем: «Шарль, Ур. 1.», «Альфия. Ур. 3.».
-_LEVEL_END_RE = re.compile(r"(?:^|[\s,.;:–—-])(?:ур\.|уровень|lv\.?|lvl\.?|level)\s*\d+\s*\.?$", re.I)
+_LEVEL_END_RE = re.compile(
+    r"(?:^|[\s,.;:–—-])(?:ур\.|уровень|lv\.?|lvl\.?|level)\s*\d+(?:\s*[–—→-]+\s*\d+)?\s*\.?$", re.I
+)
 _LEVEL_HEADER_MAX = 60
 _LEVEL_NAME_WORDS_MAX = 3
 
@@ -489,7 +614,11 @@ def is_bullet_line(text: str) -> bool:
 
 # Имя навыка отдельной строкой: «Тепло.», «Наследие Пегаса» (Реликвия Пегаса),
 # «Крути до победного!» — часть окна, только если под ним пункты описания.
-_QUOTED_TERM_RE = re.compile(r"^«[^«»]{1,60}»(?:\s*\([^()]{1,80}\))?[.!]?$")
+_QUOTED_TERM_RE = re.compile(r"^(?:«[^«»]{1,60}»|„[^„“]{1,60}“|\([^()]{1,60}\))(?:\s*\([^()]{1,80}\))?[.!]?$")
+# Навык строкой «Название – описание» под «Навыки:» («Лиарис Фриз – Стремительный рост.»).
+_DASH_TERM_RE = re.compile(r"^[A-ZА-ЯЁ«][^–—:：.!?]{0,40}?\s[–—]\s\S")
+# Имя героя над карточкой: «Белл Кранел.», «Рюу Лион».
+_NAME_LINE_RE = re.compile(r"^[A-ZА-ЯЁ][\w'’-]*(?:\s[A-ZА-ЯЁ][\w'’-]*){0,2}\.?$")
 # Шапка списка пунктов: «Нагрудник [«Скрытность» (2)]», «Руна 7 Таль + руна 5 Эт.».
 _HEADING_MAX = 60
 _VALUE_LINE_MAX = 80
@@ -626,7 +755,9 @@ def is_key_value(text: str) -> bool:
         key = key.strip().strip(_KEY_QUOTES)
         value = value.strip()
         stat_key = _is_stat_key(key)
-        if not value or len(key.split()) > 4:
+        if not value or len(key.split()) > 4 or not any(char.isalpha() for char in key):
+            continue
+        if _PRONOUN_KEY_RE.search(key):
             continue
         # Значение с кавычки — сценарная реплика «Имя: «…»», но у известной
         # характеристики это имя навыка или магии: «Магия: «Золушка.»».
@@ -640,7 +771,7 @@ def is_key_value(text: str) -> bool:
             continue
         if unbracketed and key.lower().split()[0] in _META_KEYS:
             continue
-        if not (_mostly_alphanumeric(value) or _NAMES_OR_CELLS_RE.match(value)):
+        if not (_mostly_alphanumeric(value) or _NAMES_OR_CELLS_RE.match(value) or _STARS_RE.match(value)):
             continue
         # Прирост со стрелкой — данные при любом ключе: «Шарль: lv2→lv3.».
         if (ends_with_period or ends_with_ellipsis) and not stat_key and _INCREMENT_RE.search(value) is None:
@@ -675,11 +806,136 @@ def _is_header(text: str, settings: DetectorSettings) -> bool:
 
 _DATA_SHAPES = ("full", "keyed", "list", "quoted", "dashed")
 _SINGLE_SHAPES = ("full", "quoted", "dashed")
+# После термина в скобках — определение: «[Охотник]: Ты способен…», «[Рывок] – рывок
+# вперёд», «[Очки тени] +4!». Без разделителя («[Дыхание] Зриода взрывается…») —
+# это проза, которая начинается с названия.
+_KEYED_DEFINITION_RE = re.compile(r"^[\[【〖][^\]】〗]{1,60}[\]】〗]\s*(?:[:：]|[+＋\-−]\s?\d)")
+
+
+# Реплика героя в скобках: обращение по имени, «я» или «ты» — и ни слова системы,
+# ни данных, ни обращения к носителю («[Человек, ты слышишь меня?]», телепатия).
+_VOCATIVE_START_RE = re.compile(r"^[A-ZА-ЯЁ][\w-]*(?:\s[A-ZА-ЯЁ][\w-]*)?,\s")
+_INFORMAL_YOU_RE = re.compile(
+    r"(?<![\w-])(?:ты|тебя|тебе|тобой|твой|твоя|твоё|твое|твои|твоего|твоей|твоим|твоих|твою)(?![\w-])", re.I
+)
+
+
+# Не обращения, хоть и с запятой: «Пожалуйста, выберите…», «Внимание, …».
+_NOT_VOCATIVES = frozenset(
+    "пожалуйста внимание итак однако кстати поздравляем поздравляю увы похоже возможно впрочем наконец "
+    "сейчас теперь примечание подсказка предупреждение".split()
+)
+_SPEECH_INTERJECTION_RE = re.compile(r"^(?:ха|хе|эй|ой|ого|вау|блин|лол|чёрт|черт|боже|хм|ах|ох|эх|ага|угу)(?![\w])", re.I)
+_SHORT_EXCLAMATION_WORDS = 5
+
+
+def _speech_in_brackets(text: str) -> bool:
+    """Реплика героя в скобках, а не голос системы.
+
+    Речь — «я» и «мы», междометие в начале, обращение по имени вместе с «ты»
+    или вопросом, «ты» вместе с вопросом или коротким возгласом. Система тоже
+    говорит на «ты» («[Ты осознаешь, что силы Казни…]») и обращается к
+    участникам по имени («[Цзян Вэньхао, Университет Минцин – выбыл!]»).
+    """
+    if bracket_shape(text) != "full":
+        return False
+    inner = strip_brackets(text)
+    if (
+        _SYSTEM_WORD_RE.search(inner)
+        or _HOST_RE.search(inner)
+        or any(char.isdigit() for char in inner)
+        or is_key_value(inner)
+    ):
+        return False
+    # Слова в кавычках — названия и цитаты: «собственное «я»».
+    bare = re.sub(r"«[^«»]*»|„[^„“]*“", " ", inner).strip()
+    vocative = _VOCATIVE_START_RE.match(bare)
+    if vocative and vocative.group(0).split()[0].rstrip(",").lower() in _NOT_VOCATIVES:
+        vocative = None
+    asks = "?" in bare
+    informal = _INFORMAL_YOU_RE.search(bare) is not None
+    exclaims = "!" in bare and len(bare.split()) <= _SHORT_EXCLAMATION_WORDS
+    return bool(
+        _FIRST_PERSON_BRACKET_RE.search(bare)
+        or _SPEECH_INTERJECTION_RE.match(bare)
+        or (vocative and (informal or asks))
+        or (informal and (asks or exclaims))
+    )
+
+
+def _is_empty_bracket(text: str) -> bool:
+    """«[…]», «[??]» — пауза или разделитель: окно не начинают, но продолжают."""
+    return bracket_shape(text) == "full" and not any(char.isalnum() for char in strip_brackets(text))
+
+
+def _colon_in_parentheses(text: str) -> bool:
+    before = re.split(r"[:：]", text, maxsplit=1)[0]
+    return before.count("(") > before.count(")")
+
+
+def _is_keyed_definition(text: str) -> bool:
+    """Одиночная карточка термина. Пост «[Сюй Литао V]: Для меня большая честь…»
+    (от первого лица, с «@») — не определение."""
+    if _KEYED_DEFINITION_RE.match(text) is None:
+        return False
+    rest = _KEYED_RE.match(text).group(2)
+    return "@" not in rest and _FIRST_PERSON_RE.search(rest) is None
+
+
+# Поле карточки внутри уже начатого окна: длинное описание, значение со строчной
+# буквы или с «!» в конце, ключ шире словаря характеристик («Материал: адамантин.»,
+# «Форма первая: расход 1 заряда…», «Проявления заражения: …»). Окно такие строки
+# не начинают: одна строка «Цель: …» среди прозы — не карточка.
+_CARD_KEYS = frozenset(
+    "материал наименование название цена особая отметка особенность особенности проявление проявления "
+    "заражение заражения инцидент инцидента обстоятельства результат результаты ликвидация мера меры "
+    "форма пункт примечание круг этап стадия требование требования штраф заказчик заказчики цель "
+    "срок время место лимит состояние таланты эффекты бонус бонусы ограничение ограничения условия "
+    "откат перезарядка расход дальность радиус источник происхождение владелец прогресс шанс "
+    "вероятность полномочия привилегии права обязанности внимание предупреждение важно звездность "
+    "артефакт артефакты инвентарь предметы".split()
+)
+_CARD_ROW_RE = re.compile(r"^([^:：«»\"“”!?,]{1,60}?)\s*[:：]\s*(\S.*)$", re.S)
+_CARD_ROW_MAX = 700
+_CARD_ROW_KEY_WORDS = 4
+_NUMBERED_ITEM_RE = re.compile(r"^\d{1,2}[.)]\s+\S")
+
+
+def _card_key(key: str) -> bool:
+    words = [word.lower() for word in re.findall(r"[^\W\d_]+", key)]
+    if not words or len(words) > _CARD_ROW_KEY_WORDS or _phrase_key(words) or _PRONOUN_KEY_RE.search(key):
+        return False
+    return any(word in _STAT_KEYS or word in _CARD_KEYS for word in words)
+
+
+def _is_card_row(text: str) -> bool:
+    """Поле карточки с любым значением: продолжает окно, но не начинает его."""
+    inner = strip_brackets(text).strip()
+    match = _CARD_ROW_RE.match(inner)
+    if match is None or len(inner) > _CARD_ROW_MAX or _is_dialogue(inner):
+        return False
+    key, value = match.group(1).strip(), match.group(2).strip()
+    if value[0] in "—–-" or not (key[:1].isupper() or key[:1].isdigit()):
+        return False
+    return _card_key(key)
+
+
+def _is_field_label(text: str) -> bool:
+    """Подпись раздела карточки без значения: «Штраф за провал:», «Особенности 1-го уровня:»."""
+    match = _LABEL_RE.match(text.strip())
+    return match is not None and match.group(1)[:1].isupper() and _card_key(match.group(1))
+
+
+def _is_stat_delta_line(text: str) -> bool:
+    """«Удача +10.», «Сила +30» — характеристика с числом со знаком, без двоеточия."""
+    match = _STAT_DELTA_FIELD_RE.match(text.strip().rstrip("."))
+    return match is not None and _is_stat_key(match.group(1).strip())
 
 
 def _is_data_line(text: str) -> bool:
     return (
         bracket_shape(text) in _DATA_SHAPES
+        or _is_stat_delta_line(text)
         or is_key_value(text)
         or is_single_stat_line(text)
         or _is_decorated(text)
@@ -772,6 +1028,8 @@ def source_marked_indices(html: str, source_html: str) -> dict[str, set[int]]:
 
 
 _CHAT_LINE_RE = re.compile(r"^[^«:：]{1,30}[:：]\s*«")
+_HOST_RE = re.compile(r"носител|хозяин|хост|игрок", re.I)
+_INTERJECTION_START_RE = re.compile(r"^(?:да|ха|хе|ну|эй|ой|ого|вау|блин|лол|чёрт|черт|мать|боже)(?![\w])", re.I)
 _POLITE_RE = re.compile(
     r"(?<![\w-])(?:вы|вас|вам|вами|ваш|ваша|ваше|ваши|вашего|вашей|вашему|вашим|вашими|вашу|ваших)(?![\w-])",
     re.I,
@@ -804,13 +1062,21 @@ def _source_confirms(text: str) -> bool:
     if not text or _CHAT_LINE_RE.match(text) or _is_dialogue(text) or text.rstrip().endswith((":", "：")):
         return False
     inner = _strip_outer_quotes(text).strip()
-    if _SYSTEM_START_RE.match(inner) and _has_real_words(inner):
+    if _system_start(inner) and _has_real_words(inner):
         return True
     if is_key_value(inner) or is_single_stat_line(inner):
         return True
     if _STAT_DELTA_RE.search(inner) or _CHECK_WORDS_RE.search(inner):
         return True
-    return _POLITE_RE.search(inner) is not None and _FIRST_PERSON_RE.search(inner) is None
+    # Вежливое «вы» без «я/мы» — система («У вас недостаточно прав…»). Комментарий
+    # зрителя (LOL) начинается с междометия, говорит «ты» или сыплет «?!».
+    if _POLITE_RE.search(inner) is None or _FIRST_PERSON_RE.search(inner) is not None:
+        return False
+    return (
+        _INTERJECTION_START_RE.match(inner) is None
+        and _INFORMAL_YOU_RE.search(inner) is None
+        and inner.count("?") + inner.count("!") <= 1
+    )
 
 
 _TRUST_KEPT_MIN = 0.25
@@ -851,6 +1117,39 @@ def _span_end(paragraphs, start: int, excluded) -> int | None:
     return None
 
 
+_QUOTE_SPAN_MAX = 8
+
+
+def _quote_field_text(text: str) -> str:
+    return re.sub(r"»([.!?…]*)$", r"\1", text.lstrip("«")).strip()
+
+
+def _quote_span_end(paragraphs, start: int, excluded) -> int | None:
+    """Карточка в одних кавычках на несколько абзацев: «Цель: Эсдес. / … / Награда: 10 000».
+
+    Открывающая кавычка без закрывающей, закрывающая через несколько абзацев,
+    внутри — хотя бы два поля «ключ: значение».
+    """
+    first = paragraphs[start].text
+    if not first.startswith("«") or "»" in first:
+        return None
+    fields = 0
+    for index in range(start, min(start + _QUOTE_SPAN_MAX + 1, len(paragraphs))):
+        paragraph = paragraphs[index]
+        if index > start and (not paragraph.adjacent or excluded(paragraph)):
+            return None
+        text = paragraph.text
+        field = _quote_field_text(text)
+        if is_key_value(field) or _is_card_row(field) or is_single_stat_line(field):
+            fields += 1
+        closing = text.rstrip(".!?…").endswith("»") and text.count("»") > text.count("«")
+        if index > start and closing:
+            return index if fields >= 2 else None
+        if index > start and text.count("«") > text.count("»"):
+            return None
+    return None
+
+
 def _origin(shape, marked: bool, text: str) -> str:
     if shape in ("full", "keyed", "list", "open", "dashed"):
         return "brackets"
@@ -868,6 +1167,8 @@ def _origin(shape, marked: bool, text: str) -> str:
 # «Возрождения»), «Сье: текст» (LOL).
 _CHAT_NAME = r"[^\W\d_][\w'’ -]{0,29}?"
 _CHAT_BRACKET_RE = re.compile(rf"^[\[【]({_CHAT_NAME})[\]】]\s*[:：]\s*(\S.*)$")
+# «[Футаба: Подождите!]» — вся реплика в скобках (Our Wild Love, Ace, «Белый Жнец»).
+_CHAT_BRACKETED_RE = re.compile(rf"^[\[【]({_CHAT_NAME})\s*[:：]\s*([^\[\]【】]+?)\s*[\]】]?([.!?…]*)$")
 _CHAT_FORUM_RE = re.compile(rf"^«({_CHAT_NAME})\s*[:：]\s*(.+?)»([.!?…]*)$")
 _CHAT_QUOTED_RE = re.compile(rf"^({_CHAT_NAME})\s*[:：]\s*«(.+)»([.!?…]*)$")
 _CHAT_BARE_RE = re.compile(rf"^({_CHAT_NAME})\s*[:：]\s*([^\s«\[【—–\-(].*)$")
@@ -904,11 +1205,12 @@ def is_chat_header(text: str) -> bool:
 
 def chat_line(text: str) -> ChatLine | None:
     """Реплика переписки ``Имя + сообщение`` или ``None``."""
-    stripped = " ".join(text.split())
+    stripped = _bracket_text(" ".join(text.split()))
     if not stripped or is_chat_header(stripped):
         return None
     for style, pattern in (
         ("bracket", _CHAT_BRACKET_RE),
+        ("bracketed", _CHAT_BRACKETED_RE),
         ("forum", _CHAT_FORUM_RE),
         ("quoted", _CHAT_QUOTED_RE),
         ("bare", _CHAT_BARE_RE),
@@ -918,7 +1220,7 @@ def chat_line(text: str) -> ChatLine | None:
             continue
         speaker = match.group(1).strip()
         message = match.group(2).strip()
-        if style in ("forum", "quoted"):
+        if style in ("forum", "quoted", "bracketed"):
             message += match.group(3)
         if not message or len(speaker.split()) > _CHAT_NAME_WORDS_MAX:
             return None
@@ -933,6 +1235,10 @@ _NOT_SPEAKERS = frozenset(
     "кто что где когда как почему зачем куда откуда чей далее затем потом итак сначала наконец "
     "следующая следующий следующее следующие предыдущая предыдущий улика".split()
 )
+
+
+# Анонимный рецензент на сайтах фанфиков.
+_REVIEWER_NAMES = frozenset({"guest", "гость", "гест"})
 
 
 def _looks_like_name(name: str, *, nickname: bool = False) -> bool:
@@ -952,6 +1258,24 @@ def _looks_like_name(name: str, *, nickname: bool = False) -> bool:
     return not (_is_stat_key(name) or _has_meta_word(name) or any(key in lowered for key in _TITLE_KEYS))
 
 
+_STICKER_MAX = 40
+_STICKER_WORDS_MAX = 4
+
+
+def _is_chat_sticker(text: str) -> bool:
+    """Стикер или вложение в переписке: «[Подозрение]», «[Фото]», «[Обиженный котик]»."""
+    return (
+        bracket_shape(text) == "full"
+        and len(text) <= _STICKER_MAX
+        and len(text.split()) <= _STICKER_WORDS_MAX
+        and _SYSTEM_WORD_RE.search(text) is None
+    )
+
+
+def _is_chat_spacer(text: str) -> bool:
+    return _is_chat_sticker(text) or _ELLIPSIS_LINE_RE.match(text) is not None
+
+
 def _chat_messages(lines):
     """(число шапок, реплики) или ``None``, если в серии есть не реплика."""
     headers = 0
@@ -959,6 +1283,8 @@ def _chat_messages(lines):
     for line in lines:
         if is_chat_header(line):
             headers += 1
+            continue
+        if chat_line(line) is None and (_is_chat_sticker(line) or _ELLIPSIS_LINE_RE.match(line)):
             continue
         parsed = chat_line(line)
         if parsed is None:
@@ -984,14 +1310,26 @@ def chat_verdict(lines, participants=frozenset()) -> str | None:
         return None
     if any(not _looks_like_name(item.speaker, nickname=item.style == "forum") for item in messages):
         return None
+    # «Guest: Спасибо.» — ответы автора на отзывы фанфика, а не переписка героев.
+    if any(item.speaker.lower() in _REVIEWER_NAMES for item in messages):
+        return None
+    # Обмен одними «…» и «!!» — немая сцена, а не переписка: содержательных
+    # реплик должно быть хотя бы половина («?» в живом чате — тоже реплика).
+    meaningful = sum(1 for item in messages if any(char.isalnum() for char in item.message))
+    if meaningful * 2 < len(messages):
+        return None
     speakers = [item.speaker for item in messages]
     # Без кавычек вокруг текста и с ником в кавычках так же пишут перечни
     # («Например: … / Или: …», ««Универсальная Сверхтехника: …»»): нужна живая речь.
-    if {item.style for item in messages} & {"bare", "forum"}:
+    if {item.style for item in messages} & {"bare", "forum", "bracketed"}:
         talkative = sum(1 for item in messages if _CONVERSATIONAL_RE.search(item.message))
         if talkative * 3 < len(messages):
             return None
     if headers:
+        return "chat"
+    # «[Цзыи: Я тоже еду!]»: реплика целиком в скобках с именем — уже переписка,
+    # если пишут хотя бы двое (поля карточки «[Раса: Человек]» отсеяны выше).
+    if {item.style for item in messages} == {"bracketed"} and len({item.speaker for item in messages}) >= 2:
         return "chat"
     counts: dict[str, int] = {}
     for speaker in speakers:
@@ -1203,6 +1541,62 @@ def _balanced_span(raw: str, start: int, end: int) -> tuple[int, int] | None:
     return None
 
 
+_FOREIGN_TAG_RE = re.compile(r"<(?:img|image|svg|object|video|audio)\b", re.I)
+
+
+def _foreign_content(raw: str, span: tuple[int, int], chosen) -> bool:
+    """В участке, кроме этих абзацев, есть текст или картинка.
+
+    Пустые обёртки, линейки и цитаты без своего текста не в счёт: в рамке они
+    пропадут, при снятии оформления вернутся.
+    """
+    rest, position = [], span[0]
+    for paragraph in chosen:
+        rest.append(raw[position:paragraph.start])
+        position = paragraph.end
+    rest.append(raw[position:span[1]])
+    rest = _COMMENT_RE.sub("", "".join(rest))
+    return bool(_FOREIGN_TAG_RE.search(rest) or html_module.unescape(_TAG_RE.sub("", rest)).strip())
+
+
+def _clean_span(raw: str, paragraphs, first: int, stop: int) -> tuple[int, int] | None:
+    """Участок замены абзацев [first, stop) или ``None``, если он проглотил бы чужое."""
+    start, end = paragraphs[first].start, paragraphs[stop - 1].end
+    if not any(paragraphs[number].wrapped for number in range(first + 1, stop)):
+        return start, end
+    span = _balanced_span(raw, start, end)
+    if span is None or _foreign_content(raw, span, paragraphs[first:stop]):
+        return None
+    return span
+
+
+def _span_pieces(raw: str, chosen, start: int, end: int) -> list[str]:
+    """``paragraph_html`` кандидата: сами абзацы или весь участок вместе с обёртками."""
+    if start == chosen[0].start and end == chosen[-1].end:
+        return [raw[paragraph.start:paragraph.end] for paragraph in chosen]
+    return [raw[start:end]]
+
+
+def _window_pieces(raw: str, paragraphs, first: int, stop: int) -> list[tuple[int, int, int, int]]:
+    """Серию абзацев [first, stop) — на куски, которые заменяются целыми элементами.
+
+    Абзацы-братья заменяются как есть. Абзацы в своих обёртках (страницы
+    веб-новелл) заменяются вместе с обёртками. Если в обёртке есть что-то
+    чужое (проза перед веткой форума в той же ``div``, заголовок главы),
+    серия режется на границе обёртки: иначе замена проглотила бы и его.
+    Возвращает [(первый, конец, начало участка, конец участка)].
+    """
+    pieces = []
+    while first < stop:
+        cuts = [number for number in range(first + 1, stop) if paragraphs[number].wrapped]
+        for end in [stop, *reversed(cuts)]:
+            span = _clean_span(raw, paragraphs, first, end)
+            if span is not None:
+                pieces.append((first, end, *span))
+                first = end
+                break
+    return pieces
+
 
 # --- соглашения книги о скобках ----------------------------------------------------
 
@@ -1223,6 +1617,12 @@ _RAW_PARAGRAPH_RE = re.compile(r"<p\b[^>]*>(.*?)</p\s*>", re.I | re.S)
 _CHAPTER_HEADERS_SHARE = 0.3
 _SPEECH_BRACKETS_SHARE = 0.4
 _BOOK_MIN_BRACKET_LINES = 20
+# Скобки без слов системы и без данных (чисел, пар «ключ: значение»): телепатия
+# («Сукуна слишком добрый»), кадр фильма («Годжо Бог»), комментарии стрима
+# («Моя соседка знаменитость»). У системных книг таких долей не бывает:
+# слов системы от 10 %, данных от 10 %.
+_PROSE_SYSTEM_SHARE = 0.08
+_PROSE_DATA_SHARE = 0.05
 _BOOK_MIN_CHAPTERS = 5
 _HEADER_LINES_MAX = 4
 
@@ -1237,7 +1637,11 @@ def _bracketed(text: str) -> bool:
     if not text.lstrip("—–- ").startswith(("[", "【", "〖")):
         return False
     parsed = chat_line(text)
-    return parsed is None or parsed.style != "bracket"
+    if parsed is None:
+        return True
+    if parsed.style == "bracketed":
+        return not _looks_like_name(parsed.speaker)
+    return parsed.style != "bracket"
 
 
 def book_bracket_conventions(chapters_html) -> dict:
@@ -1249,7 +1653,7 @@ def book_bracket_conventions(chapters_html) -> dict:
     of Power). Системных книг ни то, ни другое не касается: там от первого
     лица меньше десятой части скобочных строк, а главы скобкой открываются редко.
     """
-    chapters = opened = lines = first_person = system = 0
+    chapters = opened = lines = first_person = system = data = 0
     for html in chapters_html:
         texts = [text for text in _raw_paragraph_texts(html) if text]
         if not texts:
@@ -1262,12 +1666,14 @@ def book_bracket_conventions(chapters_html) -> dict:
             lines += 1
             first_person += bool(_FIRST_PERSON_BRACKET_RE.search(text) or _REMARK_AFTER_BRACKET_RE.search(text))
             system += bool(_SYSTEM_WORD_RE.search(text))
+            inner = strip_brackets(text)
+            data += bool(any(char.isdigit() for char in inner) or is_key_value(inner))
+    enough = lines >= _BOOK_MIN_BRACKET_LINES
     return {
         "chapter_headers": chapters >= _BOOK_MIN_CHAPTERS and opened >= _CHAPTER_HEADERS_SHARE * chapters,
-        "speech_brackets": (
-            lines >= _BOOK_MIN_BRACKET_LINES
-            and first_person >= _SPEECH_BRACKETS_SHARE * lines
-            and system < first_person
+        "speech_brackets": enough and (
+            (first_person >= _SPEECH_BRACKETS_SHARE * lines and system < first_person)
+            or (system < _PROSE_SYSTEM_SHARE * lines and data < _PROSE_DATA_SHARE * lines)
         ),
     }
 
@@ -1313,6 +1719,51 @@ def _convention_skips(paragraphs, settings) -> set[int]:
     return skipped
 
 
+# Приписка автора: ответы на отзывы, благодарности редакторам и бете,
+# «Прим. Авт.». Под заголовком — строки «Ник: ответ», «Помощь с латынью: …».
+_NOTE_HEADER_RE = re.compile(
+    r"ответы на (?:\w+\s+)?отзыв|оставил\w*\s+отзыв|отзыв\w*\s+читател|от автора|примечани\w*\s+автора|прим\.\s*авт"
+    r"|\ba/n\b|author'?s note|омаке|редакторск|бета-?ридер"
+    r"|опечатк|техническ\w*\s+поддержк",
+    re.I,
+)
+_NOTE_LINE_RE = re.compile(r"^[^:：]{1,60}[:：]\s*\S")
+_NOTE_HEADER_MAX = 400
+
+
+def _author_note_zone(texts) -> set[int]:
+    """Номера абзацев приписки автора: заголовок и строки «Ник: текст» сразу под ним."""
+    zone: set[int] = set()
+    index = 0
+    while index < len(texts):
+        text = texts[index]
+        if text and len(text) <= _NOTE_HEADER_MAX and bracket_shape(text) is None and _NOTE_HEADER_RE.search(text):
+            zone.add(index)
+            following = index + 1
+            while following < len(texts) and (
+                not texts[following]
+                or (_NOTE_LINE_RE.match(texts[following]) and bracket_shape(texts[following]) is None)
+            ):
+                zone.add(following)
+                following += 1
+            index = following
+            continue
+        index += 1
+    return zone
+
+
+_INFO_LINE_RE = re.compile(
+    r"^(?:id книги|количество (?:просмотров|глав|слов)|просмотры|теги|жанры)\s*[:：]|^[\[【]\s*(?:аннотация|описание|теги)\s*[\]】]$",
+    re.I,
+)
+_INFO_LINES_MIN = 2
+
+
+def _is_info_page(texts) -> bool:
+    """Служебная страница книги с сайта: ID, просмотры, аннотация — не глава."""
+    return sum(1 for text in texts if _INFO_LINE_RE.match(text)) >= _INFO_LINES_MIN
+
+
 def find_windows(
     html: str,
     settings: DetectorSettings | None = None,
@@ -1345,7 +1796,11 @@ def find_windows(
         )
 
     def confirmed(position: int) -> bool:
-        return position in marked and _source_confirms(paragraphs[position].text)
+        text = paragraphs[position].text
+        if position not in marked or not _source_confirms(text):
+            return False
+        # В книге, где скобки исходника — речь, отметка исходника без слов системы не довод.
+        return not settings.speech_brackets or _SYSTEM_WORD_RE.search(text) is not None
 
     def bullet_at(position: int) -> bool:
         return (
@@ -1405,7 +1860,23 @@ def find_windows(
         stop = position
         while stop < len(paragraphs) and (stop == position or paragraphs[stop].adjacent):
             paragraph = paragraphs[stop]
-            if excluded(paragraph) or (chat_line(paragraph.text) is None and not is_chat_header(paragraph.text)):
+            parsed = chat_line(paragraph.text)
+            # Стикер, фото или «…» посреди переписки: «[Целую]», «[Фото]».
+            if parsed is None and stop > position and _is_chat_spacer(paragraph.text):
+                following = stop + 1
+                while following < len(paragraphs) and paragraphs[following].adjacent and _is_chat_spacer(paragraphs[following].text):
+                    following += 1
+                if (
+                    following < len(paragraphs)
+                    and paragraphs[following].adjacent
+                    and chat_line(paragraphs[following].text) is not None
+                ):
+                    stop = following
+                    continue
+            if excluded(paragraph) or (parsed is None and not is_chat_header(paragraph.text)):
+                break
+            # «[Статус: Кен Амада]» — строка карточки, а не реплика: переписка кончилась.
+            if parsed is not None and parsed.style == "bracketed" and not _looks_like_name(parsed.speaker):
                 break
             stop += 1
         # Шапка без реплик после неё — не переписка.
@@ -1418,6 +1889,15 @@ def find_windows(
             weak_chats.append(lines)
         chat_ends[position] = stop if verdict == "chat" else None
         return chat_ends[position]
+
+    def key_value_follows(position: int) -> bool:
+        following = position + 1
+        return (
+            following < len(paragraphs)
+            and paragraphs[following].adjacent
+            and not excluded(paragraphs[following])
+            and is_key_value(paragraphs[following].text)
+        )
 
     def data_follows(position: int) -> bool:
         following = position + 1
@@ -1436,9 +1916,20 @@ def find_windows(
         if (
             confirmed(position)
             or _is_data_line(text)
+            or _is_card_row(text)
             or term_with_bullets(position)
             or heads_bullets(position)
             or wide_label(position)
+        ):
+            return True
+        # Подпись раздела карточки — если под ней поле, пункт или список.
+        if _is_field_label(text) and position + 1 < len(paragraphs) and paragraphs[position + 1].adjacent:
+            following = paragraphs[position + 1].text
+            if _is_data_line(following) or _is_card_row(following) or _NUMBERED_ITEM_RE.match(following):
+                return True
+        # Нумерованные пункты под подписью: «Полномочия:» / «1. Приоритет при выборе заданий».
+        if _NUMBERED_ITEM_RE.match(text) and (
+            is_section_label(previous) or _is_field_label(previous) or _NUMBERED_ITEM_RE.match(previous)
         ):
             return True
         # «…» внутри карточки: окно идёт дальше, если за разделителем снова данные.
@@ -1446,11 +1937,18 @@ def find_windows(
             return data_follows(position)
         if (is_section_label(previous) or wide_label(position - 1)) and _is_value_line(text):
             return True
+        # Навыки строками «Название – описание» под заголовком раздела.
+        if _DASH_TERM_RE.match(text) and (
+            is_section_label(previous) or _is_field_label(previous) or _DASH_TERM_RE.match(previous)
+        ):
+            return True
         # Имена навыков столбиком под заголовком: «Казан Души Клинка.», «Аура Шипов.».
         return _QUOTED_TERM_RE.match(text) is not None and _QUOTED_TERM_RE.match(previous) is not None
 
+    if _is_info_page(paragraph.text for paragraph in paragraphs):
+        return []
     windows: list[WindowCandidate] = []
-    convention_skips = _convention_skips(paragraphs, settings)
+    convention_skips = _convention_skips(paragraphs, settings) | _author_note_zone([paragraph.text for paragraph in paragraphs])
     forum_at: dict[int, tuple[int, WindowCandidate]] = {}
     texts = [paragraph.text for paragraph in paragraphs]
     if any(forum_role(text) in ("welcome", "topic", "pm") for text in texts):
@@ -1458,23 +1956,25 @@ def find_windows(
         while position < len(paragraphs):
             # Пустые абзацы и «P.S.» внутри поста — часть ветки, их не исключаем.
             stop = forum_run_end(texts, position) if paragraphs[position].text else None
-            span = _balanced_span(html, paragraphs[position].start, paragraphs[stop - 1].end) if stop else None
-            if span is None:
+            if stop is None:
                 position += 1
                 continue
-            covered = [number for number, paragraph in enumerate(paragraphs) if span[0] <= paragraph.start < span[1]]
-            forum_at[covered[0]] = (
-                covered[-1] + 1,
-                WindowCandidate(
-                    start=span[0],
-                    end=span[1],
-                    kind="forum",
-                    lines=[paragraphs[number].text for number in covered],
-                    paragraph_html=[html[span[0]:span[1]]],
-                    origin="forum",
-                ),
-            )
-            position = covered[-1] + 1
+            for first, end, span_start, span_end in _window_pieces(html, paragraphs, position, stop):
+                lines = [paragraphs[number].text for number in range(first, end)]
+                if not any(lines):
+                    continue
+                forum_at[first] = (
+                    end,
+                    WindowCandidate(
+                        start=span_start,
+                        end=span_end,
+                        kind="forum",
+                        lines=lines,
+                        paragraph_html=[html[span_start:span_end]],
+                        origin="forum",
+                    ),
+                )
+            position = stop
     index = 0
     while index < len(paragraphs):
         first = paragraphs[index]
@@ -1489,27 +1989,34 @@ def find_windows(
 
         chat_stop = chat_run_end(index)
         if chat_stop is not None:
-            chosen = paragraphs[index:chat_stop]
-            lines = [paragraph.text for paragraph in chosen]
             context = [paragraph.text for paragraph in paragraphs[max(0, index - _CHAT_CONTEXT_PARAGRAPHS):index]]
-            windows.append(
-                WindowCandidate(
-                    start=chosen[0].start,
-                    end=chosen[-1].end,
-                    kind="chat",
-                    lines=lines,
-                    paragraph_html=[html[paragraph.start:paragraph.end] for paragraph in chosen],
-                    origin="chat",
-                    chat_owner=chat_account_owner(context, lines),
+            for first, end, span_start, span_end in _window_pieces(html, paragraphs, index, chat_stop):
+                lines = [paragraph.text for paragraph in paragraphs[first:end]]
+                windows.append(
+                    WindowCandidate(
+                        start=span_start,
+                        end=span_end,
+                        kind="chat",
+                        lines=lines,
+                        paragraph_html=_span_pieces(html, paragraphs[first:end], span_start, span_end),
+                        origin="chat",
+                        chat_owner=chat_account_owner(context, lines),
+                    )
                 )
-            )
             index = chat_stop
             continue
 
+        # «[…]» и реплика героя в скобках окно не начинают (продолжить могут).
+        if _is_empty_bracket(text) or _speech_in_brackets(text):
+            index += 1
+            continue
         shape = bracket_shape(text)
         is_marked = confirmed(index)
         stop = index + 1
-        if shape == "open":
+        quote_end = _quote_span_end(paragraphs, index, excluded) if shape is None and text.startswith("«") else None
+        if quote_end is not None:
+            shape, stop = "open", quote_end + 1
+        elif shape == "open":
             span_end = _span_end(paragraphs, index, excluded)
             if span_end is None:
                 index += 1
@@ -1523,7 +2030,9 @@ def find_windows(
             or is_marked
             or single_stat
             or _is_header(text, settings)
-            or is_key_value(text)
+            # «Развитие 2.x (Интерлюдия: Чак)»: двоеточие внутри скобок окно не начинает,
+            # а пункт «Мантия (Экипирована: Тейлор)» в списке продолжает.
+            or (is_key_value(text) and (not _colon_in_parentheses(text) or key_value_follows(index)))
             or is_level_header(text)
             or is_increment_line(text)
             or is_section_label(text)
@@ -1546,6 +2055,13 @@ def find_windows(
             after = paragraphs[stop + 1].text if stop + 1 < len(paragraphs) and paragraphs[stop + 1].adjacent else ""
             if chat_run_end(stop) is not None or stop in forum_at or stop in convention_skips:
                 break
+            # Скобка, открытая здесь и закрытая через абзац-другой, — тоже часть окна.
+            if bracket_shape(following) == "open":
+                span_end = _span_end(paragraphs, stop, excluded)
+                if span_end is None:
+                    break
+                stop = span_end + 1
+                continue
             if not (continues(stop) or (in_list and _is_list_item(following, paragraphs[stop - 1].text, after))):
                 break
             in_list = in_list or _opens_list(following)
@@ -1555,23 +2071,45 @@ def find_windows(
             stop -= 1
         length = stop - index
         single_stat = single_stat or is_increment_line(text)
-        accepted = length >= 2 or single_stat or ((shape in _SINGLE_SHAPES or is_marked) and settings.single_bracketed)
+        single_shape = shape in _SINGLE_SHAPES or (shape == "keyed" and _is_keyed_definition(text))
+        accepted = length >= 2 or single_stat or ((single_shape or is_marked) and settings.single_bracketed)
         if not accepted:
             index += 1
             continue
 
-        chosen = paragraphs[index:stop]
-        lines = [paragraph.text for paragraph in chosen]
-        windows.append(
-            WindowCandidate(
-                start=chosen[0].start,
-                end=chosen[-1].end,
-                kind=classify_kind(lines),
-                lines=lines,
-                paragraph_html=[html[paragraph.start:paragraph.end] for paragraph in chosen],
-                origin=_origin(shape, is_marked, text),
+        origin = _origin(shape, is_marked, text)
+        # Имя героя и его семья строками над карточкой с уровнем:
+        # «Лилирука Арде.» / «Семья Гестии.» / «Уровень 2.».
+        previous_end = windows[-1].end if windows else 0
+        if is_level_header(text):
+            for _name_line in range(2):
+                if not (
+                    index > 0
+                    and paragraphs[index].adjacent
+                    and paragraphs[index - 1].start >= previous_end
+                    and _NAME_LINE_RE.match(paragraphs[index - 1].text)
+                    and not excluded(paragraphs[index - 1])
+                ):
+                    break
+                index -= 1
+        pieces = _window_pieces(html, paragraphs, index, stop)
+        for first, end, span_start, span_end in pieces:
+            chosen = paragraphs[first:end]
+            lines = [paragraph.text for paragraph in chosen]
+            # Строка, отрезанная границей обёртки, — окно, только если она и сама
+            # по себе системная (не шапка «Статус:» без данных под ней).
+            if len(pieces) > 1 and len(lines) == 1 and not (_is_data_line(lines[0]) or confirmed(first)):
+                continue
+            windows.append(
+                WindowCandidate(
+                    start=span_start,
+                    end=span_end,
+                    kind=classify_kind(lines),
+                    lines=lines,
+                    paragraph_html=_span_pieces(html, chosen, span_start, span_end),
+                    origin=origin,
+                )
             )
-        )
         index = stop
     _carry_chat_owners(windows)
     return windows
@@ -1643,19 +2181,26 @@ _SHORT_VALUE = 25
 _ITALIC_FROM = 40
 
 
+# Разряды числа «2 618 757»: на узкой колонке перенос посреди числа.
+_DIGIT_GROUP_RE = re.compile(r"(?<=\d) (?=\d{3}(?!\d))")
+
+
 def _escape(text: str) -> str:
-    return html_module.escape(text, quote=False)
+    return html_module.escape(_DIGIT_GROUP_RE.sub(_NBSP, text), quote=False)
 
 
 _TITLE_MAX_CHARS = 60
 
 
 def _looks_like_title(text: str) -> bool:
-    if len(text) > _TITLE_MAX_CHARS or bracket_shape(text) in ("keyed", "list"):
+    if len(text) > _TITLE_MAX_CHARS or bracket_shape(text) in ("keyed", "list") or is_bullet_line(text):
         return False
     if not is_key_value(text):
         return True
-    key = re.split(r"[:：]", text, maxsplit=1)[0].lower()
+    key = re.split(r"[:：]", text, maxsplit=1)[0].strip().lower()
+    # «2 предмета: …» — бонус комплекта, а не карточка «Предмет: Меч».
+    if key[:1].isdigit() or _SET_BONUS_KEY_RE.match(key):
+        return False
     return any(word in key for word in _TITLE_KEYS)
 
 
@@ -1694,17 +2239,55 @@ def _drop_field_period(text: str) -> str:
     return text
 
 
-def _render_row(text: str, accent: str, italic_allowed: bool):
-    """Строки окна: [(html, короткая ли это пара ключ-значение для колонок)]."""
-    if bracket_shape(text) == "keyed":
+_LIST_GROUP_RE = re.compile(r"[\[【〖]([^\[\]【】〖〗]*)[\]】〗]")
+_LIST_TAIL_RE = re.compile(r"[\]】〗]([^\]】〗]*)$")
+_LONG_KEY_RE = re.compile(r"^([^:：«»\"“”.!?…]{1,40})[:：]\s+(\S.*)$", re.S)
+_CARD_KEY_WORDS = 4
+
+
+def _render_group_list(text: str, accent: str) -> str:
+    """«[А ур. 1] [Б ур. 8]» → «А ур. 1 · Б ур. 8»: без запятых пункты слиплись бы.
+
+    Перечень через запятую («[Тошнота], [Отравление].») остаётся как написан.
+    """
+    if re.search(r"[\]】〗]\s*[,;]", text):
+        return _escape(strip_brackets(text))
+    items = [item.strip() for item in _LIST_GROUP_RE.findall(text) if item.strip()]
+    tail = _LIST_TAIL_RE.search(text.strip())
+    parts = [_render_key_value_part(item, accent) if is_key_value(item) else _escape(item) for item in items]
+    return " · ".join(parts) + (_escape(tail.group(1).strip()) if tail else "")
+
+
+def _render_row(text: str, accent: str, italic_allowed: bool, card: bool = False):
+    """Строки окна: [(html, короткая ли это пара ключ-значение для колонок)].
+
+    ``card`` — в окне несколько пар «ключ: значение»: ключ выделяется и у
+    строки с длинным значением, иначе одни дни симулятора жирные, другие нет.
+    """
+    shape = bracket_shape(text)
+    if shape == "keyed":
         return [(_render_keyed(text, accent), False)]
+    if shape == "list":
+        return [(_render_group_list(text, accent), False)]
     if is_section_label(text):
         label = _BULLET_MARK_RE.sub("", text.strip(), count=1)
         label = re.sub(r"^[—–-]\s*", "", label).rstrip(":：…").strip()
         # «Пламенная Душа» (пассивный навык) → Пламенная Душа (пассивный навык)
         label = re.sub(r"^«([^«»]+)»", r"\1", label).rstrip(".").strip()
         return [(f'<b style="color:{accent};">{_escape(label)}:</b>', False)]
+    # Имя навыка или заклинания строкой: «(Огненный Болт)», «Казан Души Клинка.».
+    if _QUOTED_TERM_RE.match(text) and not is_key_value(_strip_outer_quotes(text)):
+        name = text if text.startswith("(") else _strip_outer_quotes(text)
+        return [(f'<b style="color:{accent};">{_escape(name)}</b>', False)]
+    # Навык «Название – описание» в листе статуса.
+    dash_term = _DASH_TERM_RE.match(text) if card or italic_allowed else None
+    if dash_term:
+        term, rest = re.split(r"\s[–—]\s", text, maxsplit=1)
+        return [(f'<b style="color:{accent};">{_escape(term.strip())}</b> – {_escape(rest.strip())}', False)]
     text = _drop_field_period(_strip_outer_quotes(strip_brackets(text)))
+    # «<[Месть]: Если…>»: термин в скобках внутри внешних скобок.
+    if shape == "full" and bracket_shape(text) == "keyed":
+        return [(_render_keyed(text, accent), False)]
     delta = _STAT_DELTA_FIELD_RE.match(text)
     if delta and _KV_RE.match(text) is None:
         name, amount = delta.group(1).strip(), delta.group(2).strip()
@@ -1723,6 +2306,10 @@ def _render_row(text: str, accent: str, italic_allowed: bool):
         value = re.split(r"[:：]", text, maxsplit=1)[1].strip()
         short = len(parts) == 1 and len(value) <= _SHORT_VALUE and not _is_column_value(text)
         return [(_SEPARATOR.join(rendered), short)]
+    long_key = _LONG_KEY_RE.match(text) if card else None
+    if long_key and len(long_key.group(1).split()) <= _CARD_KEY_WORDS:
+        key, value = long_key.group(1).strip().strip(_KEY_QUOTES), long_key.group(2).strip()
+        return [(f'<b style="color:{accent};">{_escape(key)}:</b> {_escape(value)}', False)]
     escaped = _escape(text)
     if italic_allowed and len(text) >= _ITALIC_FROM:
         return [(f"<i>{escaped}</i>", False)]
@@ -1933,6 +2520,8 @@ def _render_chat(texts, template, source_html) -> str:
     floating = False
     for text in texts:
         parsed = chat_line(text)
+        if parsed is None and _ELLIPSIS_LINE_RE.match(text):
+            continue  # «…» между репликами — отступ перевода, не сообщение
         if parsed is None:
             if floating:
                 pieces.append(_CHAT_CLEAR)
@@ -1977,6 +2566,7 @@ _FORUM_WELCOME_RE = re.compile(
     r"|welcome to the parahumans|you are currently logged in|you are viewing)",
     re.I,
 )
+_FORUM_NEW_VISIT_RE = re.compile(r"^(?:добро пожаловать на (?:форум|доск)|welcome to the parahumans)", re.I)
 # Шапка «Вы просматриваете:» — с маркерами «•» или без них, как в «Калико».
 _FORUM_INFO_RE = re.compile(
     r"^(?:[•·]\s*\S|(?:(?:и|или|and|or)\s+)?(?:темы\b|личные сообщения|отображается|десять\s+(?:постов|сообщений)"
@@ -1985,7 +2575,7 @@ _FORUM_INFO_RE = re.compile(
     re.I,
 )
 _FORUM_DECOR_RE = re.compile(r"^(?:■|□|\[\s*[–—-]\s*\]|…|\.{3})$")
-_FORUM_TOPIC_RE = re.compile(r"^[♦◆]?\s*(?:тема|topic)\s*[:：]\s*(\S.*)$", re.I)
+_FORUM_TOPIC_RE = re.compile(r"^[♦◆►▶]?\s*(?:тема|topic)\s*[:：]\s*(\S.*)$", re.I)
 _FORUM_LIST_RE = re.compile(r"^(новости|фанфики|объявлени\w*|news|fanfiction)\s*[:：]\s*(\S.*)$", re.I)
 _FORUM_BOARD_RE = re.compile(r"^(?:в разделе|раздел|в|in)\s*[:：]\s*(\S.*)$", re.I)
 _FORUM_TIME_RE = re.compile(r"^(?:опубликова\w*|ответил\w*|ответ от|отправлено|posted|replied)\b", re.I)
@@ -1995,7 +2585,9 @@ _FORUM_END_RE = re.compile(r"^(?:конец страницы|end of page)\b", re
 # «Новых сообщений так и не появилось» — проза.
 _FORUM_PM_RE = re.compile(
     r"^(?:[♦◆]\s*(?:(?:личн\w+|нов\w+)\s+сообщени\w*|private message)"
-    r"|(?:(?:личн\w+|нов\w+)\s+сообщени[ея]|private message)\s+(?:от|для|from|to)\b)",
+    r"|(?:(?:личн\w+|нов\w+)\s+сообщени[ея]|private message)\s+(?:от|для|from|to)\b"
+    # Экран личных сообщений: «Новые личные сообщения (1):».
+    r"|новые\s+личные\s+сообщения\s*\(\d+\)\s*[:：]?$)",
     re.I,
 )
 # Конец поста и начало повествования: реплика с тире или разрыв сцены.
@@ -2019,10 +2611,18 @@ def forum_clean(text: str) -> str:
     return " ".join(_ZERO_WIDTH_RE.sub("", _BBCODE_RE.sub("", text)).split())
 
 
+_LEADING_ELLIPSIS_RE = re.compile(r"^(?:…|\.\.\.)\s*(?=\S)")
+
+
+def _forum_key(text: str) -> str:
+    """Строка для узнавания роли: без «…» в начале («…Конец страницы. 1, 2»)."""
+    return _LEADING_ELLIPSIS_RE.sub("", forum_clean(text))
+
+
 def forum_role(text: str, following: str = "") -> str:
     """Роль строки ветки форума: topic, board, author, time, page, end, pm, list,
     welcome, info, decor или body."""
-    line = forum_clean(text)
+    line = _forum_key(text)
     if not line:
         return "empty"
     if _FORUM_WELCOME_RE.match(line):
@@ -2047,7 +2647,7 @@ def forum_role(text: str, following: str = "") -> str:
         return "info"
     if (
         following
-        and _FORUM_TIME_RE.match(forum_clean(following))
+        and _FORUM_TIME_RE.match(_forum_key(following))
         and len(line) <= _FORUM_AUTHOR_MAX
         and _FORUM_AUTHOR_RE.match(line)
     ):
@@ -2057,6 +2657,21 @@ def forum_role(text: str, following: str = "") -> str:
 
 def _forum_roles(texts) -> list[str]:
     return [forum_role(text, texts[index + 1] if index + 1 < len(texts) else "") for index, text in enumerate(texts)]
+
+
+# Ремарка после реплики: «…, — сказала она», «…? — ответила я».
+_SPEECH_REMARK_RE = re.compile(r"[,!?…]\s*[—–]\s*[а-яёa-z]")
+
+
+def _post_list_continues(window, roles, position: int, last: int, limit: int) -> bool:
+    """Строки с тире — пункты поста («— В «Ящике…» есть участница…»), а не реплика
+    после ветки: без ремарок, и в пределах разрыва за ними снова идут посты."""
+    following = position
+    while following < len(roles) and roles[following] in ("body", "empty"):
+        if _SPEECH_REMARK_RE.search(window[following]):
+            return False
+        following += 1
+    return following < len(roles) and roles[following] != "decor" and following - last <= limit
 
 
 def forum_run_end(texts, index: int) -> int | None:
@@ -2085,13 +2700,20 @@ def forum_run_end(texts, index: int) -> int | None:
         if empties >= _FORUM_EMPTY_RUN:
             break
         if role in ("body", "empty"):
-            if _FORUM_STOP_RE.match(forum_clean(window[position])):
+            limit = _FORUM_GAP_AFTER.get(anchor_role, _FORUM_GAP_DEFAULT)
+            line = forum_clean(window[position])
+            if _FORUM_STOP_RE.match(line) and not (
+                line.startswith(("—", "–")) and _post_list_continues(window, roles, position, last, limit)
+            ):
                 break
-            if position - last > _FORUM_GAP_AFTER.get(anchor_role, _FORUM_GAP_DEFAULT):
+            if position - last > limit:
                 break
             position += 1
             continue
         if anchor_role == "end" and position - last > _FORUM_GAP_AFTER["end"]:
+            break
+        # Новое «Добро пожаловать…» после постов — следующий заход на форум.
+        if role == "welcome" and (posts or anchor_role == "end") and _FORUM_NEW_VISIT_RE.match(_forum_key(window[position])):
             break
         if role == "time":
             posts += 1
@@ -2134,9 +2756,11 @@ def forum_structure(lines):
     roles = _forum_roles(texts)
     parts: list[tuple] = []
     current = None
-    for text, role in zip(texts, roles):
-        if not text:
+    for body_text, role in zip(texts, roles):
+        if not body_text:
             continue
+        # Служебные строки — без «…» в начале, тело поста — как написано.
+        text = body_text if role == "body" else _forum_key(body_text)
         if role in ("welcome", "info"):
             if parts and parts[-1][0] == "welcome":
                 parts[-1][1].append(text)
@@ -2193,13 +2817,34 @@ def forum_structure(lines):
     return result
 
 
+def _luminance(color: str) -> float:
+    try:
+        channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    except (TypeError, ValueError):
+        return 0.0
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(first: str, second: str) -> float:
+    high, low = sorted((_luminance(first), _luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+# Мелкий приглушённый текст (раздел, дата, страницы) — не бледнее AA 4,5:1.
+_MUTED_CONTRAST = 4.5
+
+
 def _forum_colors(template) -> dict:
     background, text, accent = template["background"], template["text"], template["accent"]
-    return {
-        "header": _mix(background, accent, 0.16),
-        "line": _mix(background, text, 0.18),
-        "muted": _mix(text, background, 0.42),
-    }
+    header = _mix(background, accent, 0.16)
+    muted = text
+    for share in (0.42, 0.36, 0.3, 0.24, 0.18, 0.12, 0.06):
+        candidate = _mix(text, background, share)
+        if min(_contrast(candidate, header), _contrast(candidate, background)) >= _MUTED_CONTRAST:
+            muted = candidate
+            break
+    return {"header": header, "line": _mix(background, text, 0.18), "muted": muted}
 
 
 _FORUM_STRONG_TAGS = re.compile(r"модератор|проверенн|подтвержд|verified|moderator|агент скп|pr скп", re.I)
@@ -2259,6 +2904,15 @@ def _render_forum(texts, template, source_html) -> str:
     return re.sub(r"\s*\n\s*", " ", block)
 
 
+def _trim_span_quotes(texts):
+    """«Цель: Эсдес. / … / Награда: 10 000». — кавычки вокруг всей карточки не нужны."""
+    if len(texts) >= 2 and texts[0].startswith("«") and "»" not in texts[0] and re.search(r"»[.!?…]*$", texts[-1]):
+        last = texts[-1]
+        if last.count("»") > last.count("«"):
+            return [texts[0][1:].lstrip()] + texts[1:-1] + [re.sub(r"»([.!?…]*)$", r"\1", last)]
+    return texts
+
+
 def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     """Собрать одну строку HTML с рамкой для серии системных строк.
 
@@ -2270,12 +2924,13 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
     template.update(templates.get(kind, {}))
     accent = template["accent"]
 
-    texts = [" ".join(str(line).split()) for line in lines]
+    texts = [_bracket_text(" ".join(str(line).split())) for line in lines]
     if kind == "chat":
         return _render_chat([text for text in texts if text], template, source_html)
     if kind == "forum":
         return _render_forum([text for text in texts if text], template, source_html)
-    items = [item for text in texts if text for item in _card_pieces(text)]
+    texts = _trim_span_quotes([text for text in texts if text])
+    items = [item for text in texts for item in _card_pieces(text)]
     texts = [text for text, _ in items]
     heads = [head for _, head in items]
     if texts and bracket_shape(texts[0]) not in ("keyed", "list"):
@@ -2288,12 +2943,13 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
         texts, heads = texts[1:], heads[1:]
 
     rows = []
+    card = sum(1 for text in texts if is_key_value(text) or _is_card_row(text)) >= 2
     for text, head in zip(texts, heads):
         if head:
             name = _strip_outer_quotes(strip_brackets(text))
             rows.append((f'<b style="color:{accent};">{_escape(name)}</b>', False))
         else:
-            rows.extend(_render_row(text, accent, italic_allowed=title is not None))
+            rows.extend(_render_row(text, accent, italic_allowed=title is not None, card=card))
     body_rows = _group_columns(rows, int(template.get("columns") or 1))
 
     pieces = []

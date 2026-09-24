@@ -1827,7 +1827,13 @@ def test_bbcode_leftovers_and_reply_from_form():
     windows = find_windows(html)
     parts = sw.forum_structure(windows[0].lines)
 
-    assert windows[0].lines == lines
+    # BB-код снимается уже при разборе абзацев.
+    assert windows[0].lines == [
+        "Тема: Официальный тред Медузы", "Раздел: Форумы ► США ► Броктон-Бей",
+        "Баграт (Автор темы) (Ветеран форума)", "Опубликовано 6 апреля 2011 г.:", "Всем привет!",
+        "(Показана страница 45 из 53)", "►Smoothmoves", "Ответ от 12 апреля 2011 г.:", "Короче, работаю я дома.",
+        "Конец страницы. 1, 2", "■",
+    ]
     assert parts[0] == ("topic", "Официальный тред Медузы", "Форумы ► США ► Броктон-Бей")
     assert [part[1] for part in parts if part[0] == "post"] == ["Баграт", "Smoothmoves"]
     assert "[b]" not in sw.render_window(lines, "forum")
@@ -1960,3 +1966,653 @@ def test_bbcode_tags_arc_markers_and_story_metadata_are_not_windows():
     )
 
     assert find_windows(html) == []
+
+
+# --- абзацы в обёртках: страницы веб-новелл и границы разделов --------------------
+
+
+def _wrapped(*paragraphs):
+    # «Dimensional Traveler», «Данмачи Белл взрослый»: каждый абзац в своих div.
+    body = "\n\n".join(
+        f'<div class="db cha-paragraph"><div class="dib pr">\n<p>{text}</p>\n</div></div>' for text in paragraphs
+    )
+    return f"<html><body>\n{body}\n</body></html>\n"
+
+
+def test_paragraphs_in_their_own_wrappers_form_one_window():
+    html = _wrapped(
+        "В этот миг перед глазами соткался экран Системы:",
+        "[Поздравляем! Вы уничтожили 8 демонов.]",
+        "[Дзинь. Текущий уровень повышен: 49 → 50!]",
+        "[Разблокирована новая функция: «Мини-карта».]",
+        "— Наконец-то! — усмехнулся Рэн.",
+    )
+
+    windows = find_windows(html)
+    result, count = sw.apply_windows(html, windows)
+
+    assert [window.lines for window in windows] == [[
+        "[Поздравляем! Вы уничтожили 8 демонов.]",
+        "[Дзинь. Текущий уровень повышен: 49 → 50!]",
+        "[Разблокирована новая функция: «Мини-карта».]",
+    ]]
+    assert count == 1 and result.count("<div") == result.count("</div>")
+    assert "экран Системы:" in result and "Наконец-то!" in result
+    assert sw.strip_windows(result) == (html, 1)
+
+
+def test_forum_across_containers_does_not_swallow_the_prose_around_it():
+    # «Ангел»: ветка начинается посреди общей обёртки главы, а продолжается уже
+    # после неё. Расширить замену до целых элементов значило бы проглотить главу.
+    head, tail = PHO_THREAD[:12], PHO_THREAD[12:]
+    html = (
+        '<html><body>\n<div class="chapter">\n<h2>Глава 15</h2>\n<p>Я вздохнула и открыла ноутбук.</p>\n'
+        + "".join(f"<p>{text}</p>\n" for text in head)
+        + "</div>\n"
+        + "".join(f"<p>{text}</p>\n" for text in tail)
+        + "<p>Я закрыла ноутбук.</p>\n</body></html>\n"
+    )
+
+    windows = find_windows(html)
+    result, count = sw.apply_windows(html, windows)
+
+    assert {window.kind for window in windows} == {"forum"}
+    assert [line for window in windows for line in window.lines] == PHO_THREAD
+    assert "Я вздохнула и открыла ноутбук." in result and "<h2>Глава 15</h2>" in result
+    assert result.count("<div") == result.count("</div>")
+    assert sw.strip_windows(result) == (html, count)
+
+
+def test_system_lines_in_two_sections_are_not_joined_through_the_prose_wrappers():
+    html = (
+        '<html><body>\n<div class="s1">\n<p>Он открыл панель.</p>\n<p>[Имя: Лин]</p>\n</div>\n'
+        '<div class="s2">\n<p>[Уровень: 3]</p>\n<p>Он закрыл панель.</p>\n</div>\n</body></html>\n'
+    )
+
+    windows = find_windows(html)
+    result, count = sw.apply_windows(html, windows)
+
+    assert [line for window in windows for line in window.lines] == ["[Имя: Лин]", "[Уровень: 3]"]
+    assert "Он открыл панель." in result and "Он закрыл панель." in result
+    assert result.count("<div") == result.count("</div>")
+    assert sw.strip_windows(result) == (html, count)
+
+
+# --- вёрстка: списки групп и длинные значения -------------------------------------
+
+
+def test_group_list_without_commas_is_rendered_with_separators_not_italic():
+    # «So I'm an Earth»: «[земляной дракон ур. 1] [Скоростная регенерация ОЗ ур. 8] …»
+    lines = ["Навыки:", "[земляной дракон ур. 1] [Скоростная регенерация ОЗ ур. 8] [Небесная сила ур. 2]"]
+
+    block = sw.render_window(lines, "status")
+
+    assert "земляной дракон ур. 1 · Скоростная регенерация ОЗ ур. 8 · Небесная сила ур. 2" in block
+    assert "<i>" not in block
+
+
+def test_long_values_keep_bold_keys_when_the_window_is_a_card():
+    # «Kumo desu ka», симулятор: «День первый: …» жирным, а длинный день — нет.
+    lines = [
+        "День первый: Клуб Героев отбивает атаку Vertex.",
+        "День сорок пятый: Миёси Карин вступает в Клуб Героев.",
+        "День пятьдесят четвертый: Vertex атакуют. Ты тайно нападаешь на Инубодзаки Ицуки и выводишь её из строя."
+        " Инубодзаки Фу остается охранять сестру и не участвует в битве.",
+    ]
+
+    block = sw.render_window(lines, "status")
+
+    assert block.count("<b ") == 3
+    assert "День пятьдесят четвертый:</b>" in block
+    assert "<i>" not in block
+
+
+def _contrast(first, second):
+    def luminance(color):
+        channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_forum_muted_text_is_readable_on_header_and_body():
+    # Строка раздела под темой лежит на фоне шапки: 4,29:1 было ниже AA.
+    for template in (sw.DEFAULT_TEMPLATES["forum"], {**sw.DEFAULT_TEMPLATES["forum"], "text": "#b0b6c4"}):
+        colors = sw._forum_colors(template)
+        assert _contrast(colors["muted"], colors["header"]) >= 4.5
+        assert _contrast(colors["muted"], template["background"]) >= 4.5
+
+
+def test_dash_list_inside_a_post_does_not_end_the_thread():
+    # «Ангел»: пост со сводкой слухов пунктами через тире, дальше снова посты.
+    thread = [
+        "♦ Тема: Девушка Симург",
+        "В: Доски ► Слухи ► Губители.",
+        "► Winged",
+        "Ответил 15 июня 2011 года:",
+        "Да! Всем привет! Я отслеживаю каждый слух. Скину список:",
+        "— В «Ящике Игрушек» есть участница, которой нравится Симург (Правда – «Ящик Игрушек» подтвердил).",
+        "— По какой-то причине Йип сбежала из больницы (Возможно – свидетели видели её в Тампе).",
+        "► Nakyak",
+        "Ответил 15 июня 2011 года:",
+        "Спасибо!",
+        "Конец страницы. 1, 2",
+    ]
+    html = _chapter("Луиза ткнула планшетом мне в лицо.", *thread, "— И как мне это исправить? — спросила я.")
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [thread]
+
+
+def test_forum_lines_with_a_leading_ellipsis_keep_their_roles():
+    # «Ангел», «Predatory»: переводчик поставил «…» перед строками ветки.
+    assert sw.forum_role("…Конец страницы. 1 , 2 , 3 , 4.") == "end"
+    assert sw.forum_role("…В: Доски ► Слухи ► Губители.") == "board"
+    assert sw.forum_role("…") == "decor"
+    parts = sw.forum_structure(["♦ Тема: Девушка Симург", "…В: Доски ► Слухи.", "► Judge", "Ответил 15 июня:",
+                                "… Не-а, беру свои слова обратно.", "…Конец страницы. 1, 2"])
+    assert parts[0] == ("topic", "Девушка Симург", "Доски ► Слухи.")
+    assert parts[1][4] == ["… Не-а, беру свои слова обратно."]
+    assert parts[-1] == ("page", "Конец страницы. 1, 2")
+
+
+def test_digit_groups_do_not_break_across_lines():
+    # На телефоне «10 000» рвалось на «10» и «000».
+    block = sw.render_window(["[Очки богатства: 2 618 757]", "[Оружейный камень: 10 000 лет]"], "status")
+
+    assert "2 618 757" in block and "10 000" in block
+
+
+def test_set_bonus_line_is_not_taken_for_the_window_title():
+    # «Щит небосвода»: «2 предмета: …» — строка бонуса комплекта, а не «Предмет: Меч».
+    lines = ["2 предмета: физическая защита +150%", "4 предмета: основные характеристики +150%"]
+
+    block = sw.render_window(lines, "status")
+
+    assert "2 ПРЕДМЕТА" not in block and block.count("<b ") == 2
+    assert sw._looks_like_title("Предмет: Меч Рассвета")
+
+
+def test_angle_bracketed_lines_are_system_messages():
+    # «So I'm an Earth»: уведомления системы в угловых скобках, как в «Кумо».
+    lines = [
+        "< Повышен уровень мастерства. Навык [Память] достиг уровня 2>",
+        "< Получена компетенция. Вы получили навык [Продвинутый слух Ур. 1]>",
+    ]
+    escaped = [line.replace("<", "&lt;").replace(">", "&gt;") for line in lines]
+    html = _chapter("Я продолжила тренировку.", *escaped, "Отлично!", "&lt;Хр-р-р&gt;", "Кот спал.")
+
+    windows = find_windows(html)
+    block = sw.render_window(windows[0].lines, windows[0].kind)
+    result, count = sw.apply_windows(html, windows)
+
+    assert [window.lines for window in windows] == [lines]
+    assert "Повышен уровень мастерства. Навык [Память] достиг уровня 2" in block and "&lt;" not in block
+    assert sw.strip_windows(result) == (html, count)
+
+
+def test_bullet_line_is_never_the_window_title():
+    # «Dimensional Traveler»: список требований задания начинался пунктом.
+    block = sw.render_window(["• 50 отжиманий (0/50)", "• 50 приседаний (0/50)", "Награда:", "+1 к Силе"], "notice")
+
+    assert "ОТЖИМАНИЙ" not in block and "✦" not in block
+
+
+def test_keyed_line_inside_outer_brackets_gets_a_bold_term():
+    # «So I'm an Earth»: «<[Месть]: Если пользователь…>».
+    block = sw.render_window(["<Гнев: при активации растёт атака.>", "<[Месть]: Если союзник погиб, растёт урон.>"], "status")
+
+    assert "Месть:</b>" in block
+
+
+def test_bbcode_inside_lines_is_dropped_for_detection_and_display():
+    # «Данмачи Белл взрослый»: «[Вельф Кроццо] [spoiler] [/spoiler]».
+    html = _chapter("Он открыл лист.", "[b]Имя:[/b] Вельф Кроццо", "[b]Уровень:[/b] 2", "Он закрыл лист.")
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [["Имя: Вельф Кроццо", "Уровень: 2"]]
+
+
+def test_open_bracket_span_continues_the_current_window():
+    # «Реинкарнация в злого дракона», гл. 78; «Пробудив Белого Жнеца», гл. 594.
+    html = _chapter(
+        "Дракон зарычал.",
+        "[Поздравляем! Получено 5000 очков системы]",
+        "[Высшее поглощение: поедание добычи ускоряет рост тела.",
+        "Дополнительно: поглощение различных веществ дает соответствующие усиления.]",
+        "[Текущие очки: 5000]",
+        "Он довольно облизнулся.",
+    )
+
+    windows = find_windows(html)
+
+    assert [len(window.lines) for window in windows] == [4]
+
+
+def test_brackets_without_system_words_or_data_are_speech_in_the_book():
+    # «Сукуна слишком добрый» — телепатия, «Годжо Бог» — кадр фильма,
+    # «Моя соседка знаменитость» — комментарии стрима: в скобках нет ни слов
+    # системы, ни чисел, ни пар «ключ: значение».
+    telepathy = [
+        _chapter("[Сверху!]", "Итадори пригнулся.", "[Эй… может, сделаешь перерыв?]", "[Это всего лишь первая тренировка.]", "Текст.")
+        for _ in range(8)
+    ]
+    system = [_chapter("[Динь! Навык получен]", "[Сила: 12 → 15]", "[Молодец, носитель!]", "Текст.") for _ in range(8)]
+
+    assert sw.book_bracket_conventions(telepathy)["speech_brackets"] is True
+    assert sw.book_bracket_conventions(system)["speech_brackets"] is False
+
+
+# --- поля карточек: одиночные термины, кавычки, длинные значения ------------------
+
+
+def test_single_keyed_card_is_a_window():
+    # «Star Rail»: карточка способности одним абзацем; «Полоска здоровья»: класс.
+    html = _chapter(
+        "Он открыл описание.",
+        "[Фиолетовая способность: «Стопроцентный прорыв»]: с каким бы врагом вы ни столкнулись, шанс прорыва – 100%.",
+        "Он хмыкнул.",
+        "[Охотник]: Ты способен видеть полоску здоровья жертвы.",
+        "Текст.",
+        "[Дыхание] Зриода взрывается внутри его собственного тела, и меня отбрасывает прочь.",
+        "Текст.",
+    )
+
+    lines = [window.lines for window in find_windows(html)]
+
+    assert lines == [
+        ["[Фиолетовая способность: «Стопроцентный прорыв»]: с каким бы врагом вы ни столкнулись, шанс прорыва – 100%."],
+        ["[Охотник]: Ты способен видеть полоску здоровья жертвы."],
+    ]
+
+
+def test_key_value_line_fully_in_quotes_is_data():
+    # «Носитель Венома», «Годжо в Убийце Богов», «Хвост Феи. Симуляция».
+    html = _chapter(
+        "Экран мигнул.",
+        "«Токсичность крови: 43%».",
+        "«Эффект: очистка организма от токсинов, ускорение метаболизма для их выведения».",
+        "Он выдохнул.",
+        "«Слушай: я не пойду».",
+    )
+
+    lines = [window.lines for window in find_windows(html)]
+
+    assert lines == [["«Токсичность крови: 43%».", "«Эффект: очистка организма от токсинов, ускорение метаболизма для их выведения»."]]
+
+
+def test_card_fields_with_long_or_lowercase_values_continue_the_card():
+    # «Красный дракон», «Аномальный коллекционер», «Лавовый дракон», «Арканный поход».
+    card = [
+        "[Посох Бури]",
+        "Качество: легендарное.",
+        "Материал: адамантин.",
+        "Описание: Ваши яростные атаки заставят трепетать всех мелких тварей. Но прежде чем взять его,"
+        " убедитесь, что ваша сила не меньше 40, иначе отдача сломает вам руки!",
+        "Форма первая: расход 1 заряда, эффект заклинания «Зеркальное отражение».",
+        "Проявления заражения: за короткое время происходят резкие изменения скелетных мышц, кожа"
+        " покрывается чешуёй, а зрачки вытягиваются в вертикальные щели.",
+    ]
+    html = _chapter("Он взял посох.", *card, "Он подумал: неплохо.", "Текст.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+# --- служебные строки, благодарности, реплики «Поздравляю», время -----------------
+
+
+def test_placeholders_novel_end_and_bonus_marks_are_not_windows():
+    html = _chapter(
+        "[Изображение]", "Текст.", "[Картинка].", "Текст.", "[Конец романа]", "Текст.", "[Короткий бонус]", "Текст.",
+        "[Благодарность пользователям 20210724204602184 за пожертвование; 20210724204602185 за поддержку]", "Текст.",
+    )
+
+    assert find_windows(html) == []
+
+
+def test_site_info_page_has_no_windows():
+    # Служебная страница книги с сайта: «ID книги», просмотры, аннотация.
+    html = _chapter("ID книги: 7586325203580357694.", "Количество просмотров: 780.", "[Описание]",
+                    "[Обыватель × Скрытный манипулятор Наруто × Исключительное обожание Хинаты.]")
+
+    assert find_windows(html) == []
+
+
+def test_speech_congratulations_and_clock_times_are_not_windows():
+    html = _chapter(
+        "«Поздравляю! Ты снова побил рекорд по количеству ежемесячных голосов на „Цидяне“, котик».",
+        "Текст.",
+        "«Поздравляем носителя с получением навыка „Кулинария“!»",
+        "Текст.",
+        "9:57. До начала – три минуты. Участников попросили перевести телефоны в беззвучный режим.",
+        "10:00 ровно.",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [["«Поздравляем носителя с получением навыка „Кулинария“!»"]]
+
+
+def test_forum_welcome_after_end_of_page_starts_a_new_thread():
+    # «Девять жизней Калико»: второй визит на форум сразу после «Конца страницы».
+    second = ["Добро пожаловать на форумы «Паралюди Онлайн.»", "Вы вошли в систему как Тик-Так (Подтвержденный кейп)",
+              "♦ Тема: Новости", "Баграт (Автор темы)", "Опубликовано 3 мая 2011:", "Кто-нибудь видел?", "Конец страницы. 1"]
+    html = _chapter("Я открыла ноутбук.", *PHO_THREAD, *second, "Я закрыла ноутбук.")
+
+    assert [window.lines for window in find_windows(html)] == [PHO_THREAD, second]
+
+
+def test_empty_bracket_line_does_not_start_a_window_but_continues_one():
+    # «So I'm an Earth»: «[…]» — разделитель между абзацами, 243 окна из 391.
+    html = _chapter("Я огляделась.", "[…]", "Никого.", "[Динь! Начать слияние?]", "[…]", "Он молчал.")
+
+    assert [window.lines for window in find_windows(html)] == [["[Динь! Начать слияние?]", "[…]"]]
+
+
+def test_topic_with_arrow_marker_starts_a_forum_thread():
+    # «Atonement»: «►Тема: …» вместо «♦ Тема: …».
+    assert sw.forum_role("►Тема: Взрывы в заливе.") == "topic"
+    assert sw.forum_role("►Topic: Привязь.") == "topic"
+
+
+def test_leading_ellipsis_before_bracket_and_chat_line():
+    # «I Am NOT Going Through»: «…[ОШИБКА: …]»; «Our Wild Love»: «… [Акира]: Обещаю.»
+    assert sw.bracket_shape("…[ОШИБКА: ЗНАЧЕНИЕ НЕИЗВЕСТНО]") == "full"
+    assert sw.chat_line("… [Акира]: Обещаю.") == sw.ChatLine("Акира", "Обещаю.", "bracket")
+
+
+def test_chapter_titles_site_notes_photo_captions_and_author_notes_are_not_windows():
+    html = _chapter(
+        "[Глава 99: Начало]", "Текст.",
+        "【Глава сорок четвертая: Эволюция】", "Текст.",
+        "[Добавьте закладку, чтобы облегчить чтение]", "Текст.",
+        "[Фотография: ночное звёздное небо. На земле возвышается гигантский купол.]", "Текст.",
+        "От автора: Благодарю вас за терпение и понимание.", "Предупреждение: Сцены насилия и смерть персонажа.", "Текст.",
+        "【Еще раз спасибо всем за поддержку, люблю вас всех!】", "Текст.",
+        "Прим. 1: В этой книге классификация уровней выше божественного ранга своя.", "Текст.",
+        "Омаке от Orian D'Cate: О големах.", "Текст.",
+    )
+
+    assert find_windows(html) == []
+
+
+def test_phrase_before_colon_is_not_a_stat_key():
+    # «Сорвать луну»: «Как гласит мудрость: «…»», «Дух Сяи изумился: «…»».
+    assert not sw.is_key_value("Как гласит мудрость: «Знай врага своего и знай себя»")
+    assert not sw.is_key_value("Дух Сяи изумился: «Но ведь она мертва!»")
+    assert sw.is_key_value("Мудрость: 12")
+
+
+def test_private_messages_view_after_welcome_is_a_forum_visit():
+    # «Predatory», гл. 23: третий заход — список новых личных сообщений.
+    visit = [
+        "Welcome to the Parahumans Online message boards.", "Вы вошли как Джистринг-Гёрл.", "Вы просматриваете:",
+        "• Темы, в которых вы отвечали…", "Новые личные сообщения (1):",
+        "mr10tickles: Я ходячий, говорящий монстр со щупальцами, если ты об этом.", "GstringGirl: пищит от восторга!",
+        "mr10tickles: Хорошо, я поговорю с ней.", "GstringGirl: ДА!",
+    ]
+    html = _chapter("Она открыла ноутбук.", *visit, "— Ты чего так улыбаешься? — спросила мама.")
+
+    assert sw.forum_role("Новые личные сообщения (1):") == "pm"
+    assert [window.lines for window in find_windows(html)] == [visit]
+
+
+# --- приписки автора, ответы на отзывы, пустые реплики ----------------------------
+
+
+def test_review_replies_and_credits_are_not_windows():
+    # «The Demon Eyes of Fairy Tail», «Watch», «The Rise of Warrior Fairy Tail».
+    html = _chapter(
+        "(Ответы на старые отзывы)",
+        "matiasl151: Спасибо, и это интересный вариант для пейринга.",
+        "nickclause: Спасибо, я и сам всегда был фанатом Итачи.",
+        "Guest: Спасибо.",
+        "izica1: Спасибо.",
+        "Итачи открыл глаза.",
+        "Редакторская правка: dogbertcarroll, laros_deejay.",
+        "Помощь с латынью: Эндрю Вулф.",
+        "Ошибки исправлены: AlyssonR, Эндрю Чапмен.",
+    )
+
+    assert find_windows(html) == []
+
+
+def test_exchange_of_bare_ellipses_is_not_a_chat():
+    # «Пробудив Белого Жнеца»: «Линь Най: «…»», «Дракончик: «…»».
+    assert sw.chat_verdict(["Линь Най: «…»", "Дракончик: «…»", "Линь Най: «…»"]) is None
+    assert sw.chat_verdict(["Тан Сяо: «…»", "Тан Сань: «…»", "Тан Юань: «!!»"]) is None
+    assert sw.chat_verdict(["Цзян Ци: «?»", "Юй Фан: «Если бы я сжег дом, всё было бы проще».", "Цзян Ци: «Ты где?»"]) == "chat"
+
+
+def test_danmachi_status_sheet_keeps_magic_and_skills():
+    # «Danmachi попаданец в Белла», гл. 36.
+    sheet = [
+        "Уровень 3.",
+        "Прозвище: weiẞes Häschen.",
+        "Сила: S: 998 – SS: 1166.",
+        "Магия: SS: 1099 – SSS: 1383.",
+        "Магия:",
+        "(Огненный Болт)",
+        "• Магия быстрого применения.",
+        "(Хирайшин)",
+        "• Магия зачарования.",
+        "Навыки:",
+        "Лиарис Фриз – Стремительный рост. Ускоряет развитие, пока чувства остаются неизменными.",
+        "Аргонавт – Автоматический заряд при активном действии.",
+    ]
+    html = _chapter("Элпис без труда выбила из меня дух.", "Белл Кранел.", "Семья Гестии.", *sheet, "Я со вздохом отложил лист.")
+
+    assert [window.lines for window in find_windows(html)] == [["Белл Кранел.", "Семья Гестии.", *sheet]]
+
+
+def test_german_quoted_skill_names_continue_the_list():
+    # «Kumo desu ka»: навыки в „лапках“.
+    lines = ["# Навыки:", "„Стремительность, ур. 4.“", "„Лазанье по деревьям, ур. 5.“", "„Замедление расхода SP, ур. 2.“"]
+    html = _chapter("Я проверила статус.", "HP: 1000/1000", "MP: 500/500", *lines, "Неплохо.")
+
+    assert [window.lines for window in find_windows(html)] == [["HP: 1000/1000", "MP: 500/500", *lines]]
+
+
+def test_whole_line_bracket_chat_is_a_chat_but_status_is_not():
+    # «Our Wild Love», «Ace», «Пробудив Белого Жнеца»: «[Футаба: Подождите!]».
+    lines = ["[Футаба: Подождите! Я еще морально не готова!]", "[Акира: Ты должна сделать это, Футаба.]",
+             "[Футаба: Ладно, ладно…]"]
+    html = _chapter("Телефон завибрировал.", *lines, "Он усмехнулся.")
+    status = _chapter("Он взглянул на неё.", "[Имя: Анна Хэтэуэй]", "[Ранг: SSS]", "[Характер: робкая, добрая]", "Текст.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+    assert [window.kind for window in find_windows(status)] == ["status"]
+
+
+def test_polite_quote_without_system_hints_is_not_confirmed_by_source():
+    # LOL: реплики зрителей в «кавычках» с обращением на «вы».
+    assert not sw._source_confirms("«Мать вашу, Миллер, вы можете не тянуть кота за хвост?»")
+    assert sw._source_confirms("«Ваша защита снижена на 10%»")
+    assert sw._source_confirms("«Носитель, вы получили навык „Рывок“»")
+
+
+def test_bracketed_speech_with_remark_and_social_posts_are_not_single_windows():
+    # «Наруто»: реплики ИИ-спутницы с ремаркой; «Состояние…»: посты «Вэйбо».
+    html = _chapter(
+        "[Ну, ладно,] – светящийся шар Сяоянь описал пару кругов.", "Текст.",
+        "[Угу…] – пискнула Сяоянь тише комара.", "Текст.",
+        "[Сюй Литао V]: Для меня большая честь представлять родной университет!", "Текст.",
+        "[Фильм «Ветер крепчает» V]: Фильм по сценарию @[Сюй Литао V] вышел в прокат.", "Текст.",
+        "[Пилюля Вечной Юности]: Как следует из названия, пилюля останавливает старение.", "Текст.",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [
+        ["[Пилюля Вечной Юности]: Как следует из названия, пилюля останавливает старение."]
+    ]
+
+
+def test_dash_terms_in_prose_and_viewer_quotes_are_not_single_windows():
+    # «Лицемерная серая жизнь», «Реинкарнация», LOL.
+    html = _chapter(
+        "[Доверие] – единственное оружие, которым Ичиносе могла бы разрушить замысел Сакаянаги.", "Текст.",
+        "[Чистая правда (尺v尺)] – торжественно заверила система.", "Текст.",
+        "«Принимаю ставки: ставлю сотку, что Олаф возьмет 3-й уровень против 1-го».", "Текст.",
+        "«Я же говорил: чем страннее пик, тем быстрее победа. Думаю, управятся за 25 минут».", "Текст.",
+        "«Возраст: 15 лет».", "Текст.",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [["«Возраст: 15 лет»."]]
+
+
+# --- речь в скобках, стикеры в чате, карточка в кавычках на несколько абзацев ------
+
+
+def test_bracketed_speech_line_is_not_a_window_but_system_address_is():
+    # «Kumo», «Caterpillar», «A New World»: реплики и телепатия в скобках.
+    html = _chapter(
+        "[Память у меня не настолько плохая. Ее ведь можно назвать моей гордостью.]", "Текст.",
+        "[Наруто, твоя несносная девчонка только что пробралась в твою комнату.]", "Текст.",
+        "[Человек, ты слышишь меня?]", "Текст.",
+        "[Молодец, носитель! Ты справился.]", "Текст.",
+        "[Ты получил навык «Рывок».]", "Текст.",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [
+        ["[Молодец, носитель! Ты справился.]"], ["[Ты получил навык «Рывок».]"],
+    ]
+
+
+def test_stickers_and_photos_inside_a_chat_keep_it_whole():
+    # «Да вы издеваетесь!»: стикер посреди переписки в WeChat.
+    lines = ["Кун Лю: «Ты её фанатка?»", "[Подозрение]", "Лу Си: «Нет, просто спросила».", "[Фото]",
+             "Кун Лю: «Ага, конечно».", "Лу Си: «Ладно, фанатка».",]
+    html = _chapter("Она открыла WeChat.", *lines, "Лу Си отложила телефон.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+
+
+def test_quoted_card_across_paragraphs_is_one_window():
+    # «Марвел»: плакат розыска в одних кавычках на три абзаца.
+    card = ["«Цель: Эсдес.", "Требование: Живым! (В случае трудностей допускается ликвидация).",
+            "Заказчики: Йонду Удонта, Ронан!", "Награда: 10 000 000 юнитов».",]
+    html = _chapter("На стене висел плакат.", *card, "Питер присвистнул.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_polite_system_messages_stay_and_viewer_comments_go():
+    # «Полоска здоровья»: система на «вы»; LOL: комментарии зрителей.
+    assert sw._source_confirms("«У вас недостаточно прав для доступа к этой информации».")
+    assert sw._source_confirms("«Блогер „Ю“, на которого вы подписаны, загрузил новое видео».")
+    assert sw._source_confirms("«Охота началась. Очевидно, его сила оказалась не так велика, как вы ожидали».")
+    assert not sw._source_confirms("«Да ладно, вы серьезно радуетесь успехам этого балласта?»")
+    assert not sw._source_confirms("«Ха-ха-ха, а вы видели, как его Кеннен сделал квадрокилл?»")
+    assert not sw._source_confirms("«Стой линию, не подставляйся? Вы что тут, сказки рассказываете?»")
+
+
+def test_skill_named_recall_is_not_an_author_note_header():
+    # «Рефреш», гл. 315: навык «Отзыв» — не отзыв читателя.
+    card = ["Бочи, потенциальный уровень 3.", "Врожденные способности: «Слоты снаряжения», «Отзыв», «Опутывание»."]
+    html = _chapter("Что касается Бочи…", *card, "Он почесал затылок.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_skill_names_are_bold_in_status_sheets():
+    lines = ["Магия:", "(Огненный Болт)", "• Магия быстрого применения.", "Навыки:",
+             "Лиарис Фриз – Стремительный рост. Ускоряет развитие.", "«Казан Души Клинка.»"]
+
+    block = sw.render_window(lines, "status")
+
+    assert "(Огненный Болт)</b>" in block
+    assert "Лиарис Фриз</b> – Стремительный рост." in block
+    assert "Казан Души Клинка.</b>" in block
+
+
+def test_group_chat_replies_in_brackets_from_different_people_are_a_chat():
+    # «Возрождение духовной энергии», гл. 211: ответы в группе без повторов.
+    lines = ["[Шэнь Чжихао: Я участвую!]", "[Цзыи: Я тоже еду!]", "[Чжэнь Тяньюань: И я с вами!]"]
+    html = _chapter("Затем он снова перевёл взгляд на чат.", *lines, "Ниже шло ещё несколько подобных ответов.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+
+
+def test_system_prompts_and_second_person_system_voice_are_not_speech():
+    # «Бизнес с карточками», «Реинкарнация», «Полоска здоровья», «Белый Жнец», «Король Демонов».
+    for line in (
+        "[Пожалуйста, выберите тип карты]",
+        "[Пожалуйста, выберите место для размещения Темного бестиария.]",
+        "[Ты осознаешь, что силы Казни и Вердикта, вероятно, связаны с подобными Правилами.]",
+        "[Репутация – это мера твоего авторитета среди избранных.]",
+        "[Цзян Вэньхао, Университет Минцин – выбыл!]",
+        "[Да / Нет]",
+        "[Гордыня: абсолютное эго, где собственное «я» – единственная и высшая ценность.]",
+    ):
+        assert not sw._speech_in_brackets(line), line
+    for line in ("[Ты что, книг не читал?]", "[Твою ж мать!]", "[Господин Цзян, Вы и правда демон?]", "[Ого, а в голосе-то что – разочарование?]"):
+        assert sw._speech_in_brackets(line), line
+
+
+def test_ellipsis_spacers_inside_a_chat_keep_it_whole():
+    # «Our Wild Love», гл. 82: реплики разделены абзацами «…».
+    lines = ["[Сихо: Погодите… у Саэ завтра суд?]", "…", "… [Акэти: Работа прокурора заставляет вести несколько дел.]",
+             "…", "…", "… [Хисато: Боже мой. Без обид, Макото, но это звучит как горы работы.]"]
+    html = _chapter("После вылазки все разошлись по домам.", *lines, "Акира отложил телефон.")
+
+    windows = find_windows(html)
+    block = sw.render_window(windows[0].lines, "chat")
+
+    assert [(window.kind, window.lines) for window in windows] == [("chat", lines)]
+    assert block.count("float:") == 3 and ">…<" not in block
+
+
+# --- мелочи по снимкам: звёзды, «Удача +10.», «Внимание:», ключи-местоимения -------
+
+
+def test_card_with_stars_deltas_and_warning_stays_whole():
+    # «Бизнес с карточками»: «Звездность: ★★»; «Щит»: «Удача +10.»; «Красный дракон»: «Внимание: …».
+    card = [
+        "Карта персонажа: Ван Эръя",
+        "Звездность: ★★",
+        "Удача +10.",
+        "Особая характеристика: увеличивает шанс уклонения на 6%.",
+        "Внимание: этот эффект может привести к дестабилизации арканной энергии в области.",
+    ]
+    html = _chapter("Описание карты изменилось.", *card, "Цзян Ци хмыкнул.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_pronoun_before_colon_is_not_a_key():
+    assert not sw.is_key_value("Я из будущего: FNC победят KZ в финале со счетом 3:1")
+    assert not sw.is_key_value("Он подумал: неплохо бы поесть")
+    assert sw.is_key_value("Навык: Контроль температуры")
+    # Система говорит на «вы»: «Вы получили особую способность: Вечная Тьма.» («Красный дракон»).
+    assert sw.is_key_value("Вы получили особую способность: Вечная Тьма.")
+
+
+def test_colon_inside_parentheses_is_not_a_key_value_pair():
+    # «Abaddon Borne»: заголовок «Развитие 2.x (Интерлюдия: Чак)» и авторское предупреждение под ним.
+    html = _chapter("Развитие 2.x (Интерлюдия: Чак)", "Предупреждение: экстремальный расизм. Здесь нет хороших парней.",
+                    "Чарли не понимал, то ли это сон, то ли его просто неслабо приложили.")
+    assert find_windows(html) == []
+
+
+def test_item_with_colon_in_parentheses_continues_a_card():
+    # «The Limits of Power»: «Звёздная Мантия (Экипирована: Тейлор Эберт)» в списке артефактов.
+    card = ["Артефакты:", "Звёздная Мантия (Экипирована: Тейлор Эберт)", "Золотой Лоток (Экипирован: Тейлор Эберт)"]
+    html = _chapter("Она открыла инвентарь.", "Очки Жизни: 4", *card, "Тейлор вздохнула.")
+
+    assert [window.lines for window in find_windows(html)] == [["Очки Жизни: 4", *card]]
+
+
+def test_pronoun_phrase_does_not_continue_a_card():
+    # «Пробуждение»: «Он открыл инвентарь: действительно, в первой ячейке…» — проза.
+    html = _chapter("[Получен подарок]", "Он открыл инвентарь: действительно, в первой ячейке лежал подарок.", "Текст.")
+
+    assert [window.lines for window in find_windows(html)] == [["[Получен подарок]"]]
+
+
+def test_two_items_with_colons_in_parentheses_start_a_window():
+    # «The Limits of Power»: предметы с владельцем в скобках идут подряд.
+    items = ["Золотой Лоток (Экипирован: Тейлор Эберт)", "Звёздная Мантия (Экипирована: Тейлор Эберт)"]
+    html = _chapter("Мокс Янтарь", *items, "Посох Небесного Ослепления")
+
+    assert [window.lines for window in find_windows(html)] == [items]
