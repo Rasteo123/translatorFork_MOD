@@ -51,7 +51,10 @@ from ...utils.epub_tools import (
 # Сборка EPUB пересобирает главы через BeautifulSoup, а он пишет значение
 # с двойными кавычками внутри в одинарных кавычках.
 SYSTEM_BLOCK_RE = re.compile(r'<div\b[^>]*\bdata-sys="[^"]*"[^>]*>.*?</div>', re.IGNORECASE | re.DOTALL)
-SYSTEM_BLOCK_ORIG_RE = re.compile(r"""\s*\bdata-sys-orig=(?:"[^"]*"|'[^']*')""", re.IGNORECASE)
+# (?<!\s) — только начало серии пробелов: длинную серию без совпадения
+# иначе проходили бы заново с каждого пробела. Совпадений это не меняет.
+SYSTEM_BLOCK_ORIG_RE = re.compile(r"""(?<!\s)\s*\bdata-sys-orig=(?:"[^"]*"|'[^']*')""", re.IGNORECASE)
+_NEWLINE_RUN_RE = re.compile(r"(?<!\s)\s*\n\s*")
 _SYSTEM_BLOCK_PLACEHOLDER = "\x00SYSBLOCK{index}\x00"
 # Загрузчик Rulate прогоняет файл через Markdown. Строка «[Метка]: 80 (обожание)»
 # для него — определение ссылки: она пропадает со страницы. Обратная косая черта
@@ -333,7 +336,7 @@ class EPUBConverterThread(QThread):
 
         def keep_system_block(block):
             block = SYSTEM_BLOCK_ORIG_RE.sub("", block)
-            block = re.sub(r"\s*\n\s*", " ", block).strip()
+            block = _NEWLINE_RUN_RE.sub(" ", block).strip()
             system_blocks.append(block)
             return "\n\n" + _SYSTEM_BLOCK_PLACEHOLDER.format(index=len(system_blocks) - 1) + "\n\n"
 

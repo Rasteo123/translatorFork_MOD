@@ -159,7 +159,7 @@ def _paragraph_end(raw: str, start: int) -> int | None:
 
 # BB-код из исходника фанфика внутри строки: «[b]Имя:[/b] Вельф», «[spoiler]».
 # Однобуквенные теги — только парой: «[B]», «[S]» бывают рангами.
-_BBCODE_PAIR_RE = re.compile(r"\[(b|i|u|s)\](.*?)\[/\1\]", re.I | re.S)
+_BBCODE_PAIR_RE = re.compile(r"\[([bius])\](.*?)\[/\1\]", re.I | re.S)
 _BBCODE_TAG_RE = re.compile(
     r"\[/?(?:indent|center|right|left|quote|url|img|color|size|spoiler|sub|sup|font)(?:=[^\]]*)?\]", re.I
 )
@@ -1181,7 +1181,7 @@ def _quote_span_end(paragraphs, start: int, excluded) -> int | None:
     return None
 
 
-def _origin(shape, marked: bool, text: str) -> str:
+def _origin(shape, marked: bool) -> str:
     if shape in ("full", "keyed", "list", "open", "dashed"):
         return "brackets"
     if shape == "quoted":
@@ -1272,7 +1272,7 @@ _NOT_SPEAKERS = frozenset(
 # Анонимный рецензент на сайтах фанфиков.
 _REVIEWER_NAMES = frozenset({"guest", "гость", "гест"})
 # Приписки автора «PS2:», «UPD:», «P.S.:» — не собеседник.
-_NOTE_SPEAKER_RE = re.compile(r"^(?:p\.?\s?s\.?|ps|пс|upd|апд|n\.?b\.?)\d*$", re.I)
+_NOTE_SPEAKER_RE = re.compile(r"^(?:p\.?\s?s\.?|пс|upd|апд|n\.?b\.?)\d*$", re.I)
 # Ник с цифрой в начале: «2-тян». «2-й», «1-е» — порядковые числительные.
 _DIGIT_NICK_RE = re.compile(r"^\d{1,4}-([^\W\d_]{2,})$")
 _ORDINAL_ENDINGS = frozenset(
@@ -1555,8 +1555,11 @@ _OWN_PHONE_RE = re.compile(
 # Кто пишет не из этого аккаунта: «сообщение от Анн», «написать Кену».
 _SENDER_RE = re.compile(r"сообщени\w*\s+от\s+([А-ЯЁA-Z][\w-]+)", re.I)
 _ADDRESSEE_RE = re.compile(r"(?:написать|написал|написала|ответить|ответил|ответила)\s+([А-ЯЁA-Z][\w-]+)")
-_HEADER_FROM_RE = re.compile(r"^[\[【]?сообщени\w*\s+от\s*[:：]\s*(.+?)[.\]】]*$", re.I)
-_HEADER_TO_RE = re.compile(r"^[\[【]?сообщени\w*\s+(?:для|отправлено)\s*[:：]\s*(.+?)[.\]】]*$", re.I)
+# Хвост из точек и скобок («[Сообщение от: Кен.]») срезает chat_account_owner:
+# ленивое имя перед таким хвостом регулярка перебирала бы заново с каждой буквы.
+_HEADER_FROM_RE = re.compile(r"^[\[【]?сообщени\w*\s+от\s*[:：]\s*(\S.*)$", re.I)
+_HEADER_TO_RE = re.compile(r"^[\[【]?сообщени\w*\s+(?:для|отправлено)\s*[:：]\s*(\S.*)$", re.I)
+_HEADER_TAIL = ".]】"
 _CHAT_CONTEXT_PARAGRAPHS = 3
 # Ответ с этого телефона: «Ниа быстро напечатал ответ» прямо перед сообщением.
 _SENT_RE = re.compile(
@@ -1659,8 +1662,9 @@ def chat_account_owner(context, lines) -> str:
     for line in lines:
         for pattern in (_HEADER_FROM_RE, _HEADER_TO_RE):
             match = pattern.match(line.strip())
-            if match:
-                others.append(match.group(1).split()[0])
+            name = match.group(1).rstrip(_HEADER_TAIL) if match else ""
+            if name:
+                others.append(name.split()[0])
     for text in context:
         others += [match.group(1) for match in _SENDER_RE.finditer(text)]
         others += [match.group(1) for match in _ADDRESSEE_RE.finditer(text)]
@@ -1899,7 +1903,7 @@ def book_bracket_conventions(chapters_html) -> dict:
 
 
 # Разрыв сцены: пустой абзац или одни разделители («— ​», «***», «■»).
-_SCENE_BREAK_RE = re.compile(r"^[\s\u200b\u00a0—–\-*•·■□◆◇~=_#]*$")
+_SCENE_BREAK_RE = re.compile(r"^[\s\u200b—–\-*•·■□◆◇~=_#]*$")
 _HEADER_MAX = 200
 
 
@@ -2111,9 +2115,6 @@ def find_windows(
 
     chat_ends: dict[int, int | None] = {}
     run_ends: dict[int, int | None] = {}
-
-    def chat_speakers(lines) -> set[str]:
-        return {parsed.speaker for parsed in map(chat_line, lines) if parsed is not None}
 
     def same_chat(lines, parsed: ChatLine) -> bool:
         """Собеседник пишет в этой переписке в той же форме («Имя: …», «Имя: «…»»)."""
@@ -2377,9 +2378,7 @@ def find_windows(
                 continue
             stop = span_end + 1
         single_stat = is_single_stat_line(text)
-        if shape == "open":
-            pass
-        elif not (
+        if shape != "open" and not (
             shape in _DATA_SHAPES
             or is_marked
             or single_stat
@@ -2432,7 +2431,7 @@ def find_windows(
             index += 1
             continue
 
-        origin = _origin(shape, is_marked, text)
+        origin = _origin(shape, is_marked)
         # Имя героя и его семья строками над карточкой с уровнем:
         # «Лилирука Арде.» / «Семья Гестии.» / «Уровень 2.».
         previous_end = windows[-1].end if windows else 0
@@ -2556,6 +2555,11 @@ _DIGIT_GROUP_RE = re.compile(r"(?<=\d) (?=\d{3}(?!\d))")
 
 def _escape(text: str) -> str:
     return html_module.escape(_DIGIT_GROUP_RE.sub(_NBSP, text), quote=False)
+
+
+# Блок уходит в главу одной строкой. (?<!\s) — только начало серии пробелов:
+# длинную серию без перевода строки иначе проходили бы заново с каждого пробела.
+_NEWLINE_RUN_RE = re.compile(r"(?<!\s)\s*\n\s*")
 
 
 _TITLE_MAX_CHARS = 60
@@ -2715,7 +2719,9 @@ def _stat_parts(text: str) -> list[str]:
     """Пары одной строки: через ``|`` или через `` / ``, если каждая часть — пара."""
     if "|" in text:
         return [part.strip() for part in text.split("|")]
-    pieces = [part.strip() for part in re.split(r"\s+/\s+", text)]
+    # (?<!\s) — только начало серии пробелов, иначе длинная серия без «/»
+    # проходится заново с каждого пробела. Разбиения это не меняет.
+    pieces = [part.strip() for part in re.split(r"(?<!\s)\s+/\s+", text)]
     if len(pieces) > 1 and all(_KV_RE.match(piece) for piece in pieces):
         return pieces
     return [text]
@@ -2781,7 +2787,9 @@ def _sentence_end(text: str, index: int) -> bool:
     following = text[index + 2:].lstrip()[:1]
     if not following or not (following.isupper() or following.isdigit() or following in "«(["):
         return False
-    word = re.search(r"([^\W\d_]+)$", text[:index])
+    # Слово ищем только с его начала: с середины длинного слова поиск
+    # проходил бы остаток заново.
+    word = re.search(r"(?<![^\W\d_])([^\W\d_]+)$", text[:index])
     return not (word and word.group(1).lower() in _ABBREVIATIONS)
 
 
@@ -2933,7 +2941,7 @@ def _render_chat(texts, template, source_html) -> str:
         f"background:{background};color:{text_color};text-align:center;line-height:1.45;"
     )
     block = f'<div {BLOCK_ATTR}="chat"{_original_attr(source_html)} style="{style}">' + "".join(pieces) + "</div>"
-    return re.sub(r"\s*\n\s*", " ", block)
+    return _NEWLINE_RUN_RE.sub(" ", block)
 
 
 
@@ -3285,7 +3293,7 @@ def _render_forum(texts, template, source_html) -> str:
         f"background:{template['background']};color:{template['text']};text-align:left;line-height:1.5;"
     )
     block = f'<div {BLOCK_ATTR}="forum"{_original_attr(source_html)} style="{style}">' + "".join(pieces) + "</div>"
-    return re.sub(r"\s*\n\s*", " ", block)
+    return _NEWLINE_RUN_RE.sub(" ", block)
 
 
 def _trim_span_quotes(texts):
@@ -3357,7 +3365,7 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
         f"color:{template['text']};text-align:center;line-height:1.6;"
     )
     block = f'<div {BLOCK_ATTR}="{kind}"{_original_attr(source_html)} style="{style}">' + "<br />".join(pieces) + "</div>"
-    return re.sub(r"\s*\n\s*", " ", block)
+    return _NEWLINE_RUN_RE.sub(" ", block)
 
 
 # --- применение и снятие ----------------------------------------------------

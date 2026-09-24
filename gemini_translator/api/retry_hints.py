@@ -10,6 +10,7 @@ HTTP-дата), ``retryAfterMs`` в теле у OmniRoute, ``RetryInfo.retryDela
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -142,7 +143,7 @@ def _positive_number(value):
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    if number != number or number in (float("inf"), float("-inf")):
+    if not math.isfinite(number):
         return None
     return number
 
