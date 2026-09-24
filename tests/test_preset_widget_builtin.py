@@ -60,5 +60,73 @@ class PresetWidgetBuiltinTests(unittest.TestCase):
         self.assertEqual(widget.prompt_combo.itemText(0), "[Новый Промпт]")
 
 
+class PresetWidgetOverridePromptTests(unittest.TestCase):
+    """Промпт последовательного перевода подменяет выбранный — виджет
+    должен это показывать."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        cls.settings_manager = _SettingsManagerStub()
+        cls.app.get_settings_manager = lambda: cls.settings_manager
+
+    def _make_widget(self):
+        return PresetWidget(
+            preset_name="Промпт",
+            override_prompt_func=lambda: "SEQUENTIAL {previous_chapter_reference}",
+            override_prompt_title="Промпт последовательного перевода",
+            override_prompt_notice="Этот промпт модель не получит.",
+        )
+
+    def test_notice_follows_override_state(self):
+        widget = self._make_widget()
+        self.assertTrue(widget.override_notice.isHidden())
+
+        widget.set_override_active(True)
+        self.assertFalse(widget.override_notice.isHidden())
+        self.assertEqual(widget.override_notice.text(), "Этот промпт модель не получит.")
+
+        widget.set_override_active(False)
+        self.assertTrue(widget.override_notice.isHidden())
+
+    def test_widget_without_override_has_no_view_button_and_ignores_state(self):
+        widget = PresetWidget()
+        self.assertIsNone(widget.override_view_btn)
+
+        widget.set_override_active(True)
+        self.assertTrue(widget.override_notice.isHidden())
+
+    def test_view_button_shows_override_prompt_read_only(self):
+        from unittest import mock
+
+        widget = self._make_widget()
+        shown = []
+
+        def fake_exec(_context, dialog):
+            shown.append(dialog)
+            return 0
+
+        with mock.patch(
+            "gemini_translator.ui.widgets.preset_widget.exec_dialog", fake_exec
+        ):
+            widget.override_view_btn.click()
+
+        self.assertEqual(len(shown), 1)
+        dialog = shown[0]
+        self.assertEqual(dialog.windowTitle(), "Промпт последовательного перевода")
+        from PyQt6.QtWidgets import QPlainTextEdit
+
+        view = dialog.findChild(QPlainTextEdit)
+        self.assertTrue(view.isReadOnly())
+        self.assertEqual(view.toPlainText(), "SEQUENTIAL {previous_chapter_reference}")
+
+    def test_view_button_stays_enabled_during_session(self):
+        widget = self._make_widget()
+        widget.set_session_mode(True)
+
+        self.assertTrue(widget.override_view_btn.isEnabled())
+        self.assertFalse(widget.save_as_btn.isEnabled())
+
+
 if __name__ == "__main__":
     unittest.main()

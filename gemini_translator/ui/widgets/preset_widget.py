@@ -21,7 +21,8 @@ class PresetWidget(QWidget):
              load_presets_func=None, save_presets_func=None,
              get_last_text_func=None, get_last_preset_func=None,
              save_last_preset_func=None, show_default_button=True,
-             builtin_presets_func=None):
+             builtin_presets_func=None, override_prompt_func=None,
+             override_prompt_title=None, override_prompt_notice=None):
         
         super().__init__(parent)
         app = QtWidgets.QApplication.instance()
@@ -39,6 +40,12 @@ class PresetWidget(QWidget):
         self.get_last_text = get_last_text_func or self.settings_manager.get_custom_prompt
         self.get_last_preset = get_last_preset_func or self.settings_manager.get_last_prompt_preset_name
         self.save_last_preset = save_last_preset_func
+        # Встроенный промпт, который в каком-то режиме подменяет выбранный
+        # (последовательный перевод глав). Виджет показывает его отдельно,
+        # чтобы было видно, что на самом деле уйдёт модели.
+        self.get_override_prompt = override_prompt_func
+        self.override_prompt_title = override_prompt_title or ""
+        self.override_prompt_notice = override_prompt_notice or ""
 
         self.loaded_preset_name = None
         self.loaded_preset_source = None
@@ -85,14 +92,29 @@ class PresetWidget(QWidget):
         self.prompt_edit.textChanged.connect(self._on_text_changed)
 
         bottom_panel_layout = QHBoxLayout()
+        self.override_view_btn = None
+        if self.get_override_prompt:
+            self.override_view_btn = QPushButton(f"👁 {self.override_prompt_title}")
+            self.override_view_btn.setToolTip("Посмотреть встроенный промпт (только чтение)")
+            self.override_view_btn.clicked.connect(self._show_override_prompt)
+            bottom_panel_layout.addWidget(self.override_view_btn)
         load_default_btn = QPushButton(f"📋 Загрузить стандартный {self.preset_name_lower}")
         load_default_btn.clicked.connect(self._load_default_prompt)
         bottom_panel_layout.addStretch()
         bottom_panel_layout.addWidget(load_default_btn)
 
+        # Предупреждение «этот промпт сейчас не используется»; тон берётся
+        # из общей темы (QLabel#statusChip[tone="warning"]).
+        self.override_notice = QLabel(self.override_prompt_notice)
+        self.override_notice.setObjectName("statusChip")
+        self.override_notice.setProperty("tone", "warning")
+        self.override_notice.setWordWrap(True)
+
         main_layout.addLayout(top_panel_layout)
+        main_layout.addWidget(self.override_notice)
         main_layout.addWidget(self.prompt_edit)
         main_layout.addLayout(bottom_panel_layout)
+        self.override_notice.setVisible(False)
         # setVisible только после вставки в layout: у виджета без родителя
         # setVisible(True) на мгновение показывает его отдельным окном.
         load_default_btn.setVisible(self.show_default_button)
@@ -308,6 +330,41 @@ class PresetWidget(QWidget):
                 self.prompt_combo.setItemText(index, new_text)
         self.prompt_combo.blockSignals(False)
 
+    def set_override_active(self, active):
+        """Показывает или прячет предупреждение, что вместо текста в
+        редакторе модель получит встроенный промпт."""
+        if not self.get_override_prompt:
+            return
+        self.override_notice.setVisible(bool(active))
+
+    def _show_override_prompt(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.override_prompt_title)
+        dialog.resize(760, 560)
+        layout = QVBoxLayout(dialog)
+
+        hint = QLabel(
+            "Когда включён «Последовательный перевод глав», модель получает "
+            "этот встроенный промпт вместо выбранного во вкладке. Поля в фигурных "
+            "скобках программа заполняет сама: глоссарий, примеры оформления, "
+            "прошлая переведённая глава и текст главы."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(self.get_override_prompt() or "")
+        layout.addWidget(view, 1)
+
+        buttons = QtWidgets.QDialogButtonBox()
+        close_btn = buttons.addButton("Закрыть", QtWidgets.QDialogButtonBox.ButtonRole.RejectRole)
+        close_btn.setDefault(True)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        exec_dialog(self, dialog)
+
     def _load_default_prompt(self):
         self.prompt_edit.setPlainText(self.get_default_prompt())
         self.prompt_combo.setCurrentIndex(0)
@@ -379,6 +436,9 @@ class PresetWidget(QWidget):
             widget.setEnabled(not is_session_active)
         for widget in self.findChildren(QComboBox):
             widget.setEnabled(not is_session_active)
+        # Просмотр встроенного промпта ничего не меняет — доступен и в сессии.
+        if self.override_view_btn is not None:
+            self.override_view_btn.setEnabled(True)
             
         if hasattr(self, 'prompt_edit'):
             self.prompt_edit.setReadOnly(is_session_active)

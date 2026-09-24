@@ -603,7 +603,16 @@ class InitialSetupPage(ShellPage):
             get_last_text_func=self.settings_manager.get_custom_prompt,
             get_last_preset_func=self.settings_manager.get_last_prompt_preset_name,
             save_last_preset_func=self.settings_manager.save_last_prompt_preset_name,
-            builtin_presets_func=api_config.builtin_translation_prompt_variants
+            builtin_presets_func=api_config.builtin_translation_prompt_variants,
+            # Последовательный перевод берёт свой промпт и выбранный
+            # игнорирует (PromptBuilder._effective_translation_prompt).
+            override_prompt_func=api_config.default_sequential_prompt,
+            override_prompt_title="Промпт последовательного перевода",
+            override_prompt_notice=(
+                "Включён «Последовательный перевод глав»: этот промпт модель "
+                "не получит. Вместо него работает встроенный промпт "
+                "последовательного перевода — посмотреть его можно кнопкой внизу."
+            ),
         )
         self.preset_widget.load_last_session_state()
 
@@ -789,6 +798,9 @@ class InitialSetupPage(ShellPage):
         self.project_actions_widget.sync_project_requested.connect(self._run_project_sync)
 
         self.translation_options_widget.settings_changed.connect(self._on_translation_options_changed)
+        sequential_checkbox = self.translation_options_widget.sequential_checkbox
+        sequential_checkbox.toggled.connect(self.preset_widget.set_override_active)
+        self.preset_widget.set_override_active(sequential_checkbox.isChecked())
         self.task_management_widget.tasks_changed.connect(lambda: self._prepare_and_display_tasks(clean_rebuild=True))
 
         self.model_settings_widget.recalibrate_requested.connect(self._calibrate_cpu)
