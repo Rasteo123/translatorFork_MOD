@@ -440,6 +440,8 @@ _QUOTED_KEY_RE = re.compile(r"^«[^»]{1,40}»\s*[:：]")
 # Значение из скобок и имён в кавычках, в том числе пустых ячеек:
 # «Магия: 【 】», «Магия: «Эйнсел», [ ], [ ].».
 _NAMES_OR_CELLS_RE = re.compile(r"^(?:(?:«[^«»]*[^\W\d_][^«»]*»|[\[【〖][^\]】〗]*[\]】〗])[\s,;]*)+\.?$")
+# Рейтинг звёздами: «Звездность: ★★», «Ранг: ☆☆☆».
+_STARS_RE = re.compile(r"^[★☆✦✧⭐]{1,10}\s*[.!]?$")
 # Прирост: «I40 → I50», «lv2→lv3», «5 → 6».
 _INCREMENT_RE = re.compile(r"[\w)]\s*(?:→|->|=>)\s*[\w(]")
 # Рост уровня: «Lv7 → lv8!», «Ур. 1 → Ур. 2», «Повышение уровня: 5 → 6!».
@@ -471,6 +473,11 @@ _KEY_STOP_WORDS = frozenset(
     "как что когда если чтобы где это так вот же ли гласит говорит сказал сказала подумал подумала "
     "ответил ответила спросил спросила".split()
 )
+
+
+# «Я из будущего:», «Он подумал:» — фраза. «Вы получили способность:», «Ты знаешь:» —
+# так говорит и система, их не трогаем.
+_PRONOUN_KEY_RE = re.compile(r"(?<![\w-])(?:я|он|она|оно|они|мы)(?![\w-])", re.I)
 
 
 def _phrase_key(words) -> bool:
@@ -750,6 +757,8 @@ def is_key_value(text: str) -> bool:
         stat_key = _is_stat_key(key)
         if not value or len(key.split()) > 4 or not any(char.isalpha() for char in key):
             continue
+        if _PRONOUN_KEY_RE.search(key):
+            continue
         # Значение с кавычки — сценарная реплика «Имя: «…»», но у известной
         # характеристики это имя навыка или магии: «Магия: «Золушка.»».
         if (
@@ -762,7 +771,7 @@ def is_key_value(text: str) -> bool:
             continue
         if unbracketed and key.lower().split()[0] in _META_KEYS:
             continue
-        if not (_mostly_alphanumeric(value) or _NAMES_OR_CELLS_RE.match(value)):
+        if not (_mostly_alphanumeric(value) or _NAMES_OR_CELLS_RE.match(value) or _STARS_RE.match(value)):
             continue
         # Прирост со стрелкой — данные при любом ключе: «Шарль: lv2→lv3.».
         if (ends_with_period or ends_with_ellipsis) and not stat_key and _INCREMENT_RE.search(value) is None:
@@ -859,6 +868,11 @@ def _is_empty_bracket(text: str) -> bool:
     return bracket_shape(text) == "full" and not any(char.isalnum() for char in strip_brackets(text))
 
 
+def _colon_in_parentheses(text: str) -> bool:
+    before = re.split(r"[:：]", text, maxsplit=1)[0]
+    return before.count("(") > before.count(")")
+
+
 def _is_keyed_definition(text: str) -> bool:
     """Одиночная карточка термина. Пост «[Сюй Литао V]: Для меня большая честь…»
     (от первого лица, с «@») — не определение."""
@@ -878,7 +892,8 @@ _CARD_KEYS = frozenset(
     "форма пункт примечание круг этап стадия требование требования штраф заказчик заказчики цель "
     "срок время место лимит состояние таланты эффекты бонус бонусы ограничение ограничения условия "
     "откат перезарядка расход дальность радиус источник происхождение владелец прогресс шанс "
-    "вероятность полномочия привилегии права обязанности".split()
+    "вероятность полномочия привилегии права обязанности внимание предупреждение важно звездность "
+    "артефакт артефакты инвентарь предметы".split()
 )
 _CARD_ROW_RE = re.compile(r"^([^:：«»\"“”!?,]{1,60}?)\s*[:：]\s*(\S.*)$", re.S)
 _CARD_ROW_MAX = 700
@@ -888,7 +903,7 @@ _NUMBERED_ITEM_RE = re.compile(r"^\d{1,2}[.)]\s+\S")
 
 def _card_key(key: str) -> bool:
     words = [word.lower() for word in re.findall(r"[^\W\d_]+", key)]
-    if not words or len(words) > _CARD_ROW_KEY_WORDS or _phrase_key(words):
+    if not words or len(words) > _CARD_ROW_KEY_WORDS or _phrase_key(words) or _PRONOUN_KEY_RE.search(key):
         return False
     return any(word in _STAT_KEYS or word in _CARD_KEYS for word in words)
 
@@ -911,9 +926,16 @@ def _is_field_label(text: str) -> bool:
     return match is not None and match.group(1)[:1].isupper() and _card_key(match.group(1))
 
 
+def _is_stat_delta_line(text: str) -> bool:
+    """«Удача +10.», «Сила +30» — характеристика с числом со знаком, без двоеточия."""
+    match = _STAT_DELTA_FIELD_RE.match(text.strip().rstrip("."))
+    return match is not None and _is_stat_key(match.group(1).strip())
+
+
 def _is_data_line(text: str) -> bool:
     return (
         bracket_shape(text) in _DATA_SHAPES
+        or _is_stat_delta_line(text)
         or is_key_value(text)
         or is_single_stat_line(text)
         or _is_decorated(text)
@@ -1868,6 +1890,15 @@ def find_windows(
         chat_ends[position] = stop if verdict == "chat" else None
         return chat_ends[position]
 
+    def key_value_follows(position: int) -> bool:
+        following = position + 1
+        return (
+            following < len(paragraphs)
+            and paragraphs[following].adjacent
+            and not excluded(paragraphs[following])
+            and is_key_value(paragraphs[following].text)
+        )
+
     def data_follows(position: int) -> bool:
         following = position + 1
         if following >= len(paragraphs) or not paragraphs[following].adjacent or excluded(paragraphs[following]):
@@ -1999,7 +2030,9 @@ def find_windows(
             or is_marked
             or single_stat
             or _is_header(text, settings)
-            or is_key_value(text)
+            # «Развитие 2.x (Интерлюдия: Чак)»: двоеточие внутри скобок окно не начинает,
+            # а пункт «Мантия (Экипирована: Тейлор)» в списке продолжает.
+            or (is_key_value(text) and (not _colon_in_parentheses(text) or key_value_follows(index)))
             or is_level_header(text)
             or is_increment_line(text)
             or is_section_label(text)
@@ -2910,7 +2943,7 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
         texts, heads = texts[1:], heads[1:]
 
     rows = []
-    card = sum(1 for text in texts if is_key_value(text)) >= 2
+    card = sum(1 for text in texts if is_key_value(text) or _is_card_row(text)) >= 2
     for text, head in zip(texts, heads):
         if head:
             name = _strip_outer_quotes(strip_brackets(text))

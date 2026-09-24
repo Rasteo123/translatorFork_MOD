@@ -2561,3 +2561,58 @@ def test_ellipsis_spacers_inside_a_chat_keep_it_whole():
 
     assert [(window.kind, window.lines) for window in windows] == [("chat", lines)]
     assert block.count("float:") == 3 and ">…<" not in block
+
+
+# --- мелочи по снимкам: звёзды, «Удача +10.», «Внимание:», ключи-местоимения -------
+
+
+def test_card_with_stars_deltas_and_warning_stays_whole():
+    # «Бизнес с карточками»: «Звездность: ★★»; «Щит»: «Удача +10.»; «Красный дракон»: «Внимание: …».
+    card = [
+        "Карта персонажа: Ван Эръя",
+        "Звездность: ★★",
+        "Удача +10.",
+        "Особая характеристика: увеличивает шанс уклонения на 6%.",
+        "Внимание: этот эффект может привести к дестабилизации арканной энергии в области.",
+    ]
+    html = _chapter("Описание карты изменилось.", *card, "Цзян Ци хмыкнул.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_pronoun_before_colon_is_not_a_key():
+    assert not sw.is_key_value("Я из будущего: FNC победят KZ в финале со счетом 3:1")
+    assert not sw.is_key_value("Он подумал: неплохо бы поесть")
+    assert sw.is_key_value("Навык: Контроль температуры")
+    # Система говорит на «вы»: «Вы получили особую способность: Вечная Тьма.» («Красный дракон»).
+    assert sw.is_key_value("Вы получили особую способность: Вечная Тьма.")
+
+
+def test_colon_inside_parentheses_is_not_a_key_value_pair():
+    # «Abaddon Borne»: заголовок «Развитие 2.x (Интерлюдия: Чак)» и авторское предупреждение под ним.
+    html = _chapter("Развитие 2.x (Интерлюдия: Чак)", "Предупреждение: экстремальный расизм. Здесь нет хороших парней.",
+                    "Чарли не понимал, то ли это сон, то ли его просто неслабо приложили.")
+    assert find_windows(html) == []
+
+
+def test_item_with_colon_in_parentheses_continues_a_card():
+    # «The Limits of Power»: «Звёздная Мантия (Экипирована: Тейлор Эберт)» в списке артефактов.
+    card = ["Артефакты:", "Звёздная Мантия (Экипирована: Тейлор Эберт)", "Золотой Лоток (Экипирован: Тейлор Эберт)"]
+    html = _chapter("Она открыла инвентарь.", "Очки Жизни: 4", *card, "Тейлор вздохнула.")
+
+    assert [window.lines for window in find_windows(html)] == [["Очки Жизни: 4", *card]]
+
+
+def test_pronoun_phrase_does_not_continue_a_card():
+    # «Пробуждение»: «Он открыл инвентарь: действительно, в первой ячейке…» — проза.
+    html = _chapter("[Получен подарок]", "Он открыл инвентарь: действительно, в первой ячейке лежал подарок.", "Текст.")
+
+    assert [window.lines for window in find_windows(html)] == [["[Получен подарок]"]]
+
+
+def test_two_items_with_colons_in_parentheses_start_a_window():
+    # «The Limits of Power»: предметы с владельцем в скобках идут подряд.
+    items = ["Золотой Лоток (Экипирован: Тейлор Эберт)", "Звёздная Мантия (Экипирована: Тейлор Эберт)"]
+    html = _chapter("Мокс Янтарь", *items, "Посох Небесного Ослепления")
+
+    assert [window.lines for window in find_windows(html)] == [items]
