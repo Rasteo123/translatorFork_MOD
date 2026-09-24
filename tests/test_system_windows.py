@@ -2616,3 +2616,257 @@ def test_two_items_with_colons_in_parentheses_start_a_window():
     html = _chapter("Мокс Янтарь", *items, "Посох Небесного Ослепления")
 
     assert [window.lines for window in find_windows(html)] == [items]
+
+
+# --- «The Game Begins»: одиночные сообщения, служебные строки чата, Арканы ------------
+
+
+def test_typing_and_rename_lines_inside_a_chat_keep_it_whole():
+    # Гл. 13: «… Содзиро печатает.» между сообщениями; гл. 63: «Футаба изменила имя на ДосВагина.».
+    lines = [
+        "Акира: «Здравствуйте, дядя Содзиро. Ничего, если я вернусь попозже?»",
+        "… Содзиро печатает.",
+        "Содзиро: «Возвращайся до закрытия кафе, тогда ладно».",
+        "Акира: «Поняла. Спасибо вам огромное».",
+    ]
+    html = _chapter("Акира достала телефон и быстро набрала сообщение.", *lines, "Акира убрала телефон в карман.")
+    windows = find_windows(html)
+
+    assert [(window.kind, window.lines) for window in windows] == [("chat", lines)]
+    block = sw.render_window(windows[0].lines, "chat")
+    assert block.count("float:") == 3 and "… Содзиро печатает.</span>" in block
+
+    renamed = [
+        "Ниа: Но тебе действительно не стоит использовать это имя. Смени его.",
+        "Футаба: Ладно, так лучше?",
+        "Футаба изменила имя на ДосВагина.",
+        "Ниа: Зачем?!",
+        "ДосВагина: Был еще вариант ДосПингас.",
+    ]
+    html = _chapter("Ниа хмыкнул.", *renamed, "Он ведь наверняка пожалеет об этом?")
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", renamed)]
+
+
+def test_typing_line_alone_or_rename_in_prose_is_not_a_window():
+    html = _chapter(
+        "— Покороче, пожалуйста, — попросил Ниа.",
+        "ДосВагина печатает…",
+        "Сожаление нахлынуло мгновенно.",
+        "Став королевой, Алассра сменила имя на Симбул.",
+    )
+
+    assert find_windows(html) == []
+    assert not sw._is_chat_service("Она снова сменила никнейм на один-единственный иероглиф: «И».")
+    assert not sw._is_chat_service("В то же время она заметила, что Майлз снова печатает.")
+
+
+def test_nickname_starting_with_a_digit_is_a_chat_speaker():
+    # Гл. 82: «2-тян» — ник Ниа в общем чате.
+    lines = [
+        "2-тян: Рюдзи, а каково это – иметь маму?",
+        "DreadPirateSakamoto: Ну это типа когда рядом очень добрый человек, который постоянно пилит тебя.",
+        "2-тян: Кажется, меня только что усыновили.",
+    ]
+    html = _chapter("Ниа вытащил телефон.", *lines, "— Чудно, — буркнул Ниа, пряча телефон.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+    # Порядковые «2-й», «1-е место» — не ники.
+    assert not sw._looks_like_name("2-й")
+    assert not sw._looks_like_name("1-е место")
+
+
+def test_single_message_after_a_phone_line_is_a_chat_and_a_reply_is_the_owners():
+    # Гл. 81: сообщение Акиры на телефоне Ниа и ответ Ниа под ником Near.
+    red = "RedJoker: АКЭТИ НАБЛЮДАЕТ. ОН НЕ ПОДПУСТИТ НИКОГО К НИА, ПОКА МЫ НЕ ОБНАРУЖИМ СЕБЯ."
+    near = "Near: Назад, пока нет нужды ввязываться в бой. Я собираюсь сбежать."
+    html = _chapter(
+        "На ходу она отправила сообщение остальным.",
+        "У Ниа пискнул телефон – к всеобщему удивлению, мобильник до сих пор не разбился.",
+        red,
+        "— …Дерьмо, — Ниа поднялся на ноги и быстро напечатал ответ.",
+        near,
+        "Спрятав телефон, Ниа приготовился к худшему.",
+    )
+    windows = find_windows(html)
+
+    assert [(window.kind, window.lines) for window in windows] == [("chat", [red]), ("chat", [near])]
+    assert windows[0].chat_owner == "" and windows[1].chat_owner == "Near"
+
+
+def test_single_message_between_chats_of_the_same_people_is_a_chat():
+    # Гл. 63: одна реплика Футабы между двумя кусками переписки.
+    first = ["Ниа: Кровавый что? Поясни?", "Футаба: Ну, кровавый дождь… ладно, проехали.", "Футаба: Забудь, это неважно."]
+    lone = "Футаба: И вообще, почему у тебя до сих пор нет имени посмешнее?"
+    second = ["Ниа: Посмешнее? Хочешь сказать, мое имя забавное?", "Футаба: Ниа – твое настоящее имя?", "Ниа: … Тут все сложно."]
+    html = _chapter(
+        "Ниа прищурился.", *first, "… Ниа был уверен, что Футаба видит искажения.", lone,
+        "Ниа удивленно приподнял бровь.", *second, "Подросток хмыкнул.",
+    )
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [
+        ("chat", first), ("chat", [lone]), ("chat", second),
+    ]
+
+
+def test_single_colon_line_without_messaging_is_not_a_chat():
+    for lines in (
+        ["Он шёл домой.", "Сье: Ты тут? Чем занята?", "Он вздохнул."],
+        # Приписка автора и заголовок — не собеседники.
+        ["Пишите в чат читателей~", "PS2: Если вы не видите комментарии к главе – это нормально, у нас сбой.", "Текст."],
+        ["Она вытащила мобильный телефон.", "Воспоминание: несколько месяцев назад…", "Текст."],
+        # Новость в кавычках после слов о смартфоне — не переписка.
+        ["Компания выпустила смартфон.", "«Невероятно: сегодня еще одна компания начала продажи!»", "Текст."],
+    ):
+        assert all(window.kind != "chat" for window in find_windows(_chapter(*lines))), lines
+    # Сообщение ИИ в скобках на телефоне — системное окно, а не чат.
+    html = _chapter("Линь Цие поспешно открыл телефон.", "[Предупреждение Управляющему: человек проявляет сильную враждебность.]", "Текст.")
+    assert [window.kind for window in find_windows(html)] == ["notice"]
+
+
+def test_persona_card_with_unknown_value_and_level_colon_stays_whole():
+    # Гл. 90: карточка Персоны Футабы теряла шапку.
+    card = [
+        "Владелица Персоны: Футаба.",
+        "Персона:?? — Отшельник.",
+        "Ур. 35:",
+        "Сопротивляемость: Слабость к льду, устойчивость к тьме/огню.",
+        "Навыки: Агилао, Мегидо, Эйха, Контрудар, Масакунда",
+        "HP: 266/266.",
+        "SP: 220/220.",
+    ]
+    html = _chapter("— Интересно, — пробормотала Футаба, когда перед ее глазами всплыли параметры.", *card, "— Эх, — Футаба опустила голову.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_numbered_dash_lists_under_labels_join_the_tally():
+    # Гл. 89: списки Арканов над итогом «Старшие Арканы: 18.».
+    lines = [
+        "Старшие Арканы:", "0 – Шут.", "I – Маг.", "II – Верховная Жрица.", "XIV – Умеренность.",
+        "Обратные Арканы:", "0 – Шут.", "i – Консультант.", "xvii – Комета.",
+        "Старшие Арканы: 18.", "Обратные Арканы: 11.",
+    ]
+    html = _chapter("Величественные карты окружили её.", *lines, "— Кроме того, я советую вам вернуться ко сну, — сказал L.")
+
+    assert [window.lines for window in find_windows(html)] == [lines]
+    # Одна карта в прозе — не окно.
+    assert find_windows(_chapter("Она поднесла карту к глазам.", "xi – Похоть.", "Акиру передернуло.")) == []
+
+
+def test_shout_drawn_in_angle_brackets_is_not_a_notice():
+    # Гл. 83: облачко крика Мисы «^^^ / < А НУ СТОЙТЕ! > / vvv — закричала Миса».
+    html = _chapter("— Как я могу называть их героями?", "^^^^^^^^^", "< А НУ СТОЙТЕ! >", "vvvvvvvvv … — закричала Миса.")
+
+    assert find_windows(html) == []
+    # Уведомления в угловых скобках остаются («So I'm an Earth»).
+    assert [window.lines for window in find_windows(_chapter("Текст.", "< УРОВЕНЬ ПОВЫШЕН! >", "Текст."))] == [["< УРОВЕНЬ ПОВЫШЕН! >"]]
+    assert [window.lines for window in find_windows(_chapter("Текст.", "< Вы согласны?>", "Текст."))] == [["< Вы согласны?>"]]
+
+
+def test_script_reply_after_a_phone_in_speech_is_not_a_chat():
+    # «Сукуна слишком добрый», гл. 5: Годжо машет телефоном, а реплики записаны сценарием.
+    html = _chapter(
+        "— Однако… — он достал телефон и помахал им в воздухе. — Утренние лекции вам прочитает Фушигуро.",
+        "Фушигуро: «Так я и знал».",
+        "Итадори:",
+        "— Ого! Фушигуро будет вести у нас уроки?",
+    )
+
+    assert [window.kind for window in find_windows(html)] == []
+
+
+def test_verbs_and_emoticons_are_not_lone_messages():
+    for lines in (
+        ["Она открыла чат.", "Набрала: «Ты тут?», но так и не решилась нажать «отправить».", "Текст."],
+        ["И вот вам приходит сообщение.", "Представьте: вы гуляете по парку, и тут снова сообщение?", "Текст."],
+        ["— Не забудь выключить телефон, — пришло сообщение от учителя.", "Чэнь Фань: «∑(O_O;)»", "Текст."],
+    ):
+        assert [window.kind for window in find_windows(_chapter(*lines))] == [], lines
+
+
+def test_paragraph_with_line_breaks_is_not_one_message():
+    # «Our Wild Love»: вся переписка в одном абзаце через <br/> — одним пузырём её не показать.
+    merged = "Акира: Привет всем. Простите, что не отвечал.<br/>Анн: О, я-то знаю.<br/>Рюдзи: Че? Ты знаешь?"
+    html = _chapter("Телефон Акиры завибрировал от нового сообщения.", merged, "Он улыбнулся.")
+
+    assert find_windows(html) == []
+
+
+def test_lone_message_next_to_a_chat_in_another_form_is_not_a_chat():
+    # «Белый Жнец»: «Обезьяна: «… Верю…»» сказано вслух, а «[Обезьяна: …]» — переписка.
+    chat = ["[Обезьяна: Как ты это сделал?]", "[Линь Най: Тебя это не касается.]", "[Обезьяна: Ладно, молчу.]"]
+    html = _chapter("— Теперь веришь?", "Обезьяна: «… Верю…»", "Обезьяна смотрел на него странно.", *chat, "Текст.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", chat)]
+
+
+def test_lone_messages_do_not_introduce_chat_participants():
+    # Одиночное сообщение не делает собеседников «известными» для коротких пар в других главах.
+    first = _chapter(
+        "Пришло сообщение от Фушигуро.", "Фушигуро: «Так я и знал».", "Текст.",
+        "Пришло сообщение от Сукуны.", "Сукуна: «Где мой шоколад?»", "Текст.",
+    )
+    second = _chapter("— И шоколад еще!", "Сукуна: «… Как он догадался, что это я?!»", "Фушигуро: «Вы что, младшеклассники?»", "Текст.")
+
+    scans = sw.scan_chapters([("a.html", "a.html", first, None), ("b.html", "b.html", second, None)])
+
+    assert [window.kind for window in scans[0].candidates] == ["chat", "chat"]
+    assert scans[1].candidates == []
+
+
+def test_notice_followed_by_a_question_about_it_stays_a_window():
+    # «So I'm an Earth»: «— Кто это сказал?» после уведомления — не ремарка к нему.
+    notice = "< Опыт получен. Вы получили навык [Сопротивление огню ур. 1]>"
+    html = _chapter("— Жжёт! — вскрикнула я.", notice, "— Кто это сказал? — Голос прозвучал прямо в моей голове.")
+    assert [window.lines for window in find_windows(html)] == [[notice]]
+    card = "[«Секретная карта. Наруто Узумаки: Преемник Хокаге»]"
+    html = _chapter("На карте красовался юноша.", card, "— В магазине сказали, что эта карта самая редкая, — добавил Канкуро.")
+    assert [window.lines for window in find_windows(html)] == [[card]]
+
+
+def test_two_messages_glued_into_one_line_are_not_one_bubble():
+    # «Predatory», гл. 12: перевод склеил два сообщения; под одним ником их не показать.
+    html = _chapter(
+        "Она быстро напечатала ответ.",
+        "FlippinMad: какого хрена тебе от меня надо mr10tickles: Будь на месте, Мэдисон, не будь занудой.",
+        "На последующие сообщения никто не ответил.",
+    )
+    assert find_windows(html) == []
+    # Двоеточие внутри сообщения само по себе не мешает: «Еще один вопрос: как…».
+    html = _chapter("Он отправил сообщение.", "Цзян Ци: «Еще один вопрос: как повышать звездный ранг?»", "Текст.")
+    assert [window.kind for window in find_windows(html)] == ["chat"]
+
+
+def test_lone_message_between_chats_keeps_the_phone_owner():
+    # «The Game Begins», гл. 63: телефон Ниа; одинокая реплика Футабы — тоже слева.
+    html = _chapter(
+        "Телефон Ниа издал короткий сигнал.",
+        "Футаба: Э-ге-гей! Ты в порядке?!", "Футаба: Прошло уже 24 часа!",
+        "Ниа ахнул.",
+        "Ниа: Я в порядке, не о чем беспокоиться.", "Футаба: А дождь ты видел?", "Футаба: Забудь.",
+        "Ниа был уверен, что Футаба что-то видит.",
+        "Футаба: И вообще, почему у тебя нет имени посмешнее?",
+        "Ниа приподнял бровь.",
+    )
+
+    assert [window.chat_owner for window in find_windows(html)] == ["Ниа", "Ниа", "Ниа"]
+
+
+def test_arcana_lists_render_numerals_and_both_labels_alike():
+    # «The Game Begins», гл. 89: номера карт выделены одинаково, обе подписи — одинаково.
+    lines = ["Старшие Арканы:", "0 – Шут.", "I – Маг.", "Обратные Арканы:", "0 – Шут.", "xvii – Комета.",
+             "Старшие Арканы: 18.", "Обратные Арканы: 11."]
+
+    block = sw.render_window(lines, "status")
+
+    assert block.count("Арканы:</b>") == 4
+    for numeral in ("0", "I", "xvii"):
+        assert f">{numeral}</b> – " in block
+    assert "СТАРШИЕ АРКАНЫ" not in block
+
+
+def test_level_line_with_colon_is_a_bold_row_without_the_colon():
+    # «The Game Begins», гл. 90: «Ур. 35:» в карточке Футабы.
+    block = sw.render_window(["Владелица Персоны: Футаба.", "Ур. 35:", "HP: 266/266."], "status")
+
+    assert ">Ур. 35</b>" in block and "Ур. 35:" not in block
