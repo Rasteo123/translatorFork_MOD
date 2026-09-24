@@ -1827,7 +1827,13 @@ def test_bbcode_leftovers_and_reply_from_form():
     windows = find_windows(html)
     parts = sw.forum_structure(windows[0].lines)
 
-    assert windows[0].lines == lines
+    # BB-код снимается уже при разборе абзацев.
+    assert windows[0].lines == [
+        "Тема: Официальный тред Медузы", "Раздел: Форумы ► США ► Броктон-Бей",
+        "Баграт (Автор темы) (Ветеран форума)", "Опубликовано 6 апреля 2011 г.:", "Всем привет!",
+        "(Показана страница 45 из 53)", "►Smoothmoves", "Ответ от 12 апреля 2011 г.:", "Короче, работаю я дома.",
+        "Конец страницы. 1, 2", "■",
+    ]
     assert parts[0] == ("topic", "Официальный тред Медузы", "Форумы ► США ► Броктон-Бей")
     assert [part[1] for part in parts if part[0] == "post"] == ["Баграт", "Smoothmoves"]
     assert "[b]" not in sw.render_window(lines, "forum")
@@ -1960,3 +1966,212 @@ def test_bbcode_tags_arc_markers_and_story_metadata_are_not_windows():
     )
 
     assert find_windows(html) == []
+
+
+# --- абзацы в обёртках: страницы веб-новелл и границы разделов --------------------
+
+
+def _wrapped(*paragraphs):
+    # «Dimensional Traveler», «Данмачи Белл взрослый»: каждый абзац в своих div.
+    body = "\n\n".join(
+        f'<div class="db cha-paragraph"><div class="dib pr">\n<p>{text}</p>\n</div></div>' for text in paragraphs
+    )
+    return f"<html><body>\n{body}\n</body></html>\n"
+
+
+def test_paragraphs_in_their_own_wrappers_form_one_window():
+    html = _wrapped(
+        "В этот миг перед глазами соткался экран Системы:",
+        "[Поздравляем! Вы уничтожили 8 демонов.]",
+        "[Дзинь. Текущий уровень повышен: 49 → 50!]",
+        "[Разблокирована новая функция: «Мини-карта».]",
+        "— Наконец-то! — усмехнулся Рэн.",
+    )
+
+    windows = find_windows(html)
+    result, count = sw.apply_windows(html, windows)
+
+    assert [window.lines for window in windows] == [[
+        "[Поздравляем! Вы уничтожили 8 демонов.]",
+        "[Дзинь. Текущий уровень повышен: 49 → 50!]",
+        "[Разблокирована новая функция: «Мини-карта».]",
+    ]]
+    assert count == 1 and result.count("<div") == result.count("</div>")
+    assert "экран Системы:" in result and "Наконец-то!" in result
+    assert sw.strip_windows(result) == (html, 1)
+
+
+def test_forum_across_containers_does_not_swallow_the_prose_around_it():
+    # «Ангел»: ветка начинается посреди общей обёртки главы, а продолжается уже
+    # после неё. Расширить замену до целых элементов значило бы проглотить главу.
+    head, tail = PHO_THREAD[:12], PHO_THREAD[12:]
+    html = (
+        '<html><body>\n<div class="chapter">\n<h2>Глава 15</h2>\n<p>Я вздохнула и открыла ноутбук.</p>\n'
+        + "".join(f"<p>{text}</p>\n" for text in head)
+        + "</div>\n"
+        + "".join(f"<p>{text}</p>\n" for text in tail)
+        + "<p>Я закрыла ноутбук.</p>\n</body></html>\n"
+    )
+
+    windows = find_windows(html)
+    result, count = sw.apply_windows(html, windows)
+
+    assert {window.kind for window in windows} == {"forum"}
+    assert [line for window in windows for line in window.lines] == PHO_THREAD
+    assert "Я вздохнула и открыла ноутбук." in result and "<h2>Глава 15</h2>" in result
+    assert result.count("<div") == result.count("</div>")
+    assert sw.strip_windows(result) == (html, count)
+
+
+def test_system_lines_in_two_sections_are_not_joined_through_the_prose_wrappers():
+    html = (
+        '<html><body>\n<div class="s1">\n<p>Он открыл панель.</p>\n<p>[Имя: Лин]</p>\n</div>\n'
+        '<div class="s2">\n<p>[Уровень: 3]</p>\n<p>Он закрыл панель.</p>\n</div>\n</body></html>\n'
+    )
+
+    windows = find_windows(html)
+    result, count = sw.apply_windows(html, windows)
+
+    assert [line for window in windows for line in window.lines] == ["[Имя: Лин]", "[Уровень: 3]"]
+    assert "Он открыл панель." in result and "Он закрыл панель." in result
+    assert result.count("<div") == result.count("</div>")
+    assert sw.strip_windows(result) == (html, count)
+
+
+# --- вёрстка: списки групп и длинные значения -------------------------------------
+
+
+def test_group_list_without_commas_is_rendered_with_separators_not_italic():
+    # «So I'm an Earth»: «[земляной дракон ур. 1] [Скоростная регенерация ОЗ ур. 8] …»
+    lines = ["Навыки:", "[земляной дракон ур. 1] [Скоростная регенерация ОЗ ур. 8] [Небесная сила ур. 2]"]
+
+    block = sw.render_window(lines, "status")
+
+    assert "земляной дракон ур. 1 · Скоростная регенерация ОЗ ур. 8 · Небесная сила ур. 2" in block
+    assert "<i>" not in block
+
+
+def test_long_values_keep_bold_keys_when_the_window_is_a_card():
+    # «Kumo desu ka», симулятор: «День первый: …» жирным, а длинный день — нет.
+    lines = [
+        "День первый: Клуб Героев отбивает атаку Vertex.",
+        "День сорок пятый: Миёси Карин вступает в Клуб Героев.",
+        "День пятьдесят четвертый: Vertex атакуют. Ты тайно нападаешь на Инубодзаки Ицуки и выводишь её из строя."
+        " Инубодзаки Фу остается охранять сестру и не участвует в битве.",
+    ]
+
+    block = sw.render_window(lines, "status")
+
+    assert block.count("<b ") == 3
+    assert "День пятьдесят четвертый:</b>" in block
+    assert "<i>" not in block
+
+
+def _contrast(first, second):
+    def luminance(color):
+        channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_forum_muted_text_is_readable_on_header_and_body():
+    # Строка раздела под темой лежит на фоне шапки: 4,29:1 было ниже AA.
+    for template in (sw.DEFAULT_TEMPLATES["forum"], {**sw.DEFAULT_TEMPLATES["forum"], "text": "#b0b6c4"}):
+        colors = sw._forum_colors(template)
+        assert _contrast(colors["muted"], colors["header"]) >= 4.5
+        assert _contrast(colors["muted"], template["background"]) >= 4.5
+
+
+def test_dash_list_inside_a_post_does_not_end_the_thread():
+    # «Ангел»: пост со сводкой слухов пунктами через тире, дальше снова посты.
+    thread = [
+        "♦ Тема: Девушка Симург",
+        "В: Доски ► Слухи ► Губители.",
+        "► Winged",
+        "Ответил 15 июня 2011 года:",
+        "Да! Всем привет! Я отслеживаю каждый слух. Скину список:",
+        "— В «Ящике Игрушек» есть участница, которой нравится Симург (Правда – «Ящик Игрушек» подтвердил).",
+        "— По какой-то причине Йип сбежала из больницы (Возможно – свидетели видели её в Тампе).",
+        "► Nakyak",
+        "Ответил 15 июня 2011 года:",
+        "Спасибо!",
+        "Конец страницы. 1, 2",
+    ]
+    html = _chapter("Луиза ткнула планшетом мне в лицо.", *thread, "— И как мне это исправить? — спросила я.")
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [thread]
+
+
+def test_forum_lines_with_a_leading_ellipsis_keep_their_roles():
+    # «Ангел», «Predatory»: переводчик поставил «…» перед строками ветки.
+    assert sw.forum_role("…Конец страницы. 1 , 2 , 3 , 4.") == "end"
+    assert sw.forum_role("…В: Доски ► Слухи ► Губители.") == "board"
+    assert sw.forum_role("…") == "decor"
+    parts = sw.forum_structure(["♦ Тема: Девушка Симург", "…В: Доски ► Слухи.", "► Judge", "Ответил 15 июня:",
+                                "… Не-а, беру свои слова обратно.", "…Конец страницы. 1, 2"])
+    assert parts[0] == ("topic", "Девушка Симург", "Доски ► Слухи.")
+    assert parts[1][4] == ["… Не-а, беру свои слова обратно."]
+    assert parts[-1] == ("page", "Конец страницы. 1, 2")
+
+
+def test_digit_groups_do_not_break_across_lines():
+    # На телефоне «10 000» рвалось на «10» и «000».
+    block = sw.render_window(["[Очки богатства: 2 618 757]", "[Оружейный камень: 10 000 лет]"], "status")
+
+    assert "2 618 757" in block and "10 000" in block
+
+
+def test_set_bonus_line_is_not_taken_for_the_window_title():
+    # «Щит небосвода»: «2 предмета: …» — строка бонуса комплекта, а не «Предмет: Меч».
+    lines = ["2 предмета: физическая защита +150%", "4 предмета: основные характеристики +150%"]
+
+    block = sw.render_window(lines, "status")
+
+    assert "2 ПРЕДМЕТА" not in block and block.count("<b ") == 2
+    assert sw._looks_like_title("Предмет: Меч Рассвета")
+
+
+def test_angle_bracketed_lines_are_system_messages():
+    # «So I'm an Earth»: уведомления системы в угловых скобках, как в «Кумо».
+    lines = [
+        "< Повышен уровень мастерства. Навык [Память] достиг уровня 2>",
+        "< Получена компетенция. Вы получили навык [Продвинутый слух Ур. 1]>",
+    ]
+    escaped = [line.replace("<", "&lt;").replace(">", "&gt;") for line in lines]
+    html = _chapter("Я продолжила тренировку.", *escaped, "Отлично!", "&lt;Хр-р-р&gt;", "Кот спал.")
+
+    windows = find_windows(html)
+    block = sw.render_window(windows[0].lines, windows[0].kind)
+    result, count = sw.apply_windows(html, windows)
+
+    assert [window.lines for window in windows] == [lines]
+    assert "Повышен уровень мастерства. Навык [Память] достиг уровня 2" in block and "&lt;" not in block
+    assert sw.strip_windows(result) == (html, count)
+
+
+def test_bullet_line_is_never_the_window_title():
+    # «Dimensional Traveler»: список требований задания начинался пунктом.
+    block = sw.render_window(["• 50 отжиманий (0/50)", "• 50 приседаний (0/50)", "Награда:", "+1 к Силе"], "notice")
+
+    assert "ОТЖИМАНИЙ" not in block and "✦" not in block
+
+
+def test_keyed_line_inside_outer_brackets_gets_a_bold_term():
+    # «So I'm an Earth»: «<[Месть]: Если пользователь…>».
+    block = sw.render_window(["<Гнев: при активации растёт атака.>", "<[Месть]: Если союзник погиб, растёт урон.>"], "status")
+
+    assert "Месть:</b>" in block
+
+
+def test_bbcode_inside_lines_is_dropped_for_detection_and_display():
+    # «Данмачи Белл взрослый»: «[Вельф Кроццо] [spoiler] [/spoiler]».
+    html = _chapter("Он открыл лист.", "[b]Имя:[/b] Вельф Кроццо", "[b]Уровень:[/b] 2", "Он закрыл лист.")
+
+    windows = find_windows(html)
+
+    assert [window.lines for window in windows] == [["Имя: Вельф Кроццо", "Уровень: 2"]]

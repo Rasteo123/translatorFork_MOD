@@ -23,6 +23,9 @@ from .translation_versions import select_target_translation_version
 BLOCK_ATTR = "data-sys"
 
 _BRACKET_PAIRS = {"[": "]", "【": "】", "〖": "〗"}
+# Угловые скобки бывают только вокруг строки целиком («< Навык получен>»).
+_ANGLE_PAIRS = {"<": ">", "＜": "＞"}
+_WORD_RE = re.compile(r"[^\W\d_]{2,}")
 _DECOR_CHARS = "◆◇★☆✦✧▲△■□●○※◈❖"
 
 DEFAULT_TRIGGERS = (
@@ -114,6 +117,8 @@ class _Paragraph:
     end: int
     text: str
     adjacent: bool
+    #: Сосед предыдущего абзаца только через обёртки (``</div><div>``), не брат.
+    wrapped: bool = False
 
 
 # --- разбор абзацев ---------------------------------------------------------
@@ -144,6 +149,35 @@ def _paragraph_end(raw: str, start: int) -> int | None:
     return closing.end()
 
 
+# BB-код из исходника фанфика внутри строки: «[b]Имя:[/b] Вельф», «[spoiler]».
+# Однобуквенные теги — только парой: «[B]», «[S]» бывают рангами.
+_BBCODE_PAIR_RE = re.compile(r"\[(b|i|u|s)\](.*?)\[/\1\]", re.I | re.S)
+_BBCODE_TAG_RE = re.compile(
+    r"\[/?(?:indent|center|right|left|quote|url|img|color|size|spoiler|sub|sup|font)(?:=[^\]]*)?\]", re.I
+)
+
+
+def _strip_bbcode(text: str) -> str:
+    for _depth in range(3):  # вложенные пары: «[b]Конец страницы. [u]1[/u][/b]»
+        text, count = _BBCODE_PAIR_RE.subn(r"\2", text)
+        if not count:
+            break
+    return _BBCODE_TAG_RE.sub(" ", text)
+
+
+_WRAP_TAGS = frozenset({"div", "span", "section", "article"})
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def _wrap_gap(gap: str) -> bool:
+    """Между абзацами одни обёртки (``</div></div><div><div>``) без текста."""
+    gap = _COMMENT_RE.sub("", gap)
+    if _TAG_RE.sub("", gap).strip():
+        return False
+    names = [match.group(2).lower() for match in _TAG_TOKEN_RE.finditer(gap)]
+    return bool(names) and all(name in _WRAP_TAGS for name in names)
+
+
 def _paragraphs(raw: str) -> list[_Paragraph]:
     soup = BeautifulSoup(raw, "html.parser")
     offsets = _line_offsets(raw)
@@ -157,16 +191,19 @@ def _paragraphs(raw: str) -> list[_Paragraph]:
         if end is None:
             previous_tag = None
             continue
-        text = " ".join(tag.get_text(" ", strip=True).split())
-        adjacent = previous_tag is not None and _next_element(previous_tag) is tag
-        result.append(_Paragraph(start=start, end=end, text=text, adjacent=adjacent))
+        text = " ".join(_strip_bbcode(tag.get_text(" ", strip=True)).split())
+        sibling = previous_tag is not None and _next_element(previous_tag) is tag
+        # Страницы веб-новелл кладут каждый абзац в свои div: такие абзацы
+        # идут подряд, хотя и не братья (см. :func:`_window_pieces`).
+        wrapped = not sibling and previous_tag is not None and _wrap_gap(raw[result[-1].end:start])
+        result.append(_Paragraph(start=start, end=end, text=text, adjacent=sibling or wrapped, wrapped=wrapped))
         previous_tag = tag
     return result
 
 
 # --- классификация строк ----------------------------------------------------
 
-_FULL_RE = re.compile(r"^([\[【〖])(.*)([\]】〗])([.!?…]*)$", re.S)
+_FULL_RE = re.compile(r"^([\[【〖<＜])(.*)([\]】〗>＞])([.!?…]*)$", re.S)
 _KEYED_RE = re.compile(r"^[\[【〖]([^\]】〗]{1,60})[\]】〗](.*)$", re.S)
 _GROUP_LIST_RE = re.compile(r"^(\s*[,;]?\s*[\[【〖][^\[\]【】〖〗]{1,60}[\]】〗])*\s*[.!?…]*$")
 _ATTRIBUTION_RE = re.compile(
@@ -242,6 +279,15 @@ def bracket_shape(text: str):
             data_like = ":" in inner or any(char.isdigit() for char in inner) or len(inner) >= 40
             if len(inner) >= 20 and not exclamatory and data_like:
                 return "dashed"
+        return None
+    if opening in _ANGLE_PAIRS:
+        # «< Навык [Память] достиг уровня 2>»: уведомление целиком в угловых
+        # скобках. Одно слово («<Хр-р-р>») — звук, смайлик без букв — не окно.
+        closing = _ANGLE_PAIRS[opening]
+        body = text.rstrip(_TRAILING_PUNCT)
+        inner = body[1:-1] if body.endswith(closing) else ""
+        if inner and opening not in inner and closing not in inner and len(_WORD_RE.findall(inner)) >= 2:
+            return "full"
         return None
     if opening in _BRACKET_PAIRS:
         closing = _BRACKET_PAIRS[opening]
@@ -1203,6 +1249,62 @@ def _balanced_span(raw: str, start: int, end: int) -> tuple[int, int] | None:
     return None
 
 
+_FOREIGN_TAG_RE = re.compile(r"<(?:img|image|svg|object|video|audio)\b", re.I)
+
+
+def _foreign_content(raw: str, span: tuple[int, int], chosen) -> bool:
+    """В участке, кроме этих абзацев, есть текст или картинка.
+
+    Пустые обёртки, линейки и цитаты без своего текста не в счёт: в рамке они
+    пропадут, при снятии оформления вернутся.
+    """
+    rest, position = [], span[0]
+    for paragraph in chosen:
+        rest.append(raw[position:paragraph.start])
+        position = paragraph.end
+    rest.append(raw[position:span[1]])
+    rest = _COMMENT_RE.sub("", "".join(rest))
+    return bool(_FOREIGN_TAG_RE.search(rest) or html_module.unescape(_TAG_RE.sub("", rest)).strip())
+
+
+def _clean_span(raw: str, paragraphs, first: int, stop: int) -> tuple[int, int] | None:
+    """Участок замены абзацев [first, stop) или ``None``, если он проглотил бы чужое."""
+    start, end = paragraphs[first].start, paragraphs[stop - 1].end
+    if not any(paragraphs[number].wrapped for number in range(first + 1, stop)):
+        return start, end
+    span = _balanced_span(raw, start, end)
+    if span is None or _foreign_content(raw, span, paragraphs[first:stop]):
+        return None
+    return span
+
+
+def _span_pieces(raw: str, chosen, start: int, end: int) -> list[str]:
+    """``paragraph_html`` кандидата: сами абзацы или весь участок вместе с обёртками."""
+    if start == chosen[0].start and end == chosen[-1].end:
+        return [raw[paragraph.start:paragraph.end] for paragraph in chosen]
+    return [raw[start:end]]
+
+
+def _window_pieces(raw: str, paragraphs, first: int, stop: int) -> list[tuple[int, int, int, int]]:
+    """Серию абзацев [first, stop) — на куски, которые заменяются целыми элементами.
+
+    Абзацы-братья заменяются как есть. Абзацы в своих обёртках (страницы
+    веб-новелл) заменяются вместе с обёртками. Если в обёртке есть что-то
+    чужое (проза перед веткой форума в той же ``div``, заголовок главы),
+    серия режется на границе обёртки: иначе замена проглотила бы и его.
+    Возвращает [(первый, конец, начало участка, конец участка)].
+    """
+    pieces = []
+    while first < stop:
+        cuts = [number for number in range(first + 1, stop) if paragraphs[number].wrapped]
+        for end in [stop, *reversed(cuts)]:
+            span = _clean_span(raw, paragraphs, first, end)
+            if span is not None:
+                pieces.append((first, end, *span))
+                first = end
+                break
+    return pieces
+
 
 # --- соглашения книги о скобках ----------------------------------------------------
 
@@ -1458,23 +1560,25 @@ def find_windows(
         while position < len(paragraphs):
             # Пустые абзацы и «P.S.» внутри поста — часть ветки, их не исключаем.
             stop = forum_run_end(texts, position) if paragraphs[position].text else None
-            span = _balanced_span(html, paragraphs[position].start, paragraphs[stop - 1].end) if stop else None
-            if span is None:
+            if stop is None:
                 position += 1
                 continue
-            covered = [number for number, paragraph in enumerate(paragraphs) if span[0] <= paragraph.start < span[1]]
-            forum_at[covered[0]] = (
-                covered[-1] + 1,
-                WindowCandidate(
-                    start=span[0],
-                    end=span[1],
-                    kind="forum",
-                    lines=[paragraphs[number].text for number in covered],
-                    paragraph_html=[html[span[0]:span[1]]],
-                    origin="forum",
-                ),
-            )
-            position = covered[-1] + 1
+            for first, end, span_start, span_end in _window_pieces(html, paragraphs, position, stop):
+                lines = [paragraphs[number].text for number in range(first, end)]
+                if not any(lines):
+                    continue
+                forum_at[first] = (
+                    end,
+                    WindowCandidate(
+                        start=span_start,
+                        end=span_end,
+                        kind="forum",
+                        lines=lines,
+                        paragraph_html=[html[span_start:span_end]],
+                        origin="forum",
+                    ),
+                )
+            position = stop
     index = 0
     while index < len(paragraphs):
         first = paragraphs[index]
@@ -1489,20 +1593,20 @@ def find_windows(
 
         chat_stop = chat_run_end(index)
         if chat_stop is not None:
-            chosen = paragraphs[index:chat_stop]
-            lines = [paragraph.text for paragraph in chosen]
             context = [paragraph.text for paragraph in paragraphs[max(0, index - _CHAT_CONTEXT_PARAGRAPHS):index]]
-            windows.append(
-                WindowCandidate(
-                    start=chosen[0].start,
-                    end=chosen[-1].end,
-                    kind="chat",
-                    lines=lines,
-                    paragraph_html=[html[paragraph.start:paragraph.end] for paragraph in chosen],
-                    origin="chat",
-                    chat_owner=chat_account_owner(context, lines),
+            for first, end, span_start, span_end in _window_pieces(html, paragraphs, index, chat_stop):
+                lines = [paragraph.text for paragraph in paragraphs[first:end]]
+                windows.append(
+                    WindowCandidate(
+                        start=span_start,
+                        end=span_end,
+                        kind="chat",
+                        lines=lines,
+                        paragraph_html=_span_pieces(html, paragraphs[first:end], span_start, span_end),
+                        origin="chat",
+                        chat_owner=chat_account_owner(context, lines),
+                    )
                 )
-            )
             index = chat_stop
             continue
 
@@ -1560,18 +1664,25 @@ def find_windows(
             index += 1
             continue
 
-        chosen = paragraphs[index:stop]
-        lines = [paragraph.text for paragraph in chosen]
-        windows.append(
-            WindowCandidate(
-                start=chosen[0].start,
-                end=chosen[-1].end,
-                kind=classify_kind(lines),
-                lines=lines,
-                paragraph_html=[html[paragraph.start:paragraph.end] for paragraph in chosen],
-                origin=_origin(shape, is_marked, text),
+        origin = _origin(shape, is_marked, text)
+        pieces = _window_pieces(html, paragraphs, index, stop)
+        for first, end, span_start, span_end in pieces:
+            chosen = paragraphs[first:end]
+            lines = [paragraph.text for paragraph in chosen]
+            # Строка, отрезанная границей обёртки, — окно, только если она и сама
+            # по себе системная (не шапка «Статус:» без данных под ней).
+            if len(pieces) > 1 and len(lines) == 1 and not (_is_data_line(lines[0]) or confirmed(first)):
+                continue
+            windows.append(
+                WindowCandidate(
+                    start=span_start,
+                    end=span_end,
+                    kind=classify_kind(lines),
+                    lines=lines,
+                    paragraph_html=_span_pieces(html, chosen, span_start, span_end),
+                    origin=origin,
+                )
             )
-        )
         index = stop
     _carry_chat_owners(windows)
     return windows
@@ -1643,19 +1754,26 @@ _SHORT_VALUE = 25
 _ITALIC_FROM = 40
 
 
+# Разряды числа «2 618 757»: на узкой колонке перенос посреди числа.
+_DIGIT_GROUP_RE = re.compile(r"(?<=\d) (?=\d{3}(?!\d))")
+
+
 def _escape(text: str) -> str:
-    return html_module.escape(text, quote=False)
+    return html_module.escape(_DIGIT_GROUP_RE.sub(_NBSP, text), quote=False)
 
 
 _TITLE_MAX_CHARS = 60
 
 
 def _looks_like_title(text: str) -> bool:
-    if len(text) > _TITLE_MAX_CHARS or bracket_shape(text) in ("keyed", "list"):
+    if len(text) > _TITLE_MAX_CHARS or bracket_shape(text) in ("keyed", "list") or is_bullet_line(text):
         return False
     if not is_key_value(text):
         return True
-    key = re.split(r"[:：]", text, maxsplit=1)[0].lower()
+    key = re.split(r"[:：]", text, maxsplit=1)[0].strip().lower()
+    # «2 предмета: …» — бонус комплекта, а не карточка «Предмет: Меч».
+    if key[:1].isdigit() or _SET_BONUS_KEY_RE.match(key):
+        return False
     return any(word in key for word in _TITLE_KEYS)
 
 
@@ -1694,10 +1812,36 @@ def _drop_field_period(text: str) -> str:
     return text
 
 
-def _render_row(text: str, accent: str, italic_allowed: bool):
-    """Строки окна: [(html, короткая ли это пара ключ-значение для колонок)]."""
-    if bracket_shape(text) == "keyed":
+_LIST_GROUP_RE = re.compile(r"[\[【〖]([^\[\]【】〖〗]*)[\]】〗]")
+_LIST_TAIL_RE = re.compile(r"[\]】〗]([^\]】〗]*)$")
+_LONG_KEY_RE = re.compile(r"^([^:：«»\"“”.!?…]{1,40})[:：]\s+(\S.*)$", re.S)
+_CARD_KEY_WORDS = 4
+
+
+def _render_group_list(text: str, accent: str) -> str:
+    """«[А ур. 1] [Б ур. 8]» → «А ур. 1 · Б ур. 8»: без запятых пункты слиплись бы.
+
+    Перечень через запятую («[Тошнота], [Отравление].») остаётся как написан.
+    """
+    if re.search(r"[\]】〗]\s*[,;]", text):
+        return _escape(strip_brackets(text))
+    items = [item.strip() for item in _LIST_GROUP_RE.findall(text) if item.strip()]
+    tail = _LIST_TAIL_RE.search(text.strip())
+    parts = [_render_key_value_part(item, accent) if is_key_value(item) else _escape(item) for item in items]
+    return " · ".join(parts) + (_escape(tail.group(1).strip()) if tail else "")
+
+
+def _render_row(text: str, accent: str, italic_allowed: bool, card: bool = False):
+    """Строки окна: [(html, короткая ли это пара ключ-значение для колонок)].
+
+    ``card`` — в окне несколько пар «ключ: значение»: ключ выделяется и у
+    строки с длинным значением, иначе одни дни симулятора жирные, другие нет.
+    """
+    shape = bracket_shape(text)
+    if shape == "keyed":
         return [(_render_keyed(text, accent), False)]
+    if shape == "list":
+        return [(_render_group_list(text, accent), False)]
     if is_section_label(text):
         label = _BULLET_MARK_RE.sub("", text.strip(), count=1)
         label = re.sub(r"^[—–-]\s*", "", label).rstrip(":：…").strip()
@@ -1705,6 +1849,9 @@ def _render_row(text: str, accent: str, italic_allowed: bool):
         label = re.sub(r"^«([^«»]+)»", r"\1", label).rstrip(".").strip()
         return [(f'<b style="color:{accent};">{_escape(label)}:</b>', False)]
     text = _drop_field_period(_strip_outer_quotes(strip_brackets(text)))
+    # «<[Месть]: Если…>»: термин в скобках внутри внешних скобок.
+    if shape == "full" and bracket_shape(text) == "keyed":
+        return [(_render_keyed(text, accent), False)]
     delta = _STAT_DELTA_FIELD_RE.match(text)
     if delta and _KV_RE.match(text) is None:
         name, amount = delta.group(1).strip(), delta.group(2).strip()
@@ -1723,6 +1870,10 @@ def _render_row(text: str, accent: str, italic_allowed: bool):
         value = re.split(r"[:：]", text, maxsplit=1)[1].strip()
         short = len(parts) == 1 and len(value) <= _SHORT_VALUE and not _is_column_value(text)
         return [(_SEPARATOR.join(rendered), short)]
+    long_key = _LONG_KEY_RE.match(text) if card else None
+    if long_key and len(long_key.group(1).split()) <= _CARD_KEY_WORDS:
+        key, value = long_key.group(1).strip().strip(_KEY_QUOTES), long_key.group(2).strip()
+        return [(f'<b style="color:{accent};">{_escape(key)}:</b> {_escape(value)}', False)]
     escaped = _escape(text)
     if italic_allowed and len(text) >= _ITALIC_FROM:
         return [(f"<i>{escaped}</i>", False)]
@@ -2019,10 +2170,18 @@ def forum_clean(text: str) -> str:
     return " ".join(_ZERO_WIDTH_RE.sub("", _BBCODE_RE.sub("", text)).split())
 
 
+_LEADING_ELLIPSIS_RE = re.compile(r"^(?:…|\.\.\.)\s*(?=\S)")
+
+
+def _forum_key(text: str) -> str:
+    """Строка для узнавания роли: без «…» в начале («…Конец страницы. 1, 2»)."""
+    return _LEADING_ELLIPSIS_RE.sub("", forum_clean(text))
+
+
 def forum_role(text: str, following: str = "") -> str:
     """Роль строки ветки форума: topic, board, author, time, page, end, pm, list,
     welcome, info, decor или body."""
-    line = forum_clean(text)
+    line = _forum_key(text)
     if not line:
         return "empty"
     if _FORUM_WELCOME_RE.match(line):
@@ -2047,7 +2206,7 @@ def forum_role(text: str, following: str = "") -> str:
         return "info"
     if (
         following
-        and _FORUM_TIME_RE.match(forum_clean(following))
+        and _FORUM_TIME_RE.match(_forum_key(following))
         and len(line) <= _FORUM_AUTHOR_MAX
         and _FORUM_AUTHOR_RE.match(line)
     ):
@@ -2057,6 +2216,21 @@ def forum_role(text: str, following: str = "") -> str:
 
 def _forum_roles(texts) -> list[str]:
     return [forum_role(text, texts[index + 1] if index + 1 < len(texts) else "") for index, text in enumerate(texts)]
+
+
+# Ремарка после реплики: «…, — сказала она», «…? — ответила я».
+_SPEECH_REMARK_RE = re.compile(r"[,!?…]\s*[—–]\s*[а-яёa-z]")
+
+
+def _post_list_continues(window, roles, position: int, last: int, limit: int) -> bool:
+    """Строки с тире — пункты поста («— В «Ящике…» есть участница…»), а не реплика
+    после ветки: без ремарок, и в пределах разрыва за ними снова идут посты."""
+    following = position
+    while following < len(roles) and roles[following] in ("body", "empty"):
+        if _SPEECH_REMARK_RE.search(window[following]):
+            return False
+        following += 1
+    return following < len(roles) and roles[following] != "decor" and following - last <= limit
 
 
 def forum_run_end(texts, index: int) -> int | None:
@@ -2085,9 +2259,13 @@ def forum_run_end(texts, index: int) -> int | None:
         if empties >= _FORUM_EMPTY_RUN:
             break
         if role in ("body", "empty"):
-            if _FORUM_STOP_RE.match(forum_clean(window[position])):
+            limit = _FORUM_GAP_AFTER.get(anchor_role, _FORUM_GAP_DEFAULT)
+            line = forum_clean(window[position])
+            if _FORUM_STOP_RE.match(line) and not (
+                line.startswith(("—", "–")) and _post_list_continues(window, roles, position, last, limit)
+            ):
                 break
-            if position - last > _FORUM_GAP_AFTER.get(anchor_role, _FORUM_GAP_DEFAULT):
+            if position - last > limit:
                 break
             position += 1
             continue
@@ -2134,9 +2312,11 @@ def forum_structure(lines):
     roles = _forum_roles(texts)
     parts: list[tuple] = []
     current = None
-    for text, role in zip(texts, roles):
-        if not text:
+    for body_text, role in zip(texts, roles):
+        if not body_text:
             continue
+        # Служебные строки — без «…» в начале, тело поста — как написано.
+        text = body_text if role == "body" else _forum_key(body_text)
         if role in ("welcome", "info"):
             if parts and parts[-1][0] == "welcome":
                 parts[-1][1].append(text)
@@ -2193,13 +2373,34 @@ def forum_structure(lines):
     return result
 
 
+def _luminance(color: str) -> float:
+    try:
+        channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    except (TypeError, ValueError):
+        return 0.0
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(first: str, second: str) -> float:
+    high, low = sorted((_luminance(first), _luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+# Мелкий приглушённый текст (раздел, дата, страницы) — не бледнее AA 4,5:1.
+_MUTED_CONTRAST = 4.5
+
+
 def _forum_colors(template) -> dict:
     background, text, accent = template["background"], template["text"], template["accent"]
-    return {
-        "header": _mix(background, accent, 0.16),
-        "line": _mix(background, text, 0.18),
-        "muted": _mix(text, background, 0.42),
-    }
+    header = _mix(background, accent, 0.16)
+    muted = text
+    for share in (0.42, 0.36, 0.3, 0.24, 0.18, 0.12, 0.06):
+        candidate = _mix(text, background, share)
+        if min(_contrast(candidate, header), _contrast(candidate, background)) >= _MUTED_CONTRAST:
+            muted = candidate
+            break
+    return {"header": header, "line": _mix(background, text, 0.18), "muted": muted}
 
 
 _FORUM_STRONG_TAGS = re.compile(r"модератор|проверенн|подтвержд|verified|moderator|агент скп|pr скп", re.I)
@@ -2288,12 +2489,13 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
         texts, heads = texts[1:], heads[1:]
 
     rows = []
+    card = sum(1 for text in texts if is_key_value(text)) >= 2
     for text, head in zip(texts, heads):
         if head:
             name = _strip_outer_quotes(strip_brackets(text))
             rows.append((f'<b style="color:{accent};">{_escape(name)}</b>', False))
         else:
-            rows.extend(_render_row(text, accent, italic_allowed=title is not None))
+            rows.extend(_render_row(text, accent, italic_allowed=title is not None, card=card))
     body_rows = _group_columns(rows, int(template.get("columns") or 1))
 
     pieces = []
