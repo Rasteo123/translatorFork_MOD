@@ -2977,3 +2977,48 @@ def test_renamed_owner_stays_on_the_right():
     assert sw.window_readers(windows[1], templates["chat"]) == ["2-тян"]
     block = sw.render_window(windows[1].lines, "chat", templates={"chat": {**templates["chat"], "readers": ["2-тян"]}})
     assert block.count("float:right") == 2
+
+
+def test_polite_request_is_live_speech_for_a_lone_message():
+    # Гл. 61: «Ниа: Подлиннее, пожалуйста.» между кусками переписки.
+    chat = ["Ниа: Зачем?!", "ДосВагина: Был еще вариант ДосПингас.", "ДосВагина: Тебе длинную версию или короткую?"]
+    lone = ["Ниа: Подлиннее, пожалуйста.", "ДосВагина печатает…"]
+    html = _chapter("Ниа хмыкнул.", *chat, "Он ведь наверняка пожалеет об этом?", *lone, "Сожаление нахлынуло мгновенно.")
+
+    assert [window.lines for window in find_windows(html)] == [chat, lone]
+
+
+def test_note_words_deep_inside_a_chat_message_do_not_make_an_author_note():
+    # Гл. 137 «The Game Begins»: послесловие переписано строками чата; «бета-ридер» — в середине реплики.
+    lines = [
+        "Sushion: Всем привет! Я автор этого фанфика. А DD – мой бета-ридер и очень важный человек в творческом процессе.",
+        "DD: Приветик, я его девушка.",
+        "Sushion: Так вот… Этот финал. Просто вынос мозга, верно?",
+        "DD: Ну, для начала, Гавайи взлетели на воздух…",
+    ]
+    html = _chapter(*lines)
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+
+
+def test_reply_list_with_a_note_word_stays_an_author_note():
+    # «The Demon Eyes of Fairy Tail», гл. 14: ответы на отзывы без заголовка, ники не повторяются.
+    html = _chapter(
+        "Mr. Haziq: Спасибо, что сообщил, к счастью, мне удалось исправить эту мелкую опечатку.",
+        "Guest: Да, это было действительно мило, правда же?",
+        "Hamza Shinwari: Мы уже пообщались в личных сообщениях.",
+        "Amethyst Lavender: Всё в порядке, никаких обид.",
+        "MayanPanther: Рад, что понравилось.",
+        "Глава 12: «Орасьон Сейс!»",
+    )
+    assert find_windows(html) == []
+
+
+def test_system_panel_with_a_polite_request_is_not_a_chat():
+    # «Dimensional Traveler», гл. 12: «Пожалуйста» в системном предупреждении — не живая речь.
+    panel = [
+        "[Цель обнаружена: Четвёртая Низшая Луна.]",
+        "[Местоположение: Заброшенная усадьба на окраине города Кояма.]",
+        "[Предупреждение Системы: Цель представляет высокий уровень угрозы. Пожалуйста, тщательно подготовьтесь.]",
+    ]
+    assert [window.kind for window in find_windows(_chapter("Текст.", *panel, "Текст."))] == ["notice"]
