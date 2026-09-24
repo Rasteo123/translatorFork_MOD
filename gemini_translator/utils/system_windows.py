@@ -1572,6 +1572,7 @@ _MESSAGING_RE = re.compile(
 )
 _PHONE_WORD_RE = re.compile(r"телефон|мобильн|смартфон", re.I)
 _LINE_BREAK_RE = re.compile(r"<br\b", re.I)
+_POLITE_REQUEST_RE = re.compile(r"(?<![\w-])пожалуйста(?![\w-])", re.I)
 # Второе сообщение, склеенное переводом с первым: «…надо mr10tickles: Будь на месте».
 _GLUED_SPEAKER_RE = re.compile(r"\s[\w-]{2,30}:\s+[A-ZА-ЯЁ]")
 # Одно сообщение — чат только в этих формах: «Имя: «…»», «Имя: …», «[Имя]: …».
@@ -1603,7 +1604,13 @@ def _is_lone_message(parsed: ChatLine) -> bool:
         or _GLUED_SPEAKER_RE.search(parsed.message)
     ):
         return False
-    return parsed.style == "quoted" or _CONVERSATIONAL_RE.search(parsed.message) is not None
+    # «Ниа: Подлиннее, пожалуйста.» — просьба тоже живая речь. В серии «пожалуйста»
+    # не считаем: система просит так же («[Предупреждение Системы: … Пожалуйста, …]»).
+    return (
+        parsed.style == "quoted"
+        or _CONVERSATIONAL_RE.search(parsed.message) is not None
+        or _POLITE_REQUEST_RE.search(parsed.message) is not None
+    )
 
 
 def _name_form_of(word: str, name: str) -> bool:
@@ -1942,6 +1949,7 @@ _NOTE_HEADER_RE = re.compile(
 )
 _NOTE_LINE_RE = re.compile(r"^[^:：]{1,60}[:：]\s*\S")
 _NOTE_HEADER_MAX = 400
+_NOTE_REPEAT_WINDOW = 5
 
 
 def _author_note_zone(texts) -> set[int]:
@@ -1950,7 +1958,18 @@ def _author_note_zone(texts) -> set[int]:
     index = 0
     while index < len(texts):
         text = texts[index]
-        if text and len(text) <= _NOTE_HEADER_MAX and bracket_shape(text) is None and _NOTE_HEADER_RE.search(text):
+        header = _NOTE_HEADER_RE.search(text) if text and len(text) <= _NOTE_HEADER_MAX else None
+        # Слова приписки после двоеточия в строке «Ник: текст» («…исправить эту опечатку»)
+        # открывают список ответов на отзывы: там разные ники по разу. Если ник тут же
+        # пишет снова («Sushion: …мой бета-ридер…» в послесловии), это разговор.
+        keyed = _NOTE_LINE_RE.match(text) if header is not None else None
+        colon = re.search(r"[:：]", text) if keyed is not None else None
+        if colon is not None and header.start() > colon.start():
+            speaker = text[:colon.start()].strip()
+            after = texts[index + 1:index + 1 + _NOTE_REPEAT_WINDOW]
+            if any(other.startswith(speaker + ":") for other in after):
+                header = None
+        if header is not None and bracket_shape(text) is None:
             zone.add(index)
             following = index + 1
             while following < len(texts) and (
