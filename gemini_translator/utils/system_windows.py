@@ -214,13 +214,16 @@ def _paragraphs(raw: str) -> list[_Paragraph]:
 _FULL_RE = re.compile(r"^([\[【〖<＜])(.*)([\]】〗>＞])([.!?…]*)$", re.S)
 _KEYED_RE = re.compile(r"^[\[【〖]([^\]】〗]{1,60})[\]】〗](.*)$", re.S)
 _GROUP_LIST_RE = re.compile(r"^(\s*[,;]?\s*[\[【〖][^\[\]【】〖〗]{1,60}[\]】〗])*\s*[.!?…]*$")
-_ATTRIBUTION_RE = re.compile(
-    r"^[–—-]\s*(?:\w+\s+){0,3}(?:сказал|ответил|добавил|произн|спросил|воскликн|отозвал|проговор|"
+_SPEECH_VERBS = (
+    r"(?:сказал|ответил|добавил|произн|спросил|воскликн|отозвал|проговор|"
     r"пробормот|заяв|подтверд|уточн|польстил|взвил|отрезал|напомнил|голос|заверил|пискнул|фыркнул|хмыкнул|"
     r"буркнул|прошептал|шепнул|крикнул|закричал|усмехнул|рассмеял|вставил|перебил|продолжил|объяснил|"
-    r"заметил|сообщил|предупредил|возразил|протянул|откликнул|отреагировал)",
-    re.I,
+    r"заметил|сообщил|предупредил|возразил|протянул|откликнул|отреагировал)"
 )
+_ATTRIBUTION_RE = re.compile(r"^[–—-]\s*(?:\w+\s+){0,3}" + _SPEECH_VERBS, re.I)
+# Ремарка следующим абзацем: глагол сразу после тире («— закричала Миса»), а не
+# реплика со словом «сказал» внутри («— Кто это сказал?»).
+_NEXT_REMARK_RE = re.compile(r"^[–—-]\s*" + _SPEECH_VERBS + r"\w*\s", re.I)
 # Системное сообщение в «кавычках» и репликой «— [...]»: узнаётся по началу.
 _QUOTED_RE = re.compile(r"^«([^«»]{12,})»([.!?…]*)$")
 _DASHED_RE = re.compile(r"^[—–-]\s*([\[【]\S.*[\]】])([.!?…]*)$", re.S)
@@ -278,6 +281,8 @@ def _outer_group_spans_all(text: str) -> bool:
 
 
 _LEADING_DOTS_RE = re.compile(r"^(?:…|\.\.\.)\s*(?=[\[【〖<＜])")
+# Рисунок облачка и пауза перед ремаркой: «vvvvvvvvv … — закричала Миса».
+_REMARK_LEAD_RE = re.compile(r"^(?:[v^]{3,}|[^\w—–-])*")
 
 
 def _bracket_text(text: str) -> str:
@@ -431,7 +436,7 @@ _STAT_KEYS = frozenset(
     "дух кольца кольцо культивация культивации техника техники атрибут атрибуты стихия свойство свойства "
     "характеристика характеристики богатство богатства баллы баллов репутация известность "
     "проворство заклинание заклинания удача качество слот блокирование уклонение сопротивление "
-    "меткость точность прозвище псевдоним".split()
+    "меткость точность прозвище псевдоним сопротивляемость".split()
     + ["боевой дух", "духовная сила", "духовные кольца", "духовное кольцо", "ранг духа", "боевая мощь", "очки системы"]
 )
 _STAT_VALUE_MAX = 300
@@ -537,9 +542,9 @@ def is_single_stat_line(text: str) -> bool:
     return len(value) <= _STAT_LINE_VALUE_MAX and any(char.isdigit() for char in value)
 
 
-# Шапка карточки кончается уровнем: «Шарль, Ур. 1.», «Альфия. Ур. 3.».
+# Шапка карточки кончается уровнем: «Шарль, Ур. 1.», «Альфия. Ур. 3.», «Ур. 35:».
 _LEVEL_END_RE = re.compile(
-    r"(?:^|[\s,.;:–—-])(?:ур\.|уровень|lv\.?|lvl\.?|level)\s*\d+(?:\s*[–—→-]+\s*\d+)?\s*\.?$", re.I
+    r"(?:^|[\s,.;:–—-])(?:ур\.|уровень|lv\.?|lvl\.?|level)\s*\d+(?:\s*[–—→-]+\s*\d+)?\s*[.:：]?$", re.I
 )
 _LEVEL_HEADER_MAX = 60
 _LEVEL_NAME_WORDS_MAX = 3
@@ -617,6 +622,12 @@ def is_bullet_line(text: str) -> bool:
 _QUOTED_TERM_RE = re.compile(r"^(?:«[^«»]{1,60}»|„[^„“]{1,60}“|\([^()]{1,60}\))(?:\s*\([^()]{1,80}\))?[.!]?$")
 # Навык строкой «Название – описание» под «Навыки:» («Лиарис Фриз – Стремительный рост.»).
 _DASH_TERM_RE = re.compile(r"^[A-ZА-ЯЁ«][^–—:：.!?]{0,40}?\s[–—]\s\S")
+# Нумерованный пункт с тире: «0 – Шут.», «XIV – Умеренность.», «xvii – Комета.»
+# (списки Арканов в «The Game Begins»). Окно начинает только подпись над двумя
+# такими пунктами: одна карта в прозе («xi – Похоть.») — не окно.
+_ENUM_DASH_RE = re.compile(r"^(?:\d{1,3}|[IVXLCDM]{1,8}|[ivxlcdm]{1,8})\s+[–—]\s+[A-ZА-ЯЁ«][^.!?…:]{0,50}[.!]?$")
+_ENUM_LABEL_WORDS = 3
+_TABLE_OF_CONTENTS_RE = re.compile(r"оглавлени|содержани", re.I)
 # Имя героя над карточкой: «Белл Кранел.», «Рюу Лион».
 _NAME_LINE_RE = re.compile(r"^[A-ZА-ЯЁ][\w'’-]*(?:\s[A-ZА-ЯЁ][\w'’-]*){0,2}\.?$")
 # Шапка списка пунктов: «Нагрудник [«Скрытность» (2)]», «Руна 7 Таль + руна 5 Эт.».
@@ -626,6 +637,26 @@ _WIDE_LABEL_WORDS = 3
 # Разделитель частей карточки: «…», «… …», «...».
 _ELLIPSIS_LINE_RE = re.compile(r"^(?:…|\.\.\.)(?:\s*(?:…|\.\.\.))*$")
 _NEXT_SENTENCE_RE = re.compile(r"[.!?…]\s+[A-ZА-ЯЁ]")
+
+
+def _is_enum_item(text: str) -> bool:
+    return _ENUM_DASH_RE.match(text) is not None
+
+
+def _is_enum_label(text: str) -> bool:
+    """Подпись над нумерованными пунктами: «Старшие Арканы:», не «Он кивнул:»."""
+    match = _LABEL_RE.match(text.strip())
+    if match is None:
+        return False
+    key = match.group(1).strip()
+    words = re.findall(r"[^\W\d_]+", key.lower())
+    return (
+        key[:1].isupper()
+        and 1 <= len(words) <= _ENUM_LABEL_WORDS
+        and not _phrase_key(words)
+        and _PRONOUN_KEY_RE.search(key) is None
+        and _TABLE_OF_CONTENTS_RE.search(key) is None
+    )
 
 
 def _is_heading_line(text: str) -> bool:
@@ -893,7 +924,7 @@ _CARD_KEYS = frozenset(
     "срок время место лимит состояние таланты эффекты бонус бонусы ограничение ограничения условия "
     "откат перезарядка расход дальность радиус источник происхождение владелец прогресс шанс "
     "вероятность полномочия привилегии права обязанности внимание предупреждение важно звездность "
-    "артефакт артефакты инвентарь предметы".split()
+    "артефакт артефакты инвентарь предметы владелица персона".split()
 )
 _CARD_ROW_RE = re.compile(r"^([^:：«»\"“”!?,]{1,60}?)\s*[:：]\s*(\S.*)$", re.S)
 _CARD_ROW_MAX = 700
@@ -1165,7 +1196,8 @@ def _origin(shape, marked: bool, text: str) -> str:
 # Реплика чата в переводе: «[Кен]: текст» (Ace in the Hole), «Дядя Ли: «текст»»
 # («Бизнес с карточками», «Полоска здоровья»), ««Хаоюгэн: текст»» (форум
 # «Возрождения»), «Сье: текст» (LOL).
-_CHAT_NAME = r"[^\W\d_][\w'’ -]{0,29}?"
+# Ник может начинаться с цифры: «2-тян» («The Game Begins»).
+_CHAT_NAME = r"(?:[^\W\d_]|\d{1,4}-(?=[^\W\d_]{2}))[\w'’ -]{0,29}?"
 _CHAT_BRACKET_RE = re.compile(rf"^[\[【]({_CHAT_NAME})[\]】]\s*[:：]\s*(\S.*)$")
 # «[Футаба: Подождите!]» — вся реплика в скобках (Our Wild Love, Ace, «Белый Жнец»).
 _CHAT_BRACKETED_RE = re.compile(rf"^[\[【]({_CHAT_NAME})\s*[:：]\s*([^\[\]【】]+?)\s*[\]】]?([.!?…]*)$")
@@ -1239,6 +1271,20 @@ _NOT_SPEAKERS = frozenset(
 
 # Анонимный рецензент на сайтах фанфиков.
 _REVIEWER_NAMES = frozenset({"guest", "гость", "гест"})
+# Приписки автора «PS2:», «UPD:», «P.S.:» — не собеседник.
+_NOTE_SPEAKER_RE = re.compile(r"^(?:p\.?\s?s\.?|ps|пс|upd|апд|n\.?b\.?)\d*$", re.I)
+# Ник с цифрой в начале: «2-тян». «2-й», «1-е» — порядковые числительные.
+_DIGIT_NICK_RE = re.compile(r"^\d{1,4}-([^\W\d_]{2,})$")
+_ORDINAL_ENDINGS = frozenset(
+    "го му ми ой ый ий ая ое ые ье ья ую ого ему ому ыми ими ых их ом ем".split()
+)
+
+
+def _name_word_ok(word: str) -> bool:
+    digit_nick = _DIGIT_NICK_RE.match(word)
+    if digit_nick:
+        return digit_nick.group(1).lower() not in _ORDINAL_ENDINGS
+    return word[0].isupper()
 
 
 def _looks_like_name(name: str, *, nickname: bool = False) -> bool:
@@ -1250,12 +1296,28 @@ def _looks_like_name(name: str, *, nickname: bool = False) -> bool:
     words = name.split()
     if not 1 <= len(words) <= _CHAT_NAME_WORDS_MAX:
         return False
-    if not nickname and any(not word[0].isupper() for word in words):
+    if not nickname and any(not _name_word_ok(word) for word in words):
         return False
     lowered = name.lower()
-    if lowered in _NOT_SPEAKERS or words[0].lower() in _NOT_SPEAKERS:
+    if lowered in _NOT_SPEAKERS or words[0].lower() in _NOT_SPEAKERS or _NOTE_SPEAKER_RE.match(lowered):
         return False
     return not (_is_stat_key(name) or _has_meta_word(name) or any(key in lowered for key in _TITLE_KEYS))
+
+
+# Служебная строка мессенджера между сообщениями: «… Содзиро печатает.»,
+# «Футаба изменила имя на ДосВагина.» («The Game Begins»).
+_CHAT_SERVICE_RE = re.compile(
+    rf"^(?:…|\.\.\.)?\s*({_CHAT_NAME})\s+(?:печата(?:ет|ют)|набира(?:ет|ют)\s+сообщение"
+    r"|(?:изменил|сменил|поменял)а?\s+(?:имя|ник|никнейм)\s+на\s+\S[^.!?…]{0,40})\s*(?:…|\.\.\.|[.!])?$"
+)
+
+
+def _is_chat_service(text: str) -> bool:
+    match = _CHAT_SERVICE_RE.match(" ".join(text.split()))
+    if match is None:
+        return False
+    speaker = match.group(1).strip()
+    return _looks_like_name(speaker) and _PRONOUN_KEY_RE.search(speaker) is None
 
 
 _STICKER_MAX = 40
@@ -1273,7 +1335,7 @@ def _is_chat_sticker(text: str) -> bool:
 
 
 def _is_chat_spacer(text: str) -> bool:
-    return _is_chat_sticker(text) or _ELLIPSIS_LINE_RE.match(text) is not None
+    return _is_chat_sticker(text) or _ELLIPSIS_LINE_RE.match(text) is not None or _is_chat_service(text)
 
 
 def _chat_messages(lines):
@@ -1284,7 +1346,7 @@ def _chat_messages(lines):
         if is_chat_header(line):
             headers += 1
             continue
-        if chat_line(line) is None and (_is_chat_sticker(line) or _ELLIPSIS_LINE_RE.match(line)):
+        if chat_line(line) is None and _is_chat_spacer(line):
             continue
         parsed = chat_line(line)
         if parsed is None:
@@ -1389,7 +1451,8 @@ def chat_participants(windows_lines) -> frozenset:
 
 # --- чей аккаунт в переписке ---------------------------------------------------
 
-_PHONE = r"(?:телефон|мобильник|смартфон|мобильный)"
+# «Телефон Ниа издал сигнал» — в начале предложения слово с заглавной.
+_PHONE = r"(?:[Тт]елефон|[Мм]обильник|[Сс]мартфон|[Мм]обильный)"
 # «телефон Рена завибрировал», «на экране телефона Макото».
 _PHONE_OF_RE = re.compile(rf"{_PHONE}\w*\s+([А-ЯЁA-Z][\w-]+)")
 # «Макото достала телефон», «Кен вытащил свой телефон из сумки».
@@ -1403,6 +1466,52 @@ _ADDRESSEE_RE = re.compile(r"(?:написать|написал|написала
 _HEADER_FROM_RE = re.compile(r"^[\[【]?сообщени\w*\s+от\s*[:：]\s*(.+?)[.\]】]*$", re.I)
 _HEADER_TO_RE = re.compile(r"^[\[【]?сообщени\w*\s+(?:для|отправлено)\s*[:：]\s*(.+?)[.\]】]*$", re.I)
 _CHAT_CONTEXT_PARAGRAPHS = 3
+# Ответ с этого телефона: «Ниа быстро напечатал ответ» прямо перед сообщением.
+_SENT_RE = re.compile(
+    r"(?:напечатал|написал|набрал|настрочил|отправил|отстучал)\w*\s+(?:\w+\s+)?(?:ответ|сообщени)", re.I
+)
+# Слова о переписке в абзаце перед одиночным сообщением: «пришло сообщение от Гао Цинь»,
+# «быстро напечатал ответ» — и в ремарке реплики; «У Ниа пискнул телефон» — только
+# в повествовании: «— …он достал телефон и помахал им» бывает и без переписки.
+_MESSAGING_RE = re.compile(
+    r"сообщени|смс|эсэмэс|\bчат|переписк|мессендж|вичат|wechat|\bqq\b|в личк"
+    r"|напечатал|настрочил|набрал\w*\s+(?:сообщ|ответ|текст)|отправил\w*\s+(?:ответ|сообщ)",
+    re.I,
+)
+_PHONE_WORD_RE = re.compile(r"телефон|мобильн|смартфон", re.I)
+_LINE_BREAK_RE = re.compile(r"<br\b", re.I)
+# Второе сообщение, склеенное переводом с первым: «…надо mr10tickles: Будь на месте».
+_GLUED_SPEAKER_RE = re.compile(r"\s[\w-]{2,30}:\s+[A-ZА-ЯЁ]")
+# Одно сообщение — чат только в этих формах: «Имя: «…»», «Имя: …», «[Имя]: …».
+# «[Имя: …]» пишет и система («[Предупреждение Управляющему: …]»), а ««Ник: …»» —
+# новости и цитаты.
+_LONE_CHAT_STYLES = ("quoted", "bare", "bracket")
+# Глагол вместо имени: «Представьте: вы гуляете…», «Набрала: «Ты тут?»», «Писал Шэн Цзинбан: «…»».
+_VERB_SPEAKER_RE = re.compile(
+    r"^(?:\w+(?:йте|ите|ьте)|(?:на|от|при|до|пере)?(?:писал|печатал|брал|ответил|отправил|слал|спросил|сказал|бавил)"
+    r"[аио]?|пишет|отвечает|спрашивает)$",
+    re.I,
+)
+
+
+def _is_lone_message(parsed: ChatLine) -> bool:
+    """Одиночная строка похожа на сообщение: имя собеседника и живой текст.
+
+    «Чэнь Фань: «∑(O_O;)»» — смайлик без слов, не сообщение.
+    """
+    words = re.findall(r"[^\W\d_]+", parsed.speaker.lower())
+    if (
+        parsed.style not in _LONE_CHAT_STYLES
+        or not _looks_like_name(parsed.speaker)
+        or _phrase_key(words)
+        or _VERB_SPEAKER_RE.match(parsed.speaker.split()[0])
+        or _PRONOUN_KEY_RE.search(parsed.speaker)
+        or parsed.speaker.lower() in _REVIEWER_NAMES
+        or not _WORD_RE.search(parsed.message)
+        or _GLUED_SPEAKER_RE.search(parsed.message)
+    ):
+        return False
+    return parsed.style == "quoted" or _CONVERSATIONAL_RE.search(parsed.message) is not None
 
 
 def _name_form_of(word: str, name: str) -> bool:
@@ -1443,6 +1552,9 @@ def chat_account_owner(context, lines) -> str:
                 if pattern is _PHONE_OF_RE:
                     # Телефон того, кто в переписке не пишет: справа никого.
                     return word
+    # Одно сообщение сразу после «напечатал ответ» — с этого телефона.
+    if len(speakers) == 1 and context and _SENT_RE.search(context[-1]):
+        return speakers[0]
     # Не владелец: отправитель входящего и адресат исходящего сообщения.
     others: list[str] = []
     for line in lines:
@@ -1831,6 +1943,32 @@ def find_windows(
             return False
         return heads_bullets(following, depth=1)
 
+    def remarked(position: int) -> bool:
+        """Строка в скобках, после которой ремарка «— закричала Миса», — чья-то реплика.
+
+        «The Game Begins»: крик облачком «^^^ / < А НУ СТОЙТЕ! > / vvv … — закричала Миса».
+        """
+        following = position + 1
+        if bracket_shape(paragraphs[position].text) != "full" or following >= len(paragraphs):
+            return False
+        if not paragraphs[following].adjacent:
+            return False
+        rest = _REMARK_LEAD_RE.sub("", paragraphs[following].text, count=1)
+        return _NEXT_REMARK_RE.match(rest) is not None
+
+    def enum_follows(position: int, count: int = 1) -> bool:
+        """За строкой идут ``count`` нумерованных пунктов с тире: «0 – Шут.», «I – Маг.»."""
+        return all(
+            position + step < len(paragraphs)
+            and paragraphs[position + step].adjacent
+            and _is_enum_item(paragraphs[position + step].text)
+            for step in range(1, count + 1)
+        )
+
+    def enum_list(position: int) -> bool:
+        """Подпись и под ней хотя бы два нумерованных пункта с тире."""
+        return _is_enum_label(paragraphs[position].text) and enum_follows(position, 2)
+
     def wide_label(position: int) -> bool:
         """«Способности Пищевой Цепи:» — три слова, но под ним список имён или пунктов."""
         match = _LABEL_RE.match(paragraphs[position].text.strip())
@@ -1852,11 +1990,74 @@ def find_windows(
         )
 
     chat_ends: dict[int, int | None] = {}
+    run_ends: dict[int, int | None] = {}
+
+    def chat_speakers(lines) -> set[str]:
+        return {parsed.speaker for parsed in map(chat_line, lines) if parsed is not None}
+
+    def same_chat(lines, parsed: ChatLine) -> bool:
+        """Собеседник пишет в этой переписке в той же форме («Имя: …», «Имя: «…»»)."""
+        return any(
+            other.speaker == parsed.speaker and other.style == parsed.style
+            for other in map(chat_line, lines) if other is not None
+        )
+
+    def chat_nearby(position: int, parsed: ChatLine) -> bool:
+        """Переписка с этим собеседником не дальше двух абзацев до или после строки."""
+        if windows and windows[-1].kind == "chat" and same_chat(windows[-1].lines, parsed):
+            between = [paragraph for paragraph in paragraphs[:position] if paragraph.start >= windows[-1].end]
+            if sum(1 for paragraph in between if paragraph.text) <= 2:
+                return True
+        for following in range(position + 1, min(len(paragraphs), position + 4)):
+            end = chat_run(following)
+            if end is not None:
+                return same_chat([paragraph.text for paragraph in paragraphs[following:end]], parsed)
+        return False
+
+    def lone_message(position: int) -> bool:
+        """Одно сообщение среди прозы: после слов о телефоне или рядом с чатом тех же людей.
+
+        Абзац с переносами ``<br>`` («Our Wild Love»: вся переписка вперемешку с
+        прозой в одном абзаце) одним сообщением не считается.
+        """
+        paragraph = paragraphs[position]
+        parsed = chat_line(paragraph.text)
+        if (
+            parsed is None
+            or excluded(paragraph)
+            or not _is_lone_message(parsed)
+            or _LINE_BREAK_RE.search(html, paragraph.start, paragraph.end)
+        ):
+            return False
+        neighbours = [
+            paragraphs[number] for number in (position - 1, position + 1)
+            if 0 <= number < len(paragraphs) and paragraphs[max(number, position)].adjacent
+        ]
+        # Соседняя реплика — это уже серия, её судит chat_verdict.
+        if any(chat_line(neighbour.text) is not None for neighbour in neighbours):
+            return False
+        previous = paragraphs[position - 1] if position > 0 and paragraph.adjacent else None
+        if previous is not None and (
+            _MESSAGING_RE.search(previous.text)
+            or (not _is_dialogue(previous.text) and _PHONE_WORD_RE.search(previous.text))
+        ):
+            return True
+        return chat_nearby(position, parsed)
 
     def chat_run_end(position: int) -> int | None:
         """Конец переписки, которая начинается с ``position``, или ``None``."""
         if position in chat_ends:
             return chat_ends[position]
+        stop = chat_run(position)
+        if stop is None and lone_message(position):
+            stop = position + 1
+        chat_ends[position] = stop
+        return stop
+
+    def chat_run(position: int) -> int | None:
+        """Конец переписки из двух и больше строк с ``position`` или ``None``."""
+        if position in run_ends:
+            return run_ends[position]
         stop = position
         while stop < len(paragraphs) and (stop == position or paragraphs[stop].adjacent):
             paragraph = paragraphs[stop]
@@ -1887,8 +2088,8 @@ def find_windows(
         if verdict == "weak" and weak_chats is not None and (position == 0 or not paragraphs[position].adjacent
                                                                or chat_line(paragraphs[position - 1].text) is None):
             weak_chats.append(lines)
-        chat_ends[position] = stop if verdict == "chat" else None
-        return chat_ends[position]
+        run_ends[position] = stop if verdict == "chat" else None
+        return run_ends[position]
 
     def key_value_follows(position: int) -> bool:
         following = position + 1
@@ -1931,6 +2132,11 @@ def find_windows(
         if _NUMBERED_ITEM_RE.match(text) and (
             is_section_label(previous) or _is_field_label(previous) or _NUMBERED_ITEM_RE.match(previous)
         ):
+            return True
+        # Список с тире: «Обратные Арканы:» / «0 – Шут.» / «i – Консультант.».
+        if _is_enum_item(text) and (_is_enum_item(previous) or _is_enum_label(previous)):
+            return True
+        if _is_enum_label(text) and enum_follows(position):
             return True
         # «…» внутри карточки: окно идёт дальше, если за разделителем снова данные.
         if _ELLIPSIS_LINE_RE.match(text):
@@ -2007,7 +2213,7 @@ def find_windows(
             continue
 
         # «[…]» и реплика героя в скобках окно не начинают (продолжить могут).
-        if _is_empty_bracket(text) or _speech_in_brackets(text):
+        if _is_empty_bracket(text) or _speech_in_brackets(text) or remarked(index):
             index += 1
             continue
         shape = bracket_shape(text)
@@ -2040,6 +2246,7 @@ def find_windows(
             or bullet_run(index)
             or heads_bullets(index)
             or wide_label(index)
+            or enum_list(index)
         ):
             index += 1
             continue
@@ -2119,19 +2326,26 @@ def _carry_chat_owners(windows) -> None:
     """Следующие чаты главы — из того же аккаунта, если его владелец в них пишет.
 
     Перед вторым и третьим чатом сцены о телефоне обычно уже не говорят.
+    Реплика одного собеседника той же переписки («Футаба: …» между чатами
+    Ниа и Футабы) — тоже с телефона владельца, хоть он в ней и не пишет.
     """
     owner = ""
+    partners: set[str] = set()
     for window in windows:
         if window.kind != "chat":
             continue
+        speakers = [parsed.speaker for parsed in map(chat_line, window.lines) if parsed is not None]
         if window.chat_owner:
             owner = window.chat_owner
+            partners = set(speakers)
             continue
         if owner:
-            speakers = [parsed.speaker for parsed in map(chat_line, window.lines) if parsed is not None]
             same = next((speaker for speaker in speakers if _names_match(speaker, owner) or _name_form_of(owner, speaker)), "")
             if same:
                 window.chat_owner = same
+                partners |= set(speakers)
+            elif speakers and set(speakers) <= partners:
+                window.chat_owner = owner
 
 
 # --- оформление -------------------------------------------------------------
@@ -2269,6 +2483,13 @@ def _render_row(text: str, accent: str, italic_allowed: bool, card: bool = False
         return [(_render_keyed(text, accent), False)]
     if shape == "list":
         return [(_render_group_list(text, accent), False)]
+    # Нумерованный список Арканов: номер выделен у всех пунктов, подпись — как раздел.
+    if _is_enum_item(text):
+        number, rest = re.split(r"\s[–—]\s", text, maxsplit=1)
+        return [(f'<b style="color:{accent};">{_escape(number.strip())}</b> – {_escape(rest.strip())}', False)]
+    # «Ур. 35:» — уровень строкой карточки: жирно и без висящего двоеточия.
+    if is_level_header(text) and text.rstrip().endswith((":", "：")):
+        return [(f'<b style="color:{accent};">{_escape(text.rstrip().rstrip(":：").strip())}</b>', False)]
     if is_section_label(text):
         label = _BULLET_MARK_RE.sub("", text.strip(), count=1)
         label = re.sub(r"^[—–-]\s*", "", label).rstrip(":：…").strip()
@@ -2937,15 +3158,22 @@ def render_window(lines, kind: str, *, templates=None, source_html=None) -> str:
         texts[0] = _strip_outer_quotes(strip_brackets(texts[0]))
     title = None
     # Несколько карточек в одной рамке: названия одинаково выделены строками,
-    # а не первое заголовком рамки.
-    if len(texts) >= 2 and sum(heads) <= 1 and _looks_like_title(texts[0]):
+    # а не первое заголовком рамки. Так же с подписями нумерованных списков.
+    enum_labels = {
+        number for number, (text, following) in enumerate(zip(texts, texts[1:]))
+        if _is_enum_label(text) and _is_enum_item(following)
+    }
+    if len(texts) >= 2 and sum(heads) <= 1 and len(enum_labels) <= 1 and _looks_like_title(texts[0]):
         title = _strip_outer_quotes(texts[0].rstrip(":：").strip())
         texts, heads = texts[1:], heads[1:]
+        enum_labels = {number - 1 for number in enum_labels if number}
 
     rows = []
     card = sum(1 for text in texts if is_key_value(text) or _is_card_row(text)) >= 2
-    for text, head in zip(texts, heads):
-        if head:
+    for number, (text, head) in enumerate(zip(texts, heads)):
+        if number in enum_labels:
+            rows.append((f'<b style="color:{accent};">{_escape(text.strip().rstrip(":："))}:</b>', False))
+        elif head:
             name = _strip_outer_quotes(strip_brackets(text))
             rows.append((f'<b style="color:{accent};">{_escape(name)}</b>', False))
         else:
@@ -3265,8 +3493,10 @@ def scan_chapters(entries, settings: DetectorSettings | None = None, progress=No
         ))
         if progress is not None:
             progress((total if has_source else 0) + index, steps, original)
+    # Собеседников узнаём по перепискам; одиночное сообщение — слабый довод.
     participants = chat_participants(
-        candidate.lines for scan in result for candidate in scan.candidates if candidate.kind == "chat"
+        candidate.lines for scan in result for candidate in scan.candidates
+        if candidate.kind == "chat" and len(candidate.lines) >= 2
     )
     if participants and pending_chats:
         base = settings or DetectorSettings()
