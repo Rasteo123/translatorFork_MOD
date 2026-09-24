@@ -1304,15 +1304,38 @@ def _looks_like_name(name: str, *, nickname: bool = False) -> bool:
     return not (_is_stat_key(name) or _has_meta_word(name) or any(key in lowered for key in _TITLE_KEYS))
 
 
-# Служебная строка мессенджера между сообщениями: «… Содзиро печатает.»,
-# «Футаба изменила имя на ДосВагина.» («The Game Begins»).
+# Служебная строка мессенджера между сообщениями: «… Содзиро печатает.» («The Game Begins»).
 _CHAT_SERVICE_RE = re.compile(
-    rf"^(?:…|\.\.\.)?\s*({_CHAT_NAME})\s+(?:печата(?:ет|ют)|набира(?:ет|ют)\s+сообщение"
-    r"|(?:изменил|сменил|поменял)а?\s+(?:имя|ник|никнейм)\s+на\s+\S[^.!?…]{0,40})\s*(?:…|\.\.\.|[.!])?$"
+    rf"^(?:…|\.\.\.)?\s*({_CHAT_NAME})\s+(?:печата(?:ет|ют)|набира(?:ет|ют)\s+сообщение)\s*(?:…|\.\.\.|[.!])?$"
+)
+# Смена имени в мессенджере: «Футаба изменила имя на ДосВагина.», «ДосВагина меняет ник
+# на ДосБадзина.», «Имя пользователя Ниа принудительно изменено на 2-тян.».
+_RENAME_ACTIVE_RE = re.compile(
+    rf"^(?:…|\.\.\.)?\s*({_CHAT_NAME})\s+(?:(?:изменил|сменил|поменял)а?|меняет|изменяет|сменяет)\s+"
+    r"(?:имя|ник|никнейм)\s+на\s+(\S[^.!?…]{0,40}?)\s*[.!…]*$"
+)
+_RENAME_PASSIVE_RE = re.compile(
+    rf"^(?:имя|ник|никнейм)(?:\s+пользователя)?\s+({_CHAT_NAME})\s+(?:\w+\s+)?"
+    r"(?:изменен[оа]?|изменён|сменен[оа]?|сменён)\s+на\s+(\S[^.!?…]{0,40}?)\s*[.!…]*$",
+    re.I,
 )
 
 
+def _chat_rename(text: str):
+    """(старое имя, новое) для строки о смене имени в мессенджере или ``None``."""
+    text = " ".join(text.split())
+    for pattern in (_RENAME_ACTIVE_RE, _RENAME_PASSIVE_RE):
+        match = pattern.match(text)
+        if match:
+            old, new = match.group(1).strip(), match.group(2).strip()
+            if _looks_like_name(old) and _PRONOUN_KEY_RE.search(old) is None:
+                return old, new
+    return None
+
+
 def _is_chat_service(text: str) -> bool:
+    if _chat_rename(text) is not None:
+        return True
     match = _CHAT_SERVICE_RE.match(" ".join(text.split()))
     if match is None:
         return False
@@ -1642,11 +1665,20 @@ def chat_account_owner(context, lines) -> str:
 
 
 def window_readers(candidate, template) -> list[str]:
-    """Чьи реплики окна чата справа: выбор на странице, владелец или читающий книги."""
+    """Чьи реплики окна чата справа: выбор на странице, владелец или читающий книги.
+
+    Если посреди переписки владельца переименовали («Имя пользователя Ниа …
+    изменено на 2-тян.»), справа и его новое имя.
+    """
     if candidate.readers is not None:
         return list(candidate.readers)
     if candidate.chat_owner:
-        return [candidate.chat_owner]
+        names = [candidate.chat_owner]
+        for line in candidate.lines:
+            rename = _chat_rename(line)
+            if rename and any(_names_match(rename[0], name) for name in names) and rename[1] not in names:
+                names.append(rename[1])
+        return names
     return chat_readers(template)
 
 
@@ -2113,6 +2145,12 @@ def find_windows(
             return True
         return chat_nearby(position, parsed)
 
+    def with_trailing_service(stop: int) -> int:
+        """«ДосВагина печатает…» после последнего сообщения — ещё часть переписки."""
+        while stop < len(paragraphs) and paragraphs[stop].adjacent and _is_chat_service(paragraphs[stop].text):
+            stop += 1
+        return stop
+
     def chat_run_end(position: int) -> int | None:
         """Конец переписки, которая начинается с ``position``, или ``None``."""
         if position in chat_ends:
@@ -2120,6 +2158,8 @@ def find_windows(
         stop = chat_run(position)
         if stop is None and lone_message(position):
             stop = position + 1
+        if stop is not None:
+            stop = with_trailing_service(stop)
         chat_ends[position] = stop
         return stop
 
@@ -2427,14 +2467,21 @@ def _carry_chat_owners(windows) -> None:
         if window.chat_owner:
             owner = window.chat_owner
             partners = set(speakers)
-            continue
-        if owner:
+        elif owner:
             same = next((speaker for speaker in speakers if _names_match(speaker, owner) or _name_form_of(owner, speaker)), "")
             if same:
                 window.chat_owner = same
                 partners |= set(speakers)
             elif speakers and set(speakers) <= partners:
                 window.chat_owner = owner
+        # Смена имени посреди переписки: дальше владелец и собеседники пишут под новыми.
+        for line in window.lines:
+            rename = _chat_rename(line)
+            if rename is None:
+                continue
+            partners.add(rename[1])
+            if owner and _names_match(rename[0], owner):
+                owner = rename[1]
 
 
 # --- оформление -------------------------------------------------------------
