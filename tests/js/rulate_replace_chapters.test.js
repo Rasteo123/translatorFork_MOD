@@ -97,9 +97,31 @@ test('buildBody drops the source attribute in double quotes too', () => {
 });
 
 test('buildBody turns scene breaks into a line and escapes plain text', () => {
-  const body = api.buildBody('Раз <b> & два\n\n***\n* * *\n---\nТри');
+  const body = api.buildBody('Раз <span> & два\n\n***\n* * *\n---\nТри');
 
-  assert.equal(body, 'Раз &lt;b&gt; &amp; два\n<hr>\n<hr>\n<hr>\nТри');
+  assert.equal(body, 'Раз &lt;span&gt; &amp; два\n<hr>\n<hr>\n<hr>\nТри');
+});
+
+test('buildBody keeps the italic and bold tags of the converter', () => {
+  const body = api.buildBody('Сожаление нахлынуло <i>мгновенно</i>. <b>ВНИМАНИЕ!</b> &lt;Shadow> <b class="x">нет</b>');
+
+  // Тег с атрибутами конвертер не пишет: это текст; лишний «</b>» пропадает.
+  assert.equal(body, 'Сожаление нахлынуло <i>мгновенно</i>. <b>ВНИМАНИЕ!</b> &lt;Shadow&gt; &lt;b class="x"&gt;нет');
+  assert.equal(api.emphasisCount(api.bodyAsHtml(body)), 2);
+  assert.equal(api.buildBody('<i>открыт и не закрыт'), '<i>открыт и не закрыт</i>');
+});
+
+test('compareChapter and decide notice italics missing on the site', () => {
+  const file = 'Сожаление нахлынуло <i>мгновенно</i>.';
+  const site = '<p>Сожаление нахлынуло мгновенно.</p>';
+
+  const comparison = api.compareChapter(site, file);
+
+  assert.equal(comparison.samePlain, true);
+  assert.equal(comparison.sameEmphasis, false);
+  const pair = { file: { body: file }, site: { id: '1' } };
+  assert.equal(api.decide(pair, comparison, { frames: false, force: false }), 'replace');
+  assert.equal(api.compareChapter('<p>Сожаление нахлынуло <em>мгновенно</em>.</p>', file).sameEmphasis, true);
 });
 
 test('htmlToPlain splits on breaks and blocks and decodes entities', () => {
@@ -135,7 +157,7 @@ test('compareChapter shows where the site text was edited', () => {
 
 test('decide covers every status', () => {
   const pair = { file: { body: FILE_BODY }, site: { id: '1' } };
-  const same = { sameLetters: true, samePlain: true, sameFrames: true, siteFrames: 0, fileFrames: 1 };
+  const same = { sameLetters: true, samePlain: true, sameFrames: true, sameEmphasis: true, siteFrames: 0, fileFrames: 1 };
   const frames = { frames: true, force: false };
 
   assert.equal(api.decide({ ...pair, site: null }, same, frames), 'missing');

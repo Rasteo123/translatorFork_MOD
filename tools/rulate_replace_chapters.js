@@ -141,6 +141,44 @@
     return line.replace(/^\\(?=\[)/, '').replace(/&lt;/g, '<');
   }
 
+  // Курсив и жирный конвертер пишет тегами <i> и <b>; «<» из текста у него
+  // всегда «&lt;», так что такой тег в строке md — выделение, а не текст.
+  const EMPHASIS_TAG_RE = /(<\/?[ib]>)/;
+
+  /**
+   * Строка текста для поля перевода: выделения тегами, остальное экранировано.
+   * Теги уравновешены в пределах строки: лишний закрывающий пропадает,
+   * незакрытый закрывается в конце.
+   */
+  function textLineHtml(line) {
+    const out = [];
+    const open = [];
+    line.split(EMPHASIS_TAG_RE).forEach((part, index) => {
+      if (index % 2 === 0) {
+        out.push(escapeHtml(index === 0 ? unprotect(part) : part.replace(/&lt;/g, '<')));
+        return;
+      }
+      const name = part.replace(/[<>/]/g, '');
+      if (!part.startsWith('</')) {
+        open.push(name);
+        out.push(part);
+      } else if (open.includes(name)) {
+        while (open.length) {
+          const top = open.pop();
+          out.push(`</${top}>`);
+          if (top === name) break;
+        }
+      }
+    });
+    while (open.length) out.push(`</${open.pop()}>`);
+    return out.join('');
+  }
+
+  /** Сколько выделений (курсив и жирный) в HTML. */
+  function emphasisCount(html) {
+    return (String(html).match(/<(?:i|em|b|strong)\b[^>]*>/gi) || []).length;
+  }
+
   /**
    * Текст главы в том виде, в каком его принимает поле перевода при
    * выключенном редакторе: строка на строку, рамка одной строкой без
@@ -154,7 +192,7 @@
       if (!line) continue;
       if (isFrameLine(line)) out.push(line.replace(SOURCE_ATTR_RE, ''));
       else if (BREAK_RE.test(line)) out.push('<hr>');
-      else out.push(escapeHtml(unprotect(line)));
+      else out.push(textLineHtml(line));
     }
     return out.join('\n');
   }
@@ -275,6 +313,7 @@
       sameLetters,
       samePlain: sitePlain === filePlain,
       sameFrames: frameStyles(siteHtml).join('|') === frameStyles(fileHtml).join('|'),
+      sameEmphasis: emphasisCount(siteHtml) === emphasisCount(fileHtml),
       siteFrames: frameCountInHtml(siteHtml),
       fileFrames: countFrameLines(fileBody),
       difference: sameLetters ? null : describeDifference(sitePlain, filePlain),
@@ -289,7 +328,7 @@
     if (!pair.site) return 'missing';
     if (frames && comparison.fileFrames === 0) return 'skip';
     if (frames && comparison.siteFrames >= comparison.fileFrames) return 'done';
-    if (!frames && comparison.samePlain && comparison.sameFrames) return 'same';
+    if (!frames && comparison.samePlain && comparison.sameFrames && comparison.sameEmphasis) return 'same';
     if (frames && !comparison.sameLetters && !force) return 'differs';
     return 'replace';
   }
@@ -965,6 +1004,7 @@
     describeDifference,
     frameStyles,
     frameCountInHtml,
+    emphasisCount,
     compareChapter,
     decide,
     verifySaved,

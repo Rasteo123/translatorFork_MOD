@@ -61,6 +61,57 @@ _REFERENCE_DEFINITION_RE = re.compile(
 )
 
 
+# Курсив и жирный текста. Загрузчик Rulate пропускает теги <i> и <b>, а остальные
+# теги конвертер снимает, поэтому выделения до сноса тегов меняются на метки
+# и возвращаются тегами уже после экранирования строки.
+_EMPHASIS_TAG_RE = re.compile(r"<(/?)(em|i|strong|b)\b[^>]*>", re.IGNORECASE)
+_EMPHASIS_NAMES = {"em": "i", "i": "i", "strong": "b", "b": "b"}
+_EMPHASIS_MARK_RE = re.compile("\x01(/?)([ib])\x02")
+_EMPTY_EMPHASIS_RE = re.compile(r"<([ib])>(\s*)</\1>")
+
+
+def _mark_emphasis(match) -> str:
+    return f"\x01{match.group(1)}{_EMPHASIS_NAMES[match.group(2).lower()]}\x02"
+
+
+def _restore_emphasis(line: str, carried: list) -> tuple[str, list]:
+    """Метки выделений строки → ``<i>``/``<b>``, открытые с прошлой строки абзаца.
+
+    Незакрытое выделение закрывается в конце строки и открывается снова на
+    следующей строке того же абзаца (``<em>раз<br/>два</em>``); лишний
+    закрывающий тег пропадает. Возвращает строку и выделения, открытые к её концу.
+    """
+    parts = [f"<{name}>" for name in carried]
+    stack = list(carried)
+    position = 0
+    for match in _EMPHASIS_MARK_RE.finditer(line):
+        parts.append(line[position:match.start()])
+        position = match.end()
+        closing, name = match.groups()
+        if not closing:
+            stack.append(name)
+            parts.append(f"<{name}>")
+        elif name in stack:
+            reopen = []
+            while stack:
+                top = stack.pop()
+                parts.append(f"</{top}>")
+                if top == name:
+                    break
+                reopen.append(top)
+            for top in reversed(reopen):
+                stack.append(top)
+                parts.append(f"<{top}>")
+    parts.append(line[position:])
+    open_at_end = list(stack)
+    parts.extend(f"</{name}>" for name in reversed(stack))
+    text = "".join(parts)
+    previous = None
+    while previous != text:
+        previous, text = text, _EMPTY_EMPHASIS_RE.sub(r"\2", text)
+    return text, open_at_end
+
+
 def _protect_from_markdown(line: str) -> str:
     """Строка текста главы, которую Markdown сайта покажет как есть.
 
@@ -289,6 +340,7 @@ class EPUBConverterThread(QThread):
         # Блок с вложенными div (карточки постов форума) — целиком, до парного </div>.
         text = replace_system_blocks(text, keep_system_block)
         text = re.sub(r"<(script|style|head)[^>]*>.*?</\1>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = _EMPHASIS_TAG_RE.sub(_mark_emphasis, text)
         text = re.sub(r"</(p|div|h[1-6]|li|blockquote)>", "\n\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<hr\s*/?>", "\n***\n", text, flags=re.IGNORECASE)
@@ -296,11 +348,19 @@ class EPUBConverterThread(QThread):
         text = unescape(text)
 
         lines = []
+        carried: list = []
         for line in text.split("\n"):
             stripped = line.strip()
-            if stripped:
-                is_block = stripped.startswith("\x00SYSBLOCK")
-                lines.append(stripped if is_block else _protect_from_markdown(stripped))
+            # Пустая строка — граница абзаца: незакрытое выделение дальше не тянется.
+            if not _EMPHASIS_MARK_RE.sub("", stripped).strip():
+                carried = []
+                continue
+            if stripped.startswith("\x00SYSBLOCK"):
+                lines.append(stripped)
+                continue
+            restored, carried = _restore_emphasis(_protect_from_markdown(stripped), carried)
+            if restored.strip():
+                lines.append(restored)
 
         result = "\n".join(lines)
         for index, block in enumerate(system_blocks):

@@ -119,3 +119,51 @@ def test_angle_brackets_in_text_are_not_taken_for_tags():
     text = converter._html_to_plain_text("<body><p>Ник &lt;Shadow&gt; вошёл в игру.</p></body>")
 
     assert text == "Ник &lt;Shadow> вошёл в игру."
+
+
+# --- курсив и жирный: загрузчик Rulate пропускает <i> и <b> ----------------------------
+
+
+def test_italic_and_bold_survive_as_i_and_b_tags():
+    converter = EPUBConverterThread("book.epub")
+    html = (
+        '<body><p class="calibre7">Сожаление нахлынуло <em class="calibre10">мгновенно</em>.</p>'
+        '<p><strong class="calibre2">ВНИМАНИЕ!</strong> Текст <b>жирный</b> и <i>курсив</i>.</p></body>'
+    )
+
+    assert converter._html_to_plain_text(html).split("\n") == [
+        "Сожаление нахлынуло <i>мгновенно</i>.",
+        "<b>ВНИМАНИЕ!</b> Текст <b>жирный</b> и <i>курсив</i>.",
+    ]
+
+
+def test_emphasis_keeps_text_angle_brackets_escaped():
+    converter = EPUBConverterThread("book.epub")
+
+    text = converter._html_to_plain_text("<body><p>Ник &lt;Shadow&gt; и <em>тень</em>.</p></body>")
+
+    assert text == "Ник &lt;Shadow> и <i>тень</i>."
+
+
+def test_emphasis_across_a_line_break_is_reopened_on_the_next_line():
+    converter = EPUBConverterThread("book.epub")
+
+    text = converter._html_to_plain_text("<body><p><em>строка один<br/>строка два</em></p></body>")
+
+    assert text.split("\n") == ["<i>строка один</i>", "<i>строка два</i>"]
+
+
+def test_empty_or_unclosed_emphasis_does_not_leak():
+    converter = EPUBConverterThread("book.epub")
+    html = "<body><p>Текст<em> </em>дальше.</p><p><em>открыт</p><p>Следующий абзац.</p><p><em></em></p></body>"
+
+    assert converter._html_to_plain_text(html).split("\n") == ["Текст дальше.", "<i>открыт</i>", "Следующий абзац."]
+
+
+def test_emphasis_inside_a_system_window_stays_as_it_was():
+    converter = EPUBConverterThread("book.epub")
+    block = _block("<b>Динь!</b><br />Очки +1")
+
+    text = converter._html_to_plain_text(f"<body><p><em>До</em> окна.</p>{block}</body>")
+
+    assert text.split("\n") == ["<i>До</i> окна.", block]
