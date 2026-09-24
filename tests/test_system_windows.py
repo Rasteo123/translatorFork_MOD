@@ -2937,3 +2937,43 @@ def test_a_character_speaking_through_a_mechanical_voice_is_not_a_notice():
     # Объявление тем же голосом — уведомление («Марвел»).
     line = "— Приношу извинения, на данном участке дороги сигнал заблокирован, — ответил механический голос."
     assert [window.kind for window in find_windows(_chapter("Он набрал номер.", line, "Текст."))] == ["notice"]
+
+
+# --- смена ника в переписке: «Имя пользователя Ниа … изменено на 2-тян» -------------
+
+
+def test_rename_forms_are_service_lines_of_a_chat():
+    for line in (
+        "ДосВагина меняет ник на ДосБадзина.",
+        "Имя пользователя Ниа принудительно изменено на 2-тян.",
+        "Футаба изменила имя на ДосВагина.",
+    ):
+        assert sw._is_chat_service(line), line
+    assert sw._chat_rename("Имя пользователя Ниа принудительно изменено на 2-тян.") == ("Ниа", "2-тян")
+    assert sw._chat_rename("ДосВагина меняет ник на ДосБадзина.") == ("ДосВагина", "ДосБадзина")
+    assert sw._chat_rename("Став королевой, Алассра сменила имя на Симбул.") is None
+
+
+def test_typing_line_after_the_last_message_stays_in_the_chat():
+    lines = ["Ниа: Тебе длинную версию?", "Футаба: Да!", "Ниа: Подлиннее, пожалуйста.", "ДосВагина печатает…"]
+    html = _chapter("Ниа хмыкнул.", *lines, "Сожаление нахлынуло мгновенно.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+
+
+def test_renamed_owner_stays_on_the_right():
+    # «The Game Begins», гл. 61: Футаба переименовала Ниа в «2-тян» посреди переписки.
+    first = [
+        "Футаба: Привет! Ты тут?", "Ниа: Тут.", "Футаба: Смотри, что я умею!",
+        "Имя пользователя Ниа принудительно изменено на 2-тян.", "2-тян: Как?", "Футаба: Секрет!",
+    ]
+    second = ["2-тян: Ладно, мне пора.", "Футаба: Пока!", "2-тян: Пока."]
+    html = _chapter("Телефон Ниа издал короткий сигнал.", *first, "Ниа закатил глаза.", *second, "Он убрал телефон.")
+    windows = find_windows(html)
+    templates = {kind: dict(template) for kind, template in DEFAULT_TEMPLATES.items()}
+
+    assert [window.lines for window in windows] == [first, second]
+    assert sw.window_readers(windows[0], templates["chat"]) == ["Ниа", "2-тян"]
+    assert sw.window_readers(windows[1], templates["chat"]) == ["2-тян"]
+    block = sw.render_window(windows[1].lines, "chat", templates={"chat": {**templates["chat"], "readers": ["2-тян"]}})
+    assert block.count("float:right") == 2
