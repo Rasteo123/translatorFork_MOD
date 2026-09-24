@@ -2402,9 +2402,9 @@ def test_danmachi_status_sheet_keeps_magic_and_skills():
         "Лиарис Фриз – Стремительный рост. Ускоряет развитие, пока чувства остаются неизменными.",
         "Аргонавт – Автоматический заряд при активном действии.",
     ]
-    html = _chapter("Элпис без труда выбила из меня дух.", "Белл Кранел.", *sheet, "Я со вздохом отложил лист.")
+    html = _chapter("Элпис без труда выбила из меня дух.", "Белл Кранел.", "Семья Гестии.", *sheet, "Я со вздохом отложил лист.")
 
-    assert [window.lines for window in find_windows(html)] == [["Белл Кранел.", *sheet]]
+    assert [window.lines for window in find_windows(html)] == [["Белл Кранел.", "Семья Гестии.", *sheet]]
 
 
 def test_german_quoted_skill_names_continue_the_list():
@@ -2459,3 +2459,105 @@ def test_dash_terms_in_prose_and_viewer_quotes_are_not_single_windows():
     )
 
     assert [window.lines for window in find_windows(html)] == [["«Возраст: 15 лет»."]]
+
+
+# --- речь в скобках, стикеры в чате, карточка в кавычках на несколько абзацев ------
+
+
+def test_bracketed_speech_line_is_not_a_window_but_system_address_is():
+    # «Kumo», «Caterpillar», «A New World»: реплики и телепатия в скобках.
+    html = _chapter(
+        "[Память у меня не настолько плохая. Ее ведь можно назвать моей гордостью.]", "Текст.",
+        "[Наруто, твоя несносная девчонка только что пробралась в твою комнату.]", "Текст.",
+        "[Человек, ты слышишь меня?]", "Текст.",
+        "[Молодец, носитель! Ты справился.]", "Текст.",
+        "[Ты получил навык «Рывок».]", "Текст.",
+    )
+
+    assert [window.lines for window in find_windows(html)] == [
+        ["[Молодец, носитель! Ты справился.]"], ["[Ты получил навык «Рывок».]"],
+    ]
+
+
+def test_stickers_and_photos_inside_a_chat_keep_it_whole():
+    # «Да вы издеваетесь!»: стикер посреди переписки в WeChat.
+    lines = ["Кун Лю: «Ты её фанатка?»", "[Подозрение]", "Лу Си: «Нет, просто спросила».", "[Фото]",
+             "Кун Лю: «Ага, конечно».", "Лу Си: «Ладно, фанатка».",]
+    html = _chapter("Она открыла WeChat.", *lines, "Лу Си отложила телефон.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+
+
+def test_quoted_card_across_paragraphs_is_one_window():
+    # «Марвел»: плакат розыска в одних кавычках на три абзаца.
+    card = ["«Цель: Эсдес.", "Требование: Живым! (В случае трудностей допускается ликвидация).",
+            "Заказчики: Йонду Удонта, Ронан!", "Награда: 10 000 000 юнитов».",]
+    html = _chapter("На стене висел плакат.", *card, "Питер присвистнул.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_polite_system_messages_stay_and_viewer_comments_go():
+    # «Полоска здоровья»: система на «вы»; LOL: комментарии зрителей.
+    assert sw._source_confirms("«У вас недостаточно прав для доступа к этой информации».")
+    assert sw._source_confirms("«Блогер „Ю“, на которого вы подписаны, загрузил новое видео».")
+    assert sw._source_confirms("«Охота началась. Очевидно, его сила оказалась не так велика, как вы ожидали».")
+    assert not sw._source_confirms("«Да ладно, вы серьезно радуетесь успехам этого балласта?»")
+    assert not sw._source_confirms("«Ха-ха-ха, а вы видели, как его Кеннен сделал квадрокилл?»")
+    assert not sw._source_confirms("«Стой линию, не подставляйся? Вы что тут, сказки рассказываете?»")
+
+
+def test_skill_named_recall_is_not_an_author_note_header():
+    # «Рефреш», гл. 315: навык «Отзыв» — не отзыв читателя.
+    card = ["Бочи, потенциальный уровень 3.", "Врожденные способности: «Слоты снаряжения», «Отзыв», «Опутывание»."]
+    html = _chapter("Что касается Бочи…", *card, "Он почесал затылок.")
+
+    assert [window.lines for window in find_windows(html)] == [card]
+
+
+def test_skill_names_are_bold_in_status_sheets():
+    lines = ["Магия:", "(Огненный Болт)", "• Магия быстрого применения.", "Навыки:",
+             "Лиарис Фриз – Стремительный рост. Ускоряет развитие.", "«Казан Души Клинка.»"]
+
+    block = sw.render_window(lines, "status")
+
+    assert "(Огненный Болт)</b>" in block
+    assert "Лиарис Фриз</b> – Стремительный рост." in block
+    assert "Казан Души Клинка.</b>" in block
+
+
+def test_group_chat_replies_in_brackets_from_different_people_are_a_chat():
+    # «Возрождение духовной энергии», гл. 211: ответы в группе без повторов.
+    lines = ["[Шэнь Чжихао: Я участвую!]", "[Цзыи: Я тоже еду!]", "[Чжэнь Тяньюань: И я с вами!]"]
+    html = _chapter("Затем он снова перевёл взгляд на чат.", *lines, "Ниже шло ещё несколько подобных ответов.")
+
+    assert [(window.kind, window.lines) for window in find_windows(html)] == [("chat", lines)]
+
+
+def test_system_prompts_and_second_person_system_voice_are_not_speech():
+    # «Бизнес с карточками», «Реинкарнация», «Полоска здоровья», «Белый Жнец», «Король Демонов».
+    for line in (
+        "[Пожалуйста, выберите тип карты]",
+        "[Пожалуйста, выберите место для размещения Темного бестиария.]",
+        "[Ты осознаешь, что силы Казни и Вердикта, вероятно, связаны с подобными Правилами.]",
+        "[Репутация – это мера твоего авторитета среди избранных.]",
+        "[Цзян Вэньхао, Университет Минцин – выбыл!]",
+        "[Да / Нет]",
+        "[Гордыня: абсолютное эго, где собственное «я» – единственная и высшая ценность.]",
+    ):
+        assert not sw._speech_in_brackets(line), line
+    for line in ("[Ты что, книг не читал?]", "[Твою ж мать!]", "[Господин Цзян, Вы и правда демон?]", "[Ого, а в голосе-то что – разочарование?]"):
+        assert sw._speech_in_brackets(line), line
+
+
+def test_ellipsis_spacers_inside_a_chat_keep_it_whole():
+    # «Our Wild Love», гл. 82: реплики разделены абзацами «…».
+    lines = ["[Сихо: Погодите… у Саэ завтра суд?]", "…", "… [Акэти: Работа прокурора заставляет вести несколько дел.]",
+             "…", "…", "… [Хисато: Боже мой. Без обид, Макото, но это звучит как горы работы.]"]
+    html = _chapter("После вылазки все разошлись по домам.", *lines, "Акира отложил телефон.")
+
+    windows = find_windows(html)
+    block = sw.render_window(windows[0].lines, "chat")
+
+    assert [(window.kind, window.lines) for window in windows] == [("chat", lines)]
+    assert block.count("float:") == 3 and ">…<" not in block
