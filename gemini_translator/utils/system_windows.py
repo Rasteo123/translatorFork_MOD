@@ -1610,20 +1610,26 @@ def chat_reader(windows_lines) -> str:
     """Кто читает чат: собеседник, который есть в большинстве переписок книги.
 
     «Кен» и «Кен Амада» считаются одним человеком. Нужны хотя бы две переписки
-    с его участием, иначе справа никого нет.
+    с его участием, иначе справа никого нет. Кто во всех своих переписках пишет
+    один, тот отправитель, а не хозяин телефона (The Dark Below: только Шинсо).
     """
     presence: dict[str, int] = {}
     lines_count: dict[str, int] = {}
+    shared: set[str] = set()
     for lines in windows_lines:
         speakers = {parsed.speaker for parsed in map(chat_line, lines) if parsed is not None}
         for speaker in speakers:
             presence[speaker] = presence.get(speaker, 0) + 1
+        if len(speakers) >= 2:
+            shared.update(speakers)
         for parsed in map(chat_line, lines):
             if parsed is not None:
                 lines_count[parsed.speaker] = lines_count.get(parsed.speaker, 0) + 1
     best, best_score = "", (0, 0)
     for name in sorted(presence, key=len):
         related = [other for other in presence if _names_match(other, name)]
+        if not shared.intersection(related):
+            continue
         score = (sum(presence[other] for other in related), sum(lines_count.get(other, 0) for other in related))
         if score > best_score:
             best, best_score = name, score
