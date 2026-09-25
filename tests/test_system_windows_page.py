@@ -405,7 +405,7 @@ class SystemWindowsSourceTests(unittest.TestCase):
     def test_scan_passes_the_source_epub_only_when_checked(self):
         page = self._page()
         page.project_edit.setText(str(self.project))
-        with patch("gemini_translator.ui.pages.system_windows_page.scan_project", return_value=[]) as scan:
+        with patch("gemini_translator.ui.pages.system_windows_page.scan_project_with_hero", return_value=([], "")) as scan:
             page.scan()
             self.assertTrue(page.worker.wait(10_000))
             QtWidgets.QApplication.processEvents()
@@ -457,6 +457,29 @@ class ChatReaderFieldTests(unittest.TestCase):
         self.assertEqual(page.table.cellWidget(0, 2).currentData(), "chat")
         self.assertIn("Кен", page.reader_edit.placeholderText())
         self.assertEqual(page.templates()["chat"]["readers"], ["Кен"])
+
+    def test_book_hero_from_the_glossary_is_the_auto_reader(self):
+        # Справа — герой книги по глоссарию проекта, а не самый частый собеседник.
+        glossary = [{"original": "Ryuji", "rus": "Рюдзи", "note": "Персонаж; Мужчина"}]
+        (self.project / "project_glossary.json").write_text(json.dumps(glossary, ensure_ascii=False), encoding="utf-8")
+        page = self._page()
+        page.project_edit.setText(str(self.project))
+        page.scan()
+        self.assertTrue(page.worker.wait(10_000))
+        QtWidgets.QApplication.processEvents()
+
+        self.assertIn("Рюдзи", page.reader_edit.placeholderText())
+        self.assertEqual(page.templates()["chat"]["readers"], ["Рюдзи"])
+        self.assertIn("герой книги по глоссарию — Рюдзи", page.log_output.toPlainText())
+
+    def test_auto_reader_with_several_names_puts_each_on_the_right(self):
+        # Герой пишет под разными подписями: «Кен» и «Кен Амада» — оба справа.
+        page = self._page()
+        page.project_edit.setText(str(self.project))
+        page.set_scan_results(scan_project(self.project), hero=["Кен Амада"])
+
+        self.assertEqual(page.templates()["chat"]["readers"], ["Кен", "Кен Амада"])
+        self.assertIn("Кен, Кен Амада", page.reader_edit.placeholderText())
 
     def test_reader_field_is_remembered_per_project(self):
         page = self._page()

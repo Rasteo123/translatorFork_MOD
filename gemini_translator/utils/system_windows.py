@@ -10,6 +10,7 @@ BeautifulSoup(html.parser), а по ``sourceline``/``sourcepos`` возвращ�
 from __future__ import annotations
 
 import html as html_module
+import json
 import os
 import re
 from dataclasses import dataclass, replace
@@ -1370,7 +1371,10 @@ _NOT_SPEAKERS = frozenset(
     "вопрос ответ например или новое примечание внимание итог итоги совет подсказка цель задача причина "
     "следствие плюс минус первое второе третье шаг вывод результат замечание пример важно кстати "
     "кто что где когда как почему зачем куда откуда чей далее затем потом итак сначала наконец "
-    "следующая следующий следующее следующие предыдущая предыдущий улика".split()
+    "следующая следующий следующее следующие предыдущая предыдущий улика "
+    # «Слушай: время Возвышения настало.» (The Dark Below) — вводное слово, а не собеседник.
+    "слушай послушай смотри посмотри гляди глянь знай помни запомни представь вообрази подумай "
+    "пойми учти заметь скажи ответь".split()
 )
 
 
@@ -1606,13 +1610,149 @@ def _names_match(speaker: str, reader: str) -> bool:
     return bool(reader) and (name == reader or name.startswith(reader + " ") or reader.startswith(name + " "))
 
 
-def chat_reader(windows_lines) -> str:
-    """Кто читает чат: собеседник, который есть в большинстве переписок книги.
+# --- герой книги ------------------------------------------------------------
 
-    «Кен» и «Кен Амада» считаются одним человеком. Нужны хотя бы две переписки
-    с его участием, иначе справа никого нет. Кто во всех своих переписках пишет
-    один, тот отправитель, а не хозяин телефона (The Dark Below: только Шинсо).
+_GLOSSARY_FILE = "project_glossary.json"
+_CHARACTER_NOTE_RE = re.compile(r"персонаж", re.I)
+_NAME_TOKEN_RE = re.compile(r"[\w'’-]+")
+# Короткое имя («Ци») встречается и внутри полного («Цзян Ци»): полное берём, если оно
+# набирает хотя бы такую долю упоминаний короткого.
+_HERO_FULL_NAME_SHARE = 0.8
+
+
+# Ник героя в глоссарии: «Псевдоним; Настоящее имя: 许砺韬», «Наст. имя: Цукаса».
+_REAL_NAME_RE = re.compile(r"(?:настоящее|наст\.)\s*имя\s*[:：]\s*([^;\[\]]+)", re.I)
+
+
+def _glossary_entries(project_folder) -> list[dict]:
+    try:
+        entries = json.loads((Path(project_folder) / _GLOSSARY_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
+def _entry_name(entry: dict, field: str = "rus") -> str:
+    return " ".join(str(entry.get(field) or "").split())
+
+
+def _name_words(name: str) -> set[str]:
+    """Слова имени без дефисов и знаков: «Цукаса-тян» → {«цукаса», «тян»}."""
+    return set(re.findall(r"[^\W_]+", name.casefold()))
+
+
+def _character_names(entries) -> list[str]:
+    names = (_entry_name(entry) for entry in entries if _CHARACTER_NOTE_RE.search(str(entry.get("note") or "")))
+    return [name for name in dict.fromkeys(names) if name]
+
+
+def project_characters(project_folder) -> list[str]:
+    """Персонажи из глоссария проекта: записи с пометкой «Персонаж»."""
+    return _character_names(_glossary_entries(project_folder))
+
+
+def hero_aliases(entries, hero: str) -> list[str]:
+    """Ники героя из глоссария: записи, чьё «Настоящее имя: …» указывает на героя."""
+    originals = {_entry_name(entry, "original").casefold() for entry in entries if _entry_name(entry) == hero}
+    hero_words = _name_words(hero)
+    aliases: list[str] = []
+    for entry in entries:
+        name = _entry_name(entry)
+        real = _REAL_NAME_RE.search(str(entry.get("note") or ""))
+        if not name or name == hero or name in aliases or real is None:
+            continue
+        real_name = " ".join(real.group(1).split()).casefold()
+        real_words = _name_words(real_name)
+        if real_name in originals or (real_words and (real_words <= hero_words or hero_words <= real_words)):
+            aliases.append(name)
+    return aliases
+
+
+def book_hero(characters, texts) -> str:
+    """Главный герой: персонаж, которого повествование называет чаще всех."""
+    wanted: dict[tuple, str] = {}
+    for name in characters:
+        words = tuple(word.casefold() for word in _NAME_TOKEN_RE.findall(name))
+        if words and len(name) >= 2:
+            wanted.setdefault(words, name)
+    by_first: dict[str, list[tuple]] = {}
+    for words in wanted:
+        by_first.setdefault(words[0], []).append(words)
+    counts = dict.fromkeys(wanted, 0)
+    for text in texts:
+        tokens = [token.casefold() for token in _NAME_TOKEN_RE.findall(text)]
+        for index, token in enumerate(tokens):
+            for words in by_first.get(token, ()):
+                if tuple(tokens[index:index + len(words)]) == words:
+                    counts[words] += 1
+    ranked = sorted(((count, words) for words, count in counts.items() if count), reverse=True)
+    if not ranked:
+        return ""
+    top, hero = ranked[0]
+    for count, words in ranked[1:]:
+        if count < _HERO_FULL_NAME_SHARE * top:
+            break
+        if set(hero) < set(words):
+            hero = words
+    return wanted[hero]
+
+
+def project_hero_names(project_folder) -> list[str]:
+    """Герой книги по глоссарию проекта и тексту глав, затем его ники; без глоссария — []."""
+    entries = _glossary_entries(project_folder)
+    characters = _character_names(entries)
+    if not characters:
+        return []
+    texts = []
+    for _original, path in project_chapter_files(project_folder):
+        try:
+            texts.append(" ".join(_raw_paragraph_texts(Path(path).read_bytes().decode("utf-8", "ignore"))))
+        except OSError:
+            continue
+    hero = book_hero(characters, texts)
+    return [hero, *hero_aliases(entries, hero)] if hero else []
+
+
+def project_hero(project_folder) -> str:
+    """Герой книги по глоссарию проекта; без глоссария — пустая строка."""
+    names = project_hero_names(project_folder)
+    return names[0] if names else ""
+
+
+def _hero_reader(windows_lines, names) -> str:
+    """Подписи героя в переписке: имя, ник («Три стратегии…»), ник с именем («Гигант
+    Цзян Юй»), суффикс («Цукаса-тян»). Через запятую, самые частые первыми.
+
+    Короткая подпись внутри имени («Кун» у «Кун Лю») годится только для самого героя:
+    у ника общий слог не довод («Ань-ань» — не «Айрин Ань»).
     """
+    hero, *aliases = [words for words in map(_name_words, names) if words] or [set()]
+    written: dict[str, int] = {}
+    for lines in windows_lines:
+        for parsed in map(chat_line, lines):
+            if parsed is None:
+                continue
+            words = _name_words(parsed.speaker)
+            if words and (hero <= words or words <= hero or any(alias <= words for alias in aliases)):
+                written[parsed.speaker] = written.get(parsed.speaker, 0) + 1
+    return ", ".join(sorted(written, key=lambda speaker: (-written[speaker], len(speaker), speaker)))
+
+
+def chat_reader(windows_lines, hero=None) -> str:
+    """Кто читает чат (несколько подписей — через запятую, как в поле «Чей аккаунт»).
+
+    С героем книги (``hero`` — имя или имена с никами, см. :func:`project_hero_names`) —
+    он сам, если пишет в переписке, иначе никто: это переписка чужих людей («Система
+    идеального реванша») или входящие на его телефон. Пишет один — это его сообщения
+    («Конан»: Цзян Лай).
+
+    Без героя — собеседник, который есть в большинстве переписок книги. «Кен» и «Кен
+    Амада» считаются одним человеком. Нужны хотя бы две переписки с его участием, иначе
+    справа никого нет. Кто во всех своих переписках пишет один, тот отправитель, а не
+    хозяин телефона (The Dark Below: только Шинсо).
+    """
+    if hero:
+        return _hero_reader(windows_lines, [hero] if isinstance(hero, str) else list(hero))
     presence: dict[str, int] = {}
     lines_count: dict[str, int] = {}
     shared: set[str] = set()
@@ -2179,7 +2319,25 @@ def _author_note_zone(texts) -> set[int]:
             index = following
             continue
         index += 1
+    # Ответы на отзывы без знакомого заголовка («время для отзывов!», Fairy Tail
+    # Xenoverse): сплошной список «Ник: ответ», и в нём гостевой рецензент.
+    start = 0
+    while start < len(texts):
+        stop = start
+        while stop < len(texts) and (
+            not texts[stop] or (_NOTE_LINE_RE.match(texts[stop]) and bracket_shape(texts[stop]) is None)
+        ):
+            stop += 1
+        if any(_reviewer_line(texts[number]) for number in range(start, stop)):
+            zone.update(range(start, stop))
+        start = max(stop, start + 1)
     return zone
+
+
+def _reviewer_line(text: str) -> bool:
+    """«Guest (1): …», «Guest Reviewer «…»: …», «Гость: …» — ответ гостевому рецензенту."""
+    key = re.split(r"[:：]", text, maxsplit=1)[0].split() if text else []
+    return bool(key) and key[0].casefold().strip("«»\"'(") in _REVIEWER_NAMES
 
 
 _INFO_LINE_RE = re.compile(
@@ -3992,6 +4150,17 @@ def scan_project(
         if archive is not None:
             archive.close()
     return scan_chapters(entries, settings, progress)
+
+
+def scan_project_with_hero(
+    project_folder,
+    settings: DetectorSettings | None = None,
+    progress=None,
+    source_epub: str | None = None,
+) -> tuple[list[ChapterScan], list[str]]:
+    """:func:`scan_project` и герой книги с никами (:func:`project_hero_names`) для выбора
+    аккаунта в чатах."""
+    return scan_project(project_folder, settings, progress, source_epub), project_hero_names(project_folder)
 
 
 def apply_project(selections, templates=None, progress=None) -> tuple[int, int]:

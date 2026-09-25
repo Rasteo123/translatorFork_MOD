@@ -63,7 +63,7 @@ from gemini_translator.utils.system_windows import (
     is_reader,
     render_preview_document,
     render_window,
-    scan_project,
+    scan_project_with_hero,
     strip_project,
     user_exclude_pattern,
     window_readers,
@@ -165,6 +165,7 @@ class SystemWindowsPage(ShellPage):
         self.worker = None
         self._scans = []
         self._auto_reader = ""
+        self._book_hero = ""
         self._readers_by_project: dict[str, str] = {}
         self._build_ui()
         self._restore_ui_state()
@@ -524,6 +525,7 @@ class SystemWindowsPage(ShellPage):
         if not self._scans:
             self._set_status("Проект выбран" if text.strip() else "Проект не выбран")
         self._auto_reader = ""
+        self._book_hero = ""
         self.reader_edit.setPlaceholderText(_READER_PLACEHOLDER)
         self.reader_edit.setText(self._readers_by_project.get(self._project_key(text), ""))
         folder = text.strip()
@@ -568,7 +570,7 @@ class SystemWindowsPage(ShellPage):
         names = chat_readers({"readers": self.reader_edit.text()})
         if names:
             return names
-        return [self._auto_reader] if self._auto_reader else []
+        return chat_readers({"readers": self._auto_reader})
 
     # --- настройки ----------------------------------------------------------
 
@@ -662,13 +664,18 @@ class SystemWindowsPage(ShellPage):
 
     # --- таблица ------------------------------------------------------------
 
-    def set_scan_results(self, scans):
+    def _on_scanned(self, result):
+        scans, hero = result
+        self.set_scan_results(scans, hero=hero)
+
+    def set_scan_results(self, scans, hero=()):
         # Старые строки убрать до замены списка: пока они удаляются, Qt уводит фокус
         # из их комбобоксов и меняет выделение, а индексы строк смотрят в self._scans.
         self.table.setRowCount(0)
         self._scans = list(scans)
+        self._book_hero = hero if isinstance(hero, str) else (list(hero)[0] if hero else "")
         chats = [candidate.lines for scan in self._scans for candidate in scan.candidates if candidate.kind == "chat"]
-        self._auto_reader = chat_reader(chats)
+        self._auto_reader = chat_reader(chats, hero=hero or None)
         self.table.blockSignals(True)
         with deferred_column_autosize(self.table):
             self._fill_rows()
@@ -689,8 +696,9 @@ class SystemWindowsPage(ShellPage):
                 1 for scan in self._scans for candidate in scan.candidates
                 if candidate.kind == "chat" and candidate.chat_owner
             )
+            hero_note = f" (герой книги по глоссарию — {self._book_hero})" if self._book_hero else ""
             self._log(
-                f"Переписок: {len(chats)}. Аккаунт по книге: {shown}; "
+                f"Переписок: {len(chats)}. Аккаунт по книге: {shown}{hero_note}; "
                 f"владелец по тексту перед чатом найден в {owned}."
             )
         if total:
@@ -1112,8 +1120,8 @@ class SystemWindowsPage(ShellPage):
         source_epub = self._source_epub()
         self._log("Ищу системные окна…" + (" Сверяю с исходником." if source_epub else ""))
         self._start(
-            scan_project, folder, settings, source_epub=source_epub,
-            on_done=self.set_scan_results, busy_label="Ищу окна…", busy_button=self.scan_button,
+            scan_project_with_hero, folder, settings, source_epub=source_epub,
+            on_done=self._on_scanned, busy_label="Ищу окна…", busy_button=self.scan_button,
         )
 
     def apply_selected(self):
