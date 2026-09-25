@@ -3192,7 +3192,13 @@ def forum_structure(lines):
             parts.append(("page", text))
             current = None
         elif role == "decor":
-            if text not in ("■", "□"):
+            # «…» посреди поста или переписки — пауза на своём месте, а не
+            # отдельная часть после всего раздела.
+            if text in ("■", "□"):
+                continue
+            if current is not None:
+                current[-1].append(text)
+            else:
                 parts.append(("decor", text))
         else:
             if current is not None:

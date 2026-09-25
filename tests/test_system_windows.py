@@ -3060,3 +3060,18 @@ def test_forum_replies_signed_answer_with_a_date_keep_the_thread_whole():
     assert [(window.kind, window.lines) for window in windows] == [("forum", thread + messages)]
     assert sw.forum_role("Ответ 21 апреля 2011.") == "time"
     assert sw.forum_role("Ответ был прост: нет.") != "time"
+
+
+def test_ellipsis_inside_private_messages_keeps_its_place():
+    # «Сын Симург»: пауза «…» между сообщениями уезжала в конец рамки форума.
+    parts = sw.forum_structure([
+        "Личное сообщение от AllSeeingEye:",
+        "AllSeeingEye: Если сможешь выбраться на поверхность, пойдешь с нами?",
+        "…",
+        "Antigone: Мне больше нечего терять.",
+    ])
+
+    assert parts == [(
+        "pm", "Личное сообщение от AllSeeingEye",
+        ["AllSeeingEye: Если сможешь выбраться на поверхность, пойдешь с нами?", "…", "Antigone: Мне больше нечего терять."],
+    )]
