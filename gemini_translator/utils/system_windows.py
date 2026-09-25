@@ -1357,8 +1357,19 @@ def _is_chat_sticker(text: str) -> bool:
     )
 
 
+# Вложение без скобок между сообщениями: «Пришло селфи.», «Картинка.» («Сын Симург»).
+_CHAT_ATTACHMENT_RE = re.compile(
+    r"^(?:(?:пришл[оа]|пришёл|пришел)\s+)?(?:селфи|фото(?:графия)?|картинка|видео|скриншот)\s*[.!…]*$", re.I
+)
+
+
 def _is_chat_spacer(text: str) -> bool:
-    return _is_chat_sticker(text) or _ELLIPSIS_LINE_RE.match(text) is not None or _is_chat_service(text)
+    return (
+        _is_chat_sticker(text)
+        or _ELLIPSIS_LINE_RE.match(text) is not None
+        or _CHAT_ATTACHMENT_RE.match(text) is not None
+        or _is_chat_service(text)
+    )
 
 
 def _chat_messages(lines):
@@ -1588,6 +1599,30 @@ _VERB_SPEAKER_RE = re.compile(
     r"[аио]?|пишет|отвечает|спрашивает)$",
     re.I,
 )
+
+
+# «Ник: текст», который chat_line не разбирает: ник в кавычках («Тунец с майонезом»: …),
+# канал игрового чата («[Всем] AHQ: GG!»), приписка после сообщения («Стелла: «…».
+# (Прикреплено фото: …)»).
+_SPEAKER_PREFIX_RE = re.compile(r"^(?:\[[^\]]{1,20}\]\s*)?(«[^»]{1,40}»|[^:«»\[\]]{1,40}):\s+(\S.*)$")
+
+
+def _message_like(text: str) -> bool:
+    """Строка похожа на реплику переписки, даже если chat_line её не разбирает.
+
+    Вложение («Ван Ци: [Геолокация]») и реплика без слов («Фэй2–8: «(¬_¬)»») —
+    не текст переписки: рядом с ними одно сообщение остаётся в рамке.
+    """
+    if chat_line(text) is not None:
+        return True
+    match = _SPEAKER_PREFIX_RE.match(" ".join(text.split()))
+    if match is None or bracket_shape(match.group(2)) == "full" or not _WORD_RE.search(match.group(2)):
+        return False
+    speaker = match.group(1).strip()
+    # Ник в кавычках бывает и строчными словами, открытое имя — только с заглавных.
+    if speaker.startswith("«"):
+        return _looks_like_name(speaker[1:-1].strip(), nickname=True)
+    return _looks_like_name(speaker)
 
 
 def _is_lone_message(parsed: ChatLine) -> bool:
@@ -2154,8 +2189,9 @@ def find_windows(
             paragraphs[number] for number in (position - 1, position + 1)
             if 0 <= number < len(paragraphs) and paragraphs[max(number, position)].adjacent
         ]
-        # Соседняя реплика — это уже серия, её судит chat_verdict.
-        if any(chat_line(neighbour.text) is not None for neighbour in neighbours):
+        # Соседняя реплика — это уже серия, её судит chat_verdict. Если соседа детектор
+        # не разбирает, одна рамка посреди переписки хуже, чем ни одной.
+        if any(_message_like(neighbour.text) for neighbour in neighbours):
             return False
         previous = paragraphs[position - 1] if position > 0 and paragraph.adjacent else None
         if previous is not None and (
@@ -2163,7 +2199,55 @@ def find_windows(
             or (not _is_dialogue(previous.text) and _PHONE_WORD_RE.search(previous.text))
         ):
             return True
+        # «Прямо у них на глазах она удалила сообщение.» — о переписке говорит абзац после
+        # сообщения. Только повествование и без «телефона»: так бывает и в сценарной речи.
+        following = position + 1
+        if (
+            following < len(paragraphs)
+            and paragraphs[following].adjacent
+            and not _is_dialogue(paragraphs[following].text)
+            and _MESSAGING_RE.search(paragraphs[following].text)
+        ):
+            return True
         return chat_nearby(position, parsed)
+
+    def reply_end(position: int) -> int | None:
+        """Сообщения через строку после переписки — её продолжение.
+
+        «Сын Симург»: «Выверт: «…»» / «Он ждал ответа с едва сдерживаемым
+        нетерпением.» / «Баланс: «Отставить…»». Зовётся только из главного цикла
+        и без кэша: ответ зависит от последнего найденного окна.
+        """
+        if not windows or windows[-1].kind != "chat" or not paragraphs[position].adjacent:
+            return None
+        between = position - 1
+        while between >= 0 and paragraphs[between].start >= windows[-1].end and not paragraphs[between].text:
+            between -= 1
+        # Ровно одна строка, и перед ней сразу окно переписки. Это может быть и реплика,
+        # которую chat_line не разобрал (Kumo desu ka: «Сяобай: [Обеденный_стол. Jpg].
+        # «…»»): переписка вокруг уже в рамках.
+        if between < 0 or paragraphs[between].start < windows[-1].end or not paragraphs[between].adjacent:
+            return None
+        if between > 0 and paragraphs[between - 1].start >= windows[-1].end:
+            return None
+        stop = position
+        while stop < len(paragraphs) and (stop == position or paragraphs[stop].adjacent):
+            paragraph = paragraphs[stop]
+            parsed = chat_line(paragraph.text)
+            if (
+                parsed is None
+                or excluded(paragraph)
+                or not _is_lone_message(parsed)
+                or _LINE_BREAK_RE.search(html, paragraph.start, paragraph.end)
+            ):
+                break
+            stop += 1
+        # Следом непойманная реплика — одна рамка посреди переписки.
+        if stop == position or (
+            stop < len(paragraphs) and paragraphs[stop].adjacent and _message_like(paragraphs[stop].text)
+        ):
+            return None
+        return with_trailing_service(stop)
 
     def with_trailing_service(stop: int) -> int:
         """«ДосВагина печатает…» после последнего сообщения — ещё часть переписки."""
@@ -2324,6 +2408,8 @@ def find_windows(
             continue
 
         chat_stop = chat_run_end(index)
+        if chat_stop is None and chat_line(text) is not None:
+            chat_stop = reply_end(index)
         if chat_stop is not None:
             context = [paragraph.text for paragraph in paragraphs[max(0, index - _CHAT_CONTEXT_PARAGRAPHS):index]]
             for first, end, span_start, span_end in _window_pieces(html, paragraphs, index, chat_stop):
