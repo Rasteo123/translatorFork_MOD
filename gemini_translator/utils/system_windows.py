@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from bs4 import BeautifulSoup, Comment, NavigableString, Tag
+from bs4 import BeautifulSoup, CData, Comment, NavigableString, Tag
 
 from .io_utils import atomic_write_text
 from .translation_versions import select_target_translation_version
@@ -186,6 +186,34 @@ def _wrap_gap(gap: str) -> bool:
     return bool(names) and all(name in _WRAP_TAGS for name in names)
 
 
+# Теги, на границе которых браузер переносит строку. Инлайн-теги слов не разрывают:
+# «Я <em>знаю</em>.» — это «Я знаю.», а не «Я знаю .» («Сын Симург»).
+_TEXT_BREAK_TAGS = frozenset(
+    "br p div li ul ol table tr td th h1 h2 h3 h4 h5 h6 blockquote hr pre section article header footer "
+    "aside figure figcaption dl dt dd".split()
+)
+
+
+def _tag_text(tag) -> str:
+    """Текст абзаца так, как его видит читатель: пробелы только из разметки и переносов."""
+    pieces: list[str] = []
+
+    def walk(node) -> None:
+        for child in node.children:
+            if isinstance(child, Tag):
+                breaks = child.name in _TEXT_BREAK_TAGS
+                if breaks:
+                    pieces.append(" ")
+                walk(child)
+                if breaks:
+                    pieces.append(" ")
+            elif type(child) in (NavigableString, CData):
+                pieces.append(str(child))
+
+    walk(tag)
+    return "".join(pieces)
+
+
 def _paragraphs(raw: str) -> list[_Paragraph]:
     soup = BeautifulSoup(raw, "html.parser")
     offsets = _line_offsets(raw)
@@ -199,7 +227,7 @@ def _paragraphs(raw: str) -> list[_Paragraph]:
         if end is None:
             previous_tag = None
             continue
-        text = " ".join(_strip_bbcode(tag.get_text(" ", strip=True)).split())
+        text = " ".join(_strip_bbcode(_tag_text(tag)).split())
         sibling = previous_tag is not None and _next_element(previous_tag) is tag
         # Страницы веб-новелл кладут каждый абзац в свои div: такие абзацы
         # идут подряд, хотя и не братья (см. :func:`_window_pieces`).
@@ -790,6 +818,9 @@ def is_key_value(text: str) -> bool:
             continue
         if _PRONOUN_KEY_RE.search(key):
             continue
+        # «Guest Reviewer «fairy saiyan»: М-да.» — ответ на отзыв, а не поле карточки.
+        if key.split()[0].lower() in _REVIEWER_NAMES:
+            continue
         # Значение с кавычки — сценарная реплика «Имя: «…»», но у известной
         # характеристики это имя навыка или магии: «Магия: «Золушка.»».
         if (
@@ -1204,6 +1235,34 @@ _CHAT_BRACKETED_RE = re.compile(rf"^[\[【]({_CHAT_NAME})\s*[:：]\s*([^\[\]【�
 _CHAT_FORUM_RE = re.compile(rf"^«({_CHAT_NAME})\s*[:：]\s*(.+?)»([.!?…]*)$")
 _CHAT_QUOTED_RE = re.compile(rf"^({_CHAT_NAME})\s*[:：]\s*«(.+)»([.!?…]*)$")
 _CHAT_BARE_RE = re.compile(rf"^({_CHAT_NAME})\s*[:：]\s*([^\s«\[【—–\-(].*)$")
+# Ник в кавычках: «Тунец с майонезом»: Кое-кто готовит десерт! («Сукуна», «Бизнес с
+# карточками»). Кавычки отделяют ник, поэтому он бывает длиннее имени: «Красавчик 180 см №1».
+_CHAT_NICK_RE = re.compile(r"^«([^«»:：]{1,60})»\s*[:：]\s*(?:«(.+)»([.!?…]*)|([^\s«].*))$")
+_CHAT_NICK_WORDS_MAX = 5
+# Вложение в сообщении: «Ван Ци: [Геолокация]», «Сяобай: [Обеденный_стол. Jpg]. «…»» (Kumo).
+# Скобки без слова вложения — поле карточки: «Возраст: [19]», «Статус: [УСПЕШНО]».
+_CHAT_ATTACHED_RE = re.compile(
+    rf"^({_CHAT_NAME})\s*[:：]\s*(\[[^\[\]]{{1,60}}\])([.,!?…]*)(?:\s*«(.+)»([.!?…]*))?$"
+)
+_ATTACHMENT_WORD_RE = re.compile(
+    r"фото|изображени|картинк|снимок|скриншот|видео|голосов|аудио|файл|геолокац|местоположени|смайл|стикер"
+    r"|эмодзи|эмоджи|\bgif\b|jpe?g|png|mp4|ссылк|документ|перевод|конверт|открытк",
+    re.I,
+)
+# Канал игрового чата или время перед именем: «[Все] WE 957: «…»» (LOL), «[Пятница; 1530]
+# Шинсо: …» (The Dark Below). Метка остаётся в начале сообщения.
+_CHAT_CHANNEL_RE = re.compile(
+    r"^[\[【](?:все|всем|всех|команд[аеы]?|союзник\w{0,3}|мир|мировой|общий|гильди[яи]|клан|групп[аы]|отряд"
+    r"|лично|лс|шёпот|шепот|приват|[^\[\]【】\d]{0,20}\d{1,2}[:.]?\d{2})[\]】]\s*",
+    re.I,
+)
+# Приписка после сообщения: сноска «(1)» (So I'm an Earth) или вложение «(Прикреплено
+# фото: Юнь Хао.jpg)» (Star Rail). Остаётся в конце сообщения.
+_CHAT_NOTE_RE = re.compile(r"(?<=[».!?…])\s*\(([^()]{1,80})\)[.!?…]*$")
+# «В 5:30 утра…» — время, а не собеседник «В 5».
+_NAME_NUMBER_RE = re.compile(r"\s\d{1,3}$")
+# «(смайлик нарисовала Ян Сю…)» — слова рассказчика, а не приписка о вложении.
+_CHAT_NOTE_WORD_RE = re.compile(r"прикрепл|вложени|\.(?:jpe?g|png|gif|mp4)\b", re.I)
 # Шапка переписки: «Групповой чат: Бывшие SEES», «Сообщение от: Макото.».
 # Проза вроде «Чат мгновенно затих» или «Сообщение от Бэй Жу напомнило…» — не шапка.
 _CHAT_HEADER_RE = re.compile(
@@ -1240,6 +1299,52 @@ def chat_line(text: str) -> ChatLine | None:
     stripped = _bracket_text(" ".join(text.split()))
     if not stripped or is_chat_header(stripped):
         return None
+    channel = _CHAT_CHANNEL_RE.match(stripped)
+    core = stripped[channel.end():] if channel else stripped
+    note = _chat_note(core)
+    if note is not None:
+        core = core[:note.start()]
+    parsed = _chat_core(core)
+    if parsed is None or (channel and parsed.style not in ("quoted", "bare", "nick")):
+        return None
+    if _NAME_NUMBER_RE.search(parsed.speaker) and parsed.message[:1].isdigit():
+        return None
+    message = parsed.message
+    if channel:
+        message = f"{channel.group(0).strip()} {message}"
+    if note is not None:
+        message = f"{message} {note.group(0).strip()}"
+    return ChatLine(parsed.speaker, message, parsed.style)
+
+
+def _chat_note(text: str):
+    """Сноска или приписка о вложении в конце строки (совпадение) или ``None``."""
+    note = _CHAT_NOTE_RE.search(text)
+    if note is None:
+        return None
+    content = note.group(1).strip()
+    if (content.isdigit() and len(content) <= 3) or _CHAT_NOTE_WORD_RE.search(content):
+        return note
+    return None
+
+
+def _chat_core(text: str) -> ChatLine | None:
+    """Реплика без канала и приписки."""
+    nick = _CHAT_NICK_RE.match(text)
+    if nick is not None:
+        message = nick.group(2) + nick.group(3) if nick.group(2) is not None else nick.group(4)
+        if len(nick.group(1).split()) > _CHAT_NICK_WORDS_MAX:
+            return None
+        return ChatLine(nick.group(1).strip(), message.strip(), "nick")
+    attached = _CHAT_ATTACHED_RE.match(text)
+    if attached is not None and _ATTACHMENT_WORD_RE.search(attached.group(2)):
+        speaker, attachment = attached.group(1).strip(), attached.group(2)
+        # «В следующую секунду: [Перевод 1000 юаней].» — повествование, а не отправитель.
+        if len(speaker.split()) > _CHAT_NAME_WORDS_MAX or not _looks_like_name(speaker):
+            return None
+        if attached.group(4) is None:
+            return ChatLine(speaker, attachment + attached.group(3), "bare")
+        return ChatLine(speaker, f"{attachment} {attached.group(4)}{attached.group(5)}", "quoted")
     for style, pattern in (
         ("bracket", _CHAT_BRACKET_RE),
         ("bracketed", _CHAT_BRACKETED_RE),
@@ -1247,7 +1352,7 @@ def chat_line(text: str) -> ChatLine | None:
         ("quoted", _CHAT_QUOTED_RE),
         ("bare", _CHAT_BARE_RE),
     ):
-        match = pattern.match(stripped)
+        match = pattern.match(text)
         if match is None:
             continue
         speaker = match.group(1).strip()
@@ -1287,16 +1392,40 @@ def _name_word_ok(word: str) -> bool:
     return word[0].isupper()
 
 
-def _looks_like_name(name: str, *, nickname: bool = False) -> bool:
+# Номер в конце имени: «Март 7» (Star Rail). «Глава 7», «Этаж 5» — заголовки, не имена.
+_NUMBERED_TITLE_WORDS = frozenset(
+    "глава часть том книга арка пролог эпилог интерлюдия день ночь неделя месяц год этаж уровень номер "
+    "вариант круг виток сезон эпизод серия сцена акт раунд волна этап стадия фаза попытка комментарий "
+    "группа счет счёт сценарий конец".split()
+)
+
+
+def _name_words_ok(words, numbered: bool) -> bool:
+    """Слова имени с заглавной; последним может быть номер: «Март 7»."""
+    if (
+        numbered
+        and len(words) >= 2
+        and words[-1].isdigit()
+        and len(words[-1]) <= 3
+        and words[0].lower() not in _NUMBERED_TITLE_WORDS
+    ):
+        words = words[:-1]
+    return all(_name_word_ok(word) for word in words)
+
+
+def _looks_like_name(
+    name: str, *, nickname: bool = False, max_words: int = _CHAT_NAME_WORDS_MAX, numbered: bool = False
+) -> bool:
     """Имя собеседника: одно-три слова с заглавной, не характеристика и не «Система».
 
     Ник на форуме («учительница Ли», «Любитель яичницы») может начинаться со
-    строчной буквы и продолжаться строчными словами.
+    строчной буквы и продолжаться строчными словами. Номер в конце (``numbered``)
+    допустим у реплики в кавычках: «Март 7: «…»», а «[Пункт 1: …]» — список системы.
     """
     words = name.split()
-    if not 1 <= len(words) <= _CHAT_NAME_WORDS_MAX:
+    if not 1 <= len(words) <= max_words:
         return False
-    if not nickname and any(not _name_word_ok(word) for word in words):
+    if not nickname and not _name_words_ok(words, numbered):
         return False
     lowered = name.lower()
     if lowered in _NOT_SPEAKERS or words[0].lower() in _NOT_SPEAKERS or _NOTE_SPEAKER_RE.match(lowered):
@@ -1404,7 +1533,7 @@ def chat_verdict(lines, participants=frozenset()) -> str | None:
     headers, messages = parsed
     if not messages:
         return None
-    if any(not _looks_like_name(item.speaker, nickname=item.style == "forum") for item in messages):
+    if any(not _speaker_ok(item) for item in messages):
         return None
     # «Guest: Спасибо.» — ответы автора на отзывы фанфика, а не переписка героев.
     if any(item.speaker.lower() in _REVIEWER_NAMES for item in messages):
@@ -1417,7 +1546,7 @@ def chat_verdict(lines, participants=frozenset()) -> str | None:
     speakers = [item.speaker for item in messages]
     # Без кавычек вокруг текста и с ником в кавычках так же пишут перечни
     # («Например: … / Или: …», ««Универсальная Сверхтехника: …»»): нужна живая речь.
-    if {item.style for item in messages} & {"bare", "forum", "bracketed"}:
+    if {item.style for item in messages} & {"bare", "forum", "bracketed", "nick"}:
         talkative = sum(1 for item in messages if _CONVERSATIONAL_RE.search(item.message))
         if talkative * 3 < len(messages):
             return None
@@ -1435,10 +1564,36 @@ def chat_verdict(lines, participants=frozenset()) -> str | None:
     if (
         len(messages) >= 2
         and participants
-        and all(any(_names_match(speaker, known) for known in participants) for speaker in speakers)
+        and all(_known_speaker(speaker, participants) for speaker in speakers)
     ):
         return "chat"
     return "weak" if len(messages) >= 2 else None
+
+
+# Нумерованные собеседники одной семьи: «Фэй1»…«Фэй9», «М1», «М2» — параллельные разумы
+# So I'm an Earth. Знакомы все, если знаком хоть один.
+_NUMBERED_SPEAKER_RE = re.compile(r"^(\D+?)\s?\d{1,3}$")
+
+
+def _known_speaker(speaker: str, participants) -> bool:
+    if any(_names_match(speaker, known) for known in participants):
+        return True
+    family = _NUMBERED_SPEAKER_RE.match(speaker)
+    if family is None:
+        return False
+    base = family.group(1).casefold()
+    for known in participants:
+        other = _NUMBERED_SPEAKER_RE.match(known)
+        if other is not None and other.group(1).casefold() == base:
+            return True
+    return False
+
+
+def _speaker_ok(item: ChatLine) -> bool:
+    """Имя собеседника; ник на форуме и в кавычках — и строчными словами, в кавычках — длиннее."""
+    if item.style == "nick":
+        return _looks_like_name(item.speaker, nickname=True, max_words=_CHAT_NICK_WORDS_MAX)
+    return _looks_like_name(item.speaker, nickname=item.style == "forum", numbered=item.style == "quoted")
 
 
 def is_chat(lines, participants=frozenset()) -> bool:
@@ -1601,10 +1756,9 @@ _VERB_SPEAKER_RE = re.compile(
 )
 
 
-# «Ник: текст», который chat_line не разбирает: ник в кавычках («Тунец с майонезом»: …),
-# канал игрового чата («[Всем] AHQ: GG!»), приписка после сообщения («Стелла: «…».
-# (Прикреплено фото: …)»).
-_SPEAKER_PREFIX_RE = re.compile(r"^(?:\[[^\]]{1,20}\]\s*)?(«[^»]{1,40}»|[^:«»\[\]]{1,40}):\s+(\S.*)$")
+# «Ник: текст», который chat_line не разбирает: пояснение рассказчика после сообщения
+# («Цзян Лай: «.» (Ничего себе…)», «Конан»), незнакомая метка перед именем.
+_SPEAKER_PREFIX_RE = re.compile(r"^(?:\[[^\]]{1,20}\]\s*)?([^:«»\[\]]{1,40}):\s+(\S.*)$")
 
 
 def _message_like(text: str) -> bool:
@@ -1618,11 +1772,7 @@ def _message_like(text: str) -> bool:
     match = _SPEAKER_PREFIX_RE.match(" ".join(text.split()))
     if match is None or bracket_shape(match.group(2)) == "full" or not _WORD_RE.search(match.group(2)):
         return False
-    speaker = match.group(1).strip()
-    # Ник в кавычках бывает и строчными словами, открытое имя — только с заглавных.
-    if speaker.startswith("«"):
-        return _looks_like_name(speaker[1:-1].strip(), nickname=True)
-    return _looks_like_name(speaker)
+    return _looks_like_name(match.group(1).strip())
 
 
 def _is_lone_message(parsed: ChatLine) -> bool:
@@ -1633,7 +1783,7 @@ def _is_lone_message(parsed: ChatLine) -> bool:
     words = re.findall(r"[^\W\d_]+", parsed.speaker.lower())
     if (
         parsed.style not in _LONE_CHAT_STYLES
-        or not _looks_like_name(parsed.speaker)
+        or not _looks_like_name(parsed.speaker, numbered=parsed.style == "quoted")
         or _phrase_key(words)
         or _VERB_SPEAKER_RE.match(parsed.speaker.split()[0])
         or _PRONOUN_KEY_RE.search(parsed.speaker)
@@ -1898,6 +2048,9 @@ def _bracketed(text: str) -> bool:
     parsed = chat_line(text)
     if parsed is None:
         return True
+    # «[Все] WE 957: …», «[Пятница; 1530] Шинсо: …» — реплика с каналом или временем.
+    if _CHAT_CHANNEL_RE.match(" ".join(text.split()).lstrip("—–- ")):
+        return False
     if parsed.style == "bracketed":
         return not _looks_like_name(parsed.speaker)
     return parsed.style != "bracket"
@@ -2170,6 +2323,24 @@ def find_windows(
                 return same_chat([paragraph.text for paragraph in paragraphs[following:end]], parsed)
         return False
 
+    def messaging_before(position: int, *, narration: bool = False) -> bool:
+        """Абзацем выше — слова о переписке: «пришло сообщение», в повествовании и «телефон».
+
+        ``narration``: довод только из повествования — цитата-заголовок («…иск 99 к QQ…»,
+        «Бизнес») переписку не открывает.
+        """
+        if position == 0 or not paragraphs[position].adjacent:
+            return False
+        previous = paragraphs[position - 1].text
+        if chat_line(previous) is not None or (
+            narration and (_is_dialogue(previous) or previous[:1] in _QUOTE_CHARS)
+        ):
+            return False
+        return (
+            _MESSAGING_RE.search(previous) is not None
+            or (not _is_dialogue(previous) and _PHONE_WORD_RE.search(previous) is not None)
+        )
+
     def lone_message(position: int) -> bool:
         """Одно сообщение среди прозы: после слов о телефоне или рядом с чатом тех же людей.
 
@@ -2193,11 +2364,7 @@ def find_windows(
         # не разбирает, одна рамка посреди переписки хуже, чем ни одной.
         if any(_message_like(neighbour.text) for neighbour in neighbours):
             return False
-        previous = paragraphs[position - 1] if position > 0 and paragraph.adjacent else None
-        if previous is not None and (
-            _MESSAGING_RE.search(previous.text)
-            or (not _is_dialogue(previous.text) and _PHONE_WORD_RE.search(previous.text))
-        ):
+        if messaging_before(position):
             return True
         # «Прямо у них на глазах она удалила сообщение.» — о переписке говорит абзац после
         # сообщения. Только повествование и без «телефона»: так бывает и в сценарной речи.
@@ -2224,8 +2391,8 @@ def find_windows(
         while between >= 0 and paragraphs[between].start >= windows[-1].end and not paragraphs[between].text:
             between -= 1
         # Ровно одна строка, и перед ней сразу окно переписки. Это может быть и реплика,
-        # которую chat_line не разобрал (Kumo desu ka: «Сяобай: [Обеденный_стол. Jpg].
-        # «…»»): переписка вокруг уже в рамках.
+        # которую chat_line не разобрал («Цзян Лай: «.» (Ничего себе…)»): переписка вокруг
+        # уже в рамках.
         if between < 0 or paragraphs[between].start < windows[-1].end or not paragraphs[between].adjacent:
             return None
         if between > 0 and paragraphs[between - 1].start >= windows[-1].end:
@@ -2298,6 +2465,15 @@ def find_windows(
             stop -= 1
         lines = [paragraph.text for paragraph in paragraphs[position:stop]]
         verdict = chat_verdict(lines, settings.chat_participants) if stop > position else None
+        # Короткий обмен без повторов после слов о переписке — чат, как и одно сообщение
+        # (Predatory: «…отправила ответ…» / «FlippinMad: …» / «Mr10tickles: [изображение].»).
+        if verdict == "weak" and messaging_before(position, narration=True):
+            verdict = "chat"
+        # Хвост серии, принятый лишь потому, что его собеседники знакомы, отдельно не
+        # оформляется: серия началась выше («Состояние…», гл. 299 — поздравления звёзд).
+        previous = chat_line(paragraphs[position - 1].text) if position > 0 and paragraphs[position].adjacent else None
+        if verdict == "chat" and previous is not None and _speaker_ok(previous) and chat_verdict(lines) == "weak":
+            verdict = None
         if verdict == "weak" and weak_chats is not None and (position == 0 or not paragraphs[position].adjacent
                                                                or chat_line(paragraphs[position - 1].text) is None):
             weak_chats.append(lines)
