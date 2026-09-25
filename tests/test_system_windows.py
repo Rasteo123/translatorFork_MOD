@@ -3364,3 +3364,115 @@ def test_the_only_sender_is_not_the_reader():
     ]
     assert sw.chat_reader(chats) == ""
     assert sw.chat_reader([["Кен: Привет!", "Лена: Пока."], ["Кен: Ты где?", "Макото: Дома."]]) == "Кен"
+
+
+# --- ответы на отзывы без заголовка, повелительное «Слушай:», герой книги ------------------
+
+
+def test_reviewer_reply_list_with_a_guest_is_an_author_note():
+    # Fairy Tail Xenoverse, гл. 22: заголовок «время для отзывов» инструмент не знает,
+    # но в сплошном списке «Ник: ответ» есть гостевой рецензент — это ответы на отзывы.
+    html = _chapter(
+        "В любом случае, время для отзывов!",
+        "Elvisfonz23: Ещё раз спасибо!",
+        "Guest (1): Хм… читайте дальше!",
+        "ZombieModBrony: Жиза. XD.",
+        "Jlyman: Можешь больше не гадать!: D.",
+        "MaskedToKill: Спасибо!",
+        "А теперь – вперёд!",
+    )
+    assert find_windows(html) == []
+
+
+def test_imperative_before_a_colon_is_not_a_speaker():
+    # The Dark Below, гл. 49: «Слушай: …» дважды подряд — не переписка собеседника «Слушай».
+    html = _chapter(
+        "Каково это – быть Эйджиро Киришимой.",
+        "Слушай: заграбастай свою судьбу и отбейся от всех претендентов на твой трон.",
+        "Слушай: время Возвышения настало.",
+        "Конец.",
+    )
+    assert all(window.kind != "chat" for window in find_windows(html))
+    assert not sw._looks_like_name("Смотри") and sw._looks_like_name("Смит")
+
+
+def test_book_hero_is_the_most_mentioned_character():
+    # «Ци» встречается и внутри «Цзян Ци»: полное имя предпочтительнее короткого.
+    texts = ["Цзян Ци открыл дверь, и Лили заглянула внутрь.", "Цзян Ци кивнул. Ци устал.", "Цзян Ци и Цзян Ци."]
+    assert sw.book_hero(["Ци", "Цзян Ци", "Лили"], texts) == "Цзян Ци"
+    assert sw.book_hero(["Лили"], ["Никого нет."]) == ""
+
+
+def test_reader_is_the_book_hero_if_the_hero_writes():
+    chats = [
+        ["«Зовите меня Маки»: Чего случилось?", "Нобара: Кто готовит?", "«Зовите меня Маки»: Иду!"],
+        ["«Зовите меня Маки»: Опять?", "«Я правда панда»: Ага!"],
+        ["Сукуна: «Как он догадался?»", "Фушигуро: «Вы что, младшеклассники?»"],
+    ]
+    # Без героя — самый частый собеседник; с героем — он сам, если пишет, иначе никто
+    # («Сукуна»; «Система идеального реванша»: Цинь Тянь в переписке не пишет).
+    assert sw.chat_reader(chats) == "Зовите меня Маки"
+    assert sw.chat_reader(chats, hero="Сукуна") == "Сукуна"
+    assert sw.chat_reader(chats, hero="Цинь Тянь") == ""
+    # Герой пишет один — это его собственные сообщения («Конан»: Цзян Лай).
+    assert sw.chat_reader([["Цзян Лай: «Спасибо»."], ["Цзян Лай: «О…»"]], hero="Цзян Лай") == "Цзян Лай"
+    # Ник с именем героя: «Гигант Цзян Юй».
+    assert sw.chat_reader([["«Гигант Цзян Юй»: Привет!", "«Хао Югэн»: Ого!"]], hero="Цзян Юй") == "Гигант Цзян Юй"
+
+
+def test_project_hero_reads_the_glossary(tmp_path):
+    project = _windows_project(tmp_path)
+    (project / "OEBPS/chapter1_translated_gemini.html").write_text(
+        _chapter("Сукуна вздохнул.", "Годжо рассмеялся.", "Сукуна кивнул."), encoding="utf-8",
+    )
+    assert sw.project_hero(project) == ""  # глоссария нет
+    glossary = [
+        {"original": "Sukuna", "rus": "Сукуна", "note": "Персонаж; Мужчина"},
+        {"original": "Gojo", "rus": "Годжо", "note": "Персонаж"},
+        {"original": "Tokyo", "rus": "Токио", "note": "Локация"},
+    ]
+    (project / "project_glossary.json").write_text(json.dumps(glossary, ensure_ascii=False), encoding="utf-8")
+    assert sorted(sw.project_characters(project)) == ["Годжо", "Сукуна"]
+    assert sw.project_hero(project) == "Сукуна"
+
+
+def test_hero_nicknames_come_from_the_glossary(tmp_path):
+    # «Состояние в десятки триллионов!»: в личке герой — «Три стратегии и шесть тактик»,
+    # в группе — «Сюй Литао»; в глоссарии у ника «Настоящее имя: 许砺韬».
+    project = _windows_project(tmp_path)
+    (project / "OEBPS/chapter1_translated_gemini.html").write_text(
+        _chapter("Сюй Литао открыл чат.", "Сюй Литао улыбнулся.", "Бай Мэнчэнь покраснела."), encoding="utf-8",
+    )
+    glossary = [
+        {"original": "许砺韬", "rus": "Сюй Литао", "note": "Персонаж; Мужчина; Полное имя (Нескл.)"},
+        {"original": "三韬六略", "rus": "Три стратегии и шесть тактик",
+         "note": "Персонаж; Псевдоним; Ник в мессенджере; Настоящее имя: 许砺韬; Мужчина"},
+        {"original": "白梦晨", "rus": "Бай Мэнчэнь", "note": "Персонаж; Женщина"},
+        {"original": "红尘颜", "rus": "Лик Красной Пыли", "note": "Персонаж; Псевдоним; Настоящее имя: 白梦晨"},
+    ]
+    (project / "project_glossary.json").write_text(json.dumps(glossary, ensure_ascii=False), encoding="utf-8")
+    names = sw.project_hero_names(project)
+    assert names == ["Сюй Литао", "Три стратегии и шесть тактик"]
+    chats = [
+        ["«Три стратегии и шесть тактик»: Чем занимаешься?", "«Лик Красной Пыли»: Болтаю с бабушкой!"],
+        ["«Три стратегии и шесть тактик»: Не переживай!", "«Лик Красной Пыли»: Хм!"],
+        ["【Чэнь Синь】: Брат Тао, выходи!", "【Сюй Литао】: Иду!"],
+    ]
+    assert sw.chat_reader(chats, hero=names) == "Три стратегии и шесть тактик, Сюй Литао"
+    # Суффикс через дефис — то же имя: «Цукаса-тян» (Kumo desu ka).
+    assert sw.chat_reader([["Цукаса-тян: «Можешь присоединиться».", "Сяобай: «Ура!»"]], hero="Цукаса") == "Цукаса-тян"
+    # Короткая подпись внутри имени — только для самого героя («Кун» у «Кун Лю»); у ника
+    # общий слог не довод: «Ань-ань» — не «Айрин Ань» («Моя соседка знаменитость»).
+    chats = [["Гу: «Они помирились?»", "Кун: «Не знаю»."], ["Ань-ань: «Привет».", "Сыльги: «Пока»."]]
+    assert sw.chat_reader(chats, hero=["Кун Лю", "Айрин Ань"]) == "Кун"
+
+
+def test_hero_aliases_by_russian_real_name():
+    # «Немного больше талантов»: «Пин-эр» — «Настоящее имя: Ан Пин»; чужой ник не берётся.
+    entries = [
+        {"rus": "Ан Пин", "original": "安平", "note": "Персонаж; Мужчина"},
+        {"rus": "Пин-эр", "original": "平儿", "note": "Персонаж; Уменьшительно-ласкательное; Настоящее имя: Ан Пин"},
+        {"rus": "Пинъань", "original": "平安", "note": "Персонаж; Псевдоним; Настоящее имя: 安平"},
+        {"rus": "Черный Кот", "original": "黑猫", "note": "Персонаж; Псевдоним; Настоящее имя: Ли Мин"},
+    ]
+    assert sw.hero_aliases(entries, "Ан Пин") == ["Пин-эр", "Пинъань"]
