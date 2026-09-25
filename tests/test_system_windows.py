@@ -3353,3 +3353,14 @@ def test_tail_of_an_exchange_is_not_accepted_alone():
     html = _chapter("Они один за другим поздравляли Сюй Лу.", *lines, "Пользователи были в шоке.")
     settings = sw.DetectorSettings(chat_participants=frozenset({"Ма Хуатэн", "Ван Цзяньлинь"}))
     assert all(window.kind != "chat" for window in find_windows(html, settings))
+
+
+def test_the_only_sender_is_not_the_reader():
+    # The Dark Below: во всех переписках пишет один Шинсо — это входящие на телефон Изуку,
+    # справа никого.
+    chats = [
+        ["[09:03] Шинсо: Извини, опаздываю.", "[09:05] Шинсо: Опоздал на поезд."],
+        ["[Пятница; 1521] Шинсо: Задержался?", "[Пятница; 1530] Шинсо: Ответить не так уж сложно."],
+    ]
+    assert sw.chat_reader(chats) == ""
+    assert sw.chat_reader([["Кен: Привет!", "Лена: Пока."], ["Кен: Ты где?", "Макото: Дома."]]) == "Кен"
