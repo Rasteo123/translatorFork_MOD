@@ -2970,7 +2970,8 @@ _FORUM_DECOR_RE = re.compile(r"^(?:■|□|\[\s*[–—-]\s*\]|…|\.{3})$")
 _FORUM_TOPIC_RE = re.compile(r"^[♦◆►▶]?\s*(?:тема|topic)\s*[:：]\s*(\S.*)$", re.I)
 _FORUM_LIST_RE = re.compile(r"^(новости|фанфики|объявлени\w*|news|fanfiction)\s*[:：]\s*(\S.*)$", re.I)
 _FORUM_BOARD_RE = re.compile(r"^(?:в разделе|раздел|в|in)\s*[:：]\s*(\S.*)$", re.I)
-_FORUM_TIME_RE = re.compile(r"^(?:опубликова\w*|ответил\w*|ответ от|отправлено|posted|replied)\b", re.I)
+# «Ответ 21 апреля 2011.» — так перевод пишет «Replied on April 21, 2011» («Сын Симург»).
+_FORUM_TIME_RE = re.compile(r"^(?:опубликова\w*|ответил\w*|ответ от|ответ(?=\s+\d)|отправлено|posted|replied)\b", re.I)
 _FORUM_PAGE_RE = re.compile(r"^\(?\s*(?:показ\w*\s+страниц\w*|showing page)\b", re.I)
 _FORUM_END_RE = re.compile(r"^(?:конец страницы|end of page)\b", re.I)
 # Шапка личного сообщения: «♦ Личное сообщение от …», «Новое сообщение для …»; фраза
