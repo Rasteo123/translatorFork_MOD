@@ -320,11 +320,36 @@ class ChapterQaCoordinator:
         self.drain(timeout=timeout)
         loop = self._loop
         if loop is not None:
-            loop.call_soon_threadsafe(loop.stop)
+            cleanup = asyncio.run_coroutine_threadsafe(
+                self._cancel_loop_tasks(), loop
+            )
+
+            def stop_loop(_completed) -> None:
+                loop.call_soon_threadsafe(loop.stop)
+
+            # A slow check may have exhausted the cooperative drain deadline.
+            # Let its task process CancelledError before closing the loop;
+            # otherwise the coroutine is destroyed while still running.
+            cleanup.add_done_callback(stop_loop)
+            try:
+                cleanup.result(timeout=None if timeout is None else max(timeout, 0.5))
+            except Exception:  # noqa: BLE001 - the callback stops the loop after cleanup
+                pass
         if self._thread is not None:
-            self._thread.join(timeout=timeout)
-        self._thread = None
-        self._loop = None
+            self._thread.join(timeout=None if timeout is None else max(timeout, 0.5))
+            if not self._thread.is_alive():
+                self._thread = None
+                self._loop = None
+
+    @staticmethod
+    async def _cancel_loop_tasks() -> None:
+        """Finish task cancellation on the loop that owns the QA coroutines."""
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks() if task is not current]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # -- checks ------------------------------------------------------------
 

@@ -319,6 +319,29 @@ def test_a_stopped_check_still_counts_its_chapters_as_unchecked():
     assert coordinator.unchecked_chapter_count() == 2
 
 
+def test_shutdown_resolves_an_inflight_check_when_grace_period_expires():
+    """Closing the QA loop must not abandon a coroutine still unwinding cancellation."""
+    queue = _QueueStub()
+    entered = threading.Event()
+
+    class _SlowCancellationService:
+        async def check_chapter(self, request, options, cancellation):
+            entered.set()
+            await cancellation.wait_cancelled()
+            await asyncio.sleep(0.2)
+            cancellation.raise_if_cancelled()
+
+    coordinator = _coordinator(_SlowCancellationService(), queue)
+    coordinator.submit("task-1", (_event("chapter-1"),))
+    assert entered.wait(timeout=2)
+
+    coordinator.shutdown(timeout=0.02)
+
+    assert queue.status["task-1"] == "qa_pending"
+    assert [outcome.kind for _, outcome in queue.outcomes] == ["cancelled"]
+    assert coordinator._thread is None
+
+
 def test_an_unbuildable_request_defers_the_chapter():
     """A chapter whose project state is missing must defer, not block."""
     service = _ServiceStub()
