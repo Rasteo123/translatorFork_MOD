@@ -14,6 +14,7 @@ class FakeSettings:
         return [
             {"key": "g1", "provider": "gemini"},
             {"key": "g2", "provider": "gemini"},
+            {"key": "n1", "provider": "nvidia"},
         ]
 
     def is_key_limit_active(self, key_info, model_id):
@@ -31,6 +32,14 @@ class FakeWorker:
         self.content_filter_fallback_thinking_enabled = False
         self.content_filter_fallback_thinking_budget = None
         self.content_filter_fallback_thinking_level = None
+        self.content_filter_fallback_second_enabled = False
+        self.content_filter_fallback_second_provider = "nvidia"
+        self.content_filter_fallback_second_model = "second-model"
+        self.content_filter_fallback_second_temperature = 0.7
+        self.content_filter_fallback_second_temperature_override = True
+        self.content_filter_fallback_second_thinking_enabled = False
+        self.content_filter_fallback_second_thinking_budget = None
+        self.content_filter_fallback_second_thinking_level = None
         self.logs = []
 
     def _post_event(self, name, payload):
@@ -88,6 +97,59 @@ class RunFallbackTests(unittest.TestCase):
         cff._run_attempt = fake_run
         with self.assertRaises(ContentFilterError):
             _run(self._call(worker))
+
+    def test_second_fallback_runs_only_after_first_content_block(self):
+        worker = FakeWorker()
+        worker.content_filter_fallback_second_enabled = True
+        calls = []
+
+        async def fake_run(w, attempt, prompt, log_prefix, call_kwargs):
+            calls.append(attempt)
+            if attempt.provider_id == "gemini":
+                return ProviderAttemptResult(
+                    attempt=attempt, error="blocked", exception=ContentFilterError("x")
+                )
+            return ProviderAttemptResult(attempt=attempt, text="SECOND_OK")
+
+        cff._run_attempt = fake_run
+        self.assertEqual(_run(self._call(worker)), "SECOND_OK")
+        self.assertEqual([a.provider_id for a in calls], ["gemini", "nvidia"])
+        self.assertEqual(calls[1].api_key, "n1")
+        self.assertAlmostEqual(calls[1].temperature, 0.7)
+
+    def test_second_fallback_does_not_run_after_first_fatal_error(self):
+        worker = FakeWorker()
+        worker.content_filter_fallback_second_enabled = True
+        calls = []
+
+        async def fake_run(w, attempt, prompt, log_prefix, call_kwargs):
+            calls.append(attempt.provider_id)
+            return ProviderAttemptResult(
+                attempt=attempt, error="fatal", exception=ValueError("fatal")
+            )
+
+        cff._run_attempt = fake_run
+        with self.assertRaises(ValueError):
+            _run(self._call(worker))
+        self.assertEqual(calls, ["gemini"])
+
+    def test_second_content_block_is_final(self):
+        worker = FakeWorker()
+        worker.content_filter_fallback_second_enabled = True
+        calls = []
+
+        async def fake_run(w, attempt, prompt, log_prefix, call_kwargs):
+            calls.append(attempt.provider_id)
+            return ProviderAttemptResult(
+                attempt=attempt,
+                error="blocked",
+                exception=ContentFilterError(attempt.provider_id),
+            )
+
+        cff._run_attempt = fake_run
+        with self.assertRaisesRegex(ContentFilterError, "nvidia"):
+            _run(self._call(worker))
+        self.assertEqual(calls, ["gemini", "nvidia"])
 
     def test_transient_rotates_then_succeeds(self):
         worker = FakeWorker()

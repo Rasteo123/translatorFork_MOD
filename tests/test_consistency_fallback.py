@@ -11,6 +11,7 @@ class FakeSettings:
         return [
             {"key": "g1", "provider": "nvidia"},
             {"key": "g2", "provider": "nvidia"},
+            {"key": "s1", "provider": "second"},
         ]
 
     def is_key_limit_active(self, key_info, model_id):
@@ -41,7 +42,8 @@ class ConsistencyFallbackTests(unittest.TestCase):
     def setUp(self):
         self._orig = ce._load_providers_config
         ce._load_providers_config = lambda: {
-            "nvidia": {"handler_class": "X", "models": {"big": {"id": "big"}}}
+            "nvidia": {"handler_class": "X", "models": {"big": {"id": "big"}}},
+            "second": {"handler_class": "X", "models": {"small": {"id": "small"}}},
         }
 
     def tearDown(self):
@@ -97,6 +99,23 @@ class ConsistencyFallbackTests(unittest.TestCase):
             ConsistencyEngine._run_consistency_content_filter_fallback(
                 eng, "PROMPT", self._config()
             )
+
+    def test_second_fallback_after_first_block(self):
+        eng = FakeEngine()
+        eng._script = [ContentFilterError("first blocked"), "SECOND_OK"]
+        config = self._config()
+        config.update({
+            "content_filter_fallback_second_enabled": True,
+            "content_filter_fallback_second_provider": "second",
+            "content_filter_fallback_second_model": "small",
+            "content_filter_fallback_second_temperature": 0.8,
+        })
+
+        self.assertEqual(
+            ConsistencyEngine._run_consistency_content_filter_fallback(eng, "PROMPT", config),
+            "SECOND_OK",
+        )
+        self.assertEqual([key for key, _ in eng.calls], ["g1", "s1"])
 
     def test_transient_rotates(self):
         eng = FakeEngine()

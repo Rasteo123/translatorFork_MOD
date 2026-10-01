@@ -2498,43 +2498,52 @@ class ConsistencyEngine(QObject):
             raise
 
     def _run_consistency_content_filter_fallback(self, prompt: str, config: Dict[str, Any]) -> str:
-        """Re-run a content-blocked consistency prompt against the fallback provider."""
-        provider_id = str(config.get("content_filter_fallback_provider") or "").strip()
-        model_name = str(config.get("content_filter_fallback_model") or "").strip()
-        if not provider_id:
-            raise NoFallbackKeysError("Резервный провайдер не выбран.")
+        """Try configured consistency fallbacks in order after a content block."""
+        prefixes = ["content_filter_fallback"]
+        if config.get("content_filter_fallback_second_enabled"):
+            prefixes.append("content_filter_fallback_second")
 
-        provider_info = (_load_providers_config().get(provider_id) or {})
-        model_config = (provider_info.get("models", {}) or {}).get(model_name, {})
-        model_id = model_config.get("id", model_name)
+        for stage, prefix in enumerate(prefixes, start=1):
+            provider_id = str(config.get(f"{prefix}_provider") or "").strip()
+            model_name = str(config.get(f"{prefix}_model") or "").strip()
+            if not provider_id:
+                raise NoFallbackKeysError("Резервный провайдер не выбран.")
 
-        pool = green_keys_for_provider(self.settings_manager, provider_id, model_id)
-        if not pool:
-            raise NoFallbackKeysError(f"Нет зелёных ключей для провайдера '{provider_id}'.")
+            provider_info = _load_providers_config().get(provider_id) or {}
+            model_config = (provider_info.get("models", {}) or {}).get(model_name, {})
+            model_id = model_config.get("id", model_name)
+            pool = green_keys_for_provider(self.settings_manager, provider_id, model_id)
+            if not pool:
+                raise NoFallbackKeysError(f"Нет зелёных ключей для провайдера '{provider_id}'.")
 
-        fb_config = {
-            "provider": provider_id,
-            "model": model_name,
-            "temperature": config.get("content_filter_fallback_temperature", 0.3),
-            "temperature_override_enabled": bool(
-                config.get("content_filter_fallback_temperature_override", True)
-            ),
-            "thinking_enabled": bool(config.get("content_filter_fallback_thinking_enabled", False)),
-            "thinking_budget": config.get("content_filter_fallback_thinking_budget", 0),
-            "thinking_level": config.get("content_filter_fallback_thinking_level", "minimal"),
-            "proxy_settings": config.get("proxy_settings"),
-            "_is_fallback_attempt": True,
-        }
+            fb_config = {
+                "provider": provider_id,
+                "model": model_name,
+                "temperature": config.get(f"{prefix}_temperature", 0.3),
+                "temperature_override_enabled": bool(
+                    config.get(f"{prefix}_temperature_override", True)
+                ),
+                "thinking_enabled": bool(config.get(f"{prefix}_thinking_enabled", False)),
+                "thinking_budget": config.get(f"{prefix}_thinking_budget", 0),
+                "thinking_level": config.get(f"{prefix}_thinking_level", "minimal"),
+                "proxy_settings": config.get("proxy_settings"),
+                "_is_fallback_attempt": True,
+            }
 
-        self._emit_log_message(
-            f"🛡️➡️ [Consistency] Контент заблокирован. Резерв: "
-            f"{provider_id}/{model_id} ({len(pool)} ключей)."
-        )
-        return run_sync_fallback_loop(
-            pool=pool,
-            call_for_key=lambda key: self._call_api_with_cached_handler(prompt, fb_config, key),
-            log=self._emit_log_message,
-        )
+            self._emit_log_message(
+                f"[Consistency] Контент заблокирован. Резерв №{stage}: "
+                f"{provider_id}/{model_id} ({len(pool)} ключей)."
+            )
+            try:
+                return run_sync_fallback_loop(
+                    pool=pool,
+                    call_for_key=lambda key: self._call_api_with_cached_handler(prompt, fb_config, key),
+                    log=self._emit_log_message,
+                )
+            except (ContentFilterError, PartialGenerationError) as exc:
+                if not is_content_block_exception(exc) or stage == len(prefixes):
+                    raise
+        raise RuntimeError("Резерв не дал результата.")
 
     def _call_api(self, prompt: str, config: Dict[str, Any], api_key: str) -> str:
         return self._call_api_with_cached_handler(prompt, config, api_key)

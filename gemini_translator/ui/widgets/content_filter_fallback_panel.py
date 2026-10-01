@@ -19,9 +19,12 @@ from gemini_translator.ui.widgets.dynamic_models_refresher import (
 class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
     config_changed = pyqtSignal()
 
-    def __init__(self, settings_manager=None, parent=None):
-        super().__init__("Резерв при блокировке контента", parent)
+    def __init__(self, settings_manager=None, parent=None, *, settings_prefix="content_filter_fallback", include_second=True):
+        title = "Резерв при блокировке контента" if include_second else "Резервная модель №2"
+        super().__init__(title, parent)
         self.settings_manager = settings_manager
+        self.settings_prefix = settings_prefix
+        self.include_second = include_second
         self._restoring = False
         self._models_refresher = DynamicModelsRefresher(self)
         self._models_refresher.refreshed.connect(self._on_dynamic_models_refreshed)
@@ -34,16 +37,19 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
     def _build_ui(self):
         layout = QtWidgets.QGridLayout(self)
 
-        self.enable_checkbox = QtWidgets.QCheckBox(
+        checkbox_text = (
             "Включить резерв при блокировке (Prohibited content)"
+            if self.include_second else "Включить резервную модель №2"
         )
+        self.enable_checkbox = QtWidgets.QCheckBox(checkbox_text)
         layout.addWidget(self.enable_checkbox, 0, 0, 1, 2)
 
         layout.addWidget(QtWidgets.QLabel("Сервис:"), 1, 0)
         self.provider_combo = NoScrollComboBox()
         layout.addWidget(self.provider_combo, 1, 1)
 
-        layout.addWidget(QtWidgets.QLabel("Модель:"), 2, 0)
+        model_label = "Модель №1:" if self.include_second else "Модель №2:"
+        layout.addWidget(QtWidgets.QLabel(model_label), 2, 0)
         self.model_combo = NoScrollComboBox()
         layout.addWidget(self.model_combo, 2, 1)
 
@@ -77,6 +83,15 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
         thinking_layout.addStretch()
         layout.addLayout(thinking_layout, 5, 1)
 
+        if self.include_second:
+            self.second_panel = ContentFilterFallbackPanel(
+                settings_manager=self.settings_manager,
+                parent=self,
+                settings_prefix="content_filter_fallback_second",
+                include_second=False,
+            )
+            layout.addWidget(self.second_panel, 6, 0, 1, 2)
+
         layout.setColumnStretch(1, 1)
 
     def _connect_signals(self):
@@ -88,6 +103,11 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
         self.thinking_checkbox.stateChanged.connect(self._on_interactive_change)
         self.thinking_budget_spin.valueChanged.connect(self._on_interactive_change)
         self.thinking_level_combo.currentTextChanged.connect(self._on_interactive_change)
+        if self.include_second:
+            self.second_panel.config_changed.connect(self._emit_config_changed)
+
+    def _key(self, suffix):
+        return f"{self.settings_prefix}_{suffix}"
 
     def _on_interactive_change(self, *args):
         self._update_enabled_state()
@@ -251,6 +271,8 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
         self.thinking_level_combo.setEnabled(
             thinking_enabled and self.thinking_level_combo.isHidden() is False
         )
+        if self.include_second:
+            self.second_panel.setEnabled(panel_enabled)
 
     def get_config(self):
         thinking_enabled = self.thinking_checkbox.isEnabled() and self.thinking_checkbox.isChecked()
@@ -262,16 +284,19 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
             else:
                 thinking_budget = self.thinking_budget_spin.value()
 
-        return {
-            "content_filter_fallback_enabled": self.enable_checkbox.isChecked(),
-            "content_filter_fallback_provider": self.provider_combo.currentData() or "",
-            "content_filter_fallback_model": self.model_combo.currentText(),
-            "content_filter_fallback_temperature": self.temp_spin.value(),
-            "content_filter_fallback_temperature_override": self.temp_override_checkbox.isChecked(),
-            "content_filter_fallback_thinking_enabled": thinking_enabled,
-            "content_filter_fallback_thinking_budget": thinking_budget,
-            "content_filter_fallback_thinking_level": thinking_level,
+        config = {
+            self._key("enabled"): self.enable_checkbox.isChecked(),
+            self._key("provider"): self.provider_combo.currentData() or "",
+            self._key("model"): self.model_combo.currentText(),
+            self._key("temperature"): self.temp_spin.value(),
+            self._key("temperature_override"): self.temp_override_checkbox.isChecked(),
+            self._key("thinking_enabled"): thinking_enabled,
+            self._key("thinking_budget"): thinking_budget,
+            self._key("thinking_level"): thinking_level,
         }
+        if self.include_second:
+            config.update(self.second_panel.get_config())
+        return config
 
     def set_config(self, settings):
         settings = settings or {}
@@ -281,38 +306,40 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
             widget.blockSignals(True)
         try:
             self.enable_checkbox.setChecked(
-                bool(settings.get("content_filter_fallback_enabled", False))
+                bool(settings.get(self._key("enabled"), False))
             )
 
-            provider_id = settings.get("content_filter_fallback_provider")
+            provider_id = settings.get(self._key("provider"))
             if provider_id:
                 index = self.provider_combo.findData(provider_id)
                 if index != -1:
                     self.provider_combo.setCurrentIndex(index)
                     self._models_refresher.refresh_async(provider_id)
 
-            self._reload_models(settings.get("content_filter_fallback_model"))
+            self._reload_models(settings.get(self._key("model")))
 
             self.temp_override_checkbox.setChecked(
-                bool(settings.get("content_filter_fallback_temperature_override", False))
+                bool(settings.get(self._key("temperature_override"), False))
             )
             self.temp_spin.setValue(
-                float(settings.get("content_filter_fallback_temperature", 1.0))
+                float(settings.get(self._key("temperature"), 1.0))
             )
 
             self._update_model_dependent_controls()
             self.thinking_checkbox.setChecked(
-                bool(settings.get("content_filter_fallback_thinking_enabled", False))
+                bool(settings.get(self._key("thinking_enabled"), False))
                 and self.thinking_checkbox.isEnabled()
             )
-            budget = settings.get("content_filter_fallback_thinking_budget")
+            budget = settings.get(self._key("thinking_budget"))
             self.thinking_budget_spin.setValue(int(budget) if budget is not None else -1)
 
-            thinking_level = settings.get("content_filter_fallback_thinking_level")
+            thinking_level = settings.get(self._key("thinking_level"))
             if thinking_level and not self.thinking_level_combo.isHidden():
                 index = self.thinking_level_combo.findText(str(thinking_level).upper())
                 if index != -1:
                     self.thinking_level_combo.setCurrentIndex(index)
+            if self.include_second:
+                self.second_panel.set_config(settings)
         finally:
             for widget, was_blocked in signal_states:
                 widget.blockSignals(was_blocked)

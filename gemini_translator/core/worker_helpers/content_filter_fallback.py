@@ -4,9 +4,9 @@
 On a content block (ContentFilterError, or PartialGenerationError with a
 SAFETY/PROHIBITED_CONTENT/CONTENT_FILTER reason) the blocked chunk/chapter is re-sent to a
 user-chosen fallback provider+model, drawing from the pool of green (non-
-exhausted) keys for that provider. A content block from the fallback is
-terminal (task goes to error, as before). Transient errors rotate through
-the green pool within the same budget the main model uses.
+exhausted) keys for that provider. If it also blocks content, an optional
+second fallback is tried. Transient errors rotate through the green pool
+within the same budget the main model uses.
 """
 
 from gemini_translator.api.errors import (
@@ -122,11 +122,11 @@ def _post(worker, message: str) -> None:
         fn("log_message", {"message": message})
 
 
-def _fallback_temperature(worker):
-    if not bool(getattr(worker, "content_filter_fallback_temperature_override", True)):
+def _fallback_temperature(worker, prefix="content_filter_fallback"):
+    if not bool(getattr(worker, f"{prefix}_temperature_override", True)):
         return None
     try:
-        return float(getattr(worker, "content_filter_fallback_temperature", None))
+        return float(getattr(worker, f"{prefix}_temperature", None))
     except (TypeError, ValueError):
         return None
 
@@ -134,14 +134,27 @@ def _fallback_temperature(worker):
 async def run_content_filter_fallback(
     worker, prompt, log_prefix, *, task_info, operation_context, call_kwargs
 ):
-    """Re-run a content-blocked prompt against the configured fallback provider.
+    """Try configured fallback models in order after the primary content block."""
+    prefixes = ["content_filter_fallback"]
+    if bool(getattr(worker, "content_filter_fallback_second_enabled", False)):
+        prefixes.append("content_filter_fallback_second")
+    for index, prefix in enumerate(prefixes, start=1):
+        try:
+            return await _run_content_filter_fallback_stage(
+                worker, prompt, log_prefix, prefix=prefix, stage=index,
+                call_kwargs=call_kwargs,
+            )
+        except (ContentFilterError, PartialGenerationError) as exc:
+            if not is_content_block_exception(exc) or index == len(prefixes):
+                raise
+    raise RuntimeError("Резерв не дал результата.")
 
-    Returns the fallback translation text. Raises the content-block exception if
-    the fallback is also blocked, NoFallbackKeysError if the provider has no
-    green keys, or the last transient exception after the budget is exhausted.
-    """
-    provider_id = str(getattr(worker, "content_filter_fallback_provider", "") or "").strip()
-    model_name = str(getattr(worker, "content_filter_fallback_model", "") or "").strip()
+
+async def _run_content_filter_fallback_stage(
+    worker, prompt, log_prefix, *, prefix, stage, call_kwargs
+):
+    provider_id = str(getattr(worker, f"{prefix}_provider", "") or "").strip()
+    model_name = str(getattr(worker, f"{prefix}_model", "") or "").strip()
     if not provider_id:
         raise NoFallbackKeysError("Резервный провайдер не выбран.")
 
@@ -155,19 +168,19 @@ async def run_content_filter_fallback(
         provider_id=provider_id,
         model_name=resolved_name,
         model_config=model_config,
-        label="content-filter-fallback",
-        temperature=_fallback_temperature(worker),
+        label=f"content-filter-fallback-{stage}",
+        temperature=_fallback_temperature(worker, prefix),
         temperature_override_enabled=bool(
-            getattr(worker, "content_filter_fallback_temperature_override", True)
+            getattr(worker, f"{prefix}_temperature_override", True)
         ),
-        thinking_enabled=bool(getattr(worker, "content_filter_fallback_thinking_enabled", False)),
-        thinking_budget=getattr(worker, "content_filter_fallback_thinking_budget", None),
-        thinking_level=getattr(worker, "content_filter_fallback_thinking_level", None),
+        thinking_enabled=bool(getattr(worker, f"{prefix}_thinking_enabled", False)),
+        thinking_budget=getattr(worker, f"{prefix}_thinking_budget", None),
+        thinking_level=getattr(worker, f"{prefix}_thinking_level", None),
     )
 
     _post(
         worker,
-        f"🛡️➡️ Контент заблокирован. Резерв: {provider_id}/{model_id} "
+        f"Контент заблокирован. Резерв №{stage}: {provider_id}/{model_id} "
         f"({len(pool)} зелёных ключей).",
     )
 
@@ -177,17 +190,17 @@ async def run_content_filter_fallback(
         attempt = ProviderAttempt(api_key=api_key, **attempt_kwargs)
         result = await _run_attempt(worker, attempt, prompt, log_prefix, call_kwargs)
         if result.ok:
-            _post(worker, f"🛡️✅ Резерв перевёл заблокированный фрагмент ({provider_id}/{model_id}).")
+            _post(worker, f"Резерв №{stage} перевёл заблокированный фрагмент ({provider_id}/{model_id}).")
             return result.text
         exc = result.exception or RuntimeError(result.error or "fallback failed")
         decision = fallback_decision(exc)
         if decision == "block":
-            _post(worker, "🛡️❌ Резерв тоже вернул блокировку — задача уходит в ошибку.")
+            _post(worker, f"Резерв №{stage} тоже вернул блокировку.")
             raise exc
         if decision == "fatal":
             raise exc
         last_exc = exc
-        _post(worker, f"🛡️🔁 Временная ошибка резерва ({type(exc).__name__}), ротация ключа…")
+        _post(worker, f"Временная ошибка резерва №{stage} ({type(exc).__name__}), ротация ключа…")
     if last_exc is not None:
         raise last_exc
     raise RuntimeError("Резерв не дал результата.")

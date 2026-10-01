@@ -94,9 +94,50 @@ class ContentFilterFallbackPanelTests(unittest.TestCase):
                 "content_filter_fallback_thinking_enabled",
                 "content_filter_fallback_thinking_budget",
                 "content_filter_fallback_thinking_level",
+                "content_filter_fallback_second_enabled",
+                "content_filter_fallback_second_provider",
+                "content_filter_fallback_second_model",
+                "content_filter_fallback_second_temperature",
+                "content_filter_fallback_second_temperature_override",
+                "content_filter_fallback_second_thinking_enabled",
+                "content_filter_fallback_second_thinking_budget",
+                "content_filter_fallback_second_thinking_level",
             },
         )
         self.assertFalse(config["content_filter_fallback_enabled"])
+        self.assertFalse(config["content_filter_fallback_second_enabled"])
+
+    def test_second_model_settings_round_trip_independently(self):
+        panel = self._create_panel(FakeSettings())
+        panel.set_config({
+            "content_filter_fallback_enabled": True,
+            "content_filter_fallback_provider": "gemini",
+            "content_filter_fallback_model": "Flash",
+            "content_filter_fallback_second_enabled": True,
+            "content_filter_fallback_second_provider": "nvidia",
+            "content_filter_fallback_second_model": "Big",
+            "content_filter_fallback_second_temperature": 0.7,
+            "content_filter_fallback_second_temperature_override": True,
+        })
+
+        config = panel.get_config()
+        self.assertEqual(config["content_filter_fallback_provider"], "gemini")
+        self.assertEqual(config["content_filter_fallback_model"], "Flash")
+        self.assertTrue(config["content_filter_fallback_second_enabled"])
+        self.assertEqual(config["content_filter_fallback_second_provider"], "nvidia")
+        self.assertEqual(config["content_filter_fallback_second_model"], "Big")
+        self.assertAlmostEqual(config["content_filter_fallback_second_temperature"], 0.7)
+
+    def test_second_model_change_emits_panel_config_signal(self):
+        panel = self._create_panel(FakeSettings())
+        panel.enable_checkbox.setChecked(True)
+        changes = []
+        panel.config_changed.connect(lambda: changes.append(True))
+
+        panel.second_panel.enable_checkbox.setChecked(True)
+
+        self.assertEqual(changes, [True])
+        self.assertTrue(panel.get_config()["content_filter_fallback_second_enabled"])
 
     def test_set_get_round_trip_for_gemini_flash_with_level_thinking(self):
         panel = self._create_panel(FakeSettings())
