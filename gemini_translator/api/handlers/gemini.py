@@ -9,7 +9,7 @@ from ..errors import (
     TemporaryRateLimitError, PartialGenerationError
 )
 
-GEMINI_LONG_RETRY_DELAY_SECONDS = 6 * 3600
+GEMINI_KEY_ROTATION_THRESHOLD_SECONDS = 180
 
 class GeminiApiHandler(BaseApiHandler):
     
@@ -421,9 +421,9 @@ class GeminiApiHandler(BaseApiHandler):
     @staticmethod
     def _raise_for_retry_delay(retry_delay_seconds: int, error_message: str, stream: bool = False):
         final_delay = retry_delay_seconds + 2
-        if final_delay > GEMINI_LONG_RETRY_DELAY_SECONDS:
+        if final_delay > GEMINI_KEY_ROTATION_THRESHOLD_SECONDS:
             error = RateLimitExceededError(
-                f"Квота Gemini для ключа исчерпана; сброс через {final_delay} с. ({error_message[:100]})"
+                f"Ключ Gemini выведен из сессии: сервис запросил паузу {final_delay} с. ({error_message[:100]})"
             )
             error.retry_after_seconds = final_delay
             raise error

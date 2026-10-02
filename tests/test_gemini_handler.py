@@ -21,6 +21,47 @@ async def _async_text(value):
 
 
 class GeminiHandlerTests(unittest.TestCase):
+    def test_429_pause_of_181_seconds_rotates_key(self):
+        handler = _make_handler()
+        response = SimpleNamespace(
+            status=429,
+            text=lambda: _async_text(json.dumps({
+                "error": {"message": "Please retry in 179s", "details": [{"retryDelay": "179s"}]}
+            })),
+        )
+
+        with self.assertRaises(RateLimitExceededError) as raised:
+            asyncio.run(handler._handle_error_response(response))
+
+        self.assertEqual(raised.exception.retry_after_seconds, 181)
+
+    def test_429_pause_of_180_seconds_stays_temporary(self):
+        handler = _make_handler()
+        response = SimpleNamespace(
+            status=429,
+            text=lambda: _async_text(json.dumps({
+                "error": {"message": "Please retry in 178s", "details": [{"retryDelay": "178s"}]}
+            })),
+        )
+
+        with self.assertRaises(TemporaryRateLimitError) as raised:
+            asyncio.run(handler._handle_error_response(response))
+
+        self.assertEqual(raised.exception.delay_seconds, 180)
+
+    def test_stream_pause_of_181_seconds_rotates_key(self):
+        handler = _make_handler()
+        stream_error = {
+            "status": "RESOURCE_EXHAUSTED",
+            "message": "Please retry in 179s",
+            "details": [{"retryDelay": "179s"}],
+        }
+
+        with self.assertRaises(RateLimitExceededError) as raised:
+            handler._raise_for_stream_error(stream_error)
+
+        self.assertEqual(raised.exception.retry_after_seconds, 181)
+
     def test_429_with_thirteen_hour_retry_delay_rotates_key(self):
         handler = _make_handler()
         response = SimpleNamespace(
