@@ -9,6 +9,8 @@ from ..errors import (
     TemporaryRateLimitError, PartialGenerationError
 )
 
+GEMINI_LONG_RETRY_DELAY_SECONDS = 6 * 3600
+
 class GeminiApiHandler(BaseApiHandler):
     
     def setup_client(self, client_override=None, proxy_settings=None):
@@ -366,8 +368,7 @@ class GeminiApiHandler(BaseApiHandler):
             retry_delay_seconds = self._extract_retry_delay(error_details, error_message)
 
             if retry_delay_seconds is not None:
-                final_delay = retry_delay_seconds + 2 # Добавляем 2 секунды буфера
-                raise TemporaryRateLimitError(f"API запросил паузу на {final_delay}с. ({error_message[:100]})", delay_seconds=final_delay)
+                self._raise_for_retry_delay(retry_delay_seconds, error_message)
             
             # 2. Дефолтная пауза для RPM
             raise TemporaryRateLimitError(f"Временный лимит запросов (429).", delay_seconds=60)
@@ -388,11 +389,7 @@ class GeminiApiHandler(BaseApiHandler):
         if error_status in {'UNAVAILABLE', 'RESOURCE_EXHAUSTED'}:
             retry_delay_seconds = self._extract_retry_delay({'details': error_details.get('details', [])}, error_message)
             if retry_delay_seconds is not None:
-                final_delay = retry_delay_seconds + 2
-                raise TemporaryRateLimitError(
-                    f"Gemini stream: временная перегрузка модели, пауза {final_delay}с. ({error_message[:100]})",
-                    delay_seconds=final_delay,
-                )
+                self._raise_for_retry_delay(retry_delay_seconds, error_message, stream=True)
             raise TemporaryRateLimitError(
                 f"Gemini stream: модель временно перегружена. ({error_message[:100]})",
                 delay_seconds=20,
@@ -420,6 +417,25 @@ class GeminiApiHandler(BaseApiHandler):
             raise ApiAccessError(f"Ошибка доступа Gemini stream: {error_message}")
 
         raise NetworkError(f"Gemini stream error ({error_status}): {error_message}", delay_seconds=25)
+
+    @staticmethod
+    def _raise_for_retry_delay(retry_delay_seconds: int, error_message: str, stream: bool = False):
+        final_delay = retry_delay_seconds + 2
+        if final_delay > GEMINI_LONG_RETRY_DELAY_SECONDS:
+            error = RateLimitExceededError(
+                f"Квота Gemini для ключа исчерпана; сброс через {final_delay} с. ({error_message[:100]})"
+            )
+            error.retry_after_seconds = final_delay
+            raise error
+        if stream:
+            raise TemporaryRateLimitError(
+                f"Gemini stream: временная перегрузка модели, пауза {final_delay}с. ({error_message[:100]})",
+                delay_seconds=final_delay,
+            )
+        raise TemporaryRateLimitError(
+            f"API запросил паузу на {final_delay}с. ({error_message[:100]})",
+            delay_seconds=final_delay,
+        )
 
     @staticmethod
     def _is_key_credential_rejection(error_text: str) -> bool:
