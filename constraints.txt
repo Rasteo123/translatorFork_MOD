@@ -115,7 +115,7 @@ pydantic-settings==2.15.0
 pydantic_core==2.46.5
 pyee==13.0.1
 Pygments==2.21.0
-PyJWT==2.14.0
+PyJWT==2.15.0
 pymorphy3-dicts-ru==2.4.417150.4580142
 PyQt6-Qt6==6.11.2
 PyQt6_sip==13.12.0
