@@ -5,7 +5,7 @@
 ; Версия приходит из CI: iscc /DMyAppVersion=<версия из version.py>.
 ; Локальная сборка без define получает текущую версию по умолчанию.
 #ifndef MyAppVersion
-#define MyAppVersion "10.5.28"
+#define MyAppVersion "10.5.29"
 #endif
 
 [Setup]

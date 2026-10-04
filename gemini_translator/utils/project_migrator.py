@@ -6,26 +6,28 @@ import shutil
 import zipfile
 from .project_manager import TranslationProjectManager
 from PyQt6.QtWidgets import QMessageBox
-from PyQt6.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition, QMetaObject, Qt, QObject
+from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot, QMutex, QWaitCondition, Qt, QObject
 
-# --- ШАГ 1: Создаем маленький QObject для управления диалогом ---
-# Это позволит нам не смешивать логику потока и логику UI
 class QuestionHandler(QObject):
-    # Сигнал, который вернет ответ обратно в SyncThread
+    """Обработчик вопросов, созданный и вызываемый в GUI-потоке."""
     response_ready = pyqtSignal(bool)
+    question_active_changed = pyqtSignal(bool)
 
-    def __init__(self, parent_widget, title, text):
-        super().__init__()
+    def __init__(self, parent_widget):
+        super().__init__(parent_widget)
         self.parent = parent_widget
-        self.title = title
-        self.text = text
+        self._dialog = None
 
-    def ask(self):
+    @pyqtSlot(str, str)
+    def ask(self, title, text):
         """Этот метод будет вызван в GUI-потоке."""
+        self.question_active_changed.emit(True)
         msg_box = QMessageBox(self.parent)
-        msg_box.setWindowTitle(self.title)
+        self._dialog = msg_box
+        msg_box.setWindowTitle(title)
         msg_box.setIcon(QMessageBox.Icon.Question)
-        msg_box.setText(self.text)
+        msg_box.setText(text)
+        msg_box.setModal(True)
         yes_button = msg_box.addButton("Да", QMessageBox.ButtonRole.YesRole)
         msg_box.addButton("Нет", QMessageBox.ButtonRole.NoRole)
         
@@ -39,14 +41,15 @@ class QuestionHandler(QObject):
     def _on_dialog_finished(self, msg_box, yes_button):
         """Обрабатывает результат и отправляет сигнал с ответом."""
         response = (msg_box.clickedButton() == yes_button)
+        self._dialog = None
+        msg_box.deleteLater()
+        self.question_active_changed.emit(False)
         self.response_ready.emit(response)
-        # Важно: удаляем себя, чтобы не было утечек памяти
-        self.deleteLater()
         
 class SyncThread(QThread):
     finished_sync = pyqtSignal(bool, str)
-    # Этот сигнал теперь будет передавать объект QuestionHandler
-    _ask_question_in_ui_thread = pyqtSignal(QObject)
+    question_active_changed = pyqtSignal(bool)
+    _ask_question_in_ui_thread = pyqtSignal(str, str)
 
     def __init__(self, migrator_instance, parent_widget=None):
         super().__init__()
@@ -56,8 +59,15 @@ class SyncThread(QThread):
         self.mutex = QMutex()
         self.condition = QWaitCondition()
         
-        # Слот теперь просто вызывает метод ask() у полученного объекта
-        self._ask_question_in_ui_thread.connect(lambda handler: handler.ask())
+        # QThread создаётся в GUI-потоке; обработчик должен жить там же,
+        # а не создаваться внутри run(), где нет цикла событий Qt.
+        self._question_handler = QuestionHandler(parent_widget)
+        self.finished.connect(self._question_handler.deleteLater)
+        self._question_handler.response_ready.connect(self._set_user_response)
+        self._question_handler.question_active_changed.connect(self.question_active_changed)
+        self._ask_question_in_ui_thread.connect(
+            self._question_handler.ask, Qt.ConnectionType.QueuedConnection
+        )
 
     def run(self):
         try:
@@ -73,21 +83,21 @@ class SyncThread(QThread):
         return self._ask_question("Синхронизация (главы-призраки)", text)
         
     def _ask_question(self, title, text):
-        # 1. Создаем обработчик
-        handler = QuestionHandler(self.parent, title, text)
-        
-        # 2. Подключаем его сигнал к нашему слоту, который разбудит поток
-        handler.response_ready.connect(self._set_user_response)
-        
-        # 3. Отправляем сам объект обработчика в GUI-поток
-        self._ask_question_in_ui_thread.emit(handler)
-        
-        # 4. Блокируемся и ждем, как и раньше
         self.mutex.lock()
-        self.condition.wait(self.mutex)
-        response = self.user_response
+        self.user_response = None
         self.mutex.unlock()
-        return response
+        self._ask_question_in_ui_thread.emit(title, text)
+
+        self.mutex.lock()
+        try:
+            # Ответ может прийти до wait(); проверяем состояние под тем же
+            # мьютексом, чтобы не потерять ранний wakeAll() или повторить
+            # ответ на предыдущий вопрос.
+            while self.user_response is None:
+                self.condition.wait(self.mutex)
+            return self.user_response
+        finally:
+            self.mutex.unlock()
 
     def _set_user_response(self, response: bool):
         """Этот слот вызывается по сигналу от QuestionHandler."""

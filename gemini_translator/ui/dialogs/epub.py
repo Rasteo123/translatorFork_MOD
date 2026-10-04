@@ -180,9 +180,21 @@ def run_project_migrator_sync(widget, project_manager, source_folder, source_epu
     migrator = ProjectMigrator(source_folder, source_epub_path, project_manager)
     widget.sync_thread = SyncThread(migrator, parent_widget=widget)
     widget.sync_thread.finished_sync.connect(on_finished)
-    widget.sync_thread.start()
 
-    show_when_slow(widget.wait_dialog)
+    wait_dialog = widget.wait_dialog
+    wait_timer = show_when_slow(wait_dialog)
+
+    def on_question_active_changed(active):
+        # Нельзя показывать модальное окно ожидания поверх вопроса: оно
+        # блокирует кнопки ответа, а поток ждёт именно этот ответ.
+        if active:
+            wait_timer.stop()
+            wait_dialog.hide()
+        else:
+            wait_timer.start()
+
+    widget.sync_thread.question_active_changed.connect(on_question_active_changed)
+    widget.sync_thread.start()
 
 
 class EpubCleanupThread(QThread):
