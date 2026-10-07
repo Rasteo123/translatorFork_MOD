@@ -28,7 +28,7 @@ def test_auto_workflow_helpers_text_has_cjk_routes_through_core_pattern(monkeypa
     assert auto_workflow_helpers.text_has_cjk("一") is False
 
 
-def test_validation_initial_cjk_scan_routes_through_core_pattern(monkeypatch, tmp_path):
+def test_validation_initial_cjk_scan_routes_through_core_pattern(monkeypatch, tmp_path, qapp):
     import zipfile
 
     from gemini_translator.ui.dialogs import validation as validation_mod
@@ -43,26 +43,21 @@ def test_validation_initial_cjk_scan_routes_through_core_pattern(monkeypatch, tm
     fake = re.compile(r"Q")
     monkeypatch.setattr(cjk_ranges, "CORE_CJK_CHAR_RE", fake)
 
-    switched_to = []
-
-    class FakeCombo:
-        def findText(self, text):
-            return 0
-
-        def setCurrentIndex(self, idx):
-            switched_to.append(idx)
-
-    fake_self = types.SimpleNamespace(
-        original_epub_path=str(epub_path),
-        ratio_presets_combo=FakeCombo(),
+    monkeypatch.setattr(qapp, "global_version", "", raising=False)
+    monkeypatch.setattr(qapp, "settings_manager", None, raising=False)
+    monkeypatch.setattr(qapp, "get_settings_manager", lambda: None, raising=False)
+    page = validation_mod.TranslationValidatorPage(
+        str(tmp_path), str(epub_path), project_manager=None,
     )
-
-    validation_mod.TranslationValidatorDialog._perform_initial_cjk_scan(fake_self)
+    page._populate_initial_table_timer.stop()
 
     # The preset switch only fires once >=100 "CJK" chars are counted -- with
     # the canonical pattern faked to match 'Q', the 150 probe chars must be
     # what triggers it (the real regex would count 0 and never switch).
-    assert switched_to == [0]
+    try:
+        assert page.ratio_presets_combo.currentText() == "Иероглифический (象 -> A)"
+    finally:
+        page.deleteLater()
 
 
 def test_fixer_dialog_lang_tag_routes_through_cjk_scripts_pattern(monkeypatch):

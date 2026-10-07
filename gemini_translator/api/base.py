@@ -570,6 +570,11 @@ class BaseApiHandler:
             category = "Сервер разорвал соединение"
         elif isinstance(error, (aiohttp.ClientSSLError, ssl.SSLError)):
             category = "Ошибка SSL/TLS"
+        elif isinstance(error, aiohttp.ClientConnectorError):
+            return (
+                f"Не удалось подключиться к серверу {error.host}:{error.port}{context}. "
+                "Проверьте интернет-соединение и настройки VPN/прокси."
+            )
         else:
             category = "Сетевой сбой"
         return f"{category}{context} ({type(error).__name__}): {error}"
@@ -832,7 +837,10 @@ class BaseApiHandler:
         )):
             raise e
         
-        if "сannot connect to host" in error_text or "getaddrinfo failed" in error_text:
+        if isinstance(e, aiohttp.ClientConnectorError):
+            raise NetworkError(self._format_transport_error(e), delay_seconds=30) from e
+
+        if "cannot connect to host" in error_text or "getaddrinfo failed" in error_text:
             raise NetworkError(f"Нет связи с сервером, или нет интернета.", delay_seconds=60) from e
         
 

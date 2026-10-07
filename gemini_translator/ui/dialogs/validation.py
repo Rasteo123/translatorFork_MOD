@@ -8,6 +8,7 @@ import json
 import hashlib
 import difflib
 import importlib
+import math
 from bs4 import BeautifulSoup, NavigableString, ProcessingInstruction, Comment, Declaration
 import shutil
 from datetime import datetime
@@ -2073,6 +2074,8 @@ class TranslationValidatorPage(ShellPage):
         "Медиана ±25%": (-1.0, 0.25, "Отклонение от медианного значения по всем главам"),
         "Медиана ±30%": (-1.0, 0.30, "Отклонение от медианного значения по всем главам")
     }
+    MANUAL_RATIO_PRESET = "Ручной"
+    MANUAL_RATIO_DEFAULTS = (0.92, 1.20)
 
     VALIDATION_FILTER_DEFAULTS = {
         "check_structure": True,
@@ -2107,6 +2110,7 @@ class TranslationValidatorPage(ShellPage):
         self.previous_problem_paths = set()
         self.current_detector_signature = ""
         self.current_epub_fingerprint = {}
+        self._ratio_preset_explicit = False
 
         # --- Кеш состояния помощника недоперевода ---
         self._fixer_filter_state = None
@@ -2199,7 +2203,8 @@ class TranslationValidatorPage(ShellPage):
         main_layout.addLayout(self._create_bottom_buttons())
 
         # Подключаем сигналы ПОСЛЕ создания всех виджетов
-        self.check_length_ratio.stateChanged.connect(lambda state: self.ratio_presets_combo.setEnabled(bool(state)))
+        self._load_validation_filter_settings()
+        self.check_length_ratio.toggled.connect(self._sync_validation_filter_controls)
         self.check_paragraph_size.toggled.connect(self.max_paragraph_spinbox.setEnabled)
         self.check_simplification.toggled.connect(self.simplification_threshold_spinbox.setEnabled)
         self.check_repeating_chars.toggled.connect(self.repeating_chars_spinbox.setEnabled)
@@ -2217,7 +2222,10 @@ class TranslationValidatorPage(ShellPage):
         self.repeating_chars_spinbox.valueChanged.connect(self.reapply_filters)
         
         # 4. Комбобокс
-        self.ratio_presets_combo.currentIndexChanged.connect(self.reapply_filters)
+        self.ratio_presets_combo.currentIndexChanged.connect(self._on_ratio_preset_changed)
+        self.ratio_presets_combo.activated.connect(self._on_ratio_preset_activated)
+        self.ratio_min_spinbox.valueChanged.connect(self._on_manual_ratio_bounds_changed)
+        self.ratio_max_spinbox.valueChanged.connect(self._on_manual_ratio_bounds_changed)
         self._sync_validation_filter_controls()
 
         self._set_tooltips()
@@ -2256,7 +2264,11 @@ class TranslationValidatorPage(ShellPage):
 
     def _sync_validation_filter_controls(self):
         if hasattr(self, "ratio_presets_combo") and hasattr(self, "check_length_ratio"):
-            self.ratio_presets_combo.setEnabled(self.check_length_ratio.isChecked())
+            check_ratio = self.check_length_ratio.isChecked()
+            self.ratio_presets_combo.setEnabled(check_ratio)
+            manual = check_ratio and self.ratio_presets_combo.currentText() == self.MANUAL_RATIO_PRESET
+            self.ratio_min_spinbox.setEnabled(manual)
+            self.ratio_max_spinbox.setEnabled(manual)
         if hasattr(self, "simplification_threshold_spinbox") and hasattr(self, "check_simplification"):
             self.simplification_threshold_spinbox.setEnabled(self.check_simplification.isChecked())
         if hasattr(self, "repeating_chars_spinbox") and hasattr(self, "check_repeating_chars"):
@@ -2277,7 +2289,32 @@ class TranslationValidatorPage(ShellPage):
 
         for attr_name, checkbox in self._iter_validation_filter_checkboxes():
             if attr_name in saved_settings:
-                checkbox.setChecked(bool(saved_settings[attr_name]))
+                with QtCore.QSignalBlocker(checkbox):
+                    checkbox.setChecked(bool(saved_settings[attr_name]))
+
+        preset = saved_settings.get("ratio_preset")
+        preset_index = self.ratio_presets_combo.findText(preset) if isinstance(preset, str) else -1
+        if preset_index >= 0 and saved_settings.get("ratio_preset_explicit", True) is True:
+            with QtCore.QSignalBlocker(self.ratio_presets_combo):
+                self.ratio_presets_combo.setCurrentIndex(preset_index)
+            self._ratio_preset_explicit = True
+
+        minimum, maximum = self.MANUAL_RATIO_DEFAULTS
+        try:
+            raw_minimum = saved_settings.get("ratio_min", minimum)
+            raw_maximum = saved_settings.get("ratio_max", maximum)
+            if isinstance(raw_minimum, bool) or isinstance(raw_maximum, bool):
+                raise ValueError("Boolean ratio bound")
+            saved_minimum = round(float(raw_minimum), 2)
+            saved_maximum = round(float(raw_maximum), 2)
+            if (math.isfinite(saved_minimum) and math.isfinite(saved_maximum)
+                    and 0.0 <= saved_minimum < saved_maximum <= 100.0):
+                minimum, maximum = saved_minimum, saved_maximum
+        except (TypeError, ValueError, OverflowError):
+            pass
+        with QtCore.QSignalBlocker(self.ratio_min_spinbox), QtCore.QSignalBlocker(self.ratio_max_spinbox):
+            self.ratio_min_spinbox.setValue(minimum)
+            self.ratio_max_spinbox.setValue(maximum)
 
         self._sync_validation_filter_controls()
 
@@ -2289,9 +2326,40 @@ class TranslationValidatorPage(ShellPage):
             attr_name: checkbox.isChecked()
             for attr_name, checkbox in self._iter_validation_filter_checkboxes()
         }
+        settings.update({
+            "ratio_preset": self.ratio_presets_combo.currentText(),
+            "ratio_preset_explicit": self._ratio_preset_explicit,
+            "ratio_min": self.ratio_min_spinbox.value(),
+            "ratio_max": self.ratio_max_spinbox.value(),
+        })
         saver = getattr(self.settings_manager, "save_last_validation_filter_settings", None)
         if callable(saver):
             saver(settings)
+
+    def _on_ratio_preset_changed(self):
+        self._ratio_preset_explicit = True
+        self._sync_validation_filter_controls()
+        self._save_validation_filter_settings()
+        self.reapply_filters()
+
+    def _on_ratio_preset_activated(self):
+        # activated приходит и при повторном выборе текущего пункта.
+        if not self._ratio_preset_explicit:
+            self._ratio_preset_explicit = True
+            self._save_validation_filter_settings()
+
+    def _on_manual_ratio_bounds_changed(self):
+        minimum = self.ratio_min_spinbox.value()
+        maximum = self.ratio_max_spinbox.value()
+        if minimum >= maximum:
+            if self.sender() is self.ratio_min_spinbox:
+                with QtCore.QSignalBlocker(self.ratio_max_spinbox):
+                    self.ratio_max_spinbox.setValue(minimum + 0.01)
+            else:
+                with QtCore.QSignalBlocker(self.ratio_min_spinbox):
+                    self.ratio_min_spinbox.setValue(maximum - 0.01)
+        self._save_validation_filter_settings()
+        self.reapply_filters()
 
     def _read_text_file(self, file_path):
         try:
@@ -2780,6 +2848,8 @@ class TranslationValidatorPage(ShellPage):
         self.check_show_all.setEnabled(False)
         self.analysis_mode_combo.setEnabled(False)
         self.ratio_presets_combo.setEnabled(False)
+        self.ratio_min_spinbox.setEnabled(False)
+        self.ratio_max_spinbox.setEnabled(False)
         
         # Очистка
         self.table_results.setRowCount(0)
@@ -2936,7 +3006,6 @@ class TranslationValidatorPage(ShellPage):
         for attr_name, default_value in self.VALIDATION_FILTER_DEFAULTS.items():
             checkbox = getattr(self, attr_name)
             checkbox.setChecked(default_value)
-        self._load_validation_filter_settings()
 
         # Сохраняем состояние фильтров сразу при переключении.
         # Живая фильтрация подключается ниже, после создания всей таблицы.
@@ -2968,6 +3037,31 @@ class TranslationValidatorPage(ShellPage):
 
         self.ratio_presets_combo = QComboBox()
         for i, text in enumerate(self.RATIO_PRESETS.keys()): self.ratio_presets_combo.addItem(text)
+        self.ratio_presets_combo.addItem(self.MANUAL_RATIO_PRESET)
+        self.ratio_presets_combo.setAccessibleName("Режим проверки соотношения длин")
+
+        bounds_layout = QGridLayout()
+        for row, (attr_name, label_text, bounds, value) in enumerate([
+            ("ratio_min_spinbox", "Минимальный коэффициент", (0.0, 99.99), self.MANUAL_RATIO_DEFAULTS[0]),
+            ("ratio_max_spinbox", "Максимальный коэффициент", (0.01, 100.0), self.MANUAL_RATIO_DEFAULTS[1]),
+        ]):
+            label = QLabel(label_text)
+            label.setWordWrap(True)
+            spinbox = QtWidgets.QDoubleSpinBox()
+            spinbox.setDecimals(2)
+            spinbox.setRange(*bounds)
+            spinbox.setSingleStep(0.05)
+            spinbox.setValue(value)
+            spinbox.setAccessibleName(label_text)
+            spinbox.setToolTip(
+                "Длина перевода / длина оригинала. Минимальная граница включается, "
+                "максимальная не включается. При пересечении границ соседнее значение "
+                "корректируется автоматически."
+            )
+            label.setBuddy(spinbox)
+            setattr(self, attr_name, spinbox)
+            bounds_layout.addWidget(label, row, 0)
+            bounds_layout.addWidget(spinbox, row, 1)
         
         layout.addWidget(self.check_show_all)
         layout.addWidget(self.check_revalidate_ok) # <-- Добавляем новый флажок
@@ -2975,6 +3069,7 @@ class TranslationValidatorPage(ShellPage):
         layout.addWidget(self.analysis_mode_combo)
         layout.addWidget(self.lbl_analysis_scope)
         layout.addWidget(self.ratio_presets_combo)
+        layout.addLayout(bounds_layout)
         layout.addStretch()
         
         self.check_revalidate_ok.clicked.connect(self._update_analyze_button_state)
@@ -3445,6 +3540,10 @@ class TranslationValidatorPage(ShellPage):
                                            "• 'Алфавитный': Для пар типа Английский -> Русский.\n"
                                            "• 'Иероглифический': Для Zh/Jp/Ko -> Ru; хороший перевод обычно расширяется минимум в x1.8.\n"
                                            "• 'Медианы': Ищет отклонение от типичного ratio по текущему проекту.")
+        self.ratio_presets_combo.setToolTip(
+            self.ratio_presets_combo.toolTip()
+            + "\n• 'Ручной': Позволяет задать минимальный и максимальный коэффициенты."
+        )
 
         # Группа 4: Поиск
         self.btn_open_large_editor.setToolTip("Открыть большой редактор для ввода")
@@ -4335,6 +4434,8 @@ class TranslationValidatorPage(ShellPage):
         Если выбран медианный пресет, вычисляет границы динамически на основе загруженных данных.
         """
         ratio_preset_name = self.ratio_presets_combo.currentText()
+        if ratio_preset_name == self.MANUAL_RATIO_PRESET:
+            return self.ratio_min_spinbox.value(), self.ratio_max_spinbox.value()
         val_a, val_b, _ = self.RATIO_PRESETS.get(ratio_preset_name, (0.70, 1.80, ""))
 
         # Если первый параметр отрицательный, это признак динамического режима (Медиана)
@@ -5191,6 +5292,8 @@ class TranslationValidatorPage(ShellPage):
         Выполняет быстрый анализ нескольких глав EPUB на наличие CJK символов
         и устанавливает соответствующий пресет в ComboBox.
         """
+        if self._ratio_preset_explicit:
+            return
         if not self.original_epub_path or not os.path.exists(self.original_epub_path):
             return
 
@@ -5219,7 +5322,10 @@ class TranslationValidatorPage(ShellPage):
                 if cjk_char_count >= 100:
                     cjk_preset_index = self.ratio_presets_combo.findText("Иероглифический (象 -> A)")
                     if cjk_preset_index != -1:
-                        self.ratio_presets_combo.setCurrentIndex(cjk_preset_index)
+                        with QtCore.QSignalBlocker(self.ratio_presets_combo):
+                            self.ratio_presets_combo.setCurrentIndex(cjk_preset_index)
+                        self._sync_validation_filter_controls()
+                        self.reapply_filters()
         except Exception as e:
             # В случае ошибки просто ничего не делаем, чтобы не сломать запуск диалога
             print(f"Ошибка при предварительном сканировании на CJK: {e}")
