@@ -3545,6 +3545,33 @@ _TAIL_MAX_PERIOD = 2000
 _TAIL_MIN_REMOVED_CHARS = 200
 # Ниже этого объёма «частичный перевод» не стоит промпта до-генерации.
 _MIN_USEFUL_PARTIAL_CHARS = 200
+# Локальная петля может занимать малую часть нормальной главы и пройти zlib.
+# Ограничиваем период и требуем одновременно много копий и большой объём.
+_LOCAL_REPETITION_MIN_CHARS = 200
+_LOCAL_REPETITION_PATTERNS = tuple(
+    re.compile(
+        rf"(.{{{period}}})\1{{{max(8, (_LOCAL_REPETITION_MIN_CHARS + period - 1) // period) - 1},}}",
+        re.DOTALL,
+    )
+    for period in range(1, 81)
+)
+
+
+def _find_local_repetition(visible_text):
+    """Находит массовый точный повтор в видимом тексте, независимо от языка."""
+    normalized = re.sub(r"\s+", " ", visible_text)
+    # Проверяем периоды независимо: короткие повторы внутри длинного блока
+    # не должны поглощать совпадение и скрывать повтор всего блока.
+    for pattern in _LOCAL_REPETITION_PATTERNS:
+        for match in pattern.finditer(normalized):
+            unit = match.group(1)
+            repeats = len(match.group(0)) // len(unit)
+            if (
+                len(unit.strip()) * repeats >= _LOCAL_REPETITION_MIN_CHARS
+                and any(char.isalnum() for char in unit)
+            ):
+                return unit.strip(), repeats
+    return None
 
 
 def degenerate_repetition_ratio(text):
@@ -3614,6 +3641,10 @@ def sanitize_partial_translation(partial_text):
 
     cleaned, removed = strip_degenerate_repeated_tail(partial_text)
     if is_degenerate_repetition(cleaned):
+        return ""
+    # Петлю внутри предложения нельзя безопасно вырезать: неизвестно, какой
+    # перевод должен быть на её месте. Не передаём её в контекст доперевода.
+    if _find_local_repetition(BeautifulSoup(cleaned, 'html.parser').get_text()):
         return ""
     # После обрезки не осталось ничего осмысленного — значит, зациклился весь
     # ответ, а не только хвост. Продолжать нечего, нужен чистый перевод заново.
@@ -3836,6 +3867,14 @@ def validate_html_structure(original_html, translated_html):
             return False, f"Аномально высокая степень сжатия ({compression_ratio:.1%}).", final_translated_html
     except Exception as e:
         print(f"[WARN] Ошибка при проверке сжатия: {e}")
+
+    repetition = _find_local_repetition(text_trans)
+    if repetition:
+        unit, repeats = repetition
+        return False, (
+            f"Обнаружено зацикливание: фрагмент {unit[:40]!r} "
+            f"повторяется подряд {repeats} раз. Требуется повторный перевод."
+        ), final_translated_html
     
     if len(text_orig) > 500 and len(text_trans) < len(text_orig) / 8:
         return False, f"Ответ слишком короткий.", final_translated_html
