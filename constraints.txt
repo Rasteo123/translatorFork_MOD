@@ -104,7 +104,7 @@ jsonschema-specifications==2025.9.1
 Levenshtein==0.27.5
 MarkupSafe==3.0.3
 mcp==1.30.0
-multidict==6.9.0
+multidict==6.9.1
 multipledispatch==1.0.0
 packaging==26.3
 pluggy==1.6.0
@@ -136,5 +136,5 @@ tenacity==9.1.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 uvicorn==0.53.0
-Werkzeug==3.1.8
+Werkzeug==3.1.9
 yarl==1.25.1

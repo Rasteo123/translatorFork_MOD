@@ -1095,7 +1095,7 @@
     }
   },
   "arbz": {
-    "display_name": "AI ARBZ Translator",
+    "display_name": "Arbz / Qroute (OpenAI API)",
     "handler_class": "OpenRouterApiHandler",
     "base_url": "https://ai.arbz.lol/v1/chat/completions",
     "base_timeout": 1200,
@@ -1110,30 +1110,48 @@
       "duration_hours": 24
     },
     "models": {
-      "ARBZ Translator": {
-        "id": "translator",
-        "rpm": 6,
-        "needs_chunking": true,
-        "max_concurrent_requests": 3,
-        "max_output_tokens": 8192,
-        "context_length": 128000,
-        "reasoning_effort": "high",
-        "default_reasoning_effort": "high",
-        "thinkingLevel": [
-          "high"
-        ],
-        "min_thinking_budget": "high"
-      },
-      "Gemini 3.1 Pro High": {
-        "id": "gemini-3.1-pro-high",
+      "Gemini 4 Argon High": {
+        "id": "gemini-4-argon-high",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.1 Pro Low": {
-        "id": "gemini-3.1-pro-low",
+      "Gemini 4 Argon Medium": {
+        "id": "gemini-4-argon-medium",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 4 Argon Low": {
+        "id": "gemini-4-argon-low",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 3.8 Flash High": {
+        "id": "gemini-3.8-flash-high",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 3.8 Flash Medium": {
+        "id": "gemini-3.8-flash-medium",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 3.8 Flash Low": {
+        "id": "gemini-3.8-flash-low",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
@@ -1148,16 +1166,24 @@
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.5 Flash High": {
-        "id": "gemini-3.5-flash-agent",
+      "Gemini 3.6 Flash High": {
+        "id": "gemini-3.6-flash-high",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3 Flash": {
-        "id": "gemini-3-flash",
+      "Gemini 3.6 Flash Low": {
+        "id": "gemini-3.6-flash-low",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 3.5 Flash High": {
+        "id": "gemini-3-flash-agent",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
@@ -1172,24 +1198,164 @@
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.5 Flash Extra Low": {
-        "id": "gemini-3.5-flash-extra-low",
+      "Claude Opus 4.6": {
+        "id": "claude-opus-4-6",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.1 Flash Lite": {
-        "id": "gemini-3.1-flash-lite",
+      "Claude Sonnet 4.6": {
+        "id": "claude-sonnet-4-6",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 2.5 Flash Lite": {
-        "id": "gemini-2.5-flash-lite",
+      "GPT-5.5": {
+        "id": "gpt-5.5",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-6 Astra Plus": {
+        "id": "plus/gpt-6-astra",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-6.1 Sol Plus": {
+        "id": "plus/gpt-6.1-sol",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-6 Sol Plus": {
+        "id": "plus/gpt-6-sol",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-6 Luna Plus": {
+        "id": "plus/gpt-6-luna",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-5.6 Sol Plus": {
+        "id": "plus/gpt-5.6-sol",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-5.6 Terra Plus": {
+        "id": "plus/gpt-5.6-terra",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-5.6 Luna Plus": {
+        "id": "plus/gpt-5.6-luna",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-5.5 Plus": {
+        "id": "plus/gpt-5.5",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Grok 4.7 Plus": {
+        "id": "plus/grok-4.7",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Grok 4.6 Plus": {
+        "id": "plus/grok-4.6",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Grok 4.5 Plus": {
+        "id": "plus/grok-4.5",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Grok 4.3 Plus": {
+        "id": "plus/grok-4.3",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Grok Code Fast 1 Plus": {
+        "id": "plus/grok-code-fast-1",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      }
+    },
+    "requires_api_key": true
+  },
+  "arbz_claude": {
+    "display_name": "Arbz / Qroute — Claude",
+    "handler_class": "OpenModelApiHandler",
+    "base_url": "https://ai.arbz.lol/v1/messages",
+    "base_timeout": 1200,
+    "is_async": true,
+    "needs_warmup": true,
+    "visible": true,
+    "requires_api_key": true,
+    "post_session_creation_delay": 1.0,
+    "file_suffix": "_translated_arbz_claude.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "Claude Opus 5": {
+        "id": "claude-opus-5",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Claude Opus 4.8": {
+        "id": "claude-opus-4-8",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
