@@ -192,6 +192,23 @@ class LocalApiHandler(BaseApiHandler):
             return None
         return result if isinstance(result, dict) else None
 
+    def _apply_reasoning_options(self, payload):
+        model_config = self.worker.model_config
+        supports_reasoning = model_config.get(
+            "supports_reasoning_effort", self.worker.provider_config.get("supports_reasoning_effort", False)
+        )
+        if not supports_reasoning or not getattr(self.worker, "thinking_enabled", False):
+            return
+
+        raw_effort = getattr(self.worker, "thinking_level", None) or model_config.get(
+            "default_reasoning_effort"
+        )
+        effort = str(raw_effort or "").strip().lower()
+        allowed = {str(level).strip().lower() for level in model_config.get("thinkingLevel", [])}
+        if not effort or effort not in allowed:
+            raise ValidationFailedError(f"Недоступный уровень рассуждений: '{effort}'.")
+        payload["reasoning_effort"] = effort
+
     def call_api(self, prompt, log_prefix, allow_incomplete=False, use_stream=True, debug=False, max_output_tokens=None):
         """
         СИНХРОННАЯ реализация вызова.
@@ -227,6 +244,7 @@ class LocalApiHandler(BaseApiHandler):
         temperature = self._temperature_payload_value()
         if temperature is not None:
             payload["temperature"] = temperature
+        self._apply_reasoning_options(payload)
         
         requested_max_tokens = api_config._coerce_positive_int(max_output_tokens)
         if requested_max_tokens is not None:

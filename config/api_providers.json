@@ -1035,6 +1035,898 @@
       }
     }
   },
+  "basisweb": {
+    "display_name": "Basisweb (OpenAI API)",
+    "provider": "basisweb",
+    "handler_class": "LocalApiHandler",
+    "base_url": "https://api.basisweb.ru/v1/chat/completions",
+    "base_timeout": 1800,
+    "is_async": false,
+    "needs_warmup": false,
+    "visible": true,
+    "requires_api_key": true,
+    "file_suffix": "_translated_basisweb.html",
+    "shared_request_counter": false,
+    "reset_policy": {
+      "type": "rolling",
+      "duration_hours": 24
+    },
+    "models": {
+      "GPT 6 Astra (Basisweb)": {
+        "id": "gpt-6-astra",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "default_reasoning_effort": "low"
+      },
+      "GPT 6.1 Sol (Basisweb)": {
+        "id": "gpt-6.1-sol",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "GPT 6 Sol (Basisweb)": {
+        "id": "gpt-6-sol",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "low"
+      },
+      "GPT 6.1 Terra (Basisweb)": {
+        "id": "gpt-6.1-terra",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "GPT 6 Luna (Basisweb)": {
+        "id": "gpt-6-luna",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "low"
+      },
+      "GPT 5.6 Sol (Basisweb)": {
+        "id": "gpt-5.6-sol",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "default_reasoning_effort": "low"
+      },
+      "GPT 5.6 Terra (Basisweb)": {
+        "id": "gpt-5.6-terra",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "default_reasoning_effort": "low"
+      },
+      "GPT 5.6 Luna (Basisweb)": {
+        "id": "gpt-5.6-luna",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1050000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "default_reasoning_effort": "low"
+      },
+      "Codex Auto Review (Basisweb)": {
+        "id": "codex-auto-review",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": false,
+        "thinkingLevel": [],
+        "default_reasoning_effort": ""
+      },
+      "Claude fable 5.1 (Basisweb)": {
+        "id": "claude-fable-5.1",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude fable 5 (Basisweb)": {
+        "id": "claude-fable-5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude opus 5.5 (Basisweb)": {
+        "id": "claude-opus-5.5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude opus 5 (Basisweb)": {
+        "id": "claude-opus-5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude Opus 4.8 (Basisweb)": {
+        "id": "claude-opus-4-8",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude opus 4.7 (Basisweb)": {
+        "id": "claude-opus-4.7",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude opus 4.6 (Basisweb)": {
+        "id": "claude-opus-4.6",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude sonnet 5.5 (Basisweb)": {
+        "id": "claude-sonnet-5.5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude sonnet 5 (Basisweb)": {
+        "id": "claude-sonnet-5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude Sonnet 4.6 (Basisweb)": {
+        "id": "claude-sonnet-4-6",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 200000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude Haiku 5.5 (Basisweb)": {
+        "id": "claude-haiku-5.5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Claude haiku 4 5 (Basisweb)": {
+        "id": "claude-haiku-4-5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 200000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "GLM 5.3 (Basisweb)": {
+        "id": "glm-5.3",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "GLM 5.3 Flash (Basisweb)": {
+        "id": "glm-5.3-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "max"
+      },
+      "GLM 5.2 (Basisweb)": {
+        "id": "glm-5.2",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "GLM 5 Turbo (Basisweb)": {
+        "id": "glm-5-turbo",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 202752,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low"
+        ],
+        "default_reasoning_effort": "none"
+      },
+      "Kimi K3.1 Pro (Basisweb)": {
+        "id": "kimi-k3.1-pro",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "max"
+      },
+      "Kimi k3 (Basisweb)": {
+        "id": "kimi-k3",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "max"
+      },
+      "Kimi K2.8 Preview (Basisweb)": {
+        "id": "kimi-k2.8-preview",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "max"
+      },
+      "Kimi k2.7 code (Basisweb)": {
+        "id": "kimi-k2.7-code",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 262144,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": false,
+        "thinkingLevel": [],
+        "default_reasoning_effort": ""
+      },
+      "DeepSeek V4 pro 0813 (Basisweb)": {
+        "id": "deepseek-v4-pro-0813",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "DeepSeek V4 pro (Basisweb)": {
+        "id": "deepseek-v4-pro",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "DeepSeek V4.1 flash 1017 (Basisweb)": {
+        "id": "deepseek-v4.1-flash-1017",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "DeepSeek V4.1 flash (Basisweb)": {
+        "id": "deepseek-v4.1-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "DeepSeek V4 flash Vision exp (Basisweb)": {
+        "id": "deepseek-v4-flash-vision-exp",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "DeepSeek V4 flash 0731 (Basisweb)": {
+        "id": "deepseek-v4-flash-0731",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "DeepSeek V4 flash (Basisweb)": {
+        "id": "deepseek-v4-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high",
+          "max"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "Gemini 3.8 Flash (Basisweb)": {
+        "id": "gemini-3.8-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Gemini 3.7 Flash (Basisweb)": {
+        "id": "gemini-3.7-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Gemini 3.6 Flash (Basisweb)": {
+        "id": "gemini-3.6-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "Gemini 3.5 Flash Lite (Basisweb)": {
+        "id": "gemini-3.5-flash-lite",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": false,
+        "thinkingLevel": [],
+        "default_reasoning_effort": ""
+      },
+      "Gemini 3.1 Pro (Basisweb)": {
+        "id": "gemini-3.1-pro",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "high"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "Gemini 3.1 Flash Lite (Basisweb)": {
+        "id": "gemini-3.1-flash-lite",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": false,
+        "thinkingLevel": [],
+        "default_reasoning_effort": ""
+      },
+      "Gemini 3 Flash (Basisweb)": {
+        "id": "gemini-3-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1048576,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": false,
+        "thinkingLevel": [],
+        "default_reasoning_effort": ""
+      },
+      "Grok 4.7 (Basisweb)": {
+        "id": "grok-4.7",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 500000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "Grok 4.6 (Basisweb)": {
+        "id": "grok-4.6",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 500000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "xhigh"
+      },
+      "Grok 4.5 (Basisweb)": {
+        "id": "grok-4.5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 500000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "Qwen3.8 max (Basisweb)": {
+        "id": "qwen3.8-max",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "medium",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "xhigh"
+      },
+      "Qwen3.8 flash (Basisweb)": {
+        "id": "qwen3.8-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "low",
+          "medium",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "xhigh"
+      },
+      "Hy4 preview (Basisweb)": {
+        "id": "hy4-preview",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1024000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none",
+          "high"
+        ],
+        "default_reasoning_effort": "high"
+      },
+      "MiMo V2.6 Flash (Basisweb)": {
+        "id": "mimo-v2.6-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "MiMo V2.6 Pro (Basisweb)": {
+        "id": "mimo-v2.6-pro",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      "MiniMax M3.1 Flash (Basisweb)": {
+        "id": "minimax-m3.1-flash",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 1000000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "supports_reasoning_effort": true,
+        "thinkingLevel": [
+          "none"
+        ],
+        "default_reasoning_effort": "none"
+      },
+      "GPT 5.5 (Basisweb)": {
+        "id": "gpt-5.5",
+        "rpm": 10,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "context_length": 128000,
+        "max_output_tokens": 8192,
+        "min_thinking_budget": false,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "low"
+      }
+    },
+    "supports_reasoning_effort": true
+  },
   "local": {
     "display_name": "Локальные модели (Ollama/LM Studio)",
     "handler_class": "LocalApiHandler",
