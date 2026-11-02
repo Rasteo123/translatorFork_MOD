@@ -2507,13 +2507,20 @@ class InitialSetupPage(ShellPage):
 
         # 2. Анализ совместимости
         self.status_bar.set_permanent_message("Анализ совместимости глав...")
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        cursor_overridden = False
+        try:
+            # Qt/Cocoa может упасть в QImage::toCGImage при установке WaitCursor.
+            # SIGSEGV не перехватывается в Python; на macOS оставляем статус-бар.
+            if sys.platform != "darwin":
+                QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+                cursor_overridden = True
 
-        from ...utils.epub_tools import compare_epubs_for_swap, get_epub_chapter_order
-        comparison_results = compare_epubs_for_swap(self.selected_file, new_file_source)
-
-        QtWidgets.QApplication.restoreOverrideCursor()
-        self.status_bar.clear_message()
+            from ...utils.epub_tools import compare_epubs_for_swap, get_epub_chapter_order
+            comparison_results = compare_epubs_for_swap(self.selected_file, new_file_source)
+        finally:
+            if cursor_overridden:
+                QtWidgets.QApplication.restoreOverrideCursor()
+            self.status_bar.clear_message()
 
         if comparison_results is None:
             QMessageBox.critical(self, "Ошибка", "Не удалось прочитать или сравнить файлы.")
