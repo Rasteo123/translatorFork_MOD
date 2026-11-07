@@ -26,6 +26,7 @@ from gemini_translator.core.handler_cleanup import cleanup_provider_handler
 from gemini_translator.utils.active_keys import owned_active_keys, saved_keys_by_provider
 from gemini_translator.utils.helpers import estimate_gemini_tokens, safe_int
 from gemini_translator.utils.text import split_csv
+from gemini_translator.utils.translation_response import validate_content_filter_response
 
 
 TRANSLATION_TASK_TYPES = {"epub", "epub_batch", "epub_chunk", "raw_text_translation"}
@@ -522,9 +523,15 @@ async def _run_attempt(worker, attempt: ProviderAttempt, prompt: str, log_prefix
         attempt_prompt = _apply_prompt_overrides(prompt, attempt)
         result = handler.execute_api_call(attempt_prompt, f"{log_prefix} [{attempt.label}]", **call_kwargs)
         text = await _maybe_await(result)
+        validate_content_filter_response(text)
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         return ProviderAttemptResult(attempt=attempt, text=str(text or ""), elapsed_ms=elapsed_ms)
     except Exception as exc:
+        if isinstance(exc, PartialGenerationError):
+            try:
+                validate_content_filter_response(exc.partial_text)
+            except ContentFilterError as block_exc:
+                exc = block_exc
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         return ProviderAttemptResult(
             attempt=attempt,
