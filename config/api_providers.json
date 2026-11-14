@@ -2002,6 +2002,30 @@
       "duration_hours": 24
     },
     "models": {
+      "Gemini 4 Carbon High": {
+        "id": "gemini-4-carbon-high",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 4 Carbon Medium": {
+        "id": "gemini-4-carbon-medium",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 4 Carbon Low": {
+        "id": "gemini-4-carbon-low",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
       "Gemini 4 Argon High": {
         "id": "gemini-4-argon-high",
         "rpm": 6,
@@ -2020,6 +2044,38 @@
       },
       "Gemini 4 Argon Low": {
         "id": "gemini-4-argon-low",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 4 Hydrogen XHigh": {
+        "id": "gemini-4-hydrogen-xhigh",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 4 Hydrogen High": {
+        "id": "gemini-4-hydrogen-high",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 4 Hydrogen Medium": {
+        "id": "gemini-4-hydrogen-medium",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 4 Hydrogen Low": {
+        "id": "gemini-4-hydrogen-low",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
@@ -2050,72 +2106,104 @@
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.7 Flash Tiered": {
-        "id": "gemini-3.7-flash-tiered",
+      "Gemini 3.8 Flash": {
+        "id": "gemini-3.8-flash-tiered",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.6 Flash High": {
-        "id": "gemini-3.6-flash-high",
+      "Claude Fable 5.1 Plus": {
+        "id": "plus/claude-fable-5-1",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.6 Flash Low": {
-        "id": "gemini-3.6-flash-low",
+      "Claude Fable 5 Plus": {
+        "id": "plus/claude-fable-5",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.5 Flash High": {
-        "id": "gemini-3-flash-agent",
+      "Claude Opus 5.5 Plus": {
+        "id": "plus/claude-opus-5-5",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.5 Flash Low": {
-        "id": "gemini-3.5-flash-low",
+      "Claude Opus 5 Plus": {
+        "id": "plus/claude-opus-5",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Claude Opus 4.6": {
-        "id": "claude-opus-4-6",
+      "Claude Opus 4.8 Plus": {
+        "id": "plus/claude-opus-4-8",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Claude Sonnet 4.6": {
-        "id": "claude-sonnet-4-6",
+      "Claude Opus 4.7 Plus": {
+        "id": "plus/claude-opus-4-7",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "GPT-5.5": {
-        "id": "gpt-5.5",
+      "Claude Opus 4.6 Plus": {
+        "id": "plus/claude-opus-4-6",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "GPT-6 Astra Plus": {
-        "id": "plus/gpt-6-astra",
+      "Claude Sonnet 5.5 Plus": {
+        "id": "plus/claude-sonnet-5-5",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Claude Sonnet 5 Plus": {
+        "id": "plus/claude-sonnet-5",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Claude Sonnet 4.6 Plus": {
+        "id": "plus/claude-sonnet-4-6",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Claude Haiku 5.5 Plus": {
+        "id": "plus/claude-haiku-5-5",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Claude Haiku 4.5 Plus": {
+        "id": "plus/claude-haiku-4-5",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
@@ -2124,6 +2212,22 @@
       },
       "GPT-6.1 Sol Plus": {
         "id": "plus/gpt-6.1-sol",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-6.1 Terra Plus": {
+        "id": "plus/gpt-6.1-terra",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GPT-6 Astra Plus": {
+        "id": "plus/gpt-6-astra",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
@@ -2202,16 +2306,176 @@
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Grok 4.3 Plus": {
-        "id": "plus/grok-4.3",
+      "Gemini 4 Argon Plus": {
+        "id": "plus/gemini-4-argon",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Grok Code Fast 1 Plus": {
-        "id": "plus/grok-code-fast-1",
+      "Gemini 3.8 Flash Plus": {
+        "id": "plus/gemini-3.8-flash",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Gemini 3.7 Flash Plus": {
+        "id": "plus/gemini-3.7-flash",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "DeepSeek V4 Pro Plus": {
+        "id": "plus/deepseek-v4-pro",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "DeepSeek V4.1 Flash 1017 Plus": {
+        "id": "plus/deepseek-v4.1-flash-1017",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "DeepSeek V4.1 Flash Plus": {
+        "id": "plus/deepseek-v4.1-flash",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "DeepSeek V4 Flash Plus": {
+        "id": "plus/deepseek-v4-flash",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "DeepSeek V4 Flash Vision Exp Plus": {
+        "id": "plus/deepseek-v4-flash-vision-exp",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GLM 5.3 Plus": {
+        "id": "plus/glm-5.3",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GLM 5.3 Flash Plus": {
+        "id": "plus/glm-5.3-flash",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GLM 5.2 Plus": {
+        "id": "plus/glm-5.2",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "GLM 5.1 Plus": {
+        "id": "plus/glm-5.1",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Kimi K3.1 Pro Plus": {
+        "id": "plus/kimi-k3.1-pro",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Kimi K3 Plus": {
+        "id": "plus/kimi-k3",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Kimi K2.7 Code Plus": {
+        "id": "plus/kimi-k2.7-code",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Qwen 3.8 Max Plus": {
+        "id": "plus/qwen3.8-max",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Qwen 3.8 Flash Plus": {
+        "id": "plus/qwen3.8-flash",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Qwen 3.7 Max Plus": {
+        "id": "plus/qwen3.7-max",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "Qwen 3.7 Plus": {
+        "id": "plus/qwen3.7-plus",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "MiniMax M3.1 Flash Plus": {
+        "id": "plus/minimax-m3.1-flash",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "MiniMax M3 Plus": {
+        "id": "plus/minimax-m3",
+        "rpm": 6,
+        "needs_chunking": true,
+        "max_concurrent_requests": 3,
+        "max_output_tokens": 8192,
+        "context_length": 128000
+      },
+      "MiniMax M2.7 Plus": {
+        "id": "plus/minimax-m2.7",
         "rpm": 6,
         "needs_chunking": true,
         "max_concurrent_requests": 3,
