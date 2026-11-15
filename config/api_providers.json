@@ -33,23 +33,6 @@
         ],
         "min_thinking_budget": "minimal"
       },
-      "Gemini 3.7 Flash": {
-        "id": "gemini-3.7-flash",
-        "rpm": 5,
-        "tpm": 250000,
-        "rpd": 20,
-        "context_length": 230000,
-        "needs_chunking": true,
-        "max_concurrent_requests": 10,
-        "max_output_tokens": 65536,
-        "thinkingLevel": [
-          "high",
-          "medium",
-          "low",
-          "minimal"
-        ],
-        "min_thinking_budget": "minimal"
-      },
       "Gemini 3.6 Flash": {
         "id": "gemini-3.6-flash",
         "rpm": 5,
@@ -84,15 +67,15 @@
         ],
         "min_thinking_budget": "minimal"
       },
-      "Gemini 3.5 Flash": {
-        "id": "gemini-3.5-flash",
-        "rpm": 5,
+      "Gemini 3.1 Flash-Lite": {
+        "id": "gemini-3.1-flash-lite",
+        "rpm": 15,
         "tpm": 250000,
-        "rpd": 20,
+        "rpd": 500,
         "context_length": 230000,
         "needs_chunking": true,
-        "max_concurrent_requests": 10,
-        "max_output_tokens": 32768,
+        "max_concurrent_requests": 15,
+        "max_output_tokens": 65536,
         "thinkingLevel": [
           "high",
           "medium",
@@ -117,78 +100,6 @@
           "minimal"
         ],
         "min_thinking_budget": "minimal"
-      },
-      "Gemini 3.1 Flash-Lite Preview": {
-        "id": "gemini-3.1-flash-lite-preview",
-        "rpm": 15,
-        "tpm": 250000,
-        "rpd": 500,
-        "context_length": 230000,
-        "needs_chunking": true,
-        "max_concurrent_requests": 10,
-        "max_output_tokens": 16384,
-        "thinkingLevel": [
-          "high",
-          "medium",
-          "low",
-          "minimal"
-        ],
-        "min_thinking_budget": "minimal"
-      },
-      "Gemini 3.1 Flash-Lite": {
-        "id": "gemini-3.1-flash-lite-preview",
-        "rpm": 15,
-        "tpm": 250000,
-        "context_length": 230000,
-        "rpd": 500,
-        "needs_chunking": true,
-        "max_concurrent_requests": 15,
-        "max_output_tokens": 32000,
-        "min_thinking_budget": -1
-      },
-      "Gemini 2.5 Flash": {
-        "id": "gemini-2.5-flash",
-        "rpm": 5,
-        "tpm": 250000,
-        "rpd": 20,
-        "context_length": 230000,
-        "needs_chunking": true,
-        "max_concurrent_requests": 10,
-        "max_output_tokens": 32768,
-        "min_thinking_budget": -1
-      },
-      "Gemini Robotics-ER 1.5 Preview": {
-        "id": "gemini-robotics-er-1.5-preview",
-        "rpm": 10,
-        "tpm": 250000,
-        "rpd": 20,
-        "context_length": 230000,
-        "needs_chunking": true,
-        "max_concurrent_requests": 15,
-        "max_output_tokens": 32768,
-        "min_thinking_budget": -1
-      },
-      "Gemini Robotics-ER 1.6 Preview": {
-        "id": "gemini-robotics-er-1.6-preview",
-        "rpm": 5,
-        "tpm": 250000,
-        "rpd": 20,
-        "context_length": 128000,
-        "needs_chunking": true,
-        "max_concurrent_requests": 15,
-        "max_output_tokens": 64000,
-        "min_thinking_budget": -1
-      },
-      "Gemini 2.5 Flash-Lite": {
-        "id": "gemini-2.5-flash-lite",
-        "rpm": 10,
-        "tpm": 250000,
-        "context_length": 230000,
-        "rpd": 20,
-        "needs_chunking": true,
-        "max_concurrent_requests": 15,
-        "max_output_tokens": 16384,
-        "min_thinking_budget": -1
       },
       "Gemma 3 27B Instruct": {
         "id": "gemma-3-27b-it",
@@ -234,6 +145,30 @@
         "needs_chunking": true,
         "max_concurrent_requests": 15,
         "max_output_tokens": 128000,
+        "min_thinking_budget": false
+      },
+      "Gemini 3.8 Flash TTS": {
+        "id": "gemini-3.8-flash-tts",
+        "rpm": 3,
+        "tpm": 10000,
+        "rpd": 10,
+        "context_length": 32000,
+        "input_token_limit": 8192,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
+        "min_thinking_budget": false
+      },
+      "Gemini 3.8 Flash-Lite TTS": {
+        "id": "gemini-3.8-flash-lite-tts",
+        "rpm": 3,
+        "tpm": 10000,
+        "rpd": 10,
+        "context_length": 32000,
+        "input_token_limit": 8192,
+        "needs_chunking": true,
+        "max_concurrent_requests": 1,
+        "max_output_tokens": 16384,
         "min_thinking_budget": false
       },
       "Gemini 3.1 Flash TTS Preview": {

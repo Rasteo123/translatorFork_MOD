@@ -136,6 +136,7 @@ _BASE_GLOSSARY_DISPLAY_NAMES = {
 }
 
 # Резервные встроенные конфиги на случай, если файлы не найдены
+_DEFAULT_MODEL_NAME = "Gemini 3.5 Flash-Lite"
 _DEFAULT_API_PROVIDERS_CONFIG = {
     "gemini": {
         "display_name": "Google Gemini (default)",
@@ -144,7 +145,20 @@ _DEFAULT_API_PROVIDERS_CONFIG = {
         "needs_warmup": False,
         "file_suffix": "_translated.html",
         "reset_policy": {"type": "daily", "timezone": "America/Los_Angeles", "reset_hour": 0, "reset_minute": 1},
-        "models": {"Gemini 2.5 Flash Preview": {"id": "gemini-2.5-flash", "rpm": 10, "needs_chunking": True}}
+        "models": {
+            _DEFAULT_MODEL_NAME: {
+                "id": "gemini-3.5-flash-lite",
+                "rpm": 15,
+                "tpm": 250000,
+                "rpd": 500,
+                "context_length": 230000,
+                "needs_chunking": True,
+                "max_concurrent_requests": 15,
+                "max_output_tokens": 65536,
+                "thinkingLevel": ["high", "medium", "low", "minimal"],
+                "min_thinking_budget": "minimal",
+            }
+        },
     }
 }
 _DEFAULT_PROMPT_TEXT = """**I. РОЛЬ И ГЛАВНАЯ ЦЕЛЬ** (встроенный промпт) …"""
@@ -1721,7 +1735,7 @@ def load_base_glossary(name: str) -> list:
 
 # --- ГЕТТЕРЫ ДЛЯ СТАТИЧЕСКИХ КОНСТАНТ ---
 def default_reset_policy(): return {"type": "rolling", "duration_hours": 24}
-def default_model_name(): return "Gemini 2.5 Flash Preview"
+def default_model_name(): return _DEFAULT_MODEL_NAME
 def max_retries(): return 1
 def retry_delay_seconds(): return 25
 def default_max_output_tokens(): return 8192

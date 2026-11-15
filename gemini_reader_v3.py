@@ -189,6 +189,8 @@ LIVE_SEGMENT_OPTIONS = {
 }
 
 FLASH_TTS_MODELS = {
+    "Gemini 3.8 Flash TTS": "gemini-3.8-flash-tts",
+    "Gemini 3.8 Flash-Lite TTS": "gemini-3.8-flash-lite-tts",
     "Gemini 3.1 Flash TTS Preview": "gemini-3.1-flash-tts-preview",
     "Gemini 2.5 Flash TTS Preview": "gemini-2.5-flash-preview-tts",
     "Gemini 2.5 Pro TTS Preview": "gemini-2.5-pro-preview-tts",
@@ -286,9 +288,9 @@ TTS_SPEED_PROMPTS = {
 }
 
 PREPROCESS_MODEL_FALLBACKS = {
-    "Gemini 2.5 Flash": "gemini-2.5-flash",
-    "Gemini 3.1 Flash-Lite": "gemini-3.1-flash-lite-preview",
-    "Gemini 3.0 Flash Preview": "gemini-3-flash-preview",
+    "Gemini 3.5 Flash-Lite": "gemini-3.5-flash-lite",
+    "Gemini 3.8 Flash": "gemini-3.8-flash",
+    "Gemini 3.6 Flash": "gemini-3.6-flash",
 }
 CHATGPT_WEB_PREPROCESS_MODEL_ID = "chatgpt-web-current"
 CHATGPT_WEB_PREPROCESS_LABEL = "ChatGPT Web (current profile model)"
@@ -442,18 +444,24 @@ LIVE_REQUEST_SHORT_CUE_GAP_MS = 240
 LIVE_REQUEST_COLON_GAP_MS = 260
 
 RPD_LIMIT_FALLBACKS = {
+    "gemini-3.8-flash-tts": 10,
+    "gemini-3.8-flash-lite-tts": 10,
     "gemini-3.1-flash-tts-preview": 10,
     "gemini-2.5-flash-preview-tts": 10,
     "gemini-2.5-pro-preview-tts": 10,
 }
 
 TPM_LIMIT_FALLBACKS = {
+    "gemini-3.8-flash-tts": FLASH_TTS_DEFAULT_TPM,
+    "gemini-3.8-flash-lite-tts": FLASH_TTS_DEFAULT_TPM,
     "gemini-3.1-flash-tts-preview": FLASH_TTS_DEFAULT_TPM,
     "gemini-2.5-flash-preview-tts": FLASH_TTS_DEFAULT_TPM,
     "gemini-2.5-pro-preview-tts": FLASH_TTS_DEFAULT_TPM,
 }
 
 INPUT_TOKEN_LIMIT_FALLBACKS = {
+    "gemini-3.8-flash-tts": FLASH_TTS_INPUT_TOKEN_LIMIT,
+    "gemini-3.8-flash-lite-tts": FLASH_TTS_INPUT_TOKEN_LIMIT,
     "gemini-3.1-flash-tts-preview": FLASH_TTS_INPUT_TOKEN_LIMIT,
     "gemini-2.5-flash-preview-tts": FLASH_TTS_INPUT_TOKEN_LIMIT,
     "gemini-2.5-pro-preview-tts": FLASH_TTS_INPUT_TOKEN_LIMIT,
@@ -780,7 +788,7 @@ def _build_preprocess_models_map():
 
 
 def _default_preprocess_model_label(models_map):
-    for preferred in ("Gemini 2.5 Flash", "Gemini 3.1 Flash-Lite", "Gemini 3.0 Flash Preview"):
+    for preferred in PREPROCESS_MODEL_FALLBACKS:
         if preferred in models_map:
             return preferred
     return next(iter(models_map), "")
