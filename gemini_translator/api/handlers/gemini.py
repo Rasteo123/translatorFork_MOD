@@ -69,14 +69,14 @@ class GeminiApiHandler(BaseApiHandler):
             # --- ЛОГИКА УРОВНЕЙ ---
             if is_level_mode:
 
-                final_level = None
-                
-                # 1. Приоритет: выбор пользователя
-                if user_enabled and user_level:
-                    final_level = user_level
-                # 2. Фолбэк: жесткий минимум из конфига (даже если юзер выключил)
-                elif isinstance(min_budget_cfg, str):
-                    final_level = min_budget_cfg 
+                configured_levels = self.worker.model_config.get("thinkingLevel")
+                supported_levels = set()
+                if isinstance(configured_levels, (list, tuple)):
+                    supported_levels = {str(level).upper() for level in configured_levels}
+                requested_level = str(user_level or "").upper()
+                final_level = min_budget_cfg
+                if user_enabled and requested_level and (not supported_levels or requested_level in supported_levels):
+                    final_level = requested_level
 
                 if final_level:
                     generation_config_params["thinkingConfig"] = {

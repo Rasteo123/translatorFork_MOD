@@ -42,8 +42,11 @@ def test_latest_gemini_flash_models_are_configured():
         assert model["context_length"] == 230000
         assert model["max_output_tokens"] == 65536
         assert model["needs_chunking"] is True
-        assert model["thinkingLevel"] == ["high", "medium", "low", "minimal"]
-        assert model["min_thinking_budget"] == "minimal"
+        levels = ["high", "medium", "low"]
+        if model["id"] != "gemini-3.8-flash":
+            levels.append("minimal")
+        assert model["thinkingLevel"] == levels
+        assert model["min_thinking_budget"] == levels[-1]
 
     obsolete_ids = {
         "gemini-3.7-flash",

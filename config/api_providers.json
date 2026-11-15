@@ -16,6 +16,23 @@
       "reset_minute": 1
     },
     "models": {
+      "Gemini 4 Hydrogen": {
+        "id": "gemini-4-hydrogen",
+        "rpm": 5,
+        "tpm": 250000,
+        "rpd": 20,
+        "context_length": 230000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 5,
+        "max_output_tokens": 65536,
+        "thinkingLevel": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "min_thinking_budget": "low"
+      },
       "Gemini 3.8 Flash": {
         "id": "gemini-3.8-flash",
         "rpm": 5,
@@ -28,10 +45,9 @@
         "thinkingLevel": [
           "high",
           "medium",
-          "low",
-          "minimal"
+          "low"
         ],
-        "min_thinking_budget": "minimal"
+        "min_thinking_budget": "low"
       },
       "Gemini 3.6 Flash": {
         "id": "gemini-3.6-flash",
@@ -93,6 +109,23 @@
         "needs_chunking": true,
         "max_concurrent_requests": 10,
         "max_output_tokens": 32768,
+        "thinkingLevel": [
+          "high",
+          "medium",
+          "low",
+          "minimal"
+        ],
+        "min_thinking_budget": "minimal"
+      },
+      "Gemini Robotics-ER 2 Preview": {
+        "id": "gemini-robotics-er-2-preview",
+        "rpm": 5,
+        "tpm": 250000,
+        "rpd": 20,
+        "context_length": 128000,
+        "needs_chunking": true,
+        "max_concurrent_requests": 5,
+        "max_output_tokens": 65536,
         "thinkingLevel": [
           "high",
           "medium",

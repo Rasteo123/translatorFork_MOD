@@ -2,6 +2,7 @@ import asyncio
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from gemini_translator.api.errors import RateLimitExceededError, TemporaryRateLimitError
 from gemini_translator.api.handlers.gemini import GeminiApiHandler
@@ -21,6 +22,28 @@ async def _async_text(value):
 
 
 class GeminiHandlerTests(unittest.TestCase):
+    def test_saved_thinking_level_unsupported_by_selected_model_uses_model_minimum(self):
+        handler = _make_handler()
+        handler.worker.model_config.update(
+            thinkingLevel=["high", "medium", "low"], min_thinking_budget="low"
+        )
+        handler.worker.thinking_enabled = True
+        handler.worker.thinking_level = "MINIMAL"
+        handler.worker.prompt_builder = SimpleNamespace(system_instruction="")
+        handler.default_url = "https://example.invalid/models/test:generateContent"
+        session = MagicMock()
+        response = session.post.return_value.__aenter__.return_value
+        response.status = 200
+        response.read.return_value = json.dumps({
+            "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "Готово"}]}}]
+        }).encode()
+        handler._get_or_create_session_internal = AsyncMock(return_value=session)
+
+        self.assertEqual(asyncio.run(handler.call_api("Перевод", "", use_stream=False)), "Готово")
+
+        sent_config = session.post.call_args.kwargs["json"]["generationConfig"]
+        self.assertEqual(sent_config["thinkingConfig"], {"thinkingLevel": "LOW"})
+
     def test_429_pause_of_181_seconds_rotates_key(self):
         handler = _make_handler()
         response = SimpleNamespace(
