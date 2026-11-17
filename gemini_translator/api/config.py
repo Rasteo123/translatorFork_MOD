@@ -1336,6 +1336,13 @@ def default_manual_translation_prompt():
 def internal_prompts():
     _ensure_configs_initialized()
     return _INTERNAL_PROMPTS
+def canonical_model_name(provider_id: str | None, model_name: str | None) -> str | None:
+    """Resolve the old label only for an explicitly selected Arbz provider."""
+    if provider_id == "arbz" and model_name == "Gemini 3.8 Flash":
+        return "Gemini 3.8 Flash (Arbz / Qroute)"
+    return model_name
+
+
 def all_models():
     _ensure_configs_initialized()
     return _build_all_models(api_providers())

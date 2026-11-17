@@ -69,6 +69,37 @@ def test_default_gemini_model_is_available_from_both_catalogues():
     assert config._DEFAULT_API_PROVIDERS_CONFIG["gemini"]["models"][default]["id"] == "gemini-3.5-flash-lite"
 
 
+def test_gemini_flash_keeps_its_google_id_in_the_shared_model_lookup():
+    from gemini_translator.api import config
+
+    for lookup in (config.all_models, config.all_models_view):
+        models = lookup()
+        google = models["Gemini 3.8 Flash"]
+        assert (google["provider"], google["id"]) == ("gemini", "gemini-3.8-flash")
+        arbz = models["Gemini 3.8 Flash (Arbz / Qroute)"]
+        assert (arbz["provider"], arbz["id"]) == ("arbz", "gemini-3.8-flash-tiered")
+
+
+def test_legacy_flash_label_resolves_by_provider_in_headless_translation():
+    from gemini_translator.api import config
+    from gemini_translator.cli import _resolve_model
+    from gemini_translator.core.worker_helpers import provider_orchestrator
+
+    legacy_name = "Gemini 3.8 Flash"
+    for provider_id, expected_id in (
+        ("gemini", "gemini-3.8-flash"),
+        ("arbz", "gemini-3.8-flash-tiered"),
+    ):
+        expected_name = legacy_name if provider_id == "gemini" else f"{legacy_name} (Arbz / Qroute)"
+        results = (
+            _resolve_model(config, provider_id, {"model": legacy_name}, None),
+            _resolve_model(config, provider_id, {}, legacy_name),
+            provider_orchestrator._resolve_model(provider_id, legacy_name),
+        )
+        for name, model in results:
+            assert (name, model["provider"], model["id"]) == (expected_name, provider_id, expected_id)
+
+
 def test_reader_can_select_current_free_gemini_tts_models():
     from gemini_reader_v3 import FLASH_TTS_MODELS
 

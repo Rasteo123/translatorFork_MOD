@@ -389,7 +389,8 @@ def build_qa_handler_factory(
         if not isinstance(provider_config, Mapping):
             raise QaHandlerError(f"Unknown QA provider: {model.provider}")
         provider_config = deepcopy(dict(provider_config))
-        model_config = _model_config(provider_config, model.model)
+        model_name = api_config.canonical_model_name(model.provider, model.model)
+        model_config = _model_config(provider_config, model_name)
         # A provider view keeps the provider only as its key. Translation models get
         # it from all_models_view; QA must name it too, or its token usage is
         # published with no provider.

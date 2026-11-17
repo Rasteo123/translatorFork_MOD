@@ -296,9 +296,12 @@ def _available_model_ids(models_for_provider: dict, provider_id: str) -> list[st
 
 
 def _find_provider_model(models_for_provider: dict, provider_id: str, model_ref: str | None) -> tuple[str, dict] | None:
+    from .api.config import canonical_model_name
+
     model_ref = str(model_ref or "").strip()
     if not model_ref:
         return None
+    model_ref = canonical_model_name(provider_id, model_ref)
     for model_name, model_config in models_for_provider.items():
         model_name = str(model_name)
         cfg = _normalized_model_config(model_config, provider_id, model_name)
@@ -539,7 +542,9 @@ def build_session_settings(settings_manager, project_manager, chapters: list[str
     if isinstance(settings_override, dict):
         settings.update(settings_override)
         if "model_config" not in settings_override:
-            settings["model_config"] = api_config.all_models().get(settings.get("model"), settings["model_config"])
+            model_name = api_config.canonical_model_name(settings.get("provider"), settings.get("model"))
+            settings["model"] = model_name
+            settings["model_config"] = api_config.all_models().get(model_name, settings["model_config"])
         settings["model_id"] = (settings.get("model_config") or {}).get("id")
 
     return settings

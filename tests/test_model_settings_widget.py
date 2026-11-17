@@ -144,6 +144,20 @@ class ModelSettingsWidgetTests(unittest.TestCase):
         # Энергоэффективность: виджет не должен будиться на частые чужие события.
         self.assertNotIn("log_message", bus.subscriptions)
 
+    def test_restores_legacy_gemini_flash_selection_for_either_provider(self):
+        widget = self._create_widget()
+        widget.set_available_models("gemini")
+        for provider_id, expected_id in (
+            ("arbz", "gemini-3.8-flash-tiered"),
+            ("gemini", "gemini-3.8-flash"),
+        ):
+            with self.subTest(provider=provider_id):
+                widget.set_settings({"provider": provider_id, "model": "Gemini 3.8 Flash"})
+                self.assertEqual(widget.model_combo.currentData(), expected_id)
+                model_name = widget.get_settings()["model"]
+                model_config = api_config.all_models_view()[model_name]
+                self.assertEqual((model_config["provider"], model_config["id"]), (provider_id, expected_id))
+
     def test_ignores_provider_changes_from_other_key_widgets(self):
         widget = self._create_widget()
         own_key_widget = object()

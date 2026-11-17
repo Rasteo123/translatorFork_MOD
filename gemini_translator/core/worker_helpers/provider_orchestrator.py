@@ -198,7 +198,7 @@ def _provider_single_profile_fanout_limited(provider_id: str, provider_info: dic
 def _resolve_model(provider_id: str, model_name: str | None, fallback_model_config: dict | None = None) -> tuple[str, dict]:
     provider_info = _provider_info(provider_id)
     models = provider_info.get("models", {}) if isinstance(provider_info, dict) else {}
-    requested = str(model_name or "").strip()
+    requested = api_config.canonical_model_name(provider_id, str(model_name or "").strip())
 
     if requested and requested in models:
         model_config = deepcopy(models[requested])

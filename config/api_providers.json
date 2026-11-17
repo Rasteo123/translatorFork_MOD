@@ -2074,7 +2074,7 @@
         "max_output_tokens": 8192,
         "context_length": 128000
       },
-      "Gemini 3.8 Flash": {
+      "Gemini 3.8 Flash (Arbz / Qroute)": {
         "id": "gemini-3.8-flash-tiered",
         "rpm": 6,
         "needs_chunking": true,

@@ -165,6 +165,7 @@ class ContentFilterFallbackPanel(QtWidgets.QGroupBox):
             selected_model = self.model_combo.currentText()
 
         provider_id = self.provider_combo.currentData()
+        selected_model = api_config.canonical_model_name(provider_id, selected_model)
         provider_cfg = api_config.api_providers_view().get(provider_id, {})
         models = provider_cfg.get("models", {}) if isinstance(provider_cfg, dict) else {}
 

@@ -3441,10 +3441,6 @@ class InitialSetupPage(ShellPage):
             )):
                 self.translation_options_widget.set_settings(settings)
 
-            auto_translation_settings = settings.get('auto_translation')
-            if isinstance(auto_translation_settings, dict):
-                self.auto_translate_widget.set_settings(auto_translation_settings)
-
             if 'custom_prompt' in settings:
                 self.preset_widget.set_prompt(settings['custom_prompt'])
 
@@ -3455,7 +3451,7 @@ class InitialSetupPage(ShellPage):
             if hasattr(self, 'show_chapter_chars_checkbox'):
                 self.show_chapter_chars_checkbox.setChecked(bool(settings.get(SHOW_CHAPTER_CHAR_COUNT_SETTING_KEY, False)))
 
-            model_name = settings.get('model')
+            model_name = api_config.canonical_model_name(settings.get('provider'), settings.get('model'))
             model_id = api_config.all_models().get(model_name, {}).get('id')
             if model_id:
                 self.key_management_widget.set_current_model(model_id)
@@ -3510,6 +3506,11 @@ class InitialSetupPage(ShellPage):
                 else:
                     self.key_management_widget._load_and_refresh_keys()
 
+            self._refresh_auto_translate_runtime_context()
+            auto_translation_settings = settings.get('auto_translation')
+            if isinstance(auto_translation_settings, dict):
+                self.auto_translate_widget.set_settings(auto_translation_settings)
+
             self._update_instances_spinbox_limit()
             saved_instances = settings.get('num_instances')
             if saved_instances is not None:
@@ -3534,7 +3535,6 @@ class InitialSetupPage(ShellPage):
             if hasattr(self, 'show_chapter_chars_checkbox'):
                 self.show_chapter_chars_checkbox.blockSignals(False)
 
-        self._refresh_auto_translate_runtime_context()
         self._sync_chapter_char_display_settings()
         self._update_distribution_info_from_widget()
         self.check_ready()
@@ -4646,11 +4646,12 @@ class InitialSetupPage(ShellPage):
         if not model_name:
             return None, None, None
 
+        selected_provider = self.key_management_widget.get_selected_provider()
+        model_name = api_config.canonical_model_name(selected_provider, model_name)
         model_config = api_config.all_models().get(model_name)
         if not isinstance(model_config, dict):
             return None, None, f"Автомодель '{model_name}' не найдена в конфигурации."
 
-        selected_provider = self.key_management_widget.get_selected_provider()
         model_provider = model_config.get('provider')
         if selected_provider and model_provider and model_provider != selected_provider:
             return None, None, (
@@ -4703,11 +4704,12 @@ class InitialSetupPage(ShellPage):
         if not model_name:
             return None, "Для redirect отфильтрованных глав не выбрана модель."
 
+        selected_provider = str(auto_settings.get('filter_redirect_provider') or "").strip()
+        model_name = api_config.canonical_model_name(selected_provider, model_name)
         model_config = api_config.all_models().get(model_name)
         if not isinstance(model_config, dict):
             return None, f"Модель redirect '{model_name}' не найдена в конфигурации."
 
-        selected_provider = str(auto_settings.get('filter_redirect_provider') or "").strip()
         provider_id = selected_provider or str(model_config.get('provider') or "").strip()
         model_provider = str(model_config.get('provider') or "").strip()
         if not provider_id:

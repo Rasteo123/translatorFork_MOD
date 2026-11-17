@@ -25,7 +25,7 @@ class ArbzModelsConfigTests(unittest.TestCase):
             "Gemini 3.8 Flash High": "gemini-3.8-flash-high",
             "Gemini 3.8 Flash Medium": "gemini-3.8-flash-medium",
             "Gemini 3.8 Flash Low": "gemini-3.8-flash-low",
-            "Gemini 3.8 Flash": "gemini-3.8-flash-tiered",
+            "Gemini 3.8 Flash (Arbz / Qroute)": "gemini-3.8-flash-tiered",
             "Claude Fable 5.1 Plus": "plus/claude-fable-5-1",
             "Claude Fable 5 Plus": "plus/claude-fable-5",
             "Claude Opus 5.5 Plus": "plus/claude-opus-5-5",

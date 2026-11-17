@@ -1265,7 +1265,10 @@ class ModelSettingsWidget(EventBusMixin, QGroupBox):
             
         try:
             provider_id = settings.get('provider') or getattr(self, '_current_provider_id', None)
-            self._update_provider_specific_controls(provider_id)
+            if provider_id and provider_id != getattr(self, '_current_provider_id', None):
+                self.set_available_models(provider_id, apply_recommended_limits=False)
+            else:
+                self._update_provider_specific_controls(provider_id)
 
             model_name = settings.get('model')
             if isinstance(model_name, (tuple, list)):
@@ -1274,7 +1277,7 @@ class ModelSettingsWidget(EventBusMixin, QGroupBox):
                 model_name = str(model_name)
 
             if model_name:
-                index = self.model_combo.findText(model_name)
+                index = self.model_combo.findText(api_config.canonical_model_name(provider_id, model_name))
                 if index != -1:
                     self.model_combo.setCurrentIndex(index)
                 elif self.model_combo.count() > 0:
@@ -1515,7 +1518,9 @@ class ModelSettingsWidget(EventBusMixin, QGroupBox):
         saved_model_name = None
         saved_model_id = None
         try:
-            saved_model_name = self.settings_manager.get_last_settings().get('model')
+            saved_model_name = api_config.canonical_model_name(
+                provider_id, self.settings_manager.get_last_settings().get('model')
+            )
             saved_model_config = api_config.all_models_view().get(saved_model_name)
             if isinstance(saved_model_config, dict):
                 saved_model_id = saved_model_config.get('id')
@@ -1523,7 +1528,7 @@ class ModelSettingsWidget(EventBusMixin, QGroupBox):
             saved_model_name = None
             saved_model_id = None
 
-        self.model_combo.blockSignals(True)
+        was_blocked = self.model_combo.blockSignals(True)
         self.model_combo.clear()
         self._update_provider_specific_controls(provider_id)
         
@@ -1553,7 +1558,7 @@ class ModelSettingsWidget(EventBusMixin, QGroupBox):
                 preferred_index = 0
             self.model_combo.setCurrentIndex(preferred_index)
         
-        self.model_combo.blockSignals(False)
+        self.model_combo.blockSignals(was_blocked)
         self._on_model_changed(
             self.model_combo.currentIndex(),
             apply_recommended_limits=apply_recommended_limits,

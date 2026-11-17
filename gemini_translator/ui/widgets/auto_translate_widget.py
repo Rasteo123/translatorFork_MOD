@@ -956,7 +956,9 @@ class AutoTranslateWidget(QWidget):
             translation_mode_index = self.translation_mode_combo.findData(translation_mode)
             self.translation_mode_combo.setCurrentIndex(translation_mode_index if translation_mode_index != -1 else 0)
 
-            selected_model = merged.get("model_override")
+            selected_model = api_config.canonical_model_name(
+                self._current_provider_id, merged.get("model_override")
+            )
             self._rebuild_model_override_combo(selected_model=selected_model)
             selected_thinking = merged.get("thinking_mode_override", "inherit")
             self._rebuild_thinking_override_combo(selected_override=selected_thinking)
@@ -978,7 +980,10 @@ class AutoTranslateWidget(QWidget):
             self.filter_batch_size_spin.setValue(int(merged.get("filter_repack_batch_size", 3)))
             self.filter_dilute_checkbox.setChecked(bool(merged.get("filter_repack_dilute", True)))
             self._rebuild_filter_redirect_provider_combo(selected_provider=merged.get("filter_redirect_provider"))
-            self._rebuild_filter_redirect_model_combo(selected_model=merged.get("filter_redirect_model"))
+            redirect_model = api_config.canonical_model_name(
+                self._effective_filter_redirect_provider_id(), merged.get("filter_redirect_model")
+            )
+            self._rebuild_filter_redirect_model_combo(selected_model=redirect_model)
             self.filter_redirect_checkbox.setChecked(bool(merged.get("filter_redirect_enabled", False)))
             self.retry_network_checkbox.setChecked(bool(merged.get("retry_network_failed_enabled", True)))
             self.retry_network_delay_spin.setValue(int(merged.get("retry_network_failed_delay_sec", 60)))
