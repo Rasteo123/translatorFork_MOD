@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Doctype, NavigableString, ProcessingInstruction, Tag
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -336,11 +336,6 @@ def build_relative_reference(base_internal_path, target_internal_path):
 
 
 def split_epub_html_document(html_text, settings, used_paths, original_internal_path):
-    xml_decl_match = re.match(r"\s*(<\?xml[^>]*\?>)?", html_text, flags=re.IGNORECASE)
-    xml_decl = xml_decl_match.group(1) if xml_decl_match else ""
-    doctype_match = re.search(r"(<!DOCTYPE[^>]*>)", html_text, flags=re.IGNORECASE)
-    doctype = doctype_match.group(1) if doctype_match else ""
-
     soup = BeautifulSoup(html_text, "html.parser")
     body = soup.find("body")
     if not body:
@@ -363,6 +358,15 @@ def split_epub_html_document(html_text, settings, used_paths, original_internal_
     if len(parts) <= 1:
         del split_root["data-codex-split-root"]
         return None
+
+    # BeautifulSoup preserves the prolog. Older versions could write it twice.
+    xml_declarations = soup.find_all(
+        string=lambda node: isinstance(node, ProcessingInstruction) and re.match(r"xml\s", node),
+        recursive=False,
+    )
+    doctypes = soup.find_all(string=lambda node: isinstance(node, Doctype), recursive=False)
+    for duplicate in xml_declarations[1:] + doctypes[1:]:
+        duplicate.extract()
 
     documents = []
     for part_index, part_units in enumerate(parts, start=1):
@@ -387,13 +391,6 @@ def split_epub_html_document(html_text, settings, used_paths, original_internal_
         if title_tag:
             title_tag.string = part_title
 
-        serialized = str(clone)
-        prefix = ""
-        if xml_decl:
-            prefix += xml_decl + "\n"
-        if doctype:
-            prefix += doctype + "\n"
-
         if part_index == 1:
             internal_path = normalize_posix_path(original_internal_path)
         else:
@@ -403,7 +400,7 @@ def split_epub_html_document(html_text, settings, used_paths, original_internal_
             {
                 "internal_path": internal_path,
                 "title": part_title,
-                "content": (prefix + serialized).encode("utf-8"),
+                "content": clone.encode("utf-8"),
             }
         )
 
