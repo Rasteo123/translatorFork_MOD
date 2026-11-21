@@ -164,10 +164,10 @@ class OpenRouterApiHandler(BaseApiHandler):
             delay_seconds=min(max(hint, 1.0), RATE_LIMIT_WAIT_CAP_SECONDS),
         )
 
-    async def _read_success_response(self, response, use_stream, allow_incomplete, debug):
+    async def _read_success_response(self, response, use_stream, allow_incomplete, debug, *, is_glossary_batch):
         if use_stream:
             try:
-                collected_text, finish_reason, raw_stream_lines = await parse_openai_compatible_sse_stream(
+                content, finish_reason, raw_stream_lines = await parse_openai_compatible_sse_stream(
                     response,
                     capture_raw=(self._has_debug_trace() or debug),
                     on_usage=self._remember_openai_usage,
@@ -186,26 +186,32 @@ class OpenRouterApiHandler(BaseApiHandler):
                     extra={"mode": "stream", "http_status": response.status},
                 )
 
-            if finish_reason == "length" and not allow_incomplete:
-                raise PartialGenerationError("Превышен лимит токенов", partial_text=collected_text, reason="LENGTH")
-            if finish_reason == "content_filter":
-                self._raise_content_block(collected_text)
-            return collected_text
-
-        result = await response.json()
-        self._debug_record_response(
-            result,
-            status="http_200",
-            extra={"mode": "full", "http_status": response.status},
-        )
-        if 'choices' in result and result['choices']:
+        else:
+            result = await response.json()
+            self._debug_record_response(
+                result,
+                status="http_200",
+                extra={"mode": "full", "http_status": response.status},
+            )
+            if not result.get("choices"):
+                raise Exception(f"Пустой ответ: {result}")
             self._remember_openai_usage(result.get("usage"))
-            choice = result['choices'][0]
-            content = choice['message']['content']
-            if isinstance(choice, dict) and choice.get('finish_reason') == "content_filter":
-                self._raise_content_block(content or "")
-            return content
-        raise Exception(f"Пустой ответ: {result}")
+            choice = result["choices"][0]
+            content = (choice.get("message") or {}).get("content")
+            finish_reason = choice.get("finish_reason")
+
+        if finish_reason == "content_filter":
+            self._raise_content_block(content or "")
+        if finish_reason == "length":
+            if is_glossary_batch and not (content or "").strip():
+                raise PartialGenerationError(
+                    "Модель достигла лимита токенов и не вернула глоссарий. Автоматического повтора не будет.",
+                    partial_text="",
+                    reason="LENGTH",
+                )
+            if use_stream and not allow_incomplete:
+                raise PartialGenerationError("Превышен лимит токенов", partial_text=content, reason="LENGTH")
+        return content
 
     @staticmethod
     def _raise_content_block(text):
@@ -271,9 +277,16 @@ class OpenRouterApiHandler(BaseApiHandler):
         if temperature is not None:
             payload["temperature"] = temperature
         self._apply_openai_reasoning_options(payload)
-        if max_output_tokens is not None: payload["max_tokens"] = max_output_tokens
-        elif allow_incomplete:
-             payload["max_tokens"] = int(self.worker.model_config.get("max_output_tokens", 8192) * 0.98)
+        context_getter = getattr(self.worker, "get_debug_operation_context", None)
+        is_glossary_batch = (
+            callable(context_getter) and context_getter().get("task_type") == "glossary_batch_task"
+        )
+        # Let Arbz set its own budget for glossary generation, including reasoning.
+        use_provider_limit = is_glossary_batch and getattr(self.worker, "api_provider_name", None) == "arbz"
+        if max_output_tokens is not None:
+            payload["max_tokens"] = max_output_tokens
+        elif allow_incomplete and not use_provider_limit:
+            payload["max_tokens"] = int(self.worker.model_config.get("max_output_tokens", 8192) * 0.98)
 
         try:
             retried_without_stream = False
@@ -300,6 +313,7 @@ class OpenRouterApiHandler(BaseApiHandler):
                             request_uses_stream,
                             allow_incomplete,
                             debug,
+                            is_glossary_batch=is_glossary_batch,
                         )
 
                     response_text = await response.text()

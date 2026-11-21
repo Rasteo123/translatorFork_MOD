@@ -61,3 +61,7 @@ class PartialGenerationError(Exception):
         super().__init__(message)
         self.partial_text = partial_text
         self.reason = reason
+
+    @property
+    def is_empty_token_limit(self) -> bool:
+        return (self.reason or "").upper() in ("LENGTH", "MAX_TOKENS") and not (self.partial_text or "").strip()

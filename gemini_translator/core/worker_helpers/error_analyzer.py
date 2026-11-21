@@ -148,6 +148,13 @@ class ErrorAnalyzer:
             self.network_warnings = 0
             self.worker._post_event('api_connection_healthy')
 
+        if (
+            task_payload and task_payload[0] == 'glossary_batch_task'
+            and isinstance(exc, PartialGenerationError) and exc.is_empty_token_limit
+        ):
+            self._record_and_log_failure(task_info, error_for_history, exc)
+            return self._log_and_fail_permanently(task_name, error_for_history, exc)
+
         # Опция «Не повторять блокировки»: глава/чанк, заблокированные
         # контент-фильтром (включая partial с reason SAFETY/PROHIBITED_CONTENT/CONTENT_FILTER),
         # проваливаются сразу — без повторных отправок, которые приводят к

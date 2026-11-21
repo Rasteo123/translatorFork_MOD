@@ -1,5 +1,10 @@
+import json
 import unittest
+import zipfile
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from gemini_translator.api.errors import (
     ContentFilterError,
@@ -8,6 +13,9 @@ from gemini_translator.api.errors import (
     TemporaryRateLimitError,
 )
 from gemini_translator.api.handlers.openrouter import OpenRouterApiHandler
+from gemini_translator.core.worker import DEFAULT_TASK_STREAM_MODE, UniversalWorker
+from gemini_translator.core.worker_helpers.emerger_tasks import EmergencyTask
+from gemini_translator.core.worker_helpers.error_analyzer import ErrorAnalyzer
 
 
 def _make_handler(model_config, provider_config=None):
@@ -149,9 +157,11 @@ class _FakeSession:
     def __init__(self, response):
         self._response = response
         self.requests = 0
+        self.last_payload = None
 
     def post(self, *args, **kwargs):
         self.requests += 1
+        self.last_payload = kwargs.get("json")
         return self._response
 
 
@@ -262,6 +272,108 @@ class OpenRouterRateLimitTests(unittest.IsolatedAsyncioTestCase):
 
 def _stream(*chunks):
     return [f"data: {chunk}" for chunk in chunks] + ["data: [DONE]"]
+
+
+def _text_response(text, use_stream, finish_reason="stop"):
+    if not use_stream:
+        return _FakeResponse(200, payload={
+            "choices": [{"message": {"content": text}, "finish_reason": finish_reason}],
+        })
+    midpoint = len(text) // 2
+    return _FakeResponse(200, stream_lines=_stream(
+        json.dumps({"choices": [{"delta": {"content": text[:midpoint]}, "finish_reason": None}]}),
+        json.dumps({"choices": [{"delta": {"content": text[midpoint:]}, "finish_reason": finish_reason}]}),
+    ))
+
+
+class ArbzGlossaryOutputLimitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_length_response_fails_glossary_batch_without_retry(self):
+        response = _FakeResponse(
+            200,
+            stream_lines=_stream(
+                '{"choices":[{"delta":{"reasoning_content":"Analyzing the chapter."},"finish_reason":null}]}',
+                '{"choices":[{"delta":{},"finish_reason":"length"}]}',
+            ),
+            payload={
+                "choices": [{
+                    "message": {"content": "", "reasoning_content": "Analyzing the chapter."},
+                    "finish_reason": "length",
+                }],
+                "usage": {"prompt_tokens": 25159, "completion_tokens": 8028},
+            },
+        )
+        with TemporaryDirectory() as tmp:
+            epub_path = Path(tmp) / "book.epub"
+            with zipfile.ZipFile(epub_path, "w") as book:
+                book.writestr("chapter.xhtml", "<html><body>A new character appears.</body></html>")
+            task_info = ("task-id", ("glossary_batch_task", str(epub_path), ["chapter.xhtml"]))
+
+            for use_stream in (True, False):
+                with self.subTest(use_stream=use_stream):
+                    handler = _make_calling_handler(response)
+                    session = await handler._get_or_create_session_internal()
+                    worker = UniversalWorker.__new__(UniversalWorker)
+                    vars(worker).update(vars(handler.worker))
+                    handler.worker = worker
+                    worker.api_handler_instance = handler
+                    worker.api_provider_name = "arbz"
+                    worker.model_id = "gemini-4-hydrogen-high"
+                    worker.model_config = {"id": worker.model_id, "max_output_tokens": 8192}
+                    worker.is_cancelled = False
+                    worker.worker_id = "worker-id"
+                    worker.settings_manager = Mock()
+                    worker.prompt_builder.prepare_for_glossary_generation = Mock(
+                        return_value=("glossary prompt", None, None, {}, [])
+                    )
+                    worker.task_manager = Mock()
+                    worker.task_manager.get_failure_history.return_value = {"total_count": 0, "errors": {}}
+                    worker.task_manager._get_task_display_name.return_value = "Пакет глоссария"
+                    worker.error_analyzer = ErrorAnalyzer(worker)
+                    worker.emerger = EmergencyTask(worker)
+                    worker._post_event = Mock()
+
+                    with patch.dict(DEFAULT_TASK_STREAM_MODE, {"glossary_batch_task": use_stream}):
+                        await worker._process_single_task_with_retries(task_info)
+
+                    self.assertEqual(session.requests, 1)
+                    worker.task_manager.task_failed_permanently.assert_called_once_with("worker-id", task_info)
+                    worker.task_manager.task_requeued.assert_not_called()
+                    worker.task_manager.task_requeued_for_retry.assert_not_called()
+                    worker.task_manager.save_glossary_batch.assert_not_called()
+                    self.assertNotIn("max_tokens", session.last_payload)
+                    details = "\n".join(
+                        args[1].get("details_text", "")
+                        for args, _ in worker._post_event.call_args_list
+                        if args[0] == "log_message"
+                    )
+                    self.assertIn("достигла лимита токенов", details)
+                    self.assertIn("не вернула глоссарий", details)
+                    self.assertIn("Причина: LENGTH", details)
+                    self.assertNotIn("JSONDecodeError", details)
+
+    async def test_only_arbz_glossary_skips_the_implicit_output_limit(self):
+        for provider, task_type, max_output_tokens, expected_limit in (
+            ("arbz", "glossary_batch_task", None, None),
+            ("arbz", "glossary_batch_task", 16384, 16384),
+            ("arbz", "epub_batch", None, 8028),
+            ("openrouter", "glossary_batch_task", None, 8028),
+        ):
+            with self.subTest(provider=provider, task_type=task_type, explicit_limit=max_output_tokens):
+                handler = _make_calling_handler(_text_response('{"Term": {', True, "length"))
+                handler.worker.api_provider_name = provider
+                handler.worker.model_config["max_output_tokens"] = 8192
+                handler.worker.get_debug_operation_context = lambda: {"task_type": task_type}
+                session = await handler._get_or_create_session_internal()
+
+                result = await handler.call_api(
+                    "prompt", "log", allow_incomplete=True, max_output_tokens=max_output_tokens
+                )
+
+                self.assertEqual(result, '{"Term": {')
+                if expected_limit is None:
+                    self.assertNotIn("max_tokens", session.last_payload)
+                else:
+                    self.assertEqual(session.last_payload["max_tokens"], expected_limit)
 
 
 class OpenRouterContentFilterTests(unittest.IsolatedAsyncioTestCase):

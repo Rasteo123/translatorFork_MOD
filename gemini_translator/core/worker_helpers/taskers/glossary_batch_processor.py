@@ -194,6 +194,8 @@ class GlossaryBatchProcessor(BaseTaskProcessor):
             )
             json_text = clean_html_content(raw_response)
         except PartialGenerationError as e:
+            if e.is_empty_token_limit:
+                raise
             self.worker._post_event('log_message', {'message': "[WARN] Ответ JSON оборван. Запускаю протокол 'Феникс'..."})
             partial_clean = clean_html_content(e.partial_text)
             repaired_json = repair_json_string(partial_clean)
