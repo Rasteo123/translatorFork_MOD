@@ -1268,7 +1268,16 @@ class SettingsManager(QObject):
         return True
     
     def load_full_session_settings(self):
-        return self._generic_loader('last_full_session', {})
+        settings = self._generic_loader('last_full_session', {})
+        if isinstance(settings, dict):
+            provider_id = settings.get('provider')
+            model_name = settings.get('model')
+            if isinstance(provider_id, str) and isinstance(model_name, str):
+                provider = api_config.api_providers_view().get(provider_id, {})
+                resolved_name = api_config.resolve_legacy_model_name(provider.get('models', {}), model_name)
+                if resolved_name != model_name:
+                    return {**settings, 'model': resolved_name}
+        return settings
 
     def save_full_session_settings(self, session_dict):
         return self._generic_saver('last_full_session', session_dict)

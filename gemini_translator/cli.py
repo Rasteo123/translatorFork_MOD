@@ -296,7 +296,7 @@ def _available_model_ids(models_for_provider: dict, provider_id: str) -> list[st
 
 
 def _find_provider_model(models_for_provider: dict, provider_id: str, model_ref: str | None) -> tuple[str, dict] | None:
-    from .api.config import canonical_model_name
+    from .api.config import canonical_model_name, resolve_legacy_model_name
 
     model_ref = str(model_ref or "").strip()
     if not model_ref:
@@ -307,6 +307,9 @@ def _find_provider_model(models_for_provider: dict, provider_id: str, model_ref:
         cfg = _normalized_model_config(model_config, provider_id, model_name)
         if model_name == model_ref or str(cfg.get("id") or "").strip() == model_ref:
             return model_name, cfg
+    resolved_name = resolve_legacy_model_name(models_for_provider, model_ref)
+    if resolved_name != model_ref:
+        return resolved_name, _normalized_model_config(models_for_provider[resolved_name], provider_id, resolved_name)
     return None
 
 

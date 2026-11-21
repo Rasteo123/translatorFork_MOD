@@ -41,6 +41,19 @@ def test_settings_managers_with_different_dirs_have_isolated_keys(tmp_path):
     assert Path(first.config_file) != Path(second.config_file)
 
 
+def test_saved_arbz_sol_keeps_the_codex_route_after_rename(tmp_path):
+    _qapp()
+    manager = SettingsManager(config_dir=tmp_path)
+    manager.save_full_session_settings({"provider": "arbz", "model": "GPT-6.2 Sol"})
+
+    reloaded = SettingsManager(config_dir=tmp_path)
+
+    assert reloaded.load_full_session_settings() == {
+        "provider": "arbz",
+        "model": "GPT-6.2 Sol (Codex)",
+    }
+
+
 def test_configured_profile_is_used_by_default_manager(monkeypatch, tmp_path):
     _qapp()
     monkeypatch.setenv("HOME", str(tmp_path))

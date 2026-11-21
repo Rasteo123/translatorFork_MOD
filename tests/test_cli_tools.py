@@ -165,6 +165,16 @@ def test_resolve_model_accepts_explicit_model_id():
     assert model_config["provider"] == "fake"
 
 
+@pytest.mark.parametrize("reference", ["GPT-6.2 Sol", "codex/gpt-6.2-sol"])
+def test_resolve_model_accepts_previous_arbz_sol_reference(reference):
+    from gemini_translator.api import config as api_config
+
+    model_name, model_config = _resolve_model(api_config, "arbz", {}, reference)
+
+    assert model_name == "GPT-6.2 Sol (Codex)"
+    assert model_config["id"] == "gpt-6.2-sol"
+
+
 def test_resolve_model_rejects_unknown_explicit_model_with_available_models():
     api_config = _FakeApiConfig()
 

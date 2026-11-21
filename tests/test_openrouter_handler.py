@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from gemini_translator.api import token_usage
 from gemini_translator.api.errors import (
     ContentFilterError,
     PartialGenerationError,
@@ -158,9 +159,11 @@ class _FakeSession:
         self._response = response
         self.requests = 0
         self.last_payload = None
+        self.last_url = None
 
     def post(self, *args, **kwargs):
         self.requests += 1
+        self.last_url = args[0]
         self.last_payload = kwargs.get("json")
         return self._response
 
@@ -186,6 +189,75 @@ def _make_calling_handler(response):
 
     handler._get_or_create_session_internal = _session
     return handler
+
+
+def _make_arbz_sol_handler(response, route="Codex"):
+    handler = _make_calling_handler(response)
+    config_path = Path(__file__).resolve().parents[1] / "config" / "api_providers.json"
+    provider = json.loads(config_path.read_text(encoding="utf-8"))["arbz"]
+    handler.worker.provider_config = provider
+    handler.worker.model_config = provider["models"][f"GPT-6.2 Sol ({route})"]
+    handler.setup_client(SimpleNamespace(api_key="endpoint-key"))
+    return handler
+
+
+class ArbzSolResponsesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_posts_a_responses_request_and_reads_completed_text(self):
+        result = {
+            "status": "completed",
+            "output": [
+                {"type": "message", "phase": "commentary", "content": [{"type": "output_text", "text": "Planning…"}]},
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Hidden"}]},
+                {"type": "message", "content": [{"type": "output_text", "text": "Перевод"}]},
+            ],
+            "usage": {
+                "input_tokens": 30,
+                "input_tokens_details": {"cached_tokens": 10},
+                "output_tokens": 6,
+                "output_tokens_details": {"reasoning_tokens": 2},
+                "total_tokens": 36,
+            },
+        }
+        handler = _make_arbz_sol_handler(_FakeResponse(200, payload=result))
+        handler.worker.prompt_builder.system_instruction = "Переводи."
+        token = token_usage.begin_attempt()
+        try:
+            self.assertEqual(await handler.call_api("Translate", "log", use_stream=False, max_output_tokens=64), "Перевод")
+            usage = token_usage.reported()
+        finally:
+            token_usage.end_attempt(token)
+
+        session = await handler._get_or_create_session_internal()
+        self.assertEqual(session.last_url, "https://ai.arbz.lol/v1/responses")
+        self.assertEqual(session.last_payload, {
+            "model": "gpt-6.2-sol", "input": "Translate", "instructions": "Переводи.",
+            "max_output_tokens": 64, "stream": False, "store": False,
+        })
+        self.assertEqual(usage["cached_tokens"], 10)
+        self.assertEqual(usage["thinking_tokens"], 2)
+
+    async def test_codex_preserves_partial_text_when_responses_stream_ends_early(self):
+        handler = _make_arbz_sol_handler(_FakeResponse(200, stream_lines=[
+            'data: {"type":"response.output_text.delta","delta":"Начало"}\n',
+        ]))
+
+        with self.assertRaises(PartialGenerationError) as raised:
+            await handler.call_api("Translate", "log")
+
+        self.assertEqual(raised.exception.partial_text, "Начало")
+        self.assertEqual(raised.exception.reason, "NETWORK_ERROR")
+
+    async def test_plus_still_uses_chat_completions(self):
+        handler = _make_arbz_sol_handler(_FakeResponse(200, payload={
+            "choices": [{"message": {"content": "Перевод"}, "finish_reason": "stop"}],
+        }), route="Plus")
+
+        self.assertEqual(await handler.call_api("Translate", "log", use_stream=False), "Перевод")
+
+        session = await handler._get_or_create_session_internal()
+        self.assertEqual(session.last_url, "https://ai.arbz.lol/v1/chat/completions")
+        self.assertEqual(session.last_payload["model"], "plus/gpt-6.2-sol")
+        self.assertEqual(session.last_payload["messages"], [{"role": "user", "content": "Translate"}])
 
 
 _OMNIROUTE_QUOTA_MESSAGE = (

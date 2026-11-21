@@ -1347,6 +1347,14 @@ def all_models():
     _ensure_configs_initialized()
     return _build_all_models(api_providers())
 
+def resolve_legacy_model_name(models: dict, model_name: str) -> str:
+    """Resolve a previous name or ID within the selected provider's catalog."""
+    if model_name and model_name not in models:
+        for name, model in models.items():
+            if isinstance(model, dict) and model_name in (model.get("legacy_name"), model.get("legacy_id")):
+                return name
+    return model_name
+
 def all_models_view():
     """Кэшированная карта моделей БЕЗ копирования. Только для чтения:
     вложенные структуры разделяются с реестром провайдеров — для изменений
