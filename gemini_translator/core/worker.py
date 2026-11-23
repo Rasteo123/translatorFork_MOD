@@ -35,7 +35,7 @@ from gemini_translator.api.errors import (
     ErrorType, WorkerAction, SuccessSignal, ContentFilterError, 
     OperationCancelledError, LocationBlockedError, ModelNotFoundError, 
     RateLimitExceededError, TemporaryRateLimitError, NetworkError, OperationCancelledError,
-    GracefulShutdownInterrupt, ValidationFailedError, PartialGenerationError
+    GracefulShutdownInterrupt, ValidationFailedError, PartialGenerationError, QrouteOutputLimitError
 )
 # Импорт ресурсов потока
 from gemini_translator.api.base import get_worker_loop
@@ -410,6 +410,9 @@ class UniversalWorker(EventBusMixin):
     def _split_batch_after_content_filter(self, task_info, error_type):
         if error_type != ErrorType.CONTENT_FILTER:
             return False
+        return self._split_failed_batch(task_info, "[BATCH FILTER] Content filter hit a batch.")
+
+    def _split_failed_batch(self, task_info, reason):
         if not task_info or len(task_info) < 2:
             return False
 
@@ -424,7 +427,7 @@ class UniversalWorker(EventBusMixin):
         if split_method(task_info, worker_id=self.worker_id, priority=1):
             self._post_event('log_message', {
                 'message': (
-                    "[BATCH FILTER] Content filter hit a batch. "
+                    f"{reason} "
                     "The batch was split into individual chapters and returned to the queue."
                 )
             })
@@ -757,6 +760,8 @@ class UniversalWorker(EventBusMixin):
             raise # Пробрасываем выше, чтобы цикл обработки завершился
     
         except Exception as exc:
+            if isinstance(exc, QrouteOutputLimitError) and self._split_failed_batch(task_info, str(exc)):
+                return
             # История ошибок нужна только на пути провала — на успешном пути
             # это было бы лишним обращением к БД на каждую задачу.
             task_history = self.task_manager.get_failure_history(task_info)

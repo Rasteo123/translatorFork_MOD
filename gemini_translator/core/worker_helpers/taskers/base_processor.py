@@ -1,6 +1,7 @@
 from gemini_translator.api.errors import (
     ContentFilterError,
     PartialGenerationError,
+    QrouteOutputLimitError,
     ValidationFailedError,
 )
 from gemini_translator.core.worker_helpers.content_filter_fallback import (
@@ -9,11 +10,12 @@ from gemini_translator.core.worker_helpers.content_filter_fallback import (
     run_content_filter_fallback,
 )
 from gemini_translator.core.worker_helpers.provider_orchestrator import (
-    TRANSLATION_TASK_TYPES,
+    _run_attempt,
     execute_orchestrated_api_call,
     should_orchestrate_api_call,
 )
 from gemini_translator.utils.translation_response import (
+    TRANSLATION_TASK_TYPES,
     validate_content_filter_response,
     validate_translation_response,
 )
@@ -91,9 +93,27 @@ class BaseTaskProcessor:
             'project_path': resolved_project_path,
         }
 
-    async def _execute_api_call(self, prompt, log_prefix, *, task_info, operation_context: dict | None = None, **kwargs):
+    async def _execute_api_call(
+        self, prompt, log_prefix, *, task_info, operation_context: dict | None = None,
+        provider_attempt=None, **kwargs,
+    ):
         context_payload = operation_context or self._build_operation_context(task_info)
         is_translation = context_payload.get('task_type') in TRANSLATION_TASK_TYPES
+        with self.worker.debug_operation_context(context_payload):
+            if provider_attempt is None:
+                response = await self._request_translation(
+                    prompt, log_prefix, task_info, context_payload, is_translation, kwargs,
+                )
+            else:
+                result = await _run_attempt(self.worker, provider_attempt, prompt, log_prefix, kwargs)
+                if not result.ok:
+                    raise result.exception or ValidationFailedError(result.error or "Qroute вернул пустой ответ.")
+                response = result.text
+        if is_translation:
+            validate_translation_response(response)
+        return response
+
+    async def _request_translation(self, prompt, log_prefix, task_info, context_payload, is_translation, kwargs):
         try:
             if should_orchestrate_api_call(self.worker, context_payload):
                 response = await execute_orchestrated_api_call(
@@ -105,13 +125,10 @@ class BaseTaskProcessor:
                     call_kwargs=kwargs,
                 )
             else:
-                with self.worker.debug_operation_context(context_payload):
-                    response = await self.worker.api_handler_instance.execute_api_call(
-                        prompt,
-                        log_prefix,
-                        **kwargs,
-                    )
+                response = await self.worker.api_handler_instance.execute_api_call(prompt, log_prefix, **kwargs)
             validate_content_filter_response(response)
+        except QrouteOutputLimitError:
+            raise
         except (ContentFilterError, PartialGenerationError) as exc:
             if isinstance(exc, PartialGenerationError):
                 try:
@@ -130,14 +147,14 @@ class BaseTaskProcessor:
                         operation_context=context_payload,
                         call_kwargs=kwargs,
                     )
+                except QrouteOutputLimitError:
+                    raise
                 except PartialGenerationError as fallback_exc:
                     if is_translation:
                         validate_translation_response(fallback_exc.partial_text)
                     raise
             else:
                 raise exc
-        if is_translation:
-            validate_translation_response(response)
         return response
 
     def _raise_validation_error(self, message, raw_package_text=""):

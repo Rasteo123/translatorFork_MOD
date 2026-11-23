@@ -1,15 +1,17 @@
 import json
 import unittest
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from gemini_translator.api import token_usage
 from gemini_translator.api.errors import (
     ContentFilterError,
     PartialGenerationError,
+    QrouteOutputLimitError,
     RateLimitExceededError,
     TemporaryRateLimitError,
 )
@@ -17,6 +19,9 @@ from gemini_translator.api.handlers.openrouter import OpenRouterApiHandler
 from gemini_translator.core.worker import DEFAULT_TASK_STREAM_MODE, UniversalWorker
 from gemini_translator.core.worker_helpers.emerger_tasks import EmergencyTask
 from gemini_translator.core.worker_helpers.error_analyzer import ErrorAnalyzer
+from gemini_translator.core.worker_helpers.taskers.epub_chunk_processor import EpubChunkProcessor
+from gemini_translator.core.worker_helpers.taskers.output_limit_recovery import translate_split_fragment
+from gemini_translator.core.worker_helpers.taskers.raw_text_processor import RawTextProcessor
 
 
 def _make_handler(model_config, provider_config=None):
@@ -189,6 +194,165 @@ def _make_calling_handler(response):
 
     handler._get_or_create_session_internal = _session
     return handler
+
+
+class QrouteSplitTranslationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_part_disconnect_cannot_supply_a_continuation_for_the_parent(self):
+        worker = SimpleNamespace(_post_event=Mock())
+        translate = AsyncMock(side_effect=[
+            "<p>Первый перевод</p>",
+            PartialGenerationError("connection lost", "текст середины главы", "NETWORK_ERROR"),
+        ])
+
+        with self.assertRaises(PartialGenerationError) as raised:
+            await translate_split_fragment(
+                worker, "<p>First</p><p>Second</p>", QrouteOutputLimitError(""), translate,
+            )
+
+        self.assertEqual(raised.exception.reason, "NETWORK_ERROR")
+        self.assertEqual(raised.exception.partial_text, "")
+
+    async def test_html_split_keeps_space_at_an_inline_tag_boundary(self):
+        worker = SimpleNamespace(_post_event=Mock())
+        source = "<body><p>Here are several words <em>with</em> more words in a row.</p></body>"
+
+        async def translate(part, _attempt):
+            return "<body>" + part.strip() + "</body>"
+
+        result = await translate_split_fragment(worker, source, QrouteOutputLimitError(""), translate)
+
+        self.assertEqual(result, source)
+
+    async def test_capped_batch_returns_its_chapters_to_the_queue(self):
+        task_info = ("task", ("epub_batch", "book.epub", ("Text/ch5.xhtml", "Text/ch6.xhtml")))
+        worker = object.__new__(UniversalWorker)
+        worker.worker_id = "worker"
+        worker.task_manager = Mock()
+        worker.task_manager.split_in_progress_batch_into_chapters.return_value = True
+        worker._post_event = Mock()
+        worker._execute_task = AsyncMock(side_effect=QrouteOutputLimitError(""))
+        worker.error_analyzer = Mock()
+
+        await worker._process_single_task_with_retries(task_info)
+
+        worker.task_manager.split_in_progress_batch_into_chapters.assert_called_once_with(
+            task_info, worker_id="worker", priority=1,
+        )
+        worker.error_analyzer.analyze_and_act.assert_not_called()
+
+    async def test_raw_text_rebuilds_its_prompt_for_each_part(self):
+        worker = SimpleNamespace(api_key="test", prompt_builder=SimpleNamespace(), _post_event=Mock())
+        processor = RawTextProcessor(worker)
+        processor._execute_api_call = AsyncMock(side_effect=[
+            QrouteOutputLimitError("обрезано"), "первый", "второй",
+        ])
+
+        (task_info, translation), success, _, _ = await processor.execute(
+            ("task", ("raw_text_translation", "first second", "Translate: {text}")),
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(task_info[0], "task")
+        self.assertEqual(translation, "первый второй")
+        prompts = [call.args[0].strip() for call in processor._execute_api_call.call_args_list]
+        self.assertEqual(prompts, ["Translate: first second", "Translate: first", "Translate: second"])
+
+    async def test_raw_text_split_preserves_the_translated_markup(self):
+        worker = SimpleNamespace(api_key="test", prompt_builder=SimpleNamespace(), _post_event=Mock())
+        processor = RawTextProcessor(worker)
+        processor._execute_api_call = AsyncMock(side_effect=[
+            QrouteOutputLimitError(""), "<p>Первый</p>", "<p>Второй</p>",
+        ])
+
+        (_, translation), success, _, _ = await processor.execute(
+            ("task", ("raw_text_translation", "first second", "Translate into HTML: {text}")),
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(translation, "<p>Первый</p> <p>Второй</p>")
+
+    async def test_capped_reserve_translates_smaller_parts_and_preserves_the_original_chunk(self):
+        primary = _make_calling_handler(_text_response("", False, "content_filter"))
+        primary.execute_api_call = primary.call_api
+        primary_session = await primary._get_or_create_session_internal()
+        requests = []
+        context = {}
+
+        @contextmanager
+        def operation_context(value):
+            original = context.copy()
+            context.update(value)
+            try:
+                yield
+            finally:
+                context.clear()
+                context.update(original)
+
+        class ReserveSession:
+            def post(self, _url, *, headers, json):
+                requests.append(json)
+                source = json["messages"][-1]["content"]
+                if source.count("<p>") > 1:
+                    return _text_response("", False, "length")
+                return _text_response(source.replace("Source", "Перевод"), False, "stop")
+
+        class ReserveHandler(OpenRouterApiHandler):
+            execute_api_call = OpenRouterApiHandler.call_api
+
+            def setup_client(self, *_args, **_kwargs):
+                self.base_url = "https://ai.arbz.lol/v1/chat/completions"
+                self.is_dynamic_local = False
+                return True
+
+            async def _get_or_create_session_internal(self):
+                return ReserveSession()
+
+        worker = SimpleNamespace(
+            api_handler_instance=primary,
+            content_filter_fallback_enabled=True,
+            content_filter_fallback_provider="arbz",
+            content_filter_fallback_model="plus/deepseek-v4.1-flash-1017",
+            settings_manager=SimpleNamespace(
+                load_key_statuses=lambda: [{"provider": "arbz", "key": "reserve-key"}],
+                is_key_limit_active=lambda *_args: False,
+            ),
+            debug_operation_context=operation_context,
+            get_debug_operation_context=lambda: context,
+            context_manager=SimpleNamespace(prepare_html_for_translation=lambda text: text),
+            prompt_builder=SimpleNamespace(
+                system_instruction=None,
+                _replace_media_with_placeholders=lambda text: text,
+                prepare_for_api=lambda text_content, **_kwargs: (text_content, None, {}),
+            ),
+            response_parser=SimpleNamespace(
+                _restore_media_from_placeholders=lambda translated_content, **_kwargs: translated_content,
+            ),
+            system_instruction="translate",
+            _post_event=Mock(),
+        )
+        source = (
+            '<body><section id="original"><p>Source one.</p><p>Source two.</p>'
+            '<p>Source three.</p><p>Source four.</p></section></body>'
+        )
+        task_info = ("task", ("epub_chunk", "book.epub", "Text/ch5.xhtml", source, 2, 5, "", ""))
+
+        with patch(
+            "gemini_translator.core.worker_helpers.provider_orchestrator.get_api_handler_class",
+            return_value=ReserveHandler,
+        ):
+            result, success, status, _ = await EpubChunkProcessor(worker).execute(task_info, use_stream=False)
+
+        self.assertTrue(success)
+        self.assertEqual(status, "SUCCESS")
+        self.assertEqual(result[0], task_info)
+        self.assertEqual(
+            result[1]["translated_content"],
+            '<body><section id="original"><p>Перевод one.</p><p>Перевод two.</p>'
+            '<p>Перевод three.</p><p>Перевод four.</p></section></body>',
+        )
+        self.assertEqual(primary_session.requests, 1)
+        self.assertEqual(len(requests), 7)
+        self.assertTrue(all(item["max_tokens"] == 32768 for item in requests))
 
 
 def _make_arbz_sol_handler(response, route="Codex"):
@@ -427,11 +591,13 @@ class ArbzGlossaryOutputLimitTests(unittest.IsolatedAsyncioTestCase):
         for provider, task_type, max_output_tokens, expected_limit in (
             ("arbz", "glossary_batch_task", None, None),
             ("arbz", "glossary_batch_task", 16384, 16384),
-            ("arbz", "epub_batch", None, 8028),
+            ("arbz", "epub_batch", None, 32768),
+            ("arbz", "epub_chunk", None, 32768),
+            ("arbz", "epub_chunk", 16384, 16384),
             ("openrouter", "glossary_batch_task", None, 8028),
         ):
             with self.subTest(provider=provider, task_type=task_type, explicit_limit=max_output_tokens):
-                handler = _make_calling_handler(_text_response('{"Term": {', True, "length"))
+                handler = _make_calling_handler(_text_response('{"Term": {', True, "stop"))
                 handler.worker.api_provider_name = provider
                 handler.worker.model_config["max_output_tokens"] = 8192
                 handler.worker.get_debug_operation_context = lambda: {"task_type": task_type}
@@ -446,6 +612,18 @@ class ArbzGlossaryOutputLimitTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("max_tokens", session.last_payload)
                 else:
                     self.assertEqual(session.last_payload["max_tokens"], expected_limit)
+
+    async def test_qroute_translation_reports_length_in_both_response_modes(self):
+        for streaming, content in ((False, "truncated"), (True, "")):
+            with self.subTest(streaming=streaming, content=content):
+                handler = _make_calling_handler(_text_response(content, streaming, "length"))
+                handler.worker.api_provider_name = "arbz"
+                handler.worker.get_debug_operation_context = lambda: {"task_type": "epub_chunk"}
+
+                with self.assertRaises(PartialGenerationError) as raised:
+                    await handler.call_api("prompt", "log", use_stream=streaming, allow_incomplete=True)
+                self.assertEqual(raised.exception.reason, "LENGTH")
+                self.assertEqual(raised.exception.partial_text, content)
 
 
 class OpenRouterContentFilterTests(unittest.IsolatedAsyncioTestCase):

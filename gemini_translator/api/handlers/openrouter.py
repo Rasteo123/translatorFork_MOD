@@ -3,11 +3,14 @@ import json
 import traceback
 import os
 import platform
+
+from gemini_translator.utils.translation_response import TRANSLATION_TASK_TYPES
+
 from ..base import BaseApiHandler, TRANSPORT_ERRORS
 from ..errors import (
     ContentFilterError, NetworkError, LocationBlockedError,
     RateLimitExceededError, ModelNotFoundError, ValidationFailedError,
-    TemporaryRateLimitError, PartialGenerationError
+    TemporaryRateLimitError, PartialGenerationError, QrouteOutputLimitError
 )
 from ._responses import parse_responses_result, parse_responses_stream
 from ._sse_stream import SSEStreamInterrupted, parse_openai_compatible_sse_stream
@@ -29,6 +32,7 @@ QUOTA_RESET_FAR_SECONDS = 6 * 3600.0
 # into PartialGenerationError; the analyzer and the fallback treat it like
 # Gemini's SAFETY / PROHIBITED_CONTENT.
 CONTENT_BLOCK_REASON = "CONTENT_FILTER"
+QROUTE_TRANSLATION_OUTPUT_TOKENS = 32768
 
 
 def _format_wait(seconds):
@@ -179,7 +183,8 @@ class OpenRouterApiHandler(BaseApiHandler):
             })
 
     async def _read_success_response(
-        self, response, use_stream, allow_incomplete, debug, *, is_glossary_batch, responses_api=False,
+        self, response, use_stream, allow_incomplete, debug, *,
+        is_glossary_batch, is_qroute_translation=False, responses_api=False,
     ):
         if use_stream:
             parse_stream = parse_responses_stream if responses_api else parse_openai_compatible_sse_stream
@@ -224,6 +229,8 @@ class OpenRouterApiHandler(BaseApiHandler):
         if finish_reason == "content_filter":
             self._raise_content_block(content or "")
         if finish_reason == "length":
+            if is_qroute_translation:
+                raise QrouteOutputLimitError(content)
             if is_glossary_batch and not (content or "").strip():
                 raise PartialGenerationError(
                     "Модель достигла лимита токенов и не вернула глоссарий. Автоматического повтора не будет.",
@@ -302,14 +309,17 @@ class OpenRouterApiHandler(BaseApiHandler):
             payload["temperature"] = temperature
         self._apply_openai_reasoning_options(payload, responses_api=responses_api)
         context_getter = getattr(self.worker, "get_debug_operation_context", None)
-        is_glossary_batch = (
-            callable(context_getter) and context_getter().get("task_type") == "glossary_batch_task"
-        )
+        task_type = context_getter().get("task_type") if callable(context_getter) else None
+        is_glossary_batch = task_type == "glossary_batch_task"
+        is_qroute = getattr(self.worker, "api_provider_name", None) == "arbz"
+        is_qroute_translation = is_qroute and task_type in TRANSLATION_TASK_TYPES
         # Let Arbz set its own budget for glossary generation, including reasoning.
-        use_provider_limit = is_glossary_batch and getattr(self.worker, "api_provider_name", None) == "arbz"
+        use_provider_limit = is_qroute and is_glossary_batch
         token_limit_key = "max_output_tokens" if responses_api else "max_tokens"
         if max_output_tokens is not None:
             payload[token_limit_key] = max_output_tokens
+        elif is_qroute_translation:
+            payload[token_limit_key] = QROUTE_TRANSLATION_OUTPUT_TOKENS
         elif allow_incomplete and not use_provider_limit:
             payload[token_limit_key] = int(self.worker.model_config.get("max_output_tokens", 8192) * 0.98)
 
@@ -339,6 +349,7 @@ class OpenRouterApiHandler(BaseApiHandler):
                             allow_incomplete,
                             debug,
                             is_glossary_batch=is_glossary_batch,
+                            is_qroute_translation=is_qroute_translation,
                             responses_api=responses_api,
                         )
 

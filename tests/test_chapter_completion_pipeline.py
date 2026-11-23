@@ -15,6 +15,8 @@ import zipfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from gemini_translator.api.errors import QrouteOutputLimitError
+from gemini_translator.core.worker_helpers.taskers.base_processor import BaseTaskProcessor
 from gemini_translator.core.worker_helpers.taskers.epub_single_file_processor import (
     EpubSingleFileProcessor,
 )
@@ -130,6 +132,49 @@ class ChapterCompletionPipelineTests(unittest.TestCase):
 
         self.assertIsNone(builder.last_completion_data)
         self.assertIn("Третий абзац", parser.saved_body)
+
+    def test_qroute_limit_retranslates_the_whole_chapter_in_smaller_parts(self):
+        processor, builder, parser = _make_processor(self.tmpdir, self.epub_path)
+        builder.prepare_for_api = lambda text_content, *_args, **_kwargs: (text_content, None, {})
+        translated_paragraphs = (PARTIAL, *CONTINUATION.replace("</p><p>", "</p>|<p>").split("|"))
+
+        async def translate(_processor, prompt, *_args, **_kwargs):
+            if prompt.count("<p>") > 1:
+                raise QrouteOutputLimitError("<p>Обрезанный ответ</p>")
+            index = next(i for i, start in enumerate(("First", "Second", "Third")) if start in prompt)
+            self.assertIsNone(parser.saved_body)
+            return translated_paragraphs[index]
+
+        task_info = ("task-id", ("epub", self.epub_path, "Text/ch1.xhtml", "<p>Устаревший хвост</p>"))
+        with patch.object(BaseTaskProcessor, "_execute_api_call", new=translate):
+            (_, success, status, _) = asyncio.run(processor.execute(task_info, use_stream=False))
+
+        self.assertTrue(success)
+        self.assertEqual(status, "SUCCESS")
+        self.assertEqual("".join(translated_paragraphs), parser.saved_body.removeprefix("<body>").removesuffix("</body>"))
+
+    def test_qroute_split_preserves_in_chapter_heading_ids(self):
+        source = (
+            '<body><p>first has equally many characters here</p>'
+            '<h2 id="alpha">Alpha</h2><h2 id="beta">Beta</h2>'
+            '<p>second has similar length now</p></body>'
+        )
+        with zipfile.ZipFile(self.epub_path, "w") as epub_zip:
+            epub_zip.writestr("Text/ch1.xhtml", source)
+        processor, builder, parser = _make_processor(self.tmpdir, self.epub_path)
+        builder.prepare_for_api = lambda text_content, *_args, **_kwargs: (text_content, None, {})
+
+        async def translate(_processor, prompt, *_args, **_kwargs):
+            if prompt == source:
+                raise QrouteOutputLimitError("")
+            return prompt
+
+        task_info = ("task-id", ("epub", self.epub_path, "Text/ch1.xhtml"))
+        with patch.object(BaseTaskProcessor, "_execute_api_call", new=translate):
+            _, success, _, _ = asyncio.run(processor.execute(task_info, use_stream=False))
+
+        self.assertTrue(success)
+        self.assertEqual(parser.saved_body, source)
 
 
 async def _immediate(value):

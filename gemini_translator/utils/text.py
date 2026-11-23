@@ -3069,7 +3069,7 @@ def _strip_document_shell_for_body_repair(html_content: str) -> str:
     return fragment.strip()
 
 
-def coerce_translated_body_block(original_html: str, translated_html: str) -> str:
+def coerce_translated_body_block(original_html: str, translated_html: str, *, normalize_heading=True) -> str:
     """
     Return only the translated <body>...</body> block when the source had one.
     This is a final save guard for model responses that leak full XHTML shells
@@ -3080,18 +3080,19 @@ def coerce_translated_body_block(original_html: str, translated_html: str) -> st
         return normalized
 
     soup_cache = {}
-    normalized_original = _normalize_epub_heading_for_validation(original_html, soup_cache)
-    normalized = _normalize_epub_heading_for_validation(normalized, soup_cache)
-    normalized = _coerce_first_heading_level(normalized_original, normalized, soup_cache)
+    if normalize_heading:
+        original_html = _normalize_epub_heading_for_validation(original_html, soup_cache)
+        normalized = _normalize_epub_heading_for_validation(normalized, soup_cache)
+    normalized = _coerce_first_heading_level(original_html, normalized, soup_cache)
 
-    original_lower = normalized_original.lower()
+    original_lower = original_html.lower()
     if '<body' not in original_lower or '</body>' not in original_lower:
         return normalized
 
     normalized_lower = normalized.lower()
     if re.search(r'<body\b', normalized_lower) and re.search(r'</body>', normalized_lower):
         normalized = process_body_tag(normalized, return_parts=False, body_content_only=False)
-    return repair_missing_paragraph_tags(normalized_original, normalized, soup_cache)
+    return repair_missing_paragraph_tags(original_html, normalized, soup_cache)
 
 
 def _parse_html_for_validation(html_content, soup_cache=None):
@@ -3698,7 +3699,7 @@ def merge_partial_with_overlap_guard(previous_text, new_text):
     return previous_text + new_text, 0
 
 
-def validate_html_structure(original_html, translated_html):
+def validate_html_structure(original_html, translated_html, *, normalize_heading=True):
     """
     Умная валидация ответа с глубокой проверкой структуры.
     Версия 5.0: AUTO-REPAIR. Пытается починить баланс <p>, если он нарушен.
@@ -3709,15 +3710,18 @@ def validate_html_structure(original_html, translated_html):
 
     # Один парс на уникальную строку в рамках этого вызова (soup'ы read-only).
     soup_cache = {}
-    original_html = _normalize_epub_heading_for_validation(original_html, soup_cache)
-    final_translated_html = _normalize_epub_heading_for_validation(translated_html, soup_cache)
+    final_translated_html = translated_html
+    if normalize_heading:
+        original_html = _normalize_epub_heading_for_validation(original_html, soup_cache)
+        final_translated_html = _normalize_epub_heading_for_validation(translated_html, soup_cache)
     normalized_orig = prettify_html_for_ai(original_html)
     orig_lower = normalized_orig.lower().strip()
     final_translated_html = normalize_translated_body_wrapper(original_html, final_translated_html)
     final_translated_html = normalize_xhtml_tag_case(final_translated_html)
     final_translated_html = _coerce_first_heading_level(original_html, final_translated_html, soup_cache)
     final_translated_html = normalize_dialogue_dashes(final_translated_html)
-    final_translated_html = normalize_chapter_heading_format(final_translated_html)
+    if normalize_heading:
+        final_translated_html = normalize_chapter_heading_format(final_translated_html)
     trans_lower = final_translated_html.lower().strip()
 
     # --- ПРОВЕРКА 1: Целостность <body> (Regex) ---

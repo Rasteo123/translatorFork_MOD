@@ -7,7 +7,7 @@ from collections import Counter
 
 from .base_processor import BaseTaskProcessor, _notify_translation_ready
 from .epub_single_file_processor import EpubSingleFileProcessor
-from gemini_translator.api.errors import PartialGenerationError, SuccessSignal, ValidationFailedError
+from gemini_translator.api.errors import PartialGenerationError, QrouteOutputLimitError, SuccessSignal, ValidationFailedError
 from gemini_translator.utils.epub_json import (
     build_html_document_model,
     build_translation_payload,
@@ -232,6 +232,8 @@ class EpubBatchProcessor(BaseTaskProcessor):
                     batch_log_prefix=batch_log_prefix,
                     use_stream=use_stream,
                 )
+            except QrouteOutputLimitError:
+                raise
             except (ValidationFailedError, PartialGenerationError, ValueError) as json_error:
                 self.worker._post_event("log_message", {
                     "message": f"[JSON EPUB BATCH] Fallback to legacy HTML batch: {json_error}"
@@ -302,6 +304,8 @@ class EpubBatchProcessor(BaseTaskProcessor):
                 use_stream=use_stream,
                 allow_incomplete=use_stream,
             )
+        except QrouteOutputLimitError:
+            raise
         except PartialGenerationError as exc:
             raw_response = exc.partial_text
             finish_reason_exc = exc

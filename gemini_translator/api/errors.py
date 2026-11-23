@@ -65,3 +65,11 @@ class PartialGenerationError(Exception):
     @property
     def is_empty_token_limit(self) -> bool:
         return (self.reason or "").upper() in ("LENGTH", "MAX_TOKENS") and not (self.partial_text or "").strip()
+
+
+class QrouteOutputLimitError(PartialGenerationError):
+    """A Qroute translation hit its output budget."""
+
+    def __init__(self, partial_text):
+        super().__init__("Qroute достиг лимита выходных токенов.", partial_text or "", "LENGTH")
+        self.provider_attempt = None

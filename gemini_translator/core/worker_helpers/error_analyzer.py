@@ -11,7 +11,8 @@ from gemini_translator.api.errors import (
     NetworkError,
     OperationCancelledError,
     ValidationFailedError,
-    PartialGenerationError
+    PartialGenerationError,
+    QrouteOutputLimitError,
 )
 
 
@@ -88,6 +89,13 @@ class ErrorAnalyzer:
         task_name = self.task_manager._get_task_display_name(task_payload)
         is_package_task = bool(task_payload) and task_payload[0] in self.INFINITE_RETRY_PACKAGE_TYPES
         worker_model_id = getattr(self.worker, 'model_id', None)
+
+        if isinstance(exc, QrouteOutputLimitError):
+            # The processor has already tried splitting the source, so retrying
+            # this task would send the same oversized request again.
+            error_type = ErrorType.PARTIAL_GENERATION
+            self._record_and_log_failure(task_info, error_type, exc)
+            return self._log_and_fail_permanently(task_name, error_type, exc)
 
         # --- Шаг 1: Определяем исходный тип ошибки и тип для записи в историю ---
         error_for_rules = self._classify_exception(exc)

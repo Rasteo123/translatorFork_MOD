@@ -3,7 +3,8 @@
 import os
 
 from .base_processor import BaseTaskProcessor
-from gemini_translator.api.errors import ValidationFailedError, PartialGenerationError
+from .output_limit_recovery import translate_split_fragment
+from gemini_translator.api.errors import ValidationFailedError, PartialGenerationError, QrouteOutputLimitError
 from gemini_translator.utils.epub_json import (
     build_html_document_model,
     estimate_translation_noise,
@@ -22,8 +23,8 @@ class EpubChunkProcessor(BaseTaskProcessor):
     def _merge_with_overlap_guard(self, partial_text: str, new_text: str):
         return merge_partial_with_overlap_guard(partial_text, new_text)
 
-    def _normalize_body_wrapper(self, original_html: str, translated_html: str):
-        return coerce_translated_body_block(original_html, translated_html)
+    def _normalize_body_wrapper(self, original_html: str, translated_html: str, **options):
+        return coerce_translated_body_block(original_html, translated_html, **options)
 
     def _build_sequential_reference(self, task_info, chapter_path, chunk_index, total_chunks):
         prompt_builder = getattr(self.worker, "prompt_builder", None)
@@ -68,7 +69,11 @@ class EpubChunkProcessor(BaseTaskProcessor):
             f"[{previous_chunk_number}/{total_chunks}]\n\n{previous_translation}"
         )
 
-    async def _execute_json_chunk_pipeline(self, task_info, chapter_path, content_to_translate_for_api, log_prefix, use_stream, chunk_index, total_chunks, is_retry, previous_reference=None):
+    async def _execute_json_chunk_pipeline(
+        self, task_info, chapter_path, content_to_translate_for_api, log_prefix,
+        use_stream, chunk_index, total_chunks, is_retry, previous_reference=None, provider_attempt=None,
+        **html_options,
+    ):
         document_model = build_html_document_model(content_to_translate_for_api, document_id=chapter_path)
         user_prompt, _, _, source_payload = self.worker.prompt_builder.prepare_json_for_api(
             document_model=document_model,
@@ -92,6 +97,7 @@ class EpubChunkProcessor(BaseTaskProcessor):
             log_prefix=f"{log_prefix} [JSON]",
             task_info=task_info,
             operation_context=operation_context,
+            provider_attempt=provider_attempt,
             use_stream=use_stream,
         )
         translated_full_html = self.worker.response_parser.parse_json_translation_response(
@@ -99,10 +105,46 @@ class EpubChunkProcessor(BaseTaskProcessor):
             document_model=document_model,
             source_payload=source_payload,
         )
-        translated_full_html = self._normalize_body_wrapper(content_to_translate_for_api, translated_full_html)
+        translated_full_html = self._normalize_body_wrapper(content_to_translate_for_api, translated_full_html, **html_options)
         return raw_response, translated_full_html, source_payload
 
     async def execute(self, task_info, use_stream=True):
+        try:
+            return await self._translate_chunk(task_info, use_stream)
+        except QrouteOutputLimitError as exc:
+            base_task_info = (task_info[0], task_info[1][:8])
+            translated_html = await self.translate_after_output_limit(base_task_info, use_stream, exc)
+            result_payload = (base_task_info, self._build_success_payload(translated_content=translated_html))
+            return result_payload, True, 'SUCCESS', "Успешно"
+
+    async def translate_after_output_limit(self, task_info, use_stream, error):
+        task_id, payload = task_info
+        source = self._body_block(payload[3])
+
+        async def translate(part, provider_attempt):
+            part_task = (task_id, (*payload[:3], part, *payload[4:]))
+            (_, translated), _, _, _ = await self._translate_chunk(
+                part_task, use_stream, provider_attempt, is_split_part=True,
+            )
+            return translated["translated_content"] if isinstance(translated, dict) else translated
+
+        result = await translate_split_fragment(self.worker, source, error, translate)
+        if not getattr(self.worker, "force_accept", False):
+            is_valid, reason, validated = validate_html_structure(source, result)
+            if not is_valid:
+                self._raise_validation_error(f"Перевод из частей не прошёл HTML-валидацию: {reason}", result)
+            return validated
+        return result
+
+    @staticmethod
+    def _body_block(content, *, normalize_heading=True):
+        if not content.lower().strip().startswith('<body'):
+            content = "<body>" + content
+        if not content.lower().strip().endswith('</body>'):
+            content += "</body>"
+        return normalize_epub_chapter_heading_to_h1(content) if normalize_heading else content
+
+    async def _translate_chunk(self, task_info, use_stream, provider_attempt=None, *, is_split_part=False):
         task_id, task_payload = task_info
 
         is_retry = len(task_payload) > 8
@@ -112,12 +154,9 @@ class EpubChunkProcessor(BaseTaskProcessor):
         _, epub_path, chapter_path, chunk_content, chunk_index, total_chunks, prefix, suffix = base_payload
         log_prefix = f"{os.path.basename(chapter_path)} [{chunk_index + 1}/{total_chunks}]" + (" [Попытка 2+]" if is_retry else "")
 
-        content_to_translate_for_api = chunk_content
-        if not chunk_content.lower().strip().startswith('<body'):
-            content_to_translate_for_api = "<body>" + content_to_translate_for_api
-        if not chunk_content.lower().strip().endswith('</body>'):
-            content_to_translate_for_api = content_to_translate_for_api + "</body>"
-        content_to_translate_for_api = normalize_epub_chapter_heading_to_h1(content_to_translate_for_api)
+        # A split part can start with in-chapter headings that must stay separate.
+        html_options = {"normalize_heading": False} if is_split_part else {}
+        content_to_translate_for_api = self._body_block(chunk_content, **html_options)
 
         segmented_text = self.worker.context_manager.prepare_html_for_translation(content_to_translate_for_api)
         content_with_placeholders = self.worker.prompt_builder._replace_media_with_placeholders(segmented_text)
@@ -147,10 +186,14 @@ class EpubChunkProcessor(BaseTaskProcessor):
                     total_chunks=total_chunks,
                     is_retry=is_retry,
                     previous_reference=previous_reference,
+                    provider_attempt=provider_attempt,
+                    **html_options,
                 )
                 if not getattr(self.worker, "force_accept", False):
                     original_chunk_with_placeholders = self.worker.prompt_builder._replace_media_with_placeholders(content_to_translate_for_api)
-                    is_valid, reason, validated_chunk = validate_html_structure(original_chunk_with_placeholders, final_restored_html)
+                    is_valid, reason, validated_chunk = validate_html_structure(
+                        original_chunk_with_placeholders, final_restored_html, **html_options,
+                    )
                     if not is_valid:
                         self._raise_validation_error(
                             f"JSON chunk не прошел финальную HTML-валидацию: {reason}",
@@ -177,6 +220,8 @@ class EpubChunkProcessor(BaseTaskProcessor):
                     )
                 )
                 return result_payload, True, 'SUCCESS', "Успешно"
+            except QrouteOutputLimitError:
+                raise
             except (ValidationFailedError, PartialGenerationError, ValueError) as json_error:
                 self.worker._post_event('log_message', {
                     'message': f"[JSON EPUB CHUNK] Откат на legacy HTML для '{os.path.basename(chapter_path)}' [{chunk_index + 1}/{total_chunks}]: {json_error}"
@@ -215,6 +260,7 @@ class EpubChunkProcessor(BaseTaskProcessor):
                 log_prefix,
                 task_info=task_info,
                 operation_context=operation_context,
+                provider_attempt=provider_attempt,
                 use_stream=use_stream,
             )
         except PartialGenerationError as e:
@@ -233,12 +279,14 @@ class EpubChunkProcessor(BaseTaskProcessor):
             cleaned_new_part_from_markdown
         )
         accumulated_text = clean_html_content(accumulated_raw_html, is_html=True)
-        accumulated_text = self._normalize_body_wrapper(content_to_translate_for_api, accumulated_text)
+        accumulated_text = self._normalize_body_wrapper(content_to_translate_for_api, accumulated_text, **html_options)
 
         original_chunk_with_placeholders = self.worker.prompt_builder._replace_media_with_placeholders(content_to_translate_for_api)
 
         if not getattr(self.worker, "force_accept", False):
-            is_valid, reason, validated_chunk = validate_html_structure(original_chunk_with_placeholders, accumulated_text)
+            is_valid, reason, validated_chunk = validate_html_structure(
+                original_chunk_with_placeholders, accumulated_text, **html_options,
+            )
             if not is_valid:
                 self._raise_validation_error(
                     f"Финальный текст не прошел валидацию: {reason}",

@@ -7,6 +7,8 @@ from bs4 import BeautifulSoup
 
 from gemini_translator.api.errors import ContentFilterError, ValidationFailedError
 
+TRANSLATION_TASK_TYPES = frozenset({"epub", "epub_batch", "epub_chunk", "raw_text_translation"})
+
 
 # Some Google browser/proxy transports return this notice as ordinary text,
 # without a safety finish reason. Match the service notice, not policy mentions

@@ -3,8 +3,25 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from gemini_translator.api.errors import ContentFilterError, RateLimitExceededError
+import pytest
+
+from gemini_translator.api.errors import ContentFilterError, QrouteOutputLimitError, RateLimitExceededError
 from gemini_translator.core.worker_helpers import provider_orchestrator as orchestrator
+
+
+def test_parallel_failures_keep_the_recoverable_qroute_output_limit():
+    clipped = QrouteOutputLimitError("")
+    qroute = orchestrator.ProviderAttempt("arbz", "DeepSeek", {"id": "deepseek"}, "key", "qroute")
+    others = orchestrator.ProviderAttempt("other", "Other", {"id": "other"}, "other-key", "other")
+    results = [
+        orchestrator.ProviderAttemptResult(others, error="quota", exception=RateLimitExceededError("quota")),
+        orchestrator.ProviderAttemptResult(qroute, error="length", exception=clipped),
+        orchestrator.ProviderAttemptResult(others, error="quota", exception=RateLimitExceededError("quota")),
+    ]
+
+    with pytest.raises(QrouteOutputLimitError) as raised:
+        orchestrator._select_result("best_score", results)
+    assert raised.value is clipped
 
 
 class _ApiHandlerStub:

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 
 from .base_processor import BaseTaskProcessor
-from gemini_translator.api.errors import ValidationFailedError, PartialGenerationError
+from .output_limit_recovery import translate_split_fragment
+from gemini_translator.api.errors import PartialGenerationError, QrouteOutputLimitError
 from gemini_translator.utils.text import clean_html_content, safe_format
 
 
@@ -18,33 +19,37 @@ class RawTextProcessor(BaseTaskProcessor):
 
         log_prefix = f"Прямой перевод (ключ …{self.worker.api_key[-4:]})"
 
-        if custom_prompt_str:
-            user_prompt = safe_format(custom_prompt_str, text=text_content_to_translate)
-            self.worker.prompt_builder.system_instruction = None
-        else:
-            user_prompt, _, _ = self.worker.prompt_builder.prepare_for_api(
-                text_content_to_translate,
-                self.worker.system_instruction,
-                current_chapters_list=None
-            )
-
-        cleaned_response = ""
+        operation_context = self._build_operation_context(
+            task_info,
+            action='translate_text',
+            task_type='raw_text_translation',
+        )
         raw_translated_text = ""
-        try:
-            operation_context = self._build_operation_context(
-                task_info,
-                action='translate_text',
-                task_type='raw_text_translation',
-            )
+
+        async def translate(source, provider_attempt=None):
+            nonlocal raw_translated_text
+            if custom_prompt_str:
+                user_prompt = safe_format(custom_prompt_str, text=source)
+                self.worker.prompt_builder.system_instruction = None
+            else:
+                user_prompt, _, _ = self.worker.prompt_builder.prepare_for_api(
+                    source, self.worker.system_instruction, current_chapters_list=None,
+                )
             raw_translated_text = await self._execute_api_call(
                 user_prompt,
                 log_prefix,
                 task_info=task_info,
                 operation_context=operation_context,
+                provider_attempt=provider_attempt,
                 use_stream=use_stream,
                 allow_incomplete=True
             )
-            cleaned_response = clean_html_content(raw_translated_text, is_html=True)
+            return clean_html_content(raw_translated_text, is_html=True)
+
+        try:
+            cleaned_response = await translate(text_content_to_translate)
+        except QrouteOutputLimitError as exc:
+            cleaned_response = await translate_split_fragment(self.worker, text_content_to_translate, exc, translate)
         except PartialGenerationError as e:
             if e.partial_text:
                 temp_cleaned = clean_html_content(e.partial_text, is_html=False)

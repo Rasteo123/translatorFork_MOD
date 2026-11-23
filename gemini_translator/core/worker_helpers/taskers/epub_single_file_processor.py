@@ -4,7 +4,8 @@ import os
 import zipfile
 
 from .base_processor import BaseTaskProcessor, _notify_translation_ready
-from gemini_translator.api.errors import ValidationFailedError, PartialGenerationError
+from .epub_chunk_processor import EpubChunkProcessor
+from gemini_translator.api.errors import ValidationFailedError, PartialGenerationError, QrouteOutputLimitError
 from gemini_translator.utils.epub_json import (
     build_html_document_model,
     estimate_translation_noise,
@@ -107,6 +108,31 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
             self._copy_original_as_result(out_path, original_content, internal_chapter_path, version_suffix)
             return base_task_info, True, 'SUCCESS', "Пропущено (нет текста, только медиа/теги), оригинал скопирован."
 
+        def save_translation(translated_body, details_text):
+            saved_record = self.worker.response_parser.process_and_save_single_file(
+                translated_body_content=translated_body,
+                original_full_content=original_content,
+                prefix_html=prefix_html,
+                suffix_html=html_suffix,
+                output_path=out_path,
+                original_internal_path=internal_chapter_path,
+                version_suffix=version_suffix,
+            )
+            _notify_translation_ready(self.worker, task_info, [saved_record])
+            success_payload = self._build_success_payload(
+                details_text=details_text,
+                details_title=f"Полученный пакет для '{os.path.basename(internal_chapter_path)}'",
+                preview_limit=4000,
+            )
+            return (base_task_info, success_payload), True, 'SUCCESS', ""
+
+        async def recover_output_limit(error):
+            chunk_payload = ('epub_chunk', epub_path, internal_chapter_path, body_content, 0, 1, "", "")
+            translated_body = await EpubChunkProcessor(self.worker).translate_after_output_limit(
+                (task_id, chunk_payload), use_stream, error,
+            )
+            return save_translation(translated_body, translated_body)
+
         use_json_pipeline = self._should_use_json_epub_pipeline() and not partial_translation
         if use_json_pipeline:
             try:
@@ -147,6 +173,8 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
                     preview_limit=4000,
                 )
                 return (base_task_info, success_payload), True, 'SUCCESS', ""
+            except QrouteOutputLimitError as exc:
+                return await recover_output_limit(exc)
             except (ValidationFailedError, PartialGenerationError, ValueError) as json_error:
                 self.worker._post_event('log_message', {
                     'message': f"[JSON EPUB] Откат на legacy HTML для '{os.path.basename(internal_chapter_path)}': {json_error}"
@@ -187,6 +215,8 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
                 operation_context=operation_context,
                 use_stream=use_stream,
             )
+        except QrouteOutputLimitError as exc:
+            return await recover_output_limit(exc)
         except PartialGenerationError as e:
             if e.partial_text:
                 e.partial_text = clean_html_content(e.partial_text, is_html=False)
@@ -227,23 +257,7 @@ class EpubSingleFileProcessor(BaseTaskProcessor):
                 raw_response or cleaned_response
             )
 
-        saved_record = self.worker.response_parser.process_and_save_single_file(
-            translated_body_content=restored_body,
-            original_full_content=original_content,
-            prefix_html=prefix_html,
-            suffix_html=html_suffix,
-            output_path=out_path,
-            original_internal_path=internal_chapter_path,
-            version_suffix=version_suffix
-        )
-        _notify_translation_ready(self.worker, task_info, [saved_record])
-
-        success_payload = self._build_success_payload(
-            details_text=raw_response or cleaned_response,
-            details_title=f"Полученный пакет для '{os.path.basename(internal_chapter_path)}'",
-            preview_limit=4000,
-        )
-        return (base_task_info, success_payload), True, 'SUCCESS', ""
+        return save_translation(restored_body, raw_response or cleaned_response)
 
     def _copy_original_as_result(self, out_path, content, internal_path, suffix):
         """Копирует оригинал на диск и регистрирует его в проекте."""

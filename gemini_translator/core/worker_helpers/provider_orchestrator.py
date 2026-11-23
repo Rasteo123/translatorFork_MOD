@@ -17,6 +17,7 @@ from gemini_translator.api.errors import (
     NetworkError,
     OperationCancelledError,
     PartialGenerationError,
+    QrouteOutputLimitError,
     RateLimitExceededError,
     TemporaryRateLimitError,
     ValidationFailedError,
@@ -26,10 +27,9 @@ from gemini_translator.core.handler_cleanup import cleanup_provider_handler
 from gemini_translator.utils.active_keys import owned_active_keys, saved_keys_by_provider
 from gemini_translator.utils.helpers import estimate_gemini_tokens, safe_int
 from gemini_translator.utils.text import split_csv
-from gemini_translator.utils.translation_response import validate_content_filter_response
+from gemini_translator.utils.translation_response import TRANSLATION_TASK_TYPES, validate_content_filter_response
 
 
-TRANSLATION_TASK_TYPES = {"epub", "epub_batch", "epub_chunk", "raw_text_translation"}
 TRANSLATION_ACTION_PREFIXES = ("translate",)
 INPUT_TOKEN_LIMIT_KEYS = (
     "input_token_limit",
@@ -527,7 +527,9 @@ async def _run_attempt(worker, attempt: ProviderAttempt, prompt: str, log_prefix
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         return ProviderAttemptResult(attempt=attempt, text=str(text or ""), elapsed_ms=elapsed_ms)
     except Exception as exc:
-        if isinstance(exc, PartialGenerationError):
+        if isinstance(exc, QrouteOutputLimitError):
+            exc.provider_attempt = attempt
+        elif isinstance(exc, PartialGenerationError):
             try:
                 validate_content_filter_response(exc.partial_text)
             except ContentFilterError as block_exc:
@@ -770,6 +772,12 @@ def _select_result(strategy: str, results: list[ProviderAttemptResult]) -> Provi
     successful = [result for result in results if result.ok]
     if not successful:
         dominant = _dominant_exception(results)
+        if not isinstance(dominant, OperationCancelledError):
+            # A Qroute attempt can still finish after splitting the source.
+            dominant = next(
+                (result.exception for result in results if isinstance(result.exception, QrouteOutputLimitError)),
+                dominant,
+            )
         if dominant is not None:
             raise dominant
         errors = "; ".join(result.error for result in results if result.error)
